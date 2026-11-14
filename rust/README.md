@@ -47,13 +47,14 @@ tree, not inputs to its build.
 | `fb_core_wwr::handle` | wwr's `src/extension/handle` | `BaseHandle` over a `HandleKind` (CRTP's `create`/`destroy` hooks), `DeviceBoundHandle`, `StreamBoundHandle` over a `StreamBoundKind`, each with a fallible `try_new`; the three views; the `DeviceHandle` / `DeviceHandleStream` traits |
 | `fb_core_wwr::runtime` | wwr's `src/extension/runtime` | `Stream`, `Event`, `MemPool` (with `MemPoolProps`), `Graph`, `GraphExec`, each a newtype over the handle it is built on, whose constructors abort on failure; stream capture through to a launched graph |
 | `fb_core_wwr::blas` | wwr's `src/extension/blas` | `wwr_blas_status` as an `ErrorCode`, and `BlasHandle`, a `StreamBoundHandle` over a shared `Stream` whose constructor aborts on failure. No workspace: the C ABI has no `wwr_blas_set_workspace` (WarpWraps#376) |
+| `fb_core_wwr::solver` | wwr's `src/extension/solver` | `wwr_solver_status` as an `ErrorCode` (two values: the C ABI maps every vendor failure to `WWR_SOLVER_STATUS_UNKNOWN`), and `SolverHandle`, the dense solver's `StreamBoundHandle` over a shared `Stream`, as `BlasHandle` is |
 | `fb_core_wwr` (`gpu_status`) | `src/core/wwr`'s `:status`, and the rule its `:policy` encodes | `gpu_status` / `gpu_status_at`, and `gpu_log_error_at`, what a `Drop` does with a failed destroy |
 | `fb_core_log` | `src/core/log` | The one backend behind the [`log`](https://crates.io/crates/log) facade: spdlog's line format (local time, OS thread id, `file:line`), the seven levels, `set_level` / `should_log` / `flush`, one file sink, the warning counter, and `log_at` for a location already held |
 | `fb_core_error_handling` | `src/core/error_handling` | `ErrorKind` (with the pinned exit codes as `exit_code`), `Error` and its `#[track_caller]` factories, `Result<T>` / `Status`, `check_or_abort` |
 | `fb_core_diagnostics` | `src/core/diagnostics` (`diagnostics.h`) | `gpu_must` (`FBF_GPU_MUST`), `critical!` (`FBF_LOG_CRITICAL`), and `log`'s `trace!` ... `error!` re-exported (`FBF_LOG_TRACE` ... `FBF_LOG_ERROR`); `FBF_TRY` is `?` |
 | `fb_core_arena` | the peak model of `src/core/footprint` and `src/pipeline/footprint`, and `check_plan`'s fit | The plan's memory laid out once (`docs/memory.md`): `TableBuilder` (rows declared node by node as scratch, outputs and their readers, or the worker's; lifetimes derived), `assign` (the pure greedy best-fit offset assigner), `Table` (offsets, total, `peak`, and `handoffs`, the orderings reusing bytes needs; its text is the committed golden `core/arena/tests/golden/arena_scf_fixture.txt`, rewritten by `FB_BLESS=1`), `admit` (the fit against a cap, refusing with the rows live at the peak), `Block<K>` (the table's one plain allocation, `Device` or portable `Pinned`, filled with `0xFF`, aborting on failure with the bytes and the free memory) and `Block::partition` (a node's `Bufs`: its own rows as `&[T]` / `&mut [T]` on the host and pointer views on the device, behind always-on borrow flags). The one module that allocates |
 | `fb_core_planner` | nothing: the C++ steps allocate as they go | The glue between the two below: `Task` (`layout`, which declares every row through a `Layout`, a node's rows of one table, and `run`, which computes through them), `Dag` (tasks added in plan order, each on a GPU worker's stream or the CPU pool; `add` returns the task's rows, whose output ids the reading tasks take), `Planned` (each worker's device and host tables, and each task's dependencies, the reads and the handoffs, derived; its text is the committed golden `core/planner/tests/golden/planner_scf.txt`) and `Instance` (the blocks, and a `thread_pool::Plan` whose nodes hand each task its rows; run any number of times, each run returning the executor's `Record` with every task under its own name and `Task::dims`, and the blocks' sizes). No `unsafe` |
-| `fb_core_thread_pool` | nothing: the C++ pipeline runs on one thread | The run's workers (`docs/programming_model.md`, "CPU workers"): `Plan` (nodes added in topological order, each placed on the CPU pool or one stream worker), `run` (one scope, `n_cpu` CPU workers and a thread per stream worker, readiness counts, failure skipping descendants, the lowest-ranked error returned, a panic re-raised rather than hung), and the `Backend` the edges leaving a stream wait through: `Device` (a stream per worker with its library handles bound to it, `DeviceStream`, a BLAS handle today, made with the backend before any run and reached by a GPU node through its `Lane`; an event per GPU node) or `HostOnly` for device-free tests. `fb_core_log::TaskScope` tags each node's lines `[task@worker]`, and `Error::context` carries it out. Every run returns a `Record` (`docs/diagnostics.md`, "The timing record"): its result, its wall time, and a `TaskTime` per node that ran, failed ones included, with its name, worker, dimensions (`Plan::set_dims`), host time around the callable and, under `Device`, its stream scope's device time (an event pair on its stream, read after the run); a `SyncPoint` per host wait (a CPU node's on each GPU predecessor, a stream worker's exit sync) naming the node waited for; the build profile; and the plan's `ArenaSize`s, which the planner adds. `Record::to_json` is the `timing.json` text, over [`serde`](https://crates.io/crates/serde), its schema in the type's rustdoc. `clippy.toml` makes it the one place that spawns |
+| `fb_core_thread_pool` | nothing: the C++ pipeline runs on one thread | The run's workers (`docs/programming_model.md`, "CPU workers"): `Plan` (nodes added in topological order, each placed on the CPU pool or one stream worker), `run` (one scope, `n_cpu` CPU workers and a thread per stream worker, readiness counts, failure skipping descendants, the lowest-ranked error returned, a panic re-raised rather than hung), and the `Backend` the edges leaving a stream wait through: `Device` (a stream per worker with its library handles bound to it, `DeviceStream`, a BLAS and a dense-solver handle, made with the backend before any run and reached by a GPU node through its `Lane`; an event per GPU node) or `HostOnly` for device-free tests. `fb_core_log::TaskScope` tags each node's lines `[task@worker]`, and `Error::context` carries it out. Every run returns a `Record` (`docs/diagnostics.md`, "The timing record"): its result, its wall time, and a `TaskTime` per node that ran, failed ones included, with its name, worker, dimensions (`Plan::set_dims`), host time around the callable and, under `Device`, its stream scope's device time (an event pair on its stream, read after the run); a `SyncPoint` per host wait (a CPU node's on each GPU predecessor, a stream worker's exit sync) naming the node waited for; the build profile; and the plan's `ArenaSize`s, which the planner adds. `Record::to_json` is the `timing.json` text, over [`serde`](https://crates.io/crates/serde), its schema in the type's rustdoc. `clippy.toml` makes it the one place that spawns |
 | `fb_core_types` | `src/core/types`, what the host modules name | `Double3`, `Vec<double, 3>`: `#[repr(C)]` with the backend's `double3` layout. The fixed-width integers and `make_vec` are the language's |
 | `fb_core_primitives` | `src/core/primitives`, what the host modules name | `double_factorial_odd`, `factorial`, `binomial` as `const fn`, bitwise the C++ loops. `idivup` / `align_up` are `div_ceil` / `next_multiple_of`, and the element-wise functions `f64`'s methods |
 | `fb_core_constants` | `src/core/constants`, what the host modules name | `BOHR_PER_ANGSTROM`, `kBohrPerAngstrom<double>`, asserted against the C++ double's bit pattern |
@@ -79,6 +80,7 @@ tree, not inputs to its build.
 | `fb_integrals_one_electron_core_hamiltonian` | `src/integrals/one_electron/core_hamiltonian`'s `core_hamiltonian` | `add_core_hamiltonian`: H = T + V of a `BasisSet` over `fb_molecule_nuclei`'s `NucleiRows` as tasks after the records, one build task, `core hamiltonian`, on the stream (the Cartesian matrix zeroed, then `kinetic_classes` and `potential_en_classes` on top, reading `ClassRows` and `NucleiRows` as edges, with no T or V row of its own), then `fb_recipes_matrix_ao`'s spherical transform, U's slot passed in; nuclei with no nucleus refused at planning as `InvalidConfig`, adding nothing. The plan text for each of the overlap's fixtures is the committed golden `integrals/one_electron/core_hamiltonian/tests/golden/plan_*.txt` |
 | `fb_pipeline_config`, and the `free-breakfast` binary | `src/pipeline/config`, `src/main.cpp` | The binary: `Config`, a serde type read from TOML by `read_config` (`calculation`, `output`, `[molecule] xyz`, `[basis_set] basis`, `[guess] type` or `from`; each field's doc comment its default and unit; an unknown key refused `InvalidConfig` as `<file>:<line>: unknown field ...`; the geometry, a basis path and a guess's `from` joined to the config's directory; a `[guess]` beside another calculation, or with both keys, refused), `plan`, the calculation's tasks as one `Planned` (`"overlap"`, S written as `overlap.npy`; `"guess"`, `fb_pipeline_guess`'s SAD or loaded D written as `d.npy`), and the write nodes: `add_write_npy`, `download <file>` on the stream into a pinned row and `write <file>` on the CPU, a float64 `.npy` in Fortran order, feeding nothing, and `add_write_host_npy`, the write node alone for a product already a pinned row. `free-breakfast <config.toml>` (`src/main.rs`) plans, makes the output directory, runs on device 0 and writes `timing.json` (`Record::to_json`) beside the products; its `main` is the one place an error is logged, exiting with `ErrorKind::exit_code`. `rust/examples/` holds one config per calculation, `overlap.toml` and `guess.toml`, run through the binary by `tests/examples.rs`; each example's plan text is the committed golden `pipeline/config/tests/golden/plan_*.txt` |
 | `fb_tools_sad`, the `free-breakfast-sad-stamps` binary | `tools/sad` | The generator of `data/sad/`: `free-breakfast-sad-stamps <repo>/data (<basis>... \| --all)` resolves each named set through `fb-io-basis`'s compiled-in table (a set the binary does not carry refused `InvalidConfig`; `--all`, every `<data>/basis/*.json` by its document's BSE `name`), runs `fb-sad`'s atomic SCF for each element alone at the origin, one CPU node of a `thread_pool::Plan` per element on `HostOnly`, and writes `<data>/sad/<basis>/<Z>.npy` through `fb-io-npy` after removing each regenerated set's directory (every one under `--all`); an atom too large for the SCF (`Unsupported`) is skipped, any other failure exits with its kind's code before anything is removed. It links `fb-sad`, never `fb-io-sad`, so it is not linked against its own output. Its STO-3G output is the committed `data/sad/STO-3G/` byte for byte, `tests/stamps.rs` |
+| `fb_recipes_diagonalize` | `src/recipes/diagonalize` | `add_diagonalize`: the eigendecomposition `A = U diag(w) Uᵀ` of a symmetric device row as two tasks of a `Dag`, `syevd` on the stream (A copied into the output row U, then the legacy `wwr_solver_dn_dsyevd` on the stream worker's solver handle, lower triangle, eigenvectors over U, ascending eigenvalues into w, its work a scratch row of exactly `lwork` doubles, its flag a device scratch row copied into a pinned row) and `syevd check` on the CPU (a positive flag `Numerical`, a negative one `GpuRuntime`). `syevd_lwork`, the solver's query on a `SolverHandle`, which a run calls before planning and hands `add_diagonalize` as a number. `f64` only. The plan text at `n = 24` is the committed golden `recipes/diagonalize/tests/golden/plan_n24.txt` |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -115,7 +117,9 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `pipeline/config` on `integrals/one_electron/overlap`, `io/xyz`,
 `io/basis`, `io/npy`, `log`, `planner`, `arena`, `thread_pool`, `wwr` and
 `error_handling`; and `tools/sad` on `sad`, `io/basis`, `io/npy`, `basis`,
-`atom`, `types`, `thread_pool` (without `device`) and `error_handling`.
+`atom`, `types`, `thread_pool` (without `device`) and `error_handling`;
+and `recipes/diagonalize` on `planner`, `arena`, `thread_pool`, `wwr` and
+`error_handling`.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -171,7 +175,7 @@ broken promise; a contract would turn it into a panic.
 ```bash
 cd rust
 cmake --preset cuda                    # or hip; the backend has no default
-cmake --build --preset cuda            # libwwr_capi_{runtime_api,blas}.so and the kernel libraries
+cmake --build --preset cuda            # libwwr_capi_{runtime_api,blas,solver}.so and the kernel libraries
 cargo test --workspace -- --include-ignored  # debug, device cases and contract tests
 cargo test --workspace --release       # the contract tests are skipped
 cargo test -p fb-core-arena            # one crate, with only its own features
@@ -197,8 +201,8 @@ cargo test -p fb-core-log -p fb-core-error-handling -p fb-doc-check \
 
 `CMakeLists.txt` here is a CMake project of its own, which the root
 `CMakeLists.txt` does not add: it configures `deps/WarpWraps` alone (its
-tests, examples and install rules off) and builds `wwr.capi.runtime_api`
-and `wwr.capi.blas`,
+tests, examples and install rules off) and builds `wwr.capi.runtime_api`,
+`wwr.capi.blas` and `wwr.capi.solver`,
 so building what the crates link configures nothing of the C++ tree. Its
 presets are `cuda` and `hip`, into `build-cuda/` and `build-hip/` here,
 with the root's sm_80 floor checked. It also builds the kernel shared
@@ -220,12 +224,14 @@ includes, finds `libwwr_capi_runtime_api.so` under
 holds it. With both built it refuses to choose: set `FB_RUST_BUILD_DIR` to
 one, which also takes any other CMake build directory, the root's
 `build-experimental` among them. `devtools/doctor.sh` reports which are
-built. Only the `runtime_api` and `blas` surfaces of `wwr-sys` are linked:
-`blas` is asked for by `fb-core-wwr` (each stream worker's BLAS handle,
-made by the `Device` backend) and `fb-recipes-matrix-ao` (its GEMMs), and a
-workspace build unifies features, so every crate linking `wwr-sys` in it
-links against `libwwr_capi_blas.so` (only a binary that calls it keeps it
-under `NEEDED`).
+built. Only the `runtime_api`, `blas` and `solver` surfaces of `wwr-sys`
+are linked: `blas` and `solver` are asked for by `fb-core-wwr` (each stream
+worker's BLAS and dense-solver handles, made by the `Device` backend), and
+by `fb-recipes-matrix-ao` (its GEMMs) and `fb-recipes-diagonalize` (its
+syevd), and a workspace build unifies features, so every crate linking
+`wwr-sys` in it links against `libwwr_capi_blas.so` and
+`libwwr_capi_solver.so` (only a binary that calls one keeps it under
+`NEEDED`).
 
 The GPU tests (the ignored ones) use device 0 and need room on it for a
 context. The host-only
@@ -249,7 +255,8 @@ the thread pool turn their defaults off, so nothing turns them on by
 accident. Only `fb-core-wwr`, `fb-core-diagnostics`, `fb-recipes-sys`,
 `fb-integrals-sys`, `fb-integrals-mmd`,
 `fb-integrals-one-electron-overlap`, `fb-recipes-matrix-ao`,
-`fb-molecule-nuclei` and `fb-pipeline-config` always link; the records' layout asks
+`fb-molecule-nuclei`, `fb-pipeline-config` and `fb-recipes-diagonalize`
+always link; the records' layout asks
 the kernel library for the sort's workspace at planning, so even the
 overlap's and the transform's device-free tests (the host tables, the plan
 goldens) need the library built. `fb-molecule-nuclei` links wwr alone,
@@ -372,6 +379,16 @@ adding in place reorders no sum inside either. Its references are committed in
 writes them, the overlap's with `int1e_kin + int1e_nuc`, and the same
 conventions.
 
+The eigensolver on a card is `recipes/diagonalize/tests/diagonalize.rs`:
+the overlap's three committed references, S of order 7, 24 and 60, read
+from `integrals/one_electron/overlap/tests/data/`, each run once through
+`add_diagonalize` with `syevd_lwork` asked of a solver handle on the device
+first, at `max |A U - U diag(w)| <= 1e-12 ‖A‖₂` and `max |Uᵀ U - I| <=
+1e-12` with w ascending: syevd's backward-stability bound is a small
+multiple of `n ε ‖A‖₂`, 1.3e-14 at n = 60, so two decades of margin. Its
+flag check is a tier-3 unit test on `Heap` rows, and its plan at a given
+`lwork` a golden.
+
 `doc_check/tests/section_citations.rs` checks that every section the
 README, `docs/` and every member's Rust sources cite by name is a heading of
 the file cited ([`documentation.md`](docs/documentation.md), "Narrative:
@@ -437,7 +454,7 @@ config, in waves:
 | Wave | Issues |
 |---|---|
 | 0 | #1402 one conversion from `fb_launch_status`, done; #1403 library handles per device; #1404 `cargo doc` without the library; #1405 the kinetic and nuclear-attraction forks, done; #1406 the shared spherical transform, done; #1407 the nuclei upload task, done; #1408 the timing record's JSON, done; #1417 io/npy, done; #1418 sad, done |
-| 1 | #1409 the kinetic energy, done; #1410 the nuclear attraction, done; #1411 the symmetric eigensolver; #1412 the binary, done; #1419 io/sad, done; #1420 the SAD stamp generator, done |
+| 1 | #1409 the kinetic energy, done; #1410 the nuclear attraction, done; #1411 the symmetric eigensolver, done; #1412 the binary, done; #1419 io/sad, done; #1420 the SAD stamp generator, done |
 | 2 | #1413 the core Hamiltonian, done; #1414 the symmetric orthogonalizer; #1421 the SAD guess as tasks, done |
 | 3 | #1415 the core-Hamiltonian orbitals; #1422 the SAD guess from a config, through the binary, done |
 
@@ -859,3 +876,22 @@ text is the golden `pipeline/config/tests/golden/plan_guess.txt`; and
 unknown key, the table beside `"overlap"`, each `InvalidConfig`). Clippy
 (`-D warnings`, the crate with its tests), rustdoc (`-D warnings`) and
 `cargo fmt --check` are clean. Not run on the RTX 3080.
+
+2026-11-14, `recipes/diagonalize` (the symmetric eigensolver: `syevd` and
+its flag check as tasks, `lwork` a dimension asked of the device before
+planning) and the dense-solver handle in each stream worker's
+`DeviceStream`, on the RTX 3080 (CUDA), holding the card, linking the
+libraries the `cuda` preset built: `devtools/test.py pr --only cargo --all`
+passes, tier 3 197 tests; tier 4 134, none skipped, the new crate's 4
+among them: S of H2O/STO-3G, H2O/cc-pVDZ and CO/cc-pVTZ (order 7, 24, 60)
+diagonalized once each, `max |A U - U diag(w)|` `4.7e-16`, `1.3e-15` and
+`2.6e-15` against the bar `1e-12 ‖A‖₂` (`1.9e-12`, `4.4e-12`, `4.7e-12`),
+`max |Uᵀ U - I|` `8.9e-16`, `1.6e-15` and `1.6e-15` against `1e-12`, w
+ascending, the vendor's `lwork` 71106, 85715 and 122475; the flag check
+(`Numerical` for a positive flag, `GpuRuntime` for a negative one, on
+`Heap` rows); the plan golden at `lwork` 1234; and an empty matrix refused.
+The device binary is clean under `compute-sanitizer --tool memcheck`, the
+work row exactly `lwork` doubles (inside the arena's block, whose bounds
+are what memcheck sees). Clippy (`-D warnings`, the changed crates with
+their tests), rustdoc (`-D warnings`) and `cargo fmt --check` are clean.
+Not run on the gfx1200; `wwr.capi.solver` compiles for HIP.

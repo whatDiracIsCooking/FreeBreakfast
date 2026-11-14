@@ -539,15 +539,15 @@ fn device_edges_wait_for_the_work_they_consume() {
     );
 }
 
-/// Device 0: each stream worker's BLAS handle is made with the backend, on
-/// the worker's device and bound to its stream, and is the same handle at
-/// every run, so no task makes one.
+/// Device 0: each stream worker's BLAS and dense-solver handles are made
+/// with the backend, on the worker's device and bound to its stream, and
+/// are the same handles at every run, so no task makes one.
 #[cfg(feature = "device-tests")]
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn device_library_handles_are_the_workers_made_before_the_run() {
     use fb_core_wwr::handle::{DeviceHandle, DeviceHandleStream};
-    use wwr_sys::{wwr_blas_status, wwr_stream};
+    use wwr_sys::{wwr_blas_status, wwr_solver_status, wwr_stream};
 
     let seen = Mutex::new(Vec::new());
     let mut plan: Plan<'_, DeviceStream> = Plan::new();
@@ -564,7 +564,16 @@ fn device_library_handles_are_the_workers_made_before_the_run() {
             assert_eq!(status, wwr_blas_status::WWR_BLAS_STATUS_SUCCESS);
             assert_eq!(bound, stream.stream());
             assert_eq!(blas.dev_idx(), stream.dev_idx());
-            seen.lock().unwrap().push((index, blas.get() as usize));
+            let solver = stream.solver();
+            let mut bound: wwr_stream = std::ptr::null_mut();
+            // SAFETY: as above, for the solver handle.
+            let status = unsafe { wwr_sys::wwr_solver_dn_get_stream(solver.get(), &mut bound) };
+            assert_eq!(status, wwr_solver_status::WWR_SOLVER_STATUS_SUCCESS);
+            assert_eq!(bound, stream.stream());
+            assert_eq!(solver.dev_idx(), stream.dev_idx());
+            seen.lock()
+                .unwrap()
+                .push((index, blas.get() as usize, solver.get() as usize));
             Ok(())
         });
     }
@@ -577,6 +586,13 @@ fn device_library_handles_are_the_workers_made_before_the_run() {
         runs.push(handles);
     }
     assert_eq!(runs[0].len(), 2);
-    assert_ne!(runs[0][0].1, runs[0][1].1, "one handle per stream worker");
+    assert_ne!(
+        runs[0][0].1, runs[0][1].1,
+        "one BLAS handle per stream worker"
+    );
+    assert_ne!(
+        runs[0][0].2, runs[0][1].2,
+        "one solver handle per stream worker"
+    );
     assert_eq!(runs[0], runs[1], "a run made a handle of its own");
 }

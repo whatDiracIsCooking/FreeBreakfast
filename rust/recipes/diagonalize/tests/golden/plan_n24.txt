@@ -1,0 +1,19 @@
+plan: 3 tasks, GPU workers: 1
+ task  worker  lane    name: after
+    0       0  stream  S
+    1       0  stream  syevd: after 0
+    2       0  cpu     syevd check: after 1
+worker 0 device table: 5 rows, 19460 bytes
+peak: 19284 bytes at node 1
+    offset      bytes  owner   life     name: users (w writes, r reads)
+         0       4608  edge    0-1      S: 0w 1r
+     14592       4608  edge    1-1      S U: 1w
+     19200        192  edge    1-1      S w: 1w
+      4608       9872  task    1-1      syevd work: 1w
+     19456          4  task    1-1      syevd info: 1w
+handoffs:
+worker 0 pinned table: 1 rows, 4 bytes
+peak: 4 bytes at node 1
+    offset      bytes  owner   life     name: users (w writes, r reads)
+         0          4  edge    1-2      syevd info: 1w 2r
+handoffs:

@@ -203,22 +203,24 @@ Only this tree's own kernels need a C++ wrapper.
 stream worker owns one handle per library, bound to its stream and on its
 device: `fb_core_thread_pool::DeviceStream`, what a GPU task's `Lane` hands
 it, is the worker's stream (it derefs to `fb_core_wwr::runtime::Stream`)
-and its handles (`blas()`, an `fb_core_wwr::blas::BlasHandle`). The
+and its handles (`blas()`, an `fb_core_wwr::blas::BlasHandle`, and
+`solver()`, an `fb_core_wwr::solver::SolverHandle`, the dense solver's). The
 `Device` backend makes them when it is built over an instance's plan, with
 the streams and events, so creating a handle is never a task's work and
 never happens inside a `run`; the C++ tree's `res.blas()`, one handle per
 `DeviceResources`, is the same rule per device. Planning still needs no
 device: a task names no handle in its layout, and the tier-3 planner tests
 run on `HostOnly` workers under `--no-default-features`, with no wwr crate
-in their graph. BLAS is the
-one library so far; the dense solver's handle joins it in `DeviceStream`.
+in their graph. BLAS and the
+dense solver are the libraries so far.
 Every task of the worker shares the handles, so a task that changes one's
 state (its pointer mode) sets it back before it returns.
 
 **A library's workspace is part of the layout.** The solvers' is
 already a dimension: the pipeline treats `syevd_lwork` as one, and a layout
-calls the query at planning ([`programming_model.md`](programming_model.md),
-"Memory: layouts and arenas"). cuBLAS and hipBLAS allocate a workspace per
+takes the query's answer as a number ([`programming_model.md`](programming_model.md),
+"Memory: layouts and arenas"; "Scratch: the workspace query" below has why
+the query itself runs before planning). cuBLAS and hipBLAS allocate a workspace per
 handle on their own unless they are handed one (`cublasSetWorkspace` and its
 HIP twin), so the design hands every handle a worker row of the arena
 ([`memory.md`](memory.md), "The table"), and a run allocates nothing through
@@ -354,6 +356,28 @@ comes from the plain device allocation and is at least that aligned on both
 vendors, and the safe wrapper checks each pointer against it at tier 2. The workspace
 query's internal partitioning follows the same constant, so a wrapper never
 assumes more of its scratch than the arena gave.
+
+**A vendor library's query is not pure, so its answer is a dimension.**
+cuSOLVER's and hipSOLVER's `*_bufferSize` take a handle, which a
+device-free planner does not have, and the answer can differ between
+backends and library versions. So `fb-recipes-diagonalize` does what the
+C++ `diagonalize_footprint(lwork)` already does: `add_diagonalize` takes
+`lwork` as a number, and the layout declares the `syevd work` scratch row
+at exactly that many doubles. A run asks first, `syevd_lwork` on a solver
+handle of the device it will run on, made and dropped before planning (the
+stream workers' handles do not exist until the `Device` backend is built
+over the plan); a tier-3 plan test passes any number, and its golden shows
+the row at that number. A number too small is the solver's refused argument,
+a negative flag, which the `syevd check` task returns as `GpuRuntime`. The
+tier-4 test hands syevd exactly the row its query asked for under
+`memcheck`, which sees the arena block's bounds, not the row's: an overrun
+into a neighbouring row of the block is not visible to it.
+
+The solver's flag is the `syevd` task's own: a device scratch row syevd
+writes, copied on the stream into a pinned output the check reads. It is
+not the per-worker row [`memory.md`](memory.md)'s table gives as its
+example, because a flag the task declares is counted in its layout and
+ordered by its edges, with nothing to share between two eigensolves.
 
 ## Statuses
 
