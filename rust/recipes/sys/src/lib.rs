@@ -13,12 +13,14 @@
 //! | `merge_sort_passes(stream, n, keys, keys_alt, values, values_alt)` | [`fb_merge_sort`]`(stream, n, keys, values, workspace, workspace_bytes)` |
 //! | `keys_alt` and `values_alt`, "n elements" each | one workspace of [`fb_merge_sort_workspace_bytes`] bytes, partitioned at [`FB_DEVICE_ALIGNMENT`] |
 //! | `inverse_sqrt<T>(stream, count, data, floor)` (`src/recipes/orthogonalize`), through wwr's `parallel_for` | [`fb_inverse_sqrt`]`(stream, count, data, floor)`, `f64` only, its index-per-thread launch written out |
+//! | `symmetrize(stream, n, a, lda)` and `mirror_triangle(stream, from_lower, n, a, lda)` (`src/recipes/symmetrize`), `lda` an `int64_t` | [`fb_symmetrize`] and [`fb_mirror_triangle`], `lda` the module's `int32_t`, the module's argument checks moved in as refusals |
 //! | `wwrError_t` | [`fb_launch_status`]: 0, a positive `wwr_status`, or a negative refusal ([`FB_LAUNCH_INVALID_ARGUMENT`]) |
 //! | nothing: the C++ tree compiles its kernels into the binary | [`check_library`], the library's [`fb_recipes_abi_version`] and [`fb_recipes_backend`] against the bindings' |
 //! | `gather_columns` and every other recipe | not forked yet |
 //!
-//! **The safe calls.** [`inverse_sqrt`], [`merge_sort`], [`merge_sort_keys`]
-//! and [`merge_sort_workspace_bytes`] are what a caller uses
+//! **The safe calls.** [`inverse_sqrt`], [`merge_sort`], [`merge_sort_keys`],
+//! [`merge_sort_workspace_bytes`], [`symmetrize`] and [`mirror_triangle`]
+//! are what a caller uses
 //! (`docs/gpu_layer.md`, "The safe wrapper"), as `fb_core_wwr::blas::gemm`
 //! is over the BLAS: device memory as
 //! [`DeviceSlice`](fb_core_wwr::device_slice::DeviceSlice)s, which the
@@ -232,4 +234,87 @@ fn sort(
         )
     };
     launched("fb_merge_sort", status)
+}
+
+/// `A ← (A + Aᵀ) / 2` in place over the column-major `n × n` block of `a`
+/// with leading dimension `lda`, on `stream`: [`fb_symmetrize`], over a
+/// slice it checks. `(i, j)` and `(j, i)` come out the same bits, since each
+/// pair is summed once in each order, which IEEE addition makes the same
+/// value, and halved; a symmetric input comes back unchanged. Rows past `n`
+/// are neither read nor written, and an `n` of 0 enqueues nothing.
+///
+/// # Errors
+/// The launch's failure, as [`fb_kernel_abi::launch_status`] maps it. A
+/// fault inside the kernel surfaces at the next synchronization.
+///
+/// # Panics
+/// If `n` or `lda` does not fit an `i32`, or `a` is shorter than the block,
+/// `lda (n - 1) + n` elements; before anything is enqueued.
+#[debug_requires(lda >= n, "the leading dimension covers a column")]
+#[track_caller]
+pub fn symmetrize(
+    stream: &Stream,
+    n: usize,
+    a: &mut impl DeviceSliceMut<f64>,
+    lda: usize,
+) -> Status {
+    let (n, lda, a) = square_block("symmetrize", n, a, lda);
+    // SAFETY: the stream is live; a holds the n × n block at leading
+    // dimension lda, checked above, and stays so, with no other user, until
+    // the enqueued work finishes (DeviceSliceMut's promise).
+    let status = unsafe { fb_symmetrize(stream.stream(), n, a, lda) };
+    launched("fb_symmetrize", status)
+}
+
+/// Overwrites the strict upper triangle of the column-major `n × n` block of
+/// `a` (leading dimension `lda`) with the transpose of its strict lower one
+/// when `from_lower`, or the strict lower with the transpose of the strict
+/// upper when not, in place, on `stream`: [`fb_mirror_triangle`], over a
+/// slice it checks. The source triangle and the diagonal are not written, and
+/// no value of the destination reaches the result, so it may hold anything,
+/// NaN included. Rows past `n` are neither read nor written, and an `n` of 0
+/// enqueues nothing.
+///
+/// # Errors
+/// As [`symmetrize`].
+///
+/// # Panics
+/// As [`symmetrize`].
+#[debug_requires(lda >= n, "the leading dimension covers a column")]
+#[track_caller]
+pub fn mirror_triangle(
+    stream: &Stream,
+    from_lower: bool,
+    n: usize,
+    a: &mut impl DeviceSliceMut<f64>,
+    lda: usize,
+) -> Status {
+    let (n, lda, a) = square_block("mirror_triangle", n, a, lda);
+    // SAFETY: as in symmetrize.
+    let status = unsafe { fb_mirror_triangle(stream.stream(), from_lower, n, a, lda) };
+    launched("fb_mirror_triangle", status)
+}
+
+/// The `n × n` block at leading dimension `lda` checked against `a`: `n` and
+/// `lda` as the C ABI's `i32`s, and `a`'s pointer.
+#[track_caller]
+fn square_block(
+    routine: &str,
+    n: usize,
+    a: &mut impl DeviceSliceMut<f64>,
+    lda: usize,
+) -> (i32, i32, *mut f64) {
+    let (Ok(n32), Ok(lda32)) = (i32::try_from(n), i32::try_from(lda)) else {
+        panic!("{routine}: n = {n} and lda = {lda} must each fit an i32");
+    };
+    // The last element the kernels touch is (n - 1, n - 1), at
+    // lda (n - 1) + n - 1; with lda below n the launcher refuses before any
+    // is touched.
+    let need = if n == 0 { 0 } else { lda * (n - 1) + n };
+    assert!(
+        a.len() >= need,
+        "{routine}: the {n} × {n} block at lda {lda} needs {need} elements, but a holds {}",
+        a.len()
+    );
+    (n32, lda32, a.as_mut_ptr())
 }

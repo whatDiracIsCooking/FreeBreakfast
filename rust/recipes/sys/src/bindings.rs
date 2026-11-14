@@ -29,7 +29,7 @@ pub const FB_BACKEND_HIP: fb_backend = 2;
 /// The version of this header's ABI. Bump it with any change to a
 /// declaration here or in a header this one includes, so that fb-recipes-sys
 /// refuses a library built from another version of them.
-pub const FB_RECIPES_ABI_VERSION: u32 = 2;
+pub const FB_RECIPES_ABI_VERSION: u32 = 3;
 
 unsafe extern "C" {
     /// Replaces each of the first count of data with 1 / sqrt(x), in place, on
@@ -64,6 +64,32 @@ unsafe extern "C" {
     /// status of the first failed launch, or FB_LAUNCH_SUCCESS. Launch errors
     /// only: a fault inside a kernel surfaces at the next synchronization.
     pub fn fb_merge_sort(stream: wwr_stream, n: u32, keys: *mut f64, values: *mut u32, workspace: *mut core::ffi::c_void, workspace_bytes: usize) -> fb_launch_status;
+    /// A <- (A + A^T) / 2 in place, on stream, over the column-major n x n a
+    /// with leading dimension lda; (i, j) and (j, i) come out the same bits.
+    ///
+    /// Each pair is summed once in each order, which IEEE addition makes the
+    /// same value, and halved, so the result is exactly symmetric and a
+    /// symmetric input comes back unchanged. Rows past n are neither read nor
+    /// written. a is a device pointer.
+    ///
+    /// Returns FB_LAUNCH_SUCCESS, enqueueing nothing, for n 0, whatever lda;
+    /// FB_LAUNCH_INVALID_ARGUMENT, enqueueing nothing, for a negative n, an lda
+    /// below n, a null a with n positive, or an n of 2,097,121 or more (past
+    /// the launch grid); otherwise the launch's status. Launch errors only: a
+    /// fault inside the kernel surfaces at the next synchronization.
+    pub fn fb_symmetrize(stream: wwr_stream, n: i32, a: *mut f64, lda: i32) -> fb_launch_status;
+    /// Overwrites the strict upper triangle of the column-major n x n a
+    /// (leading dimension lda) with the transpose of its strict lower one when
+    /// from_lower, or the strict lower with the transpose of the strict upper
+    /// when not, in place, on stream.
+    ///
+    /// The source triangle and the diagonal are not written, and no value of
+    /// the destination reaches the result, so it may hold anything, NaN
+    /// included. Rows past n are neither read nor written. a is a device
+    /// pointer.
+    ///
+    /// Returns as fb_symmetrize does.
+    pub fn fb_mirror_triangle(stream: wwr_stream, from_lower: bool, n: i32, a: *mut f64, lda: i32) -> fb_launch_status;
     /// FB_RECIPES_ABI_VERSION as this library was compiled. A plain host
     /// function: it calls no runtime and needs no device.
     pub fn fb_recipes_abi_version() -> u32;
