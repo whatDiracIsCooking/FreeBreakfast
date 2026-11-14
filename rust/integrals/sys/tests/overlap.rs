@@ -23,30 +23,6 @@ use fb_integrals_sys::{
     fb_primitive_pair_class_view, fb_primitive_pair_records, fb_primitive_pair_source,
 };
 use std::ptr::{null, null_mut};
-use wwr_sys::{wwr_memcpy_kind, wwr_status};
-
-/// Copies `host` to a new device buffer on `stream` and waits for it: on the
-/// stream, not with the synchronous copy, which runs on the legacy stream a
-/// non-blocking `Stream` does not wait for (README.md, "Build and test").
-fn upload<T: Copy>(host: &[T], stream: &Stream) -> DeviceBytes {
-    let bytes = std::mem::size_of_val(host);
-    let device = DeviceBytes::new(bytes);
-    // SAFETY: both ranges are `bytes` long, and `host` outlives the copy:
-    // the stream is drained before it returns.
-    let status = unsafe {
-        let copy = wwr_sys::wwr_memcpy_async(
-            device.0,
-            host.as_ptr().cast(),
-            bytes,
-            wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
-            stream.stream(),
-        );
-        assert_eq!(copy, wwr_status::WWR_STATUS_SUCCESS);
-        wwr_sys::wwr_stream_synchronize(stream.stream())
-    };
-    assert_eq!(status, wwr_status::WWR_STATUS_SUCCESS);
-    device
-}
 
 /// A view of no arrays: every pointer null, for the fields a test sets.
 fn empty_view(la: i32, lb: i32, n_rec: i32) -> fb_primitive_pair_class_view {
@@ -103,22 +79,22 @@ fn one_ss_record_is_the_closed_form_overlap() {
     let expected = c_a * c_b * (std::f64::consts::PI / zeta).powf(1.5) * (-mu_r2).exp();
 
     let stream = Stream::new(0);
-    let d_zeta = upload(&[zeta], &stream);
+    let d_zeta = DeviceBytes::upload(&[zeta], &stream);
     let d_pa = [
-        upload(&[pa_x], &stream),
-        upload(&[0.0_f64], &stream),
-        upload(&[0.0_f64], &stream),
+        DeviceBytes::upload(&[pa_x], &stream),
+        DeviceBytes::upload(&[0.0_f64], &stream),
+        DeviceBytes::upload(&[0.0_f64], &stream),
     ];
     let d_pb = [
-        upload(&[pb_x], &stream),
-        upload(&[0.0_f64], &stream),
-        upload(&[0.0_f64], &stream),
+        DeviceBytes::upload(&[pb_x], &stream),
+        DeviceBytes::upload(&[0.0_f64], &stream),
+        DeviceBytes::upload(&[0.0_f64], &stream),
     ];
-    let d_s = upload(&[s], &stream);
-    let d_off_a = upload(&[0_i32], &stream);
-    let d_off_b = upload(&[1_i32], &stream);
+    let d_s = DeviceBytes::upload(&[s], &stream);
+    let d_off_a = DeviceBytes::upload(&[0_i32], &stream);
+    let d_off_b = DeviceBytes::upload(&[1_i32], &stream);
     let n_ao = 2;
-    let d_matrix = upload(&[0.0_f64; 4], &stream);
+    let d_matrix = DeviceBytes::upload(&[0.0_f64; 4], &stream);
     let view = fb_primitive_pair_class_view {
         zeta: d_zeta.0.cast(),
         pa_x: d_pa[0].0.cast(),
@@ -137,7 +113,7 @@ fn one_ss_record_is_the_closed_form_overlap() {
     let status = unsafe { fb_overlap_class(stream.stream(), &view, n_ao, d_matrix.0.cast()) };
     assert_eq!(status, FB_LAUNCH_SUCCESS);
     let got: Vec<f64> = d_matrix
-        .read(stream.stream())
+        .read(&stream)
         .as_chunks::<8>()
         .0
         .iter()

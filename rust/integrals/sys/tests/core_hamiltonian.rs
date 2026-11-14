@@ -27,35 +27,11 @@ use fb_integrals_sys::{
 };
 use std::f64::consts::PI;
 use std::ptr::{null, null_mut};
-use wwr_sys::{wwr_memcpy_kind, wwr_status};
 
 // libm's erf, which std links on every target this tree builds for: f64's
 // own is not stable yet.
 unsafe extern "C" {
     safe fn erf(x: f64) -> f64;
-}
-
-/// Copies `host` to a new device buffer on `stream` and waits for it: on the
-/// stream, not with the synchronous copy, which runs on the legacy stream a
-/// non-blocking `Stream` does not wait for (README.md, "Build and test").
-fn upload<T: Copy>(host: &[T], stream: &Stream) -> DeviceBytes {
-    let bytes = std::mem::size_of_val(host);
-    let device = DeviceBytes::new(bytes);
-    // SAFETY: both ranges are `bytes` long, and `host` outlives the copy:
-    // the stream is drained before it returns.
-    let status = unsafe {
-        let copy = wwr_sys::wwr_memcpy_async(
-            device.0,
-            host.as_ptr().cast(),
-            bytes,
-            wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
-            stream.stream(),
-        );
-        assert_eq!(copy, wwr_status::WWR_STATUS_SUCCESS);
-        wwr_sys::wwr_stream_synchronize(stream.stream())
-    };
-    assert_eq!(status, wwr_status::WWR_STATUS_SUCCESS);
-    device
 }
 
 /// A view of no arrays: every pointer null, for the fields a test sets.
@@ -128,7 +104,7 @@ fn record() -> Record {
 /// diagonal stays 0.
 fn check_mirrors(matrix: &DeviceBytes, stream: &Stream, expected: f64, bar: f64) {
     let got: Vec<f64> = matrix
-        .read(stream.stream())
+        .read(stream)
         .as_chunks::<8>()
         .0
         .iter()
@@ -155,23 +131,23 @@ fn one_ss_record_is_the_closed_form_kinetic_energy() {
     let expected = r.s * mu * (3.0 - 2.0 * r.mu_r2) * (-r.mu_r2).exp();
 
     let stream = Stream::new(0);
-    let d_zeta = upload(&[r.zeta], &stream);
+    let d_zeta = DeviceBytes::upload(&[r.zeta], &stream);
     let d_pa = [
-        upload(&[r.pa_x], &stream),
-        upload(&[0.0_f64], &stream),
-        upload(&[0.0_f64], &stream),
+        DeviceBytes::upload(&[r.pa_x], &stream),
+        DeviceBytes::upload(&[0.0_f64], &stream),
+        DeviceBytes::upload(&[0.0_f64], &stream),
     ];
     let d_pb = [
-        upload(&[r.pb_x], &stream),
-        upload(&[0.0_f64], &stream),
-        upload(&[0.0_f64], &stream),
+        DeviceBytes::upload(&[r.pb_x], &stream),
+        DeviceBytes::upload(&[0.0_f64], &stream),
+        DeviceBytes::upload(&[0.0_f64], &stream),
     ];
-    let d_s = upload(&[r.s], &stream);
-    let d_eb = upload(&[r.beta], &stream);
-    let d_off_a = upload(&[0_i32], &stream);
-    let d_off_b = upload(&[1_i32], &stream);
+    let d_s = DeviceBytes::upload(&[r.s], &stream);
+    let d_eb = DeviceBytes::upload(&[r.beta], &stream);
+    let d_off_a = DeviceBytes::upload(&[0_i32], &stream);
+    let d_off_b = DeviceBytes::upload(&[1_i32], &stream);
     let n_ao = 2;
-    let d_matrix = upload(&[0.0_f64; 4], &stream);
+    let d_matrix = DeviceBytes::upload(&[0.0_f64; 4], &stream);
     let view = fb_primitive_pair_class_view {
         zeta: d_zeta.0.cast(),
         pa_x: d_pa[0].0.cast(),
@@ -208,29 +184,29 @@ fn one_ss_record_and_nucleus_is_the_closed_form_attraction() {
     let expected = -z_c * r.s * (2.0 / PI.sqrt()) * r.zeta.sqrt() * f0 * (-r.mu_r2).exp();
 
     let stream = Stream::new(0);
-    let d_zeta = upload(&[r.zeta], &stream);
+    let d_zeta = DeviceBytes::upload(&[r.zeta], &stream);
     let d_p = [
-        upload(&[r.p_x], &stream),
-        upload(&[0.0_f64], &stream),
-        upload(&[0.0_f64], &stream),
+        DeviceBytes::upload(&[r.p_x], &stream),
+        DeviceBytes::upload(&[0.0_f64], &stream),
+        DeviceBytes::upload(&[0.0_f64], &stream),
     ];
     let d_pa = [
-        upload(&[r.pa_x], &stream),
-        upload(&[0.0_f64], &stream),
-        upload(&[0.0_f64], &stream),
+        DeviceBytes::upload(&[r.pa_x], &stream),
+        DeviceBytes::upload(&[0.0_f64], &stream),
+        DeviceBytes::upload(&[0.0_f64], &stream),
     ];
     let d_pb = [
-        upload(&[r.pb_x], &stream),
-        upload(&[0.0_f64], &stream),
-        upload(&[0.0_f64], &stream),
+        DeviceBytes::upload(&[r.pb_x], &stream),
+        DeviceBytes::upload(&[0.0_f64], &stream),
+        DeviceBytes::upload(&[0.0_f64], &stream),
     ];
-    let d_s = upload(&[r.s], &stream);
-    let d_off_a = upload(&[0_i32], &stream);
-    let d_off_b = upload(&[1_i32], &stream);
-    let d_z = upload(&[z_c], &stream);
-    let d_c = upload(&c, &stream);
+    let d_s = DeviceBytes::upload(&[r.s], &stream);
+    let d_off_a = DeviceBytes::upload(&[0_i32], &stream);
+    let d_off_b = DeviceBytes::upload(&[1_i32], &stream);
+    let d_z = DeviceBytes::upload(&[z_c], &stream);
+    let d_c = DeviceBytes::upload(&c, &stream);
     let n_ao = 2;
-    let d_matrix = upload(&[0.0_f64; 4], &stream);
+    let d_matrix = DeviceBytes::upload(&[0.0_f64; 4], &stream);
     let view = fb_primitive_pair_class_view {
         zeta: d_zeta.0.cast(),
         p_x: d_p[0].0.cast(),

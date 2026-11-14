@@ -16,7 +16,6 @@ use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::runtime::tests::DeviceBytes;
 use fb_recipes_sys::{FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, fb_inverse_sqrt};
-use wwr_sys::{wwr_memcpy_kind, wwr_status};
 
 /// The orthogonalizer's default floor, the C++ `kOrthogonalizeEigenvalueFloor`.
 const FLOOR: f64 = 1e-10;
@@ -56,28 +55,12 @@ fn elements() -> Vec<f64> {
 fn maps_each_element_as_the_host_does() {
     let stream = Stream::new(0);
     let host = elements();
-    let bytes = size_of_val(host.as_slice());
-    let device = DeviceBytes::new(bytes);
-    // SAFETY: both ranges are `bytes` long; the copy is drained before the
-    // launch is queued, and `host` outlives it.
-    let status = unsafe {
-        let copy = wwr_sys::wwr_memcpy_async(
-            device.0,
-            host.as_ptr().cast(),
-            bytes,
-            wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
-            stream.stream(),
-        );
-        assert_eq!(copy, wwr_status::WWR_STATUS_SUCCESS);
-        wwr_sys::wwr_stream_synchronize(stream.stream())
-    };
-    assert_eq!(status, wwr_status::WWR_STATUS_SUCCESS);
-
+    let device = DeviceBytes::upload(&host, &stream);
     // SAFETY: a device array of COUNT + TAIL doubles, on `stream`.
     let status = unsafe { fb_inverse_sqrt(stream.stream(), COUNT as u32, device.0.cast(), FLOOR) };
     assert_eq!(status, FB_LAUNCH_SUCCESS);
     let got: Vec<u64> = device
-        .read(stream.stream())
+        .read(&stream)
         .as_chunks::<8>()
         .0
         .iter()

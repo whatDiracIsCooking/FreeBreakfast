@@ -4,21 +4,21 @@
 //! A binary of its own: a case measures the card's free memory, which
 //! another test allocating beside it would move, so the cases take turns.
 
-use std::ffi::c_void;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use fb_core_arena::{Bufs, DEVICE_ALIGNMENT, Device, Layout, Pinned, RowId};
+use fb_core_arena::{
+    Bufs, DEVICE_ALIGNMENT, Device, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p, memcpy_p2d,
+};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane, Placement};
 use fb_core_wwr::common::ScopedDeviceIndex;
 use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
-use wwr_sys::{wwr_memcpy_kind, wwr_status};
+use wwr_sys::wwr_status;
 
 const N: usize = 4096;
-const BYTES: usize = N * size_of::<f64>();
 
 /// Held by each case for its whole length.
 static TURN: Mutex<()> = Mutex::new(());
@@ -88,18 +88,9 @@ impl Task for Upload {
         };
         let dst = d.take_mut(*dev);
         assert_eq!(dst.as_ptr().addr() % DEVICE_ALIGNMENT, 0);
-        // SAFETY: N f64s between two rows of N, on the task's stream. The
-        // source is not rewritten before this copy completes: its bytes'
-        // next owner is ordered after this task's event by a handoff.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memcpy_async(
-                dst.as_mut_ptr().cast(),
-                h.get(self.0).as_ptr().cast::<c_void>(),
-                BYTES,
-                wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
-                stream.stream(),
-            )
-        })
+        // The source is not rewritten before this copy completes: its
+        // bytes' next owner is ordered after this task's event by a handoff.
+        memcpy_p2d(&dst, h, self.0, stream)
     }
 }
 
@@ -124,17 +115,7 @@ impl Task for Download {
         };
         // No host write here: `down` is `up`'s bytes, and the upload out of
         // them may still be in flight. A stream task only enqueues.
-        let dst = h.take_mut(*down);
-        // SAFETY: as in `Upload`, device to pinned.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memcpy_async(
-                dst.as_mut_ptr().cast(),
-                d.get(self.0).as_ptr().cast::<c_void>(),
-                BYTES,
-                wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
-                stream.stream(),
-            )
-        })
+        memcpy_d2p(h, *down, d.get(self.0), stream)
     }
 }
 
@@ -257,23 +238,18 @@ impl Task for Stage {
             unreachable!("a GPU task runs on a stream")
         };
         let dst = d.take_mut(*out);
-        let bytes = BIG * size_of::<f64>();
-        // SAFETY: `bytes` within one row, or between two rows of BIG, on the
-        // task's stream.
-        gpu_status(unsafe {
-            match self.0 {
-                None => {
-                    wwr_sys::wwr_memset_async(dst.as_mut_ptr().cast(), 0, bytes, stream.stream())
-                }
-                Some(input) => wwr_sys::wwr_memcpy_async(
+        match self.0 {
+            // SAFETY: the row's bytes, on the task's stream.
+            None => gpu_status(unsafe {
+                wwr_sys::wwr_memset_async(
                     dst.as_mut_ptr().cast(),
-                    d.get(input).as_ptr().cast::<c_void>(),
-                    bytes,
-                    wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_DEVICE,
+                    0,
+                    BIG * size_of::<f64>(),
                     stream.stream(),
-                ),
-            }
-        })
+                )
+            }),
+            Some(input) => memcpy_d2d(&dst, d.get(input), stream),
+        }
     }
 }
 

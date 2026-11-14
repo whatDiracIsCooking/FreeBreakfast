@@ -12,17 +12,14 @@
 
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane};
-use fb_core_wwr::gpu_status;
-use fb_core_wwr::handle::DeviceHandleStream;
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_overlap::add_overlap;
 use fb_molecule::nuclear_charge;
 use fb_pipeline_guess::{add_guess_upload, add_sad_guess};
-use wwr_sys::wwr_memcpy_kind;
 
 /// The bar, relative to `Σ_A Z_A`.
 const BAR: f64 = 1e-10;
@@ -68,17 +65,7 @@ impl Task for Download {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let (src, dst) = (device.get(self.row), host.take_mut(*pinned));
-        // SAFETY: two rows of the same length, on the task's stream.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memcpy_async(
-                dst.as_mut_ptr().cast(),
-                src.as_ptr().cast(),
-                size_of_val(dst),
-                wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
-                stream.stream(),
-            )
-        })
+        memcpy_d2p(host, *pinned, device.get(self.row), stream)
     }
 }
 

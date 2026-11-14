@@ -159,7 +159,7 @@ impl DeviceHandleStream for BlasHandle {
 mod tests {
     use super::*;
     use crate::runtime::tests::{DeviceBytes, ok};
-    use wwr_sys::{wwr_blas_operation, wwr_memcpy_kind};
+    use wwr_sys::wwr_blas_operation;
 
     #[test]
     fn every_status_has_a_name_and_a_description() {
@@ -229,28 +229,16 @@ mod tests {
                 want[i + j * N] = (0..N).map(|k| a[i + k * N] * b[k + j * N]).sum();
             }
         }
-        let bytes = N * N * size_of::<f64>();
-        let (da, db, dc) = (
-            DeviceBytes::new(bytes),
-            DeviceBytes::new(bytes),
-            DeviceBytes::new(bytes),
+        let (da, db) = (
+            DeviceBytes::upload(&a, &owner),
+            DeviceBytes::upload(&b, &owner),
         );
+        let dc = DeviceBytes::new(N * N * size_of::<f64>());
         let (one, zero) = (1.0f64, 0.0f64);
         let n = N as i32;
-        // SAFETY: three live device buffers of N² doubles; the host inputs
-        // are N² doubles; the handle is live and bound to `owner`'s stream.
+        // SAFETY: three live device buffers of N² doubles; the handle is
+        // live and bound to `owner`'s stream.
         unsafe {
-            for (dst, src) in [(&da, &a), (&db, &b)] {
-                ok(wwr_sys::wwr_memcpy(
-                    dst.0,
-                    src.as_ptr().cast(),
-                    bytes,
-                    wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
-                ));
-            }
-            // A pageable copy may return before its DMA lands, and the
-            // owner's stream does not wait on the legacy one.
-            ok(wwr_sys::wwr_device_synchronize());
             gpu_status(wwr_sys::wwr_blas_dgemm(
                 blas.get(),
                 wwr_blas_operation::WWR_BLAS_OP_N,
@@ -270,9 +258,11 @@ mod tests {
             .unwrap();
         }
         let got: Vec<f64> = dc
-            .read(owner.stream())
-            .chunks_exact(8)
-            .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+            .read(&owner)
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| f64::from_ne_bytes(*c))
             .collect();
         assert_eq!(got, want);
         drop(blas);

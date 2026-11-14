@@ -9,9 +9,12 @@
 use std::process::Command;
 use std::sync::Mutex;
 
-use fb_core_arena::{Block, Device, Pinned, TableBuilder};
+use fb_core_arena::{
+    Block, Device, Pinned, TableBuilder, memcpy_d2d, memcpy_d2p, memcpy_h2p, memcpy_p2d, memcpy_p2h,
+};
 use fb_core_wwr::common::ScopedDeviceIndex;
-use wwr_sys::{wwr_memcpy_kind, wwr_status};
+use fb_core_wwr::runtime::Stream;
+use wwr_sys::wwr_status;
 
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
@@ -90,19 +93,17 @@ fn blocks_are_filled() {
     let dr = d.output::<u64>(0, "D", n);
     let device = Block::new(0, d.build());
     let v = device.partition(0);
-    let row = v.get(dr);
-    let mut host = vec![0u64; n];
-    let _device = ScopedDeviceIndex::new(0);
-    // SAFETY: n u64s from the device row into a local of the same size.
-    ok(unsafe {
-        wwr_sys::wwr_memcpy(
-            host.as_mut_ptr().cast(),
-            row.as_ptr().cast(),
-            n * 8,
-            wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
-        )
-    });
-    assert!(host.iter().all(|&x| x == u64::MAX));
+    // A pinned row to read it into, zeroed first, since its own fill is the
+    // same bytes: only the copy can put `u64::MAX` back.
+    let mut h = TableBuilder::<Pinned>::new();
+    let hr = h.output::<u64>(0, "H", n);
+    let host = Block::new(0, h.build());
+    memcpy_h2p(&host.partition(0), hr, &vec![0; n]);
+    let stream = Stream::new(0);
+    memcpy_d2p(&host.partition(0), hr, v.get(dr), &stream).unwrap();
+    ok(stream.sync());
+    let got = memcpy_p2h(&host.partition(0), hr);
+    assert!(got.iter().all(|&x| x == u64::MAX));
 }
 
 /// What the child does, by `FB_ARENA_CHILD`; nothing when unset.
@@ -158,9 +159,6 @@ fn an_allocation_the_card_cannot_hold_aborts() {
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn copies_round_trip_through_every_kind() {
-    use fb_core_arena::{memcpy_d2d, memcpy_d2p, memcpy_h2p, memcpy_p2d, memcpy_p2h};
-    use fb_core_wwr::runtime::Stream;
-
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let n = 4097;
     let data: Vec<f64> = (0..n).map(|i| i as f64 * 0.5 - 7.0).collect();

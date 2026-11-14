@@ -8,16 +8,13 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Planned, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::gpu_status;
-use fb_core_wwr::handle::DeviceHandleStream;
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_molecule_nuclei::add_nuclei;
-use wwr_sys::wwr_memcpy_kind;
 
 /// Each fixture: its stem, naming its golden and its reference, its XYZ
 /// file and its basis.
@@ -108,18 +105,7 @@ impl Task for Download {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let (src, dst) = (device.get(self.h), host.take_mut(*pinned));
-        // SAFETY: two rows of the same length, on the task's stream; a
-        // stream task hands the pinned row to the copy and no more.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memcpy_async(
-                dst.as_mut_ptr().cast(),
-                src.as_ptr().cast(),
-                size_of_val(dst),
-                wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
-                stream.stream(),
-            )
-        })
+        memcpy_d2p(host, *pinned, device.get(self.h), stream)
     }
 }
 

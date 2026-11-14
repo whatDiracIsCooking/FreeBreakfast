@@ -82,7 +82,10 @@ fn first_failure(sync: wwr_status, destroy: wwr_status) -> wwr_status {
 pub mod tests {
     use std::ffi::c_void;
 
-    use wwr_sys::{wwr_memcpy_kind, wwr_status, wwr_stream};
+    use wwr_sys::{wwr_memcpy_kind, wwr_status};
+
+    use super::Stream;
+    use crate::handle::DeviceHandleStream;
 
     use fb_core_error_handling::{Error, ErrorKind};
 
@@ -100,8 +103,20 @@ pub mod tests {
         assert_eq!(status, wwr_status::WWR_STATUS_SUCCESS);
     }
 
-    /// `n` bytes of device memory, freed on drop.
+    /// `n` bytes of device memory, freed on drop: a kernel library's test
+    /// buffer, for a test with no arena. Its copies run on the test's own
+    /// stream and are drained before they return, never the synchronous
+    /// `wwr_memcpy`: that runs on the legacy stream, which a non-blocking
+    /// [`Stream`] does not wait for, and from pageable memory it returns
+    /// before its DMA lands (README.md, "Build and test").
     pub struct DeviceBytes(pub *mut c_void, usize);
+
+    // SAFETY: the host never dereferences the pointer; the bytes are
+    // reached only through runtime calls, which are thread-safe, and the
+    // allocation is freed once, by the owner's drop.
+    unsafe impl Send for DeviceBytes {}
+    // SAFETY: as above; `&self` methods only read the bytes.
+    unsafe impl Sync for DeviceBytes {}
 
     impl DeviceBytes {
         pub fn new(n: usize) -> Self {
@@ -111,26 +126,41 @@ pub mod tests {
             DeviceBytes(p, n)
         }
 
-        /// The bytes, after the work queued on `stream` has finished.
-        #[allow(
-            clippy::not_unsafe_ptr_arg_deref,
-            reason = "a test helper; `pub` only for the test-support feature, \
-                      and every caller passes a live stream's handle"
-        )]
-        pub fn read(&self, stream: wwr_stream) -> Vec<u8> {
+        /// A new buffer holding `host`'s bytes, copied on `stream` and so
+        /// ordered before the work queued on it after.
+        pub fn upload<T: Copy>(host: &[T], stream: &Stream) -> Self {
+            let device = Self::new(size_of_val(host));
+            let kind = wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE;
+            device.copy(device.0, host.as_ptr().cast(), kind, stream);
+            device
+        }
+
+        /// The bytes, copied on `stream` after the work queued on it.
+        pub fn read(&self, stream: &Stream) -> Vec<u8> {
             let mut host = vec![0u8; self.1];
-            // SAFETY: both ranges are `self.1` bytes; the stream is drained
-            // before the synchronous copy reads the device side.
-            unsafe {
-                ok(wwr_sys::wwr_stream_synchronize(stream));
-                ok(wwr_sys::wwr_memcpy(
-                    host.as_mut_ptr().cast(),
-                    self.0,
-                    self.1,
-                    wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
-                ));
-            }
+            let kind = wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST;
+            self.copy(host.as_mut_ptr().cast(), self.0, kind, stream);
             host
+        }
+
+        /// The one copy, all `self.1` bytes from `src` to `dst`, one of them
+        /// this buffer and the other host memory, on `stream`, drained
+        /// before it returns.
+        fn copy(
+            &self,
+            dst: *mut c_void,
+            src: *const c_void,
+            kind: wwr_memcpy_kind,
+            stream: &Stream,
+        ) {
+            if self.1 == 0 {
+                return;
+            }
+            // SAFETY: both ranges are `self.1` bytes, the host one a live
+            // local or borrow of the caller's that outlives the copy: the
+            // stream is drained before this returns. `stream` is live.
+            ok(unsafe { wwr_sys::wwr_memcpy_async(dst, src, self.1, kind, stream.stream()) });
+            ok(stream.sync());
         }
     }
 

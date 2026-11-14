@@ -19,14 +19,11 @@ mod common;
 
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane};
-use fb_core_wwr::gpu_status;
-use fb_core_wwr::handle::DeviceHandleStream;
 use fb_integrals_mmd::{ClassRows, add_records};
-use wwr_sys::wwr_memcpy_kind;
 
 /// The double fields, in the reference file's order.
 const F64_FIELDS: [&str; 16] = [
@@ -113,31 +110,10 @@ impl Task for Download {
         for (c, down) in self.0.iter().zip(rows) {
             let (f, i) = (f64_fields(c), i32_fields(c));
             for (&src, &dst) in f.iter().zip(&down.f64s) {
-                let (src, dst) = (d.get(src), h.take_mut(dst));
-                // SAFETY: two rows of n_rec doubles, on the task's stream; a
-                // stream task hands the pinned row to the copy and no more.
-                gpu_status(unsafe {
-                    wwr_sys::wwr_memcpy_async(
-                        dst.as_mut_ptr().cast(),
-                        src.as_ptr().cast(),
-                        size_of_val(dst),
-                        wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
-                        stream.stream(),
-                    )
-                })?;
+                memcpy_d2p(h, dst, d.get(src), stream)?;
             }
             for (&src, &dst) in i.iter().zip(&down.i32s) {
-                let (src, dst) = (d.get(src), h.take_mut(dst));
-                // SAFETY: as above, n_rec int32s.
-                gpu_status(unsafe {
-                    wwr_sys::wwr_memcpy_async(
-                        dst.as_mut_ptr().cast(),
-                        src.as_ptr().cast(),
-                        size_of_val(dst),
-                        wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
-                        stream.stream(),
-                    )
-                })?;
+                memcpy_d2p(h, dst, d.get(src), stream)?;
             }
         }
         Ok(())
