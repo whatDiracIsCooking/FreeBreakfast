@@ -185,6 +185,7 @@ or one only review can.
 | A reference value is committed beside its crate with the reference's version and the command that made it | [`testing.md`](testing.md), "Correctness", "Reference data" | **unenforced** |
 | A comparison with PySCF loads the tree's basis JSON, goes through the overlap, and uses CODATA 2018 | [`testing.md`](testing.md), "Reference data" | **unenforced** |
 | Seeds are fixed and printed | [`testing.md`](testing.md), "Determinism and placements" | **unenforced** |
+| A bitwise comparison of two plans, placements or versions runs both in one process; across processes a library-backed result meets a bar fixed by analysis | [`testing.md`](testing.md), "Determinism and placements" | `recipes/matrix_ao/tests/one_process.rs::two_plans_give_the_same_bits_in_one_process` (that one process's bits do not depend on the plan; not that every bitwise comparison runs in one process, which is the review's) |
 | The weekly run: compute-sanitizer with `--error-exitcode=1`, Miri, the fuzzers, `cargo-mutants` and tier 5 | [`testing.md`](testing.md), "What runs when", "Sanitizers", "Fuzzing" | **unenforced** (not built: no weekly run exists) |
 
 ## The GPU layer

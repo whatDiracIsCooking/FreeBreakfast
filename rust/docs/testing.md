@@ -429,6 +429,16 @@ declared tolerance where one is not. That promise is a test here:
 - **Atomics do not loosen a bar.** A result that varies run to run because a
   kernel reduces with atomics meets the bar its analysis fixed, or the kernel
   gets an ordered reduce. The bar is never raised to make the variation fit.
+- **A bitwise bar holds within one process.** A library may choose its
+  kernel once per process, and not the same one in every process: on the
+  gfx1200, hipBLASLt has no tuned kernel for a small `dgemm` shape (the
+  spherical transform's `58 × 58 × 65` with A transposed), falls back to
+  the kernels whose predicates match, two that round differently, and takes
+  one or the other from one process to the next, with nothing but a log
+  setting changed (#1575; the RTX 3080's cuBLASLt picks one kernel every
+  time). So two plans, two placements or two versions of a task are compared
+  bitwise by running both in one process; a result held across processes,
+  as a committed value or another run's, meets a bar fixed by analysis.
 
 ### Performance
 
