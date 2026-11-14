@@ -390,7 +390,9 @@ def test_push_by_hand_without_a_base_exits_2(
 # call fails as cargo does on a lock its manifests have outgrown. Without
 # --no-default-features, `test` is tier 4: fb-core-wwr's one device case is
 # ignored unless --include-ignored.
-# `clippy` exits FAKE_CARGO_CLIPPY_RC, printing a lint error when non-zero.
+# `clippy` exits FAKE_CARGO_CLIPPY_RC, printing a lint error when non-zero;
+# with FAKE_CARGO_DOC_RC, a `doc` with the default features (tier 4's, or
+# tiers 1 to 3's over the defaults) exits it, printing a rustdoc error.
 # A `test` recorded (--message-format=json-render-diagnostics) prints each
 # executable's compiler-artifact message first, and tier 3 then its cases.
 _FAKE_CARGO = """
@@ -438,6 +440,11 @@ elif args[0] == "clippy":
         print("error: unsafe block missing a safety comment")
         print("  --> core/wwr/src/lib.rs:1:1")
     sys.exit(rc)
+elif args[0] == "doc" and "--no-default-features" not in args \
+        and os.environ.get("FAKE_CARGO_DOC_RC"):
+    print("error: unresolved link to `Missing`")
+    print("  --> core/wwr/src/lib.rs:3:5")
+    sys.exit(int(os.environ["FAKE_CARGO_DOC_RC"]))
 elif args[0] == "tree":
     name = args[args.index("-p") + 1]
     print(f"{name} v0.1.0 (/x)")
@@ -791,6 +798,10 @@ def test_tier4_without_a_device_lists_every_device_case_as_skipped(
     clippy = "clippy --locked -j 4 --all-targets -p fb-core-wwr -- -D warnings"
     assert calls.index(clippy) < calls.index(test)
     assert "tier 4 clippy: ok" in out
+    # And rustdoc over them, after clippy and before the tests (#1593).
+    rustdoc = "doc --locked -j 4 --no-deps -p fb-core-wwr"
+    assert calls.index(clippy) < calls.index(rustdoc) < calls.index(test)
+    assert "tier 4 rustdoc: ok" in out
     assert "tier 4: 1 passed, 0 failed, 1 ignored" in out
     assert "tier 4 skipped 1 case(s) (no device visible: why):" in out
     assert (
@@ -867,6 +878,53 @@ def test_a_lint_error_fails_tier4_before_the_card_and_the_tests(
     assert "--- tier 4 clippy: cargo clippy --locked -j 4 --all-targets" in text
     assert "unsafe block missing a safety comment" in text
     assert "tier 4 clippy: FAILED" in text
+
+
+def test_a_rustdoc_error_fails_tier4_before_the_card_and_the_tests(
+    fake_cargo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A broken doc link in a crate that links fails tier 4's rustdoc, run
+    under RUSTDOCFLAGS=-D warnings, and no test runs (#1593)."""
+    monkeypatch.setenv("FAKE_CARGO_DOC_RC", "101")
+    _HeldCard.backend = None
+    seen: list[str | None] = []
+    real_run = subprocess.run
+
+    def run(cmd, *a, **kw):  # noqa: ANN001, ANN002, ANN003, ANN202
+        if cmd[:2] == ["cargo", "doc"]:
+            seen.append((kw.get("env") or {}).get("RUSTDOCFLAGS"))
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(gates.subprocess, "run", run)
+    bindir = Path(os.environ["PATH"].split(os.pathsep)[0])
+    cmake = bindir / "cmake"
+    cmake.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(0)\n")
+    cmake.chmod(0o755)
+    monkeypatch.setattr(gates, "toolchain_unavailable", lambda: None)
+    monkeypatch.setattr(gates, "Card", _HeldCard)
+    log = tmp_path / "t4.log"
+    rc = gates.cargo_tier4(
+        "push",
+        {"GPU_HIP_PRESETS": "hip"},
+        "hip",
+        ["rust/core/wwr/src/lib.rs"],
+        "4",
+        log,
+    )
+    calls = fake_cargo.read_text().splitlines()
+    assert rc == 101
+    assert seen == ["-D warnings"]
+    captured = capsys.readouterr()
+    assert "tier 4 clippy: ok" in captured.out
+    assert "tier 4 rustdoc: FAILED, cargo doc exited 101" in captured.out
+    assert "tier 4 FAILED: cargo doc exited 101" in captured.err
+    assert "unresolved link to `Missing`" in captured.err
+    assert not any(c.startswith("test") for c in calls)
+    assert _HeldCard.backend is None
+    assert "--- tier 4 rustdoc: cargo doc --locked -j 4 --no-deps" in log.read_text()
 
 
 def test_tier4_runs_nothing_for_a_link_free_diff(
@@ -1072,7 +1130,8 @@ def test_nightly_dry_run_lists_a_cargo_half_without_the_fast_switch(
     cargo = [line for line in out.splitlines() if "cargo half" in line]
     assert len(cargo) == 1
     assert (
-        "tier 4 of every crate (clippy, then the tests under the hip card" in (cargo[0])
+        "tier 4 of every crate (clippy, rustdoc, then the tests under the hip card"
+        in (cargo[0])
     )
     assert "slow cases included" in cargo[0]
     assert "every case, unskipped (no FREE_BREAKFAST_FAST_TESTS)" in out

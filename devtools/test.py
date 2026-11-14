@@ -38,8 +38,9 @@ push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   that link the library (each changed file's crate and its reverse
   dependents, from `cargo metadata`; a lint-config change affects them all),
   in rust/target/<backend>: `cargo clippy --all-targets -D warnings`, the
-  one gate of the workspace lints on those crates, and, once it passes,
-  under that card's lock every test, one test thread. A device case is
+  one gate of the workspace lints on those crates, then `cargo doc
+  --no-deps` with warnings denied, the one gate of their rustdoc, and, once
+  both pass, under that card's lock every test, one test thread. A device case is
   `#[ignore = "tier 4: needs a GPU"]`: it runs (--include-ignored) only when
   wwr sees a device, and every case that did not run is printed in one list
   with its reason.
@@ -1402,10 +1403,12 @@ def cargo_tier4(
     `preset`'s backend names, held whole. Builds rust/'s own CMake project
     for that backend first (rust/build-<backend>), and builds the crates in
     rust/target/<backend>. Before the tests, and before the card is taken,
-    `cargo clippy --all-targets -D warnings` over the same crates in the
-    same target directory: cargo-lint reaches only the link-free crates, so
-    this is the one gate of the workspace lints on the crates that link.
-    A lint failure fails tier 4 and runs no test. A device case runs only
+    `cargo clippy --all-targets -D warnings` and then `cargo doc --no-deps`
+    under RUSTDOCFLAGS=-D warnings over the same crates in the same target
+    directory: cargo-lint and the tiers-1-to-3 `cargo doc` reach only the
+    link-free crates, so these are the one gate of the workspace lints and
+    of the rustdoc lints (a broken intra-doc link) on the crates that link.
+    A failure of either fails tier 4 and runs no test. A device case runs only
     when wwr sees a device under the card lock; otherwise it is reported
     ignored, and every ignored case is printed in one list with its
     reason. Skips, exit 0, where cmake is absent: the libraries cannot be
@@ -1451,34 +1454,40 @@ def cargo_tier4(
     selected = [a for c in crates for a in ("-p", c)]
     jflag = ["-j", jobs] if jobs else []
     # The workspace lints on the crates that link, which cargo-lint cannot
-    # build: first, so a lint error fails in a check build, and outside the
-    # card lock, since clippy needs no device. The same env as the tests,
-    # so a build script's environment does not differ between the two.
+    # build, then their rustdoc, which the tiers-1-to-3 `cargo doc` cannot:
+    # first, so a lint error fails in a check build, and outside the card
+    # lock, since neither needs a device. The same env as the tests, so a
+    # build script's environment does not differ between them.
     clippy = cargo_cmd("clippy", *jflag, "--all-targets", *selected)
     clippy += ["--", "-D", "warnings"]
-    start = time.monotonic()
-    with log.open("a") as f:
-        f.write(f"--- tier 4 clippy: {' '.join(clippy)} ---\n")
-        proc = subprocess.run(
-            clippy,
-            cwd=RUST_DIR,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            check=False,
-        )
-        f.write(proc.stdout)
-    if proc.returncode != 0:
-        say(
-            f"{tag}:   tier 4 clippy: FAILED, cargo clippy exited {proc.returncode}",
-            log=log,
-        )
-        say(f"{tag}: tier 4 FAILED: cargo clippy exited {proc.returncode}", err=True)
-        for line in proc.stdout.splitlines()[-25:]:
-            say(f"{tag}:   {line}", err=True)
-        return proc.returncode
-    say(f"{tag}:   tier 4 clippy: ok ({time.monotonic() - start:.0f}s)", log=log)
+    rustdoc = cargo_cmd("doc", *jflag, "--no-deps", *selected)
+    for name, tool, lint, extra in (
+        ("clippy", "cargo clippy", clippy, {}),
+        ("rustdoc", "cargo doc", rustdoc, {"RUSTDOCFLAGS": "-D warnings"}),
+    ):
+        start = time.monotonic()
+        with log.open("a") as f:
+            f.write(f"--- tier 4 {name}: {' '.join(lint)} ---\n")
+            proc = subprocess.run(
+                lint,
+                cwd=RUST_DIR,
+                env=env | extra,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+            f.write(proc.stdout)
+        if proc.returncode != 0:
+            say(
+                f"{tag}:   tier 4 {name}: FAILED, {tool} exited {proc.returncode}",
+                log=log,
+            )
+            say(f"{tag}: tier 4 FAILED: {tool} exited {proc.returncode}", err=True)
+            for line in proc.stdout.splitlines()[-25:]:
+                say(f"{tag}:   {line}", err=True)
+            return proc.returncode
+        say(f"{tag}:   tier 4 {name}: ok ({time.monotonic() - start:.0f}s)", log=log)
     record = [CARGO_RECORD_FLAG] if cases is not None else []
     cmd = cargo_cmd("test", *jflag, *record, *selected, "--", "--test-threads=1")
     with Card(backend, cfg):
@@ -2665,7 +2674,8 @@ def nightly_plan(args: argparse.Namespace, cfg: dict[str, str]) -> list[str]:
         "3. pytest: the whole suite, slow included, the card released",
         "4. cargo half: tiers 1 to 3 (cargo test --no-default-features over the"
         " link-free crates, cargo doc), then tier 4 of every crate (clippy,"
-        f" then the tests under the {backend} card lock); slow cases included",
+        f" rustdoc, then the tests under the {backend} card lock); slow cases"
+        " included",
         "5. cross-backend-check.sh",
         "6. the metrics record, the slow-test report, the night's issue",
     ]

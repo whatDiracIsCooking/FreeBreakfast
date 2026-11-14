@@ -36,8 +36,8 @@ A gate is named by **when it runs**, not by what it contains.
 
 | Gate | When | Runs | Budget |
 | --- | --- | --- | --- |
-| `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++ outside `experimental/` and `test/experimental/`, the Python half when it touches `.py`, the cargo half when it touches `rust/` (and then neither of the others for those paths). C++: the host binaries' fast set, and of the GPU binaries each family's representative, as `pr` (#1126; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates (clippy, then their tests on the card) | under 5 min on a busy card |
-| `pr` | by hand before opening a PR; `milestone-run` requires it | C++: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates (clippy, then their tests on the test preset's card; `--all`, every crate's), when `origin/main...HEAD` or the uncommitted tree touches `rust/` (`--only cargo` alone) | under 5 min on a busy card |
+| `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++ outside `experimental/` and `test/experimental/`, the Python half when it touches `.py`, the cargo half when it touches `rust/` (and then neither of the others for those paths). C++: the host binaries' fast set, and of the GPU binaries each family's representative, as `pr` (#1126; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates (clippy and rustdoc, then their tests on the card) | under 5 min on a busy card |
+| `pr` | by hand before opening a PR; `milestone-run` requires it | C++: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates (clippy and rustdoc, then their tests on the test preset's card; `--all`, every crate's), when `origin/main...HEAD` or the uncommitted tree touches `rust/` (`--only cargo` alone) | under 5 min on a busy card |
 | `nightly` | a timer on this box | everything, unskipped: the C++ and Python halves, and the cargo half as `pr --only cargo --all` with its slow cases (#1459), plus the cross-backend compile check | none; it has the night |
 
 **The single-backend rule holds for all three.** A gate runs on one card, and
@@ -88,7 +88,12 @@ that links, so this is the one gate of the workspace lints
 (`undocumented_unsafe_blocks`, `missing_panics_doc`, `missing_docs`,
 `clippy.toml`'s `disallowed_methods`, …) on them. It prints `tier 4 clippy:
 ok (Ns)`, or `tier 4 clippy: FAILED` with the lint's tail, and a failure
-runs no test. Then, holding that card as the C++ half does, `cargo test`
+runs no test. Next `cargo doc --no-deps` over the same crates with
+`RUSTDOCFLAGS=-D warnings`, still before the card: the tiers-1-to-3
+`cargo doc` documents only the link-free members, so this is the one gate of
+rustdoc's lints (a broken or redundant intra-doc link, #1593) on the crates
+that link. It prints `tier 4 rustdoc: ok (Ns)`, or `tier 4 rustdoc: FAILED`
+with rustdoc's tail, and a failure runs no test either. Then, holding that card as the C++ half does, `cargo test`
 over the same crates, one test thread. A device case is declared on the
 case, `#[ignore = "tier 4: needs a GPU"]`, so a plain `cargo test` lists it
 as ignored with that reason. The gate asks wwr (`wwr_get_device_count`, in a
@@ -452,8 +457,8 @@ timer, `devtools/systemd/free-breakfast-nightly@.timer`.
 5. **Run the cargo half** (#1459), as `pr --only cargo --all` runs it but with
    no `FREE_BREAKFAST_FAST_TESTS`, so the slow cases run
    (`rust/docs/testing.md` "Slow cases"): tiers 1 to 3, then every crate's
-   tier 4 (its clippy, then its tests on the preset's card, which take the
-   card lock again by themselves).
+   tier 4 (its clippy and rustdoc, then its tests on the preset's card,
+   which take the card lock again by themselves).
    Its counts, per test binary and in total, go to the log beside a
    `slow cases run` line for each `cargo test`; its totals and the count of
    tier-4 cases that did not run go onto the summary line, those cases each
