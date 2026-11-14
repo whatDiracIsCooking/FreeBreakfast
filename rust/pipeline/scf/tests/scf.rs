@@ -2,7 +2,8 @@
 //! the SAD guess, against PySCF's DF-RHF energy over the same orbital and
 //! fitting documents and geometry, converged to `conv_tol = 1e-12`
 //! (`tests/data/scf_<stem>.npy`, written by `tests/data/scf_reference.py`,
-//! which says how).
+//! which says how; ethylene's by PySCF's second-order solver, whose case
+//! says why).
 //!
 //! **The bar, by analysis, one run: `|E - E_ref| <= 1e-9` hartree.** The
 //! energy is stationary in the orbitals, so each run's convergence error
@@ -83,6 +84,10 @@ static FREE: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 /// Every line logged at `warn`, in order.
 static WARNED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+/// Every line the loop's decision logs as it restarts a singular DIIS
+/// subspace, in order.
+static RESTARTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 /// Device 0's free memory, with it made current.
 #[allow(
     clippy::disallowed_methods,
@@ -97,9 +102,9 @@ fn free_bytes() -> usize {
     free
 }
 
-/// A logger that prints every line, keeps each warning, and, at each
-/// iteration line, samples the free memory: the decision writes the line
-/// after the body's GPU work has completed.
+/// A logger that prints every line, keeps each warning and each DIIS
+/// restart, and, at each iteration line, samples the free memory: the
+/// decision writes the line after the body's GPU work has completed.
 struct Sampler;
 
 impl log::Log for Sampler {
@@ -115,14 +120,17 @@ impl log::Log for Sampler {
         if record.level() == log::Level::Warn {
             WARNED.lock().unwrap().push(line.clone());
         }
+        if line.starts_with("scf: DIIS subspace singular") {
+            RESTARTED.lock().unwrap().push(line.clone());
+        }
         println!("{line}");
     }
 
     fn flush(&self) {}
 }
 
-/// Install [`Sampler`] once, empty the samples and the warnings, and
-/// return the case's turn.
+/// Install [`Sampler`] once, empty the samples, the warnings and the
+/// restarts, and return the case's turn.
 fn turn() -> std::sync::MutexGuard<'static, ()> {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     let guard = TURN.lock().unwrap_or_else(|e| e.into_inner());
@@ -132,6 +140,7 @@ fn turn() -> std::sync::MutexGuard<'static, ()> {
     });
     FREE.lock().unwrap().clear();
     WARNED.lock().unwrap().clear();
+    RESTARTED.lock().unwrap().clear();
     guard
 }
 
@@ -162,14 +171,14 @@ fn run(xyz: &Path, step: &ScfStep) -> (fb_core_thread_pool::Record, Option<ScfOu
     run.run(0)
 }
 
-/// The case `stem` converged and held to the energy bar, the residual
-/// under the tolerance, the free memory never falling from the second
-/// iteration to the last, and no warning: the SAD guess is positive
-/// semidefinite, so `guess check` has nothing to say.
-fn converges_to_pyscf(stem: &str, xyz: &Path) {
+/// The case `stem` run with `step`, converged and held to the energy bar,
+/// the residual under the tolerance, the free memory never falling from the
+/// second iteration to the last, and no warning: the SAD guess is positive
+/// semidefinite, so `guess check` has nothing to say. Returns the lines the
+/// decision logged as it restarted a singular DIIS subspace.
+fn converges_to_pyscf(stem: &str, xyz: &Path, step: &ScfStep) -> Vec<String> {
     let _turn = turn();
-    let step = ScfStep::default();
-    let (record, out) = run(xyz, &step);
+    let (record, out) = run(xyz, step);
     record.result.unwrap();
     let out = out.expect("a converged run brings its products back");
     let e_ref = fb_io_npy::read_npy(&data(&format!("scf_{stem}_cc-pvdz_cc-pvdz-jkfit.npy")))
@@ -206,6 +215,7 @@ fn converges_to_pyscf(stem: &str, xyz: &Path) {
         "{stem}: free memory fell after iteration {}: {free:?}",
         fell.map_or(0, |i| i + 2)
     );
+    std::mem::take(&mut *RESTARTED.lock().unwrap())
 }
 
 /// Water in cc-pVDZ over cc-pVDZ-JKFIT: the gate's representative. Needs a
@@ -213,7 +223,7 @@ fn converges_to_pyscf(stem: &str, xyz: &Path) {
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn water_converges_to_pyscf() {
-    converges_to_pyscf("h2o", &water());
+    converges_to_pyscf("h2o", &water(), &ScfStep::default());
 }
 
 /// Benzene in cc-pVDZ over cc-pVDZ-JKFIT (114 AOs, 558 fitting functions),
@@ -227,7 +237,53 @@ fn benzene_converges_to_pyscf() {
         eprintln!("skipped: slow case (FREE_BREAKFAST_FAST_TESTS is set)");
         return;
     }
-    converges_to_pyscf("benzene", &data("benzene.xyz"));
+    converges_to_pyscf("benzene", &data("benzene.xyz"), &ScfStep::default());
+}
+
+/// Ethylene at #856's DF-SA3-CASSCF(2,2) S1/S0 MECI in cc-pVDZ over
+/// cc-pVDZ-JKFIT (48 AOs, 232 fitting functions), the C++ tree's issue #865
+/// case (`test/gtest/pipeline_df_scf_gpu.cpp`, `meci856_ccpvdz`): a run
+/// that takes the singular-DIIS restart in the loop, and converges past it
+/// to PySCF's energy at the same bar. Needs a GPU.
+///
+/// **Why it restarts.** The RHF orbital Hessian has one eigenvalue near
+/// zero there (PySCF: 6.4e-6 Eh), along which the plain Roothaan step
+/// barely moves, so the loop sits at `‖e‖` about 1.3e-6, where DIIS's
+/// residuals differ by too little for its absolute singular pivot
+/// (`fb_recipes_diis`). The C++ loop stalled there for 400 iterations
+/// before its restart; this one logs one restart at that `‖e‖` and
+/// converges. The case asserts the restart's log line, so a loop that
+/// never took the path fails it.
+///
+/// **The reference** is PySCF's second-order solver (`.newton()`;
+/// `tests/data/scf_reference.py`, its `newton` argument): PySCF's own DIIS
+/// stalls on the same mode, at an orbital gradient of 1e-6 and 2.1e-7 Eh
+/// above the minimum, and reports itself converged at `conv_tol = 1e-12`.
+/// The C++ case's energy, also `.newton()`'s, agrees with it to 1e-12.
+///
+/// **The bar** stays [`ENERGY_BAR`], and the run is at
+/// `commutator_tolerance = 1e-8`, a decade under the default, to keep it:
+/// the energy's convergence error is `g² / 2λ` along the mode, `g` the
+/// orbital gradient and `λ` the Hessian's eigenvalue. `‖e‖ = 2√2 ‖F_vo‖`
+/// in the orthonormal basis, and PySCF's `g` is `2 F_vo` with its `λ` in
+/// the same convention, so the error is at most `‖e‖² / 4λ`, and `‖e‖² /
+/// λ` leaves a factor of 4 for the convention: 1.6e-9 at the default
+/// `‖e‖ < 1e-7` if all of it lay along the soft mode, past the bar, and
+/// 1.6e-11 at 1e-8, under it beside the integrals' 1e-10. The restart is
+/// at `‖e‖ = 1.3e-6`, well above either tolerance.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn ethylene_takes_the_diis_restart_and_converges_to_pyscf() {
+    let step = ScfStep {
+        commutator_tolerance: 1e-8,
+        ..ScfStep::default()
+    };
+    let restarted = converges_to_pyscf("ethylene_meci856", &data("ethylene_meci856.xyz"), &step);
+    assert!(
+        !restarted.is_empty(),
+        "ethylene_meci856: no singular-DIIS restart was logged"
+    );
+    println!("ethylene_meci856: {restarted:?}");
 }
 
 /// Water's plan at `max_iterations = 2` fails the run with

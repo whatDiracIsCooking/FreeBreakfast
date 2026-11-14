@@ -11,6 +11,17 @@ Usage (from the checkout root; PySCF is in the `tools` dependency group):
     OMP_NUM_THREADS=8 uv run --group tools python $D/scf_reference.py \\
         $D/benzene.xyz cc-pvdz cc-pvdz-jkfit \\
         $D/scf_benzene_cc-pvdz_cc-pvdz-jkfit.npy
+    OMP_NUM_THREADS=8 uv run --group tools python $D/scf_reference.py \\
+        $D/ethylene_meci856.xyz cc-pvdz cc-pvdz-jkfit \\
+        $D/scf_ethylene_meci856_cc-pvdz_cc-pvdz-jkfit.npy newton
+
+A fifth argument `newton` runs PySCF's second-order solver
+(`mf.newton()`) in place of its DIIS, at the same `conv_tol` and its
+default `conv_tol_grad`. Ethylene at #856's MECI needs it: its RHF orbital
+Hessian has an eigenvalue near zero (6.4e-6 Eh), on which PySCF's DIIS
+stalls at an orbital gradient of 1e-6 and reports itself converged
+2.1e-7 Eh above the minimum. The second-order energy moves by under 1e-12
+between `conv_tol_grad` 1e-6 and 1e-10.
 
 It writes one float64 .npy of shape (1,): the total energy in hartree,
 electronic plus nuclear repulsion. The molecule and both sets come from the
@@ -48,7 +59,7 @@ def three_center_reference():
 
 
 def main() -> None:
-    if len(sys.argv) != 5:
+    if len(sys.argv) not in (5, 6) or sys.argv[5:] not in ([], ["newton"]):
         raise SystemExit(__doc__)
     xyz, orbital, aux_spec, out = (
         Path(sys.argv[1]),
@@ -56,6 +67,7 @@ def main() -> None:
         sys.argv[3],
         Path(sys.argv[4]),
     )
+    newton = sys.argv[5:] == ["newton"]
     ref = three_center_reference()
     orb, _, _, _ = ref.named(xyz, orbital, aux_spec)
     atoms = ref.read_xyz(xyz)
@@ -63,10 +75,13 @@ def main() -> None:
     auxbasis = {s: ref.basis_from_bse(aux_doc, s) for s in {a for a, _ in atoms}}
 
     mf = scf.RHF(orb).density_fit(auxbasis=auxbasis)
+    if newton:
+        mf = mf.newton()
     mf.conv_tol = 1e-12
     mf.max_cycle = 200
     cycles = []
-    mf.callback = lambda envs: cycles.append(envs["cycle"])
+    # One call a cycle, or a macro iteration of the second-order solver.
+    mf.callback = lambda envs: cycles.append(None)
     energy = mf.kernel()
     print(
         f"nao {orb.nao}, naux {mf.with_df.get_naoaux()}, nocc {orb.nelectron // 2}:"
