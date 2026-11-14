@@ -325,6 +325,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "fb-integrals-eri-density-fitting-fit"
+version = "0.1.0"
+dependencies = [
+ "contracts",
+ "fb-core-arena",
+ "fb-core-error-handling",
+ "fb-core-planner",
+ "fb-core-thread-pool",
+ "fb-core-wwr",
+ "fb-io-npy",
+ "fb-recipes-cholesky",
+ "fb-test-support",
+ "wwr-sys",
+]
+
+[[package]]
 name = "fb-integrals-eri-density-fitting-metric"
 version = "0.1.0"
 dependencies = [

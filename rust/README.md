@@ -89,6 +89,7 @@ tree, not inputs to its build.
 | `fb_recipes_symmetrize` | `src/recipes/symmetrize`'s two `symmetrize` overloads | Calls a task makes inside its `run`, on its stream, not tasks: `symmetrize(stream, n, a, lda)`, `A ← (A + Aᵀ)/2` in place, `(i, j)` and `(j, i)` the same bits, `fb_recipes_sys`'s re-exported; and `symmetrize_from(stream, fill, n, a, lda)`, the strict triangle opposite `fill` overwritten with the transpose of `fill`'s, `fill` BLAS's `wwr_blas_fill_mode` so a syrk's passes straight through, over `fb_recipes_sys::mirror_triangle`. No `unsafe` (`#![forbid(unsafe_code)]`) |
 | `fb_recipes_cholesky` | `src/recipes/cholesky` | `add_cholesky`: `A = L Lᵀ` of a symmetric positive definite device row as two tasks of a `Dag`, after `fb-recipes-sys`'s load check at planning, never the dense solver's `potrf` (rocSOLVER's small-matrix kernel races on its pivot, #404, #379): `cholesky` on the stream (A copied into the output row L, the flag zeroed, then right-looking and blocked, `CHOLESKY_BLOCK` (64) columns at a time: the diagonal tile by `fb_recipes_sys::cholesky_diagonal`, the panel by `fb_core_wwr::blas::trsm` against the tile's packed copy, the trailing matrix by `syrk`, L cut into disjoint parts by `split_at_mut`; the flag into a pinned row), and `cholesky check` on the CPU, a non-zero flag a `Numerical` error naming the 1-based leading minor. It returns L and the check's `checked` pinned row, which a task that must not run on a failed factor reads. No `unsafe` (`#![forbid(unsafe_code)]`) |
 | `fb_integrals_eri_density_fitting_metric` | `src/integrals/eri/density_fitting/metric`'s `metric` | `add_metric`: the spherical Coulomb metric (P\|Q) of a placed aux `BasisSet` as tasks of a `Dag`, after the kernel library's load check at planning (a shell above i, or `nao_cart²` past `i32`, refused there as `Unsupported`, adding nothing): `fb_integrals_sys::add_metric_tasks` (`metric tables`, `metric`), `fb_recipes_matrix_ao`'s spherical transform (U's slot passed in), and `metric average` on the stream (M copied into its own row and averaged with its transpose by `fb_recipes_symmetrize`, so `M[P][Q]` and `M[Q][P]` are the same bits). No `unsafe` (`#![forbid(unsafe_code)]`). Water in cc-pVDZ-JKFIT and iron beside water in def2-universal-JKFIT (aux through i) against PySCF's `int2c2e` at 1e-12 of max\|M\|; their plan text is the committed golden `integrals/eri/density_fitting/metric/tests/golden/plan_*.txt` |
+| `fb_integrals_eri_density_fitting_fit` | `src/integrals/eri/density_fitting/fit`, the Cholesky path | `add_density_fit(dag, worker, nao, naux, metric, tensor)`: the density-fitting factor `B = L⁻¹ (P|mn)`, `M = L Lᵀ`, as tasks of a `Dag`, returning B (`naux · nao²` doubles, the tensor's layout, P fastest, then n, then m) and L (`naux²`), each an output row of its own (a task writes only its own rows, so neither is in place as the C++ is): `fb_recipes_cholesky`'s two tasks over the metric's row, then `density fit` on the stream (the tensor copied into B, then one `fb_core_wwr::blas::trsm`, left, lower, no transpose), which reads the check's `checked` row beside L, so a metric that is not positive definite is the check's `Numerical`, naming the minor, and neither the fit nor any reader of B runs. `lindep`, the C++ fit over M's eigenmodes above a threshold (#630), is not ported. No `unsafe` (`#![forbid(unsafe_code)]`). The plan text at naux = 41, nao = 5 is the committed golden `integrals/eri/density_fitting/fit/tests/golden/plan_naux41_nao5.txt` |
 | `fb_pipeline_scf` | `src/pipeline/scf`'s `solve_fock` (the Roothaan step, without the density) | `add_solve_fock`: `F C = S C ε` through `X = S^(-1/2)` for the rows of a symmetric operator F and of X, as tasks of a `Dag`: `fock transform` on the stream (`F' = X F X`, two gemms through a scratch row), `fb_recipes_diagonalize`'s two on F', and `back transform` on the stream (`C = X C'`), ε and C output rows, so the SCF's Fock matrix takes the core Hamiltonian's place later with no change. `Run`, the core Hamiltonian's orbitals: an XYZ file and a basis name planned once (the nuclei, S and H over one build of the records and one staging of U, X, the step with H for F, a download and a collect), syevd's `lwork` asked through a closure at the AO count, run on one stream, returning ε, C and the timing record. The plan text for each of the overlap's fixtures is the committed golden `pipeline/scf/tests/golden/plan_*.txt` |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
@@ -136,7 +137,9 @@ and `recipes/diagonalize` on `planner`, `arena`, `thread_pool`, `wwr` and
 `recipes/sys`, `planner`, `arena`, `thread_pool`, `wwr` and
 `error_handling`; and
 `integrals/eri/density_fitting/metric` on `integrals/sys`,
-`recipes/matrix_ao`, `recipes/symmetrize`, `basis` and what they stand on.
+`recipes/matrix_ao`, `recipes/symmetrize`, `basis` and what they stand on; and
+`integrals/eri/density_fitting/fit` on
+`recipes/cholesky` and what it stands on.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -284,7 +287,7 @@ accident. Only `fb-core-wwr`, `fb-core-diagnostics`, `fb-recipes-sys`, `fb-recip
 `fb-integrals-sys`, `fb-integrals-mmd`,
 `fb-integrals-one-electron-overlap`, `fb-recipes-matrix-ao`,
 `fb-molecule-nuclei`, `fb-pipeline-config`, `fb-recipes-diagonalize`,
-`fb-recipes-orthogonalize`, `fb-pipeline-scf`, `fb-recipes-symmetrize` and `fb-recipes-cholesky` always link; the records' layout asks
+`fb-recipes-orthogonalize`, `fb-pipeline-scf`, `fb-recipes-symmetrize`, `fb-recipes-cholesky` and `fb-integrals-eri-density-fitting-fit` always link; the records' layout asks
 the kernel library for the sort's workspace at planning, so even the
 overlap's and the transform's device-free tests (the host tables, the plan
 goldens) need the library built. `fb-molecule-nuclei` links wwr alone,
@@ -461,6 +464,17 @@ Its plan at n = 200 is the golden `recipes/cholesky/tests/golden/`, and the
 tile wrapper's refusals are `recipes/sys/tests/cholesky.rs`, raw, with no
 device. `trsm` and `syrk` on a card are `fb_core_wwr::blas`'s own tests,
 exact on small integers with the unread triangle NaN.
+
+The density fit on a card is
+`integrals/eri/density_fitting/fit/tests/fit.rs`, one run per case on the
+committed fixtures (`integrals/eri/density_fitting/fit/tests/data/`, with
+the script that writes them): an SPD metric of order 41 (cond(M) 1e4) and
+a random tensor of 41 × 5², held to `max |L B - b| <= 100 n ε κ₂(L) max
+|b|`, the triangular solve's backward error with two decades of margin,
+κ₂(L) from the fixture's committed singular values; and a metric whose
+first non-positive leading minor is 17, a `Numerical` error naming it with
+neither the fit nor the download of B run. Its plan is the golden
+`integrals/eri/density_fitting/fit/tests/golden/`.
 
 The core Hamiltonian's orbitals on a card are
 `pipeline/scf/tests/core_orbitals.rs`: the overlap's three fixtures, each
@@ -1094,3 +1108,13 @@ and 67 each named in a `Numerical` error with the reader of `checked` not
 run; and `trsm` and `syrk` exact on small integers, the unread triangle
 NaN. `devtools/cross-backend-check.sh --device-only` compiles the fork
 for HIP. Not run on the gfx1200.
+
+2026-11-14, `integrals/eri/density_fitting/fit` (`add_density_fit`, the
+Cholesky path: `fb-recipes-cholesky`'s tasks over the metric, then one
+trsm into B behind the check), on the RTX 3080 (CUDA), the `default`
+preset: `devtools/test.py pr --only cargo --all` passes, tier 3 291 tests;
+tier 4 225, none skipped, among them the committed order-41 metric and
+41 × 5² tensor fitted with `max |L B - b| = 2.6e-15` (the bar
+`100 n ε κ₂(L) max |b|`, `2.8e-10`, κ₂(L) = 100), and the metric whose
+minor 17 is not positive a `Numerical` naming it with neither the fit nor
+the download of B run. Not run on the gfx1200.
