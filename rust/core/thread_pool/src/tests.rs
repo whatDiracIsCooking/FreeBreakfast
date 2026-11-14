@@ -982,7 +982,7 @@ fn device_edges_wait_for_the_work_they_consume() {
         *seen_by_cpu.lock().unwrap() = dst.read(&Stream::new(0));
         Ok(())
     });
-    let mut device = Device::new(&[0], &plan);
+    let mut device = Device::new(&[0], &plan, &[]);
     let record = run(&mut plan, &mut device, 1);
     record.result.as_ref().unwrap();
     assert_eq!(*devices_seen.lock().unwrap(), [0]);
@@ -1043,7 +1043,7 @@ fn device_library_handles_are_the_workers_made_before_the_run() {
             Ok(())
         });
     }
-    let mut device = Device::new(&[0], &plan);
+    let mut device = Device::new(&[0], &plan, &[vec![true, true]]);
     let mut runs = Vec::new();
     for _ in 0..2 {
         run(&mut plan, &mut device, 1).result.unwrap();
@@ -1055,6 +1055,38 @@ fn device_library_handles_are_the_workers_made_before_the_run() {
     assert_ne!(runs[0][0].1, runs[0][1].1, "one BLAS handle per lane");
     assert_ne!(runs[0][0].2, runs[0][1].2, "one solver handle per lane");
     assert_eq!(runs[0], runs[1], "a run made a handle of its own");
+}
+
+/// Device 0: a lane the libraries leave unmarked, or do not reach, is made
+/// with no library handles; a marked lane has both, so a lane whose nodes
+/// call no library costs no handle (`docs/gpu_layer.md`, "Layering").
+#[cfg(feature = "device-tests")]
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn a_lane_with_no_library_user_has_no_handles() {
+    let mut plan: Plan<'_, DeviceStream> = Plan::new();
+    for s in 0..4 {
+        plan.add(format!("kernel{s}"), on(0, s), &[], |_| Ok(()));
+    }
+    let device = Device::new(&[0], &plan, &[vec![true, false, true]]);
+    let made = |f: &dyn Fn()| std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_ok();
+    let has: Vec<(bool, bool)> = (0..4)
+        .map(|l| {
+            let stream = device.stream(LaneId { worker: 0, lane: l });
+            (
+                made(&|| {
+                    let _ = stream.blas();
+                }),
+                made(&|| {
+                    let _ = stream.solver();
+                }),
+            )
+        })
+        .collect();
+    assert_eq!(
+        has,
+        [(true, true), (false, false), (true, true), (false, false)]
+    );
 }
 
 /// Device 0, one run: a loop whose body is a stream node and a CPU node
@@ -1116,7 +1148,7 @@ fn device_loop_reads_each_iterations_stream_scope() {
             ControlFlow::Break(())
         })
     });
-    let mut device = Device::new(&[0], &plan);
+    let mut device = Device::new(&[0], &plan, &[]);
     let record = run(&mut plan, &mut device, 1);
     record.result.as_ref().unwrap();
 
@@ -1268,7 +1300,7 @@ fn device_counted_loop_times_each_trip() {
         Ok(())
     });
     plan.add_counted(copies, TRIPS, 2);
-    let mut device = Device::new(&[0], &plan);
+    let mut device = Device::new(&[0], &plan, &[]);
     let record = run(&mut plan, &mut device, 1);
     record.result.as_ref().unwrap();
 

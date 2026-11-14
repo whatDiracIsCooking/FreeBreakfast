@@ -90,13 +90,15 @@ impl<H: HostKind, S> Declared<'_, H, S> {
 }
 
 /// One GPU worker's rows, of both kinds, shared by its lanes; its lane
-/// count, one past the highest a GPU task named; and its BLAS workspace
-/// rows, one per lane once declared.
+/// count, one past the highest a GPU task named; per lane, whether a GPU
+/// task on it uses the library handles ([`GpuTask::uses_libraries`]); and
+/// its BLAS workspace rows, each with its lane, once declared.
 struct Worker<H> {
     device: TableBuilder<Device>,
     host: TableBuilder<H>,
     lanes: usize,
-    blas_workspace: Vec<RowId<Device, u8>>,
+    libraries: Vec<bool>,
+    blas_workspace: Vec<(usize, RowId<Device, u8>)>,
 }
 
 /// Tasks declared in plan order, each on a GPU worker: the planner's input.
@@ -180,6 +182,10 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         let pos = self.nodes.len();
         let w = self.worker(at.worker);
         w.lanes = w.lanes.max(at.lane + 1);
+        if w.libraries.len() < w.lanes {
+            w.libraries.resize(w.lanes, false);
+        }
+        w.libraries[at.lane] |= task.uses_libraries();
         let rows = task.layout(&mut w.device.node(pos), &mut w.host.node(pos));
         let kept = rows.clone();
         self.nodes.push(Declared {
@@ -339,11 +345,13 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
     }
 
     /// Declare worker `worker`'s BLAS workspaces: one worker row of
-    /// [`BLAS_WORKSPACE_BYTES`] per lane, since each lane has a BLAS handle
-    /// of its own and two lanes run at once. Lane 0's is `blas workspace`
-    /// in the worker's device table, declared here; lane `l`'s, `blas
-    /// workspace lane <l>`, when the DAG is planned and its lanes are
-    /// known. Admission counts them like any other row, and the instance's
+    /// [`BLAS_WORKSPACE_BYTES`] per lane that has a BLAS handle, since each
+    /// such lane has one of its own and two lanes run at once. Lane 0's is
+    /// `blas workspace` in the worker's device table, declared here; lane
+    /// `l`'s, `blas workspace lane <l>`, when the DAG is planned and its
+    /// lanes are known, and only if a task on it uses the library handles
+    /// ([`GpuTask::uses_libraries`]): a lane whose tasks only launch kernels
+    /// or copy has no handles and no row. Admission counts them like any other row, and the instance's
     /// backend hands each to its lane's BLAS handle when it is made
     /// (`Instance::backend`), so no BLAS call allocates behind the table.
     /// No task can name the rows, so each is its handle's alone. Declaring
@@ -355,7 +363,7 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         let w = self.worker(worker);
         if w.blas_workspace.is_empty() {
             let row = w.device.worker("blas workspace", BLAS_WORKSPACE_BYTES);
-            w.blas_workspace.push(row);
+            w.blas_workspace.push((0, row));
         }
     }
 
@@ -378,11 +386,15 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
     /// the tables' contracts ([`TableBuilder::build`]).
     pub fn plan(mut self) -> Planned<'a, H, S> {
         for w in &mut self.workers {
+            // Lane 0 has its handles whatever its tasks say; a lane above
+            // it, only if a task on it uses them.
+            w.libraries.resize(w.lanes.max(1), false);
+            w.libraries[0] = true;
             if !w.blas_workspace.is_empty() {
-                for lane in w.blas_workspace.len()..w.lanes {
+                for lane in (1..w.lanes).filter(|&l| w.libraries[l]) {
                     let name = format!("blas workspace lane {lane}");
                     let row = w.device.worker(&name, BLAS_WORKSPACE_BYTES);
-                    w.blas_workspace.push(row);
+                    w.blas_workspace.push((lane, row));
                 }
             }
         }
@@ -390,6 +402,11 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
             .workers
             .iter_mut()
             .map(|w| std::mem::take(&mut w.blas_workspace))
+            .collect();
+        let libraries = self
+            .workers
+            .iter_mut()
+            .map(|w| std::mem::take(&mut w.libraries))
             .collect();
         let lanes = self.workers.iter().map(|w| w.lanes).collect();
         let loops = &self.loops;
@@ -435,6 +452,7 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         Planned {
             tables,
             lanes,
+            libraries,
             blas_workspaces,
             nodes: self.nodes,
             deps: deps.into_iter().map(|d| d.into_iter().collect()).collect(),
@@ -448,6 +466,7 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
                 device: TableBuilder::new(),
                 host: TableBuilder::new(),
                 lanes: 0,
+                libraries: Vec::new(),
                 blas_workspace: Vec::new(),
             });
         }
@@ -470,8 +489,12 @@ pub struct Planned<'a, H: HostKind = Pinned, S = DeviceStream> {
     pub(super) tables: Vec<(Table<Device>, Table<H>)>,
     /// Per worker, its lane count: one past the highest a GPU task named.
     pub(super) lanes: Vec<usize>,
-    /// Per worker, its BLAS workspace rows, one per lane, if declared.
-    pub(super) blas_workspaces: Vec<Vec<RowId<Device, u8>>>,
+    /// Per worker, per lane, whether the lane has library handles: lane 0
+    /// always, a lane above it if a task on it uses them.
+    pub(super) libraries: Vec<Vec<bool>>,
+    /// Per worker, its BLAS workspace rows, each with its lane: one per
+    /// lane with library handles, if declared.
+    pub(super) blas_workspaces: Vec<Vec<(usize, RowId<Device, u8>)>>,
     pub(super) nodes: Vec<Declared<'a, H, S>>,
     pub(super) deps: Vec<Vec<usize>>,
     pub(super) loops: Vec<Loop>,

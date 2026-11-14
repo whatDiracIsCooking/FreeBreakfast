@@ -241,6 +241,18 @@ device: a task names no handle in its layout, and the tier-3 planner tests
 run on `HostOnly` workers under `--no-default-features`, with no wwr crate
 in their graph. BLAS and the
 dense solver are the libraries so far.
+
+**A lane that calls no library has no handles.** A task says whether its
+`run` may call one, `GpuTask::uses_libraries`, yes by default; a lane
+above 0 gets its handle pair, and its BLAS workspace row below, only when
+a task placed on it says yes. Lane 0 has both whatever its tasks say:
+every worker has it, `Dag::blas_workspace` declares its row at the call,
+and a one-lane plan's table is then what it was. The mmd records' class
+tasks and the copy nodes say no, so a lane of a class or of a copy costs a
+stream and nothing more (#1614). A task that said no and calls one panics
+at the call (`DeviceStream::blas`); the default is yes so that a task that
+forgets costs memory its plan golden shows rather than that panic.
+
 Every task of the lane shares the handles, so a task that changes one's
 state (its pointer mode) sets it back before it returns. A run borrows the
 backend exclusively (`Instance::run` takes it by `&mut`), so the handles
@@ -258,7 +270,8 @@ HIP twin), so the design hands every handle a worker row of the arena
 a library either. The planner declares it: `Dag::blas_workspace(worker)`
 adds `blas workspace`, a worker row of `fb_core_planner::BLAS_WORKSPACE_BYTES`
 (32 MiB), to the worker's device table, and one more, `blas workspace lane
-<l>`, per further lane its tasks name, where admission counts them like any
+<l>`, per further lane a task that uses the libraries is placed on, where
+admission counts them like any
 other row, and keeps their ids, so no task can name them. They are bound where the
 backend and the instance meet: `Instance::backend` builds the `Device` over
 the instance's plan and hands each lane's handle its row, once, as an

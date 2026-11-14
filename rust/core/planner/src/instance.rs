@@ -28,9 +28,12 @@ pub struct Instance<'a, H: HostKind = Pinned, S = DeviceStream> {
     /// that partition it and, for the device one, with a backend's handle
     /// that holds its BLAS workspace row.
     pub(super) blocks: Vec<WorkerBlocks<H>>,
-    /// Per worker, its BLAS workspace rows, one per lane, if declared.
+    /// Per worker, per lane, whether the lane has library handles.
     #[cfg_attr(not(feature = "device"), allow(dead_code))]
-    pub(super) blas_workspaces: Vec<Vec<RowId<Device, u8>>>,
+    libraries: Vec<Vec<bool>>,
+    /// Per worker, its BLAS workspace rows, each with its lane, if declared.
+    #[cfg_attr(not(feature = "device"), allow(dead_code))]
+    pub(super) blas_workspaces: Vec<Vec<(usize, RowId<Device, u8>)>>,
 }
 
 /// A worker's device block and host block.
@@ -106,6 +109,7 @@ impl<'a, H: HostKind, S: 'a> Planned<'a, H, S> {
         Instance {
             plan,
             blocks,
+            libraries: self.libraries,
             blas_workspaces: self.blas_workspaces,
         }
     }
@@ -167,8 +171,10 @@ impl<H: HostKind> Instance<'_, H, DeviceStream> {
     /// The backend this instance's GPU tasks run on: a
     /// [`thread_pool::Device`] whose GPU worker `w` is on worker `w`'s
     /// device with the lanes its tasks name, with an event pair for every
-    /// GPU node of this plan, and each lane's declared BLAS workspace
-    /// ([`Dag::blas_workspace`]) handed to its BLAS handle. A handle holds
+    /// GPU node of this plan, library handles on lane 0 and on each lane a
+    /// task that uses them is placed on ([`GpuTask::uses_libraries`]), and
+    /// each such lane's declared BLAS workspace ([`Dag::blas_workspace`])
+    /// handed to its BLAS handle. A handle holds
     /// its row as a
     /// [`HeldRow`](fb_core_arena::HeldRow) for as long as the backend
     /// lives, which keeps the block alive with it, so the backend may
@@ -182,12 +188,13 @@ impl<H: HostKind> Instance<'_, H, DeviceStream> {
     /// instance before still lives.
     ///
     /// [`Dag::blas_workspace`]: super::Dag::blas_workspace
+    /// [`GpuTask::uses_libraries`]: super::GpuTask::uses_libraries
     #[track_caller]
     pub fn backend(&self) -> thread_pool::Device {
         let devices: Vec<i32> = self.blocks.iter().map(|(d, _)| d.dev_idx()).collect();
-        let mut backend = thread_pool::Device::new(&devices, &self.plan);
+        let mut backend = thread_pool::Device::new(&devices, &self.plan, &self.libraries);
         for (worker, rows) in self.blas_workspaces.iter().enumerate() {
-            for (lane, &row) in rows.iter().enumerate() {
+            for &(lane, row) in rows {
                 let held = self.blocks[worker].0.hold(row);
                 check_or_abort(backend.bind_blas_workspace(LaneId { worker, lane }, held));
             }

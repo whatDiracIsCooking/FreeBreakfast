@@ -1161,7 +1161,8 @@ fn a_blas_workspace_is_a_worker_row_admission_counts() {
     let planned = dag.plan();
     assert_eq!(planned.len(), 1, "declaring a workspace adds no task");
     assert_eq!(planned.n_workers(), 2);
-    let row = planned.blas_workspaces[0][0];
+    let (lane, row) = planned.blas_workspaces[0][0];
+    assert_eq!(lane, 0);
     let table = planned.device_table(0);
     assert_eq!(table.n_rows(), bare.device_table(0).n_rows() + 1);
     assert_eq!(table.len(row), BLAS_WORKSPACE_BYTES);
@@ -1232,4 +1233,55 @@ fn lanes_share_their_workers_tables() {
     }
     let total = planned.device_table(0).total();
     assert!(total >= 3 * BLAS_WORKSPACE_BYTES, "{total}");
+}
+
+/// A task that only launches kernels or copies, as `Declares` would.
+struct NoLibraries(Declares);
+
+impl GpuTask<Heap, ()> for NoLibraries {
+    type Rows = Vec<RowId<Device, f64>>;
+
+    fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) -> Self::Rows {
+        self.0.layout(d, h)
+    }
+
+    fn uses_libraries(&self) -> bool {
+        false
+    }
+
+    fn run(&self, r: &Self::Rows, d: &Bufs<'_, Device>, h: &CopyOnly<'_, Heap>, s: &()) -> Status {
+        self.0.run(r, d, h, s)
+    }
+}
+
+/// A lane with no library user has no BLAS workspace row and no library
+/// handles: of four lanes, lane 1's tasks all say they call no library and
+/// lane 3's only task does, so the plan has workspace rows for lanes 0 and
+/// 2 alone, and marks only those two for handles. Lane 0 keeps both even
+/// when its one task says no; a lane with one library user among others
+/// that are not keeps them.
+#[test]
+fn a_lane_with_no_library_user_has_no_workspace_row_or_handles() {
+    use Decl::*;
+    let n = 24 * 24;
+    let lane = |lane| LaneId { worker: 0, lane };
+    let none = |name| NoLibraries(Declares(vec![Out(name, n)]));
+    let mut dag = Dag::<Heap, ()>::new();
+    dag.blas_workspace(0);
+    dag.add_gpu("A", lane(0), none("a"));
+    dag.add_gpu("B", lane(1), none("b"));
+    dag.add_gpu("B'", lane(1), none("b'"));
+    dag.add_gpu("C", lane(2), none("c"));
+    dag.add_gpu("C'", lane(2), Declares(vec![Out("c'", n)]));
+    dag.add_gpu("D", lane(3), none("d"));
+    let planned = dag.plan();
+    assert_eq!(planned.n_lanes(0), 4);
+    assert_eq!(planned.libraries, [vec![true, false, true, false]]);
+    let lanes: Vec<usize> = planned.blas_workspaces[0].iter().map(|&(l, _)| l).collect();
+    assert_eq!(lanes, [0, 2]);
+    let text = planned.to_string();
+    assert_eq!(text.matches("blas workspace").count(), 2, "{text}");
+    assert!(text.contains("blas workspace lane 2\n"), "{text}");
+    let total = planned.device_table(0).total();
+    assert!(total < 3 * BLAS_WORKSPACE_BYTES, "{total}");
 }

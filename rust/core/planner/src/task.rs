@@ -70,6 +70,19 @@ pub trait GpuTask<H: HostKind = Pinned, S = DeviceStream>: Send + Sync {
         Vec::new()
     }
 
+    /// Whether its `run` may call a library through its lane's handles,
+    /// BLAS or the dense solver (`DeviceStream::blas`, `DeviceStream::solver`).
+    /// A lane above 0 gets its handles, and its BLAS workspace row if the
+    /// worker declares one ([`Dag::blas_workspace`](super::Dag::blas_workspace)),
+    /// only when a task placed on it says yes, so a task that only launches
+    /// kernels or copies says no and its lane costs neither; lane 0 has
+    /// both whatever its tasks say (`docs/gpu_layer.md`, "Layering").
+    /// Called once, at planning; yes by default, so a task that forgets to
+    /// say costs memory the plan shows, never a missing handle.
+    fn uses_libraries(&self) -> bool {
+        true
+    }
+
     /// Enqueue its work on `stream`, through the rows `layout` returned,
     /// and return. Called once per run, and in a loop once per iteration,
     /// whose index its views give ([`Bufs::iteration`]): a counted loop's
