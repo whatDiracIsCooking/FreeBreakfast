@@ -11,7 +11,7 @@
 //! class's shell pairs with their record prefixes, a
 //! [`RecordTables`](fb_integrals_sys::RecordTables), and hands it to
 //! [`fb_integrals_sys::add_record_tasks`], which adds two tasks to a
-//! [`Dag`](fb_core_planner::Dag):
+//! [`Dag`]:
 //!
 //! - **`mmd tables`**, on the CPU: the tables written into pinned rows.
 //!   A basis of N primitives has O(N²) records but only O(shells²) shell
@@ -22,7 +22,7 @@
 //!   already in descending ζ), its bound (`fb_mmd_bound`) and its two
 //!   dressed bounds (`fb_ordered_pair_bound`, as stored and swapped). The
 //!   record fields are its outputs,
-//!   [`ClassRows`](fb_integrals_sys::ClassRows), one per class, a type only
+//!   [`ClassRows`], one per class, a type only
 //!   those tasks make, so the class launchers can trust the AO offsets it
 //!   holds on the device.
 //!
@@ -34,13 +34,14 @@
 //! | C++ (`src/integrals/mmd`) | Here |
 //! |---|---|
 //! | `primitive_pair_classes(res, basis)` | [`add_records`]`(dag, worker, basis)`: two tasks, run whenever the plan runs |
-//! | `PrimitivePairClass`, a device buffer per field on its own stream | [`ClassRows`](fb_integrals_sys::ClassRows): a device output row per field, on the worker's one stream |
+//! | `PrimitivePairClass`, a device buffer per field on its own stream | [`ClassRows`]: a device output row per field, on the worker's one stream |
 //! | `basis_sweep`, `shell_table`, `pair_table`, `shell_ranks` | the host tables, formed here and checked by [`RecordTables::new`](fb_integrals_sys::RecordTables::new) |
 //! | `upload`'s carve of `res`'s pinned workspace, and the device buffers for the call | the tables' pinned rows (outputs of `mmd tables`) and device rows (scratch of `mmd records`) |
 //! | `form_classes`' carve of `res`'s device workspace, two keys and two permutations | one key, one permutation and `fb_mmd_order`'s workspace, scratch of `mmd records`, sized to the largest class |
 //! | each class forked from the one before, so the sorts share the carve | every class on the worker's one stream |
 //! | `primitive_pair_classes_footprint` | the plan's tables ([`Planned`](fb_core_planner::Planned)): the footprint is the layout |
-//! | `mixed_primitive_pair_classes` | not ported yet |
+//! | `mixed_primitive_pair_classes(res, rows, cols)`, `mixed_sweep` | [`add_mixed_records`]`(dag, worker, rows, cols)`: the same two tasks over both bases' table, returning [`MixedClassRows`], which no one-basis launcher takes |
+//! | `mixed_primitive_pair_classes_footprint` | the plan's tables, as for one basis |
 //!
 //! [`BasisSet`]: fb_basis::BasisSet
 
@@ -52,7 +53,7 @@ mod tests;
 
 use fb_core_error_handling::{Error, Result};
 use fb_core_planner::Dag;
-use fb_integrals_sys::{ClassRows, add_record_tasks};
+use fb_integrals_sys::{ClassRows, MixedClassRows, add_mixed_record_tasks, add_record_tasks};
 
 /// Add the records of `basis` to `dag` on GPU worker `worker`: the sweep
 /// formed on the host and handed to [`add_record_tasks`], a CPU task,
@@ -91,4 +92,48 @@ pub fn add_records(
         return Ok(Vec::new());
     }
     Ok(add_record_tasks(dag, worker, tables::tables(basis)))
+}
+
+/// Add the records between two bases, `rows` and `cols`, to `dag` on GPU
+/// worker `worker`, as [`add_records`] adds one basis's: the sweep formed
+/// on the host, then `mmd tables` and `mmd records` over both bases'
+/// shells. Returns each class's rows, ascending in `(la, lb)`; either
+/// basis with no shells adds nothing and returns none.
+///
+/// Every **ordered** shell pair (`i` of `rows`, `j` of `cols`) gives one
+/// record per primitive pair, `i` always the bra, in class `(l_i, l_j)`:
+/// nothing is swapped, so `la > lb` classes appear. `off_a` is a Cartesian
+/// AO of `rows` and `off_b` one of `cols`, two index sets, so equal
+/// offsets mean nothing; each rank is among its own basis's shells. The
+/// fields, their order (descending ζ in a class) and the bounds are
+/// [`add_records`]'. The bases may differ in set, in geometry, in both or
+/// in neither, and may be the same.
+///
+/// First the kernel library's load check, as [`add_records`] makes it.
+///
+/// # Errors
+/// As [`add_records`].
+///
+/// # Panics
+/// As [`RecordTables::mixed`](fb_integrals_sys::RecordTables::mixed),
+/// which two bases' own sweep never trips.
+#[track_caller]
+pub fn add_mixed_records(
+    dag: &mut Dag<'_>,
+    worker: usize,
+    rows: &fb_basis::BasisSet,
+    cols: &fb_basis::BasisSet,
+) -> Result<Vec<MixedClassRows>> {
+    // Not `map_err(Error::gpu)`, as in add_records.
+    if let Err(e) = fb_integrals_sys::check_library() {
+        return Err(Error::gpu(e));
+    }
+    if rows.nshells() == 0 || cols.nshells() == 0 {
+        return Ok(Vec::new());
+    }
+    Ok(add_mixed_record_tasks(
+        dag,
+        worker,
+        tables::mixed_tables(rows, cols),
+    ))
 }

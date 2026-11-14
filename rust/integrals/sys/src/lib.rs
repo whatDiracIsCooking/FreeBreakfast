@@ -80,7 +80,10 @@ mod three_center;
 pub use bindings::*;
 pub use classes::{kinetic_class, overlap_class, potential_en_class};
 pub use metric::{AuxTable, add_metric_tasks};
-pub use records::{ClassPairs, ClassRows, Fields, RecordTables, ShellTable, add_record_tasks};
+pub use records::{
+    ClassPairs, ClassRows, Fields, MixedClassRows, RecordTables, ShellTable,
+    add_mixed_record_tasks, add_record_tasks,
+};
 pub use three_center::add_three_center_tasks;
 
 use fb_core_error_handling::Status;

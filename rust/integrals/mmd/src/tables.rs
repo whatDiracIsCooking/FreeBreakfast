@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use fb_basis::BasisSet;
+use fb_basis::{BasisSet, Shell};
 use fb_core_error_handling::{Error, check_or_abort};
 use fb_integrals_sys::{ClassPairs, RecordTables, ShellTable};
 
@@ -25,9 +25,89 @@ pub(crate) fn tables(basis: &BasisSet) -> RecordTables {
         prim_begin: vec![0],
         ..ShellTable::default()
     };
+    push_shells(&mut t, basis);
+
+    let mut sweep = Sweep::new();
+    let n = basis.nshells();
+    for i in 0..n {
+        for j in i..n {
+            let (si, sj) = (&shells[i as usize], &shells[j as usize]);
+            let (bra, ket) = if si.angular_momentum() > sj.angular_momentum() {
+                (j, i)
+            } else {
+                (i, j)
+            };
+            add_pair(
+                &mut sweep,
+                &shells[bra as usize],
+                &shells[ket as usize],
+                bra,
+                ket,
+            );
+        }
+    }
+    RecordTables::new(t, classes(sweep), basis.nao_cart() as usize)
+}
+
+/// The sweep of two bases, `rows` and `cols`, as the C++
+/// `mixed_primitive_pair_classes` forms it: every ordered shell pair (`i`
+/// of `rows`, `j` of `cols`), never swapped, in its class `(l_i, l_j)`,
+/// ascending, none empty; the shell table `rows`' shells and then `cols'`,
+/// so `j` is `n_rows + j` there, each shell's offset into its own basis's
+/// Cartesian AOs and its rank among its own basis's shells. Aborts as
+/// [`tables`] does, the primitives of both bases counted together.
+///
+/// # Panics
+/// As [`RecordTables::mixed`], which two bases' own sweep never trips.
+#[track_caller]
+pub(crate) fn mixed_tables(rows: &BasisSet, cols: &BasisSet) -> RecordTables {
+    let mut t = ShellTable {
+        prim_begin: vec![0],
+        ..ShellTable::default()
+    };
+    push_shells(&mut t, rows);
+    push_shells(&mut t, cols);
+    let mut sweep = Sweep::new();
+    let n_rows = rows.nshells();
+    for (i, si) in (0_u32..).zip(rows.shells()) {
+        for (j, sj) in (0_u32..).zip(cols.shells()) {
+            add_pair(&mut sweep, si, sj, i, n_rows + j);
+        }
+    }
+    RecordTables::mixed(
+        t,
+        classes(sweep),
+        n_rows as usize,
+        [rows.nao_cart() as usize, cols.nao_cart() as usize],
+    )
+}
+
+/// Each class's bra shells, ket shells and record prefix (in `i64`, so a
+/// class past `i32::MAX` is caught before it is sized), keyed by
+/// `(la, lb)` so the classes come out ascending.
+type Sweep = BTreeMap<(i32, i32), (Vec<u32>, Vec<u32>, Vec<i64>)>;
+
+/// The pair (`bra`, `ket`) of shells `sb` and `sk`, at those indices of the
+/// shell table, listed in its class with its first record.
+fn add_pair(sweep: &mut Sweep, sb: &Shell, sk: &Shell, bra: u32, ket: u32) {
+    let (b, k, r) = sweep
+        .entry((sb.angular_momentum(), sk.angular_momentum()))
+        .or_insert_with(|| (Vec::new(), Vec::new(), vec![0]));
+    b.push(bra);
+    k.push(ket);
+    let last = *r.last().expect("a prefix starts at 0");
+    r.push(last + i64::from(sb.nprimitives()) * i64::from(sk.nprimitives()));
+}
+
+/// `basis`'s shells appended to `t`: their primitives, centres, first
+/// Cartesian AOs (into `basis`'s own) and ranks (among `basis`'s own
+/// shells of each momentum). Aborts past `i32::MAX` primitives in the
+/// table.
+#[track_caller]
+fn push_shells(t: &mut ShellTable, basis: &BasisSet) {
     let mut next_rank = BTreeMap::<i32, i32>::new();
-    let mut n_prim = 0_i64;
-    for (i, shell) in (0_u32..).zip(shells) {
+    let mut n_prim = i64::from(*t.prim_begin.last().expect("a prefix starts at 0"));
+    for (i, shell) in (0_u32..).zip(basis.shells()) {
         n_prim += i64::from(shell.nprimitives());
         t.prim_begin
             .push(check_or_abort(i32::try_from(n_prim).map_err(|_| {
@@ -50,30 +130,13 @@ pub(crate) fn tables(basis: &BasisSet) -> RecordTables {
         t.rank.push(*rank);
         *rank += 1;
     }
+}
 
-    // Keyed by (la, lb), so the classes come out ascending; prefixes in
-    // i64, so a class past i32::MAX is caught before it is sized.
-    let mut sweep = BTreeMap::<(i32, i32), (Vec<u32>, Vec<u32>, Vec<i64>)>::new();
-    let n = basis.nshells();
-    for i in 0..n {
-        for j in i..n {
-            let (si, sj) = (&shells[i as usize], &shells[j as usize]);
-            let (bra, ket) = if si.angular_momentum() > sj.angular_momentum() {
-                (j, i)
-            } else {
-                (i, j)
-            };
-            let (sb, sk) = (&shells[bra as usize], &shells[ket as usize]);
-            let (b, k, r) = sweep
-                .entry((sb.angular_momentum(), sk.angular_momentum()))
-                .or_insert_with(|| (Vec::new(), Vec::new(), vec![0]));
-            b.push(bra);
-            k.push(ket);
-            let last = *r.last().expect("a prefix starts at 0");
-            r.push(last + i64::from(sb.nprimitives()) * i64::from(sk.nprimitives()));
-        }
-    }
-    let classes = sweep
+/// The sweep's classes, ascending, each prefix narrowed to `i32`. A class
+/// past `i32::MAX` records aborts.
+#[track_caller]
+fn classes(sweep: Sweep) -> Vec<ClassPairs> {
+    sweep
         .into_iter()
         .map(|((la, lb), (bra, ket, rec_begin))| {
             let n_rec = *rec_begin.last().expect("a prefix starts at 0");
@@ -92,6 +155,5 @@ pub(crate) fn tables(basis: &BasisSet) -> RecordTables {
                 rec_begin: rec_begin.into_iter().map(|r| r as i32).collect(),
             }
         })
-        .collect();
-    RecordTables::new(t, classes, basis.nao_cart() as usize)
+        .collect()
 }
