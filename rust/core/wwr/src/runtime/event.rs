@@ -192,7 +192,7 @@ mod tests {
         // SAFETY: as above.
         ok(unsafe { wwr_sys::wwr_memset_async(bytes.0, 2, 1 << 20, b.stream()) });
         ok(a.sync());
-        assert!(bytes.read(b.stream()).iter().all(|&x| x == 2));
+        assert!(bytes.read(&b).iter().all(|&x| x == 2));
     }
 
     /// Needs a GPU. Flags no backend accepts fail the create, at the

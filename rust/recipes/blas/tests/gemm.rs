@@ -6,11 +6,10 @@ use std::rc::Rc;
 
 use fb_core_wwr::blas::BlasHandle;
 use fb_core_wwr::device_slice::DeviceSlice;
-use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::runtime::tests::{DeviceBytes, ok};
 use fb_recipes_blas::{BlasOp, C, N, T, gemm};
-use wwr_sys::{wwr_blas_operation, wwr_memcpy_kind};
+use wwr_sys::wwr_blas_operation;
 
 /// `rows` × `cols`, column-major, packed.
 fn matrix(rows: usize, cols: usize, seed: usize) -> Vec<f64> {
@@ -47,28 +46,9 @@ fn host_gemm(
     out
 }
 
-fn upload(host: &[f64]) -> DeviceBytes {
-    let bytes = size_of_val(host);
-    let device = DeviceBytes::new(bytes);
-    // SAFETY: both ranges are `bytes` long; the copy is synchronous.
-    ok(unsafe {
-        wwr_sys::wwr_memcpy(
-            device.0,
-            host.as_ptr().cast(),
-            bytes,
-            wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
-        )
-    });
-    // A pageable copy may return before its DMA lands, and a created
-    // stream does not wait on the legacy one.
-    // SAFETY: no arguments.
-    ok(unsafe { wwr_sys::wwr_device_synchronize() });
-    device
-}
-
 fn download(device: &DeviceBytes, owner: &Stream, n: usize) -> Vec<f64> {
     device
-        .read(owner.stream())
+        .read(owner)
         .as_chunks::<8>()
         .0
         .iter()
@@ -85,7 +65,11 @@ fn check<OpA: BlasOp, OpB: BlasOp>((m, n, k): (usize, usize, usize)) {
     let want = host_gemm(t_a, t_b, (m, n, k), -2.0, &a, &b, 3.0, &c);
     let owner = Rc::new(Stream::new(0));
     let blas = BlasHandle::new(owner.clone());
-    let (da, db, mut dc) = (upload(&a), upload(&b), upload(&c));
+    let (da, db, mut dc) = (
+        DeviceBytes::upload(&a, &owner),
+        DeviceBytes::upload(&b, &owner),
+        DeviceBytes::upload(&c, &owner),
+    );
     let i = |x: usize| x as i32;
     gemm::<OpA, OpB, f64>(&blas, i(m), i(n), i(k), -2.0, &da, &db, 3.0, &mut dc).unwrap();
     assert_eq!(download(&dc, &owner, m * n), want);

@@ -24,17 +24,14 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane};
-use fb_core_wwr::gpu_status;
-use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::solver::SolverHandle;
 use fb_recipes_diagonalize::syevd_lwork;
 use fb_recipes_orthogonalize::{ORTHOGONALIZE_EIGENVALUE_FLOOR, add_orthogonalize};
-use wwr_sys::wwr_memcpy_kind;
 
 /// The overlap's fixtures, by stem: S of order 7, 24 and 60.
 const FIXTURES: [&str; 3] = ["h2o_sto-3g", "h2o_cc-pvdz", "co_cc-pvtz"];
@@ -85,18 +82,7 @@ impl Task for Upload {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let (dst, src) = (device.take_mut(*s), host.get(self.0));
-        // SAFETY: two rows of the same length, on the task's stream; the
-        // pinned one is handed to the copy and not touched from the host.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memcpy_async(
-                dst.as_mut_ptr().cast(),
-                src.as_ptr().cast(),
-                size_of_val(src),
-                wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
-                stream.stream(),
-            )
-        })
+        memcpy_p2d(&device.take_mut(*s), host, self.0, stream)
     }
 }
 
@@ -122,17 +108,7 @@ impl Task for Download {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let (dst, src) = (host.take_mut(*x), device.get(self.0));
-        // SAFETY: two rows of `self.1` doubles, on the task's stream.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memcpy_async(
-                dst.as_mut_ptr().cast(),
-                src.as_ptr().cast(),
-                self.1 * size_of::<f64>(),
-                wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
-                stream.stream(),
-            )
-        })
+        memcpy_d2p(host, *x, device.get(self.0), stream)
     }
 }
 

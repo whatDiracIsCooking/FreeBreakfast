@@ -265,7 +265,7 @@ mod tests {
         ok(exec.upload(&s));
         ok(exec.launch(&s));
         ok(exec.launch(&s));
-        assert_eq!(bytes.read(s.stream()), [0x5a; 16]);
+        assert_eq!(bytes.read(&s), [0x5a; 16]);
     }
 
     /// Needs a GPU. Ending a capture that never began is an error at the
