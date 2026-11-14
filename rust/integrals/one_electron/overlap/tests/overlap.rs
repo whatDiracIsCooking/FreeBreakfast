@@ -9,7 +9,8 @@
 //! decades of margin. Symmetry is not gated: the reference is symmetric.
 //!
 //! The run's timing record has an entry per task, and every stream task's
-//! entry has a stream scope.
+//! entry has a stream scope; each class's records ran on a lane of its
+//! own, and the record holds no sync point for an edge between two lanes.
 
 mod common;
 
@@ -113,6 +114,41 @@ fn overlap_matches_pyscf() {
                 t.name
             );
         }
+
+        // Each class's records on a lane of its own, and no sync point for
+        // an edge between two lanes: every reader of a class on another
+        // lane waits on the device. A sync point is a CPU node's wait on a
+        // GPU predecessor, or a lane's one sync as its worker exits.
+        let records: std::collections::BTreeSet<&str> = record
+            .tasks
+            .iter()
+            .filter(|t| t.name.starts_with("mmd records "))
+            .map(|t| t.worker.as_str())
+            .collect();
+        let n_records = record
+            .tasks
+            .iter()
+            .filter(|t| t.name.starts_with("mmd records "))
+            .count();
+        assert!(
+            n_records > 1 && records.len() == n_records,
+            "{stem}: {n_records} classes on lanes {records:?}"
+        );
+        let lanes: std::collections::BTreeSet<&str> = record
+            .tasks
+            .iter()
+            .map(|t| t.worker.as_str())
+            .filter(|w| w.starts_with("gpu"))
+            .collect();
+        for s in &record.syncs {
+            assert_eq!(
+                s.node.is_some(),
+                s.worker.starts_with("cpu"),
+                "{stem}: a sync point that is neither a CPU node's wait nor a lane's exit: {s:?}"
+            );
+        }
+        let exits = record.syncs.iter().filter(|s| s.node.is_none()).count();
+        assert_eq!(exits, lanes.len(), "{stem}: one exit sync per lane");
 
         let (shape, want) = read_npy(&common::data(&format!("{stem}.npy")));
         assert_eq!(shape, [n, n], "{stem}: the AO count");

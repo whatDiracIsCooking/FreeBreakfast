@@ -26,7 +26,7 @@
 //! | C++ | Here |
 //! |---|---|
 //! | `kinetic_class(stream, cls, n_ao, t)` (`kinetic_bridge.h`), one class | [`kinetic_class`], `fb-integrals-sys`'s safe launcher over a [`ClassRows`]; [`kinetic_classes`]`(stream, device, classes, t)`, every class in order on one stream |
-//! | `kinetic(res, classes, t.cartesian())`: zeroed, then one launch per class, each on a stream forked from `res.stream()` | the `kinetic` task of [`add_kinetic`]: zeroed, then [`kinetic_classes`] on the worker's one stream, the records' [`ClassRows`] passed in by the caller |
+//! | `kinetic(res, classes, t.cartesian())`: zeroed, then one launch per class, each on a stream forked from `res.stream()` | the `kinetic` task of [`add_kinetic`]: zeroed, then [`kinetic_classes`] on the worker's lane 0, each class's records, formed on a lane of their own, an event wait on the device; the records' [`ClassRows`] passed in by the caller |
 //! | `kinetic`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | [`kinetic_class`]'s contract for the class, and its always-on `assert!` of the matrix's `n_cart²` and the `i32` bound; [`add_kinetic`] asserts the `i32` bound at planning too, and the records hold only `la <= lb` |
 //! | `upload_spherical_transform_matrix`, `MatrixAOPair::cartesian_to_spherical` | [`fb_recipes_matrix_ao::add_cartesian_to_spherical`], U's slot passed in by the caller |
 //! | `res.dev_idx()` made current for the call | nothing: a stream task runs with its worker's device current |

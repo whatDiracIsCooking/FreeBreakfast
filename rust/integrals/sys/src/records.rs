@@ -1,5 +1,5 @@
 //! The primitive-pair records' device path: the tables the kernels read
-//! ([`RecordTables`], validated), the two tasks that turn them into every
+//! ([`RecordTables`], validated), the tasks that turn them into every
 //! class's records ([`add_record_tasks`]), and the records themselves
 //! ([`ClassRows`]), which only those tasks produce.
 //!
@@ -8,14 +8,21 @@
 //! - **`mmd tables`**, on the CPU: the shell table and every class's shell
 //!   pairs with their record prefixes, written into pinned rows, its
 //!   outputs.
-//! - **`mmd records`**, on the worker's stream: the tables copied into
-//!   device rows, its scratch, then each class `(la, lb)` in the tables'
-//!   order: its order ([`fb_mmd_order`]: the key `-ζ` and a stable sort, in
-//!   scratch sized to the largest class), its records ([`fb_mmd_records`],
-//!   every field written once, already in descending ζ), its bound
-//!   ([`fb_mmd_bound`]) and its two dressed bounds
-//!   ([`fb_ordered_pair_bound`], as stored and swapped). The record fields
-//!   are its outputs, one [`ClassRows`] per class.
+//! - **`upload <table>`**, one per table, on the worker's lane 0: each
+//!   pinned row copied into a device row ([`Dag::upload`]).
+//! - **`mmd records (la,lb)`**, one per class, class `c` of the tables'
+//!   order on the worker's lane `c`: reading the uploaded tables, its order
+//!   ([`fb_mmd_order`]: the key `-ζ` and a stable sort, in scratch sized to
+//!   the class), its records ([`fb_mmd_records`], every field written
+//!   once, already in descending ζ), its bound ([`fb_mmd_bound`]) and its
+//!   two dressed bounds ([`fb_ordered_pair_bound`], as stored and swapped).
+//!   The record fields are its outputs, the class's [`ClassRows`].
+//!
+//! Each class on a lane of its own is the C++ `src/integrals/mmd`, whose
+//! every `PrimitivePairClass` carries its own stream. The sorts' scratch
+//! is packed to the fewest bytes like any other row, so the classes share
+//! it and the handoffs chain them, one after another, as the C++ forks do
+//! (`docs/programming_model.md`, "Workers are a hierarchy").
 //!
 //! Forming the tables from a basis, the sweep, is `fb-integrals-mmd`'s;
 //! this module trusts none of it, and checks every index the kernels
@@ -23,12 +30,10 @@
 
 use std::sync::Arc;
 
-use fb_core_arena::{
-    Bufs, CopyOnly, Device, Element, Kind, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d,
-};
-use fb_core_error_handling::{Result, Status};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_h2p};
+use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
-use fb_core_thread_pool::DeviceStream;
+use fb_core_thread_pool::{DeviceStream, LaneId};
 use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::memset;
 
@@ -333,7 +338,7 @@ const I_OFF_B: usize = 17;
 
 /// One class's records on the device: its momenta, its record count, the
 /// Cartesian AO count of its basis, and a row per field, each `n_rec`
-/// long, all outputs of the records task. A reader declares that it reads
+/// long, all outputs of the class's records task. A reader declares that it reads
 /// the fields its family uses with [`ClassRows::read`], and hands the
 /// class to a launcher:
 /// [`overlap_class`](crate::overlap_class),
@@ -348,25 +353,28 @@ const I_OFF_B: usize = 17;
 /// `m[off_a + i][off_b + j]` at the AO offsets the records hold, and those
 /// are device data, which no host check can read. So the type carries
 /// them: its fields are private, and the one place that makes a
-/// `ClassRows` is [`add_record_tasks`], which adds, with it, the two tasks
-/// that write its rows.
+/// `ClassRows` is [`add_record_tasks`], which adds, with it, the tasks
+/// that write its rows and the tables they read.
 ///
-/// - **What the rows hold.** The records task launches the order, the
-///   records and the bounds into every row on its stream, from tables
-///   [`RecordTables::new`] checked, so every offset is a shell's
-///   `ao_offset` with its block inside `[0, n_cart)`, and the records
-///   carry that `n_cart`.
-/// - **Who writes them.** Each row is an output of the records task, so no
-///   other task can write it: [`Bufs::take_mut`] refuses a row the task's
-///   layout did not declare as its own output. Copying a `ClassRows`
-///   copies the names of rows, not their contents.
+/// - **What the rows hold.** The class's records task launches the order,
+///   the records and the bounds into every row on its lane's stream, from
+///   the device tables the uploads copied from the pinned rows `mmd
+///   tables` wrote, of tables [`RecordTables::new`] checked, so every
+///   offset is a shell's `ao_offset` with its block inside `[0, n_cart)`,
+///   and the records carry that `n_cart`. The tables' rows, pinned and
+///   device, are named only inside this module, so no other task can
+///   declare a write to them.
+/// - **Who writes them.** Each row is an output of the class's records
+///   task, so no other task can write it: [`Bufs::take_mut`] refuses a row
+///   the task's layout did not declare as its own output. Copying a
+///   `ClassRows` copies the names of rows, not their contents.
 /// - **When a reader sees them.** A launcher fetches each row through the
 ///   reading task's [`Bufs::get`], which panics unless that task's layout
 ///   declared the read. A declared read is an edge: the executor runs the
-///   reader only after the records task succeeded (a failure skips every
-///   descendant), orders the reader's stream work after the records' (the
-///   same stream, or an event on it), and keeps the rows' bytes from any
-///   other row until the reader is done.
+///   reader only after the class's records task succeeded (a failure skips
+///   every descendant), orders the reader's stream work after the records'
+///   (the same lane, or an event on the device from the class's lane), and
+///   keeps the rows' bytes from any other row until the reader is done.
 /// - **Which plan.** A row names its table, so a `ClassRows` of another
 ///   plan or another worker panics in [`Dag::add_gpu`] or at [`Bufs::get`]
 ///   rather than reading some other row as records.
@@ -494,7 +502,7 @@ impl ClassRows {
                 return std::ptr::null();
             }
             let row = device.get(rows[bit]);
-            // INVARIANT: the records task declared every field n_rec long.
+            // INVARIANT: the class's records task declared every field n_rec long.
             debug_assert_eq!(row.len(), n_rec);
             row.as_ptr()
         };
@@ -588,14 +596,27 @@ impl MixedClassRows {
 }
 
 /// Add the records of `tables` to `dag` on GPU worker `worker`: a CPU task,
-/// `mmd tables`, that writes the tables into pinned rows, and a stream
-/// task, `mmd records`, that copies them to device scratch and forms every
-/// class from them. Returns each class's rows, in the tables' order;
-/// tables with no class add nothing and return none.
+/// `mmd tables`, that writes the tables into pinned rows; an upload of each
+/// to a device row ([`Dag::upload`], `upload <table>`) on the worker's lane
+/// 0; and a stream task per class, `mmd records (la,lb)`, class `c` of the
+/// tables' order on the worker's lane `c`, that forms the class from the
+/// uploaded tables. Returns each class's rows, in the tables' order; tables
+/// with no class add nothing and return none.
+///
+/// The lanes are the records' own, numbered from the worker's lane 0, as
+/// the C++ puts each class on a stream of its own. A reader of a class on
+/// another lane is ordered after it by an event on the device, with no host
+/// wait. The classes' sort scratch is laid out like any other row: the
+/// assigner packs it to the fewest bytes, so the classes share those bytes
+/// and the handoffs between them chain the classes one after another, as
+/// the C++ forks each class's stream from the one before ("which is why the
+/// forks chain"). Giving that reuse up for concurrency is admission's
+/// search, not built (`docs/memory.md`, "Open questions").
 ///
 /// Every size is the tables', fixed here at planning: a class's rows are
-/// its `n_rec` long, and the sort's workspace is
-/// [`fb_mmd_order_workspace_bytes`] of the largest class, a host query.
+/// its `n_rec` long, and so are its sort's key and permutation, scratch of
+/// its own task beside the sort's workspace,
+/// [`fb_mmd_order_workspace_bytes`] of its `n_rec`, a host query.
 ///
 /// # Panics
 /// If `tables` are two bases' ([`RecordTables::mixed`]): their ket offsets
@@ -612,9 +633,9 @@ pub fn add_record_tasks(dag: &mut Dag<'_>, worker: usize, tables: RecordTables) 
 
 /// Add the records of two bases' `tables` ([`RecordTables::mixed`]) to
 /// `dag` on GPU worker `worker`, as [`add_record_tasks`] adds one basis's:
-/// the same two tasks, every field formed the same way, in a class of any
-/// order. Returns each class's rows as [`MixedClassRows`], which no
-/// one-basis launcher takes.
+/// the same tasks on the same lanes, every field formed the same way, in a
+/// class of any order. Returns each class's rows as [`MixedClassRows`],
+/// which no one-basis launcher takes.
 ///
 /// # Panics
 /// If `tables` are one basis's ([`RecordTables::new`]).
@@ -635,7 +656,7 @@ pub fn add_mixed_record_tasks(
         .collect()
 }
 
-/// [`add_record_tasks`]' and [`add_mixed_record_tasks`]' two tasks, each
+/// [`add_record_tasks`]' and [`add_mixed_record_tasks`]' tasks, each
 /// class's rows carrying the bra offsets' `n_cart`.
 #[track_caller]
 fn record_tasks(dag: &mut Dag<'_>, worker: usize, tables: RecordTables) -> Vec<ClassRows> {
@@ -650,12 +671,25 @@ fn record_tasks(dag: &mut Dag<'_>, worker: usize, tables: RecordTables) -> Vec<C
             tables: Arc::clone(&tables),
         },
     );
-    dag.add_gpu("mmd records", worker, Records { tables, staged })
-        .classes
+    let uploaded = staged.upload(dag, worker, &tables);
+    let mut first = 0;
+    let mut classes = Vec::with_capacity(tables.classes.len());
+    for (c, pairs) in tables.classes.iter().enumerate() {
+        let task = Form {
+            tables: Arc::clone(&tables),
+            c,
+            first,
+            uploaded,
+        };
+        first += pairs.bra.len();
+        let name = format!("mmd records ({},{})", pairs.la, pairs.lb);
+        classes.push(dag.add_gpu(name, LaneId { worker, lane: c }, task).class);
+    }
+    classes
 }
 
 /// The eleven tables, one row each, of one kind: pinned as the CPU task's
-/// outputs, device as the stream task's scratch.
+/// outputs, device as the uploads'.
 struct TableRows<K> {
     prim_begin: RowId<K, i32>,
     exponent: RowId<K, f64>,
@@ -680,35 +714,48 @@ impl<K> Clone for TableRows<K> {
 
 impl<K> Copy for TableRows<K> {}
 
-impl<K: Kind> TableRows<K> {
-    /// Declare the eleven rows, as outputs or as scratch.
-    fn declare(l: &mut Layout<'_, K>, t: &RecordTables, output: bool) -> Self {
-        fn row<K: Kind, T: Element>(
-            l: &mut Layout<'_, K>,
-            name: &str,
-            len: usize,
-            output: bool,
-        ) -> RowId<K, T> {
-            if output {
-                l.output(name, len)
-            } else {
-                l.scratch(name, len)
-            }
-        }
+impl TableRows<Pinned> {
+    /// Declare the eleven rows, as the staging task's outputs.
+    fn declare(l: &mut Layout<'_, Pinned>, t: &RecordTables) -> Self {
         let s = &t.shells;
         let n_pairs = t.n_pairs();
         TableRows {
-            prim_begin: row(l, "prim_begin", s.prim_begin.len(), output),
-            exponent: row(l, "exponent", s.exponent.len(), output),
-            coefficient: row(l, "coefficient", s.coefficient.len(), output),
-            c_x: row(l, "c_x", s.c_x.len(), output),
-            c_y: row(l, "c_y", s.c_y.len(), output),
-            c_z: row(l, "c_z", s.c_z.len(), output),
-            ao_offset: row(l, "ao_offset", s.ao_offset.len(), output),
-            rank: row(l, "rank", s.rank.len(), output),
-            bra: row(l, "bra", n_pairs, output),
-            ket: row(l, "ket", n_pairs, output),
-            rec_begin: row(l, "rec_begin", n_pairs + t.classes.len(), output),
+            prim_begin: l.output("prim_begin", s.prim_begin.len()),
+            exponent: l.output("exponent", s.exponent.len()),
+            coefficient: l.output("coefficient", s.coefficient.len()),
+            c_x: l.output("c_x", s.c_x.len()),
+            c_y: l.output("c_y", s.c_y.len()),
+            c_z: l.output("c_z", s.c_z.len()),
+            ao_offset: l.output("ao_offset", s.ao_offset.len()),
+            rank: l.output("rank", s.rank.len()),
+            bra: l.output("bra", n_pairs),
+            ket: l.output("ket", n_pairs),
+            rec_begin: l.output("rec_begin", n_pairs + t.classes.len()),
+        }
+    }
+
+    /// Each row uploaded to a device row of its name on `worker`'s lane 0,
+    /// a node of its own.
+    fn upload(&self, dag: &mut Dag<'_>, worker: usize, t: &RecordTables) -> TableRows<Device> {
+        let s = &t.shells;
+        let n_pairs = t.n_pairs();
+        TableRows {
+            prim_begin: dag.upload(worker, self.prim_begin, "prim_begin", s.prim_begin.len()),
+            exponent: dag.upload(worker, self.exponent, "exponent", s.exponent.len()),
+            coefficient: dag.upload(worker, self.coefficient, "coefficient", s.coefficient.len()),
+            c_x: dag.upload(worker, self.c_x, "c_x", s.c_x.len()),
+            c_y: dag.upload(worker, self.c_y, "c_y", s.c_y.len()),
+            c_z: dag.upload(worker, self.c_z, "c_z", s.c_z.len()),
+            ao_offset: dag.upload(worker, self.ao_offset, "ao_offset", s.ao_offset.len()),
+            rank: dag.upload(worker, self.rank, "rank", s.rank.len()),
+            bra: dag.upload(worker, self.bra, "bra", n_pairs),
+            ket: dag.upload(worker, self.ket, "ket", n_pairs),
+            rec_begin: dag.upload(
+                worker,
+                self.rec_begin,
+                "rec_begin",
+                n_pairs + t.classes.len(),
+            ),
         }
     }
 }
@@ -722,7 +769,7 @@ impl CpuTask for Stage {
     type Rows = TableRows<Pinned>;
 
     fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        TableRows::declare(host, &self.tables, true)
+        TableRows::declare(host, &self.tables)
     }
 
     fn run(&self, rows: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
@@ -751,295 +798,270 @@ impl CpuTask for Stage {
     }
 }
 
-/// GPU: the tables copied to device scratch, then each class, in order, on
-/// the one stream: its order (key and stable sort, in scratch sized to the
-/// largest class), its records, its bound and its two dressed bounds.
-struct Records {
+/// GPU: one class, on its lane, from the uploaded tables: its order (key
+/// and stable sort, in scratch sized to the class), its records, its bound
+/// and its two dressed bounds.
+struct Form {
     tables: Arc<RecordTables>,
-    staged: TableRows<Pinned>,
+    /// The class's index in the tables' order.
+    c: usize,
+    /// Its first pair's index among every class's pairs.
+    first: usize,
+    uploaded: TableRows<Device>,
 }
 
-#[derive(Clone)]
-struct RecordsRows {
-    tables: TableRows<Device>,
+/// A [`Form`]'s rows: the class's, its outputs, and the sort's scratch.
+#[derive(Clone, Copy)]
+struct FormRows {
+    class: ClassRows,
     key: RowId<Device, f64>,
     perm: RowId<Device, u32>,
     workspace: RowId<Device, u8>,
-    classes: Vec<ClassRows>,
 }
 
-impl GpuTask for Records {
-    type Rows = RecordsRows;
+impl Form {
+    /// The class's pairs.
+    fn pairs(&self) -> &ClassPairs {
+        &self.tables.classes[self.c]
+    }
+}
 
-    fn layout(
-        &self,
-        device: &mut Layout<'_, Device>,
-        host: &mut Layout<'_, Pinned>,
-    ) -> RecordsRows {
-        let s = &self.staged;
-        host.read(s.prim_begin);
-        host.read(s.exponent);
-        host.read(s.coefficient);
-        host.read(s.c_x);
-        host.read(s.c_y);
-        host.read(s.c_z);
-        host.read(s.ao_offset);
-        host.read(s.rank);
-        host.read(s.bra);
-        host.read(s.ket);
-        host.read(s.rec_begin);
-        let t = &self.tables;
-        let tables = TableRows::declare(device, t, false);
-        let n_max = t.n_max() as usize;
-        let key = device.scratch("order key", n_max);
-        let perm = device.scratch("order perm", n_max);
+impl GpuTask for Form {
+    type Rows = FormRows;
+
+    fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> FormRows {
+        let u = &self.uploaded;
+        device.read(u.prim_begin);
+        device.read(u.exponent);
+        device.read(u.coefficient);
+        device.read(u.c_x);
+        device.read(u.c_y);
+        device.read(u.c_z);
+        device.read(u.ao_offset);
+        device.read(u.rank);
+        device.read(u.bra);
+        device.read(u.ket);
+        device.read(u.rec_begin);
+        let pairs = self.pairs();
+        let (la, lb, n) = (pairs.la, pairs.lb, pairs.n_rec() as usize);
+        let key = device.scratch("order key", n);
+        let perm = device.scratch("order perm", n);
         // SAFETY: a host function of its argument alone.
-        let bytes = unsafe { fb_mmd_order_workspace_bytes(t.n_max()) };
+        let bytes = unsafe { fb_mmd_order_workspace_bytes(pairs.n_rec()) };
         let workspace = device.scratch("order workspace", bytes);
-        let classes = t
-            .classes
-            .iter()
-            .map(|c| {
-                let (la, lb, n) = (c.la, c.lb, c.n_rec() as usize);
-                let mut f64_row =
-                    |field: &str| device.output::<f64>(&format!("{field} ({la},{lb})"), n);
-                let (zeta, p_x, p_y, p_z) = (
-                    f64_row("zeta"),
-                    f64_row("p_x"),
-                    f64_row("p_y"),
-                    f64_row("p_z"),
-                );
-                let (pa_x, pa_y, pa_z) = (f64_row("pa_x"), f64_row("pa_y"), f64_row("pa_z"));
-                let (pb_x, pb_y, pb_z) = (f64_row("pb_x"), f64_row("pb_y"), f64_row("pb_z"));
-                let (s, ea, eb) = (f64_row("s"), f64_row("ea"), f64_row("eb"));
-                let (bound, bound_ab, bound_ba) =
-                    (f64_row("bound"), f64_row("bound_ab"), f64_row("bound_ba"));
-                let mut i32_row =
-                    |field: &str| device.output::<i32>(&format!("{field} ({la},{lb})"), n);
-                let (off_a, off_b, rank_a, rank_b) = (
-                    i32_row("off_a"),
-                    i32_row("off_b"),
-                    i32_row("rank_a"),
-                    i32_row("rank_b"),
-                );
-                ClassRows {
-                    la,
-                    lb,
-                    n_rec: c.n_rec(),
-                    n_cart: t.n_cart[0],
-                    zeta,
-                    p_x,
-                    p_y,
-                    p_z,
-                    pa_x,
-                    pa_y,
-                    pa_z,
-                    pb_x,
-                    pb_y,
-                    pb_z,
-                    s,
-                    ea,
-                    eb,
-                    bound,
-                    bound_ab,
-                    bound_ba,
-                    off_a,
-                    off_b,
-                    rank_a,
-                    rank_b,
-                }
-            })
-            .collect();
-        RecordsRows {
-            tables,
+        let mut f64_row = |field: &str| device.output::<f64>(&format!("{field} ({la},{lb})"), n);
+        let (zeta, p_x, p_y, p_z) = (
+            f64_row("zeta"),
+            f64_row("p_x"),
+            f64_row("p_y"),
+            f64_row("p_z"),
+        );
+        let (pa_x, pa_y, pa_z) = (f64_row("pa_x"), f64_row("pa_y"), f64_row("pa_z"));
+        let (pb_x, pb_y, pb_z) = (f64_row("pb_x"), f64_row("pb_y"), f64_row("pb_z"));
+        let (s, ea, eb) = (f64_row("s"), f64_row("ea"), f64_row("eb"));
+        let (bound, bound_ab, bound_ba) =
+            (f64_row("bound"), f64_row("bound_ab"), f64_row("bound_ba"));
+        let mut i32_row = |field: &str| device.output::<i32>(&format!("{field} ({la},{lb})"), n);
+        let (off_a, off_b, rank_a, rank_b) = (
+            i32_row("off_a"),
+            i32_row("off_b"),
+            i32_row("rank_a"),
+            i32_row("rank_b"),
+        );
+        let class = ClassRows {
+            la,
+            lb,
+            n_rec: pairs.n_rec(),
+            n_cart: self.tables.n_cart[0],
+            zeta,
+            p_x,
+            p_y,
+            p_z,
+            pa_x,
+            pa_y,
+            pa_z,
+            pb_x,
+            pb_y,
+            pb_z,
+            s,
+            ea,
+            eb,
+            bound,
+            bound_ab,
+            bound_ba,
+            off_a,
+            off_b,
+            rank_a,
+            rank_b,
+        };
+        FormRows {
+            class,
             key,
             perm,
             workspace,
-            classes,
         }
+    }
+
+    fn dims(&self) -> Vec<(&'static str, usize)> {
+        vec![("n_rec", self.pairs().n_rec() as usize)]
     }
 
     fn run(
         &self,
-        rows: &RecordsRows,
+        rows: &FormRows,
         device: &Bufs<'_, Device>,
-        host: &CopyOnly<'_, Pinned>,
-        worker: &DeviceStream,
+        _: &CopyOnly<'_, Pinned>,
+        lane: &DeviceStream,
     ) -> Status {
-        let stream = worker.stream();
-        let (d, s) = (&rows.tables, &self.staged);
-        let prim_begin = upload(worker, device, d.prim_begin, host, s.prim_begin)?;
-        let exponent = upload(worker, device, d.exponent, host, s.exponent)?;
-        let coefficient = upload(worker, device, d.coefficient, host, s.coefficient)?;
-        let c_x = upload(worker, device, d.c_x, host, s.c_x)?;
-        let c_y = upload(worker, device, d.c_y, host, s.c_y)?;
-        let c_z = upload(worker, device, d.c_z, host, s.c_z)?;
-        let ao_offset = upload(worker, device, d.ao_offset, host, s.ao_offset)?;
-        let rank = upload(worker, device, d.rank, host, s.rank)?;
-        let bra = upload(worker, device, d.bra, host, s.bra)?;
-        let ket = upload(worker, device, d.ket, host, s.ket)?;
-        let rec_begin = upload(worker, device, d.rec_begin, host, s.rec_begin)?;
-
+        let stream = lane.stream();
+        let u = &self.uploaded;
+        let (bra, ket, rec_begin) = (
+            device.get(u.bra),
+            device.get(u.ket),
+            device.get(u.rec_begin),
+        );
+        let (pairs, cls, first) = (self.pairs(), &rows.class, self.first);
+        let n_pairs = pairs.bra.len();
+        let class = [cls.la, cls.lb];
+        let src = fb_primitive_pair_source {
+            n_pairs: n_pairs as i32,
+            // In bounds: the class's pairs, and its prefix, lie inside the
+            // concatenated rows (TableRows::rec_begin).
+            bra: bra.as_ptr().wrapping_add(first),
+            ket: ket.as_ptr().wrapping_add(first),
+            rec_begin: rec_begin.as_ptr().wrapping_add(first + self.c),
+            prim_begin: device.get(u.prim_begin).as_ptr(),
+            exponent: device.get(u.exponent).as_ptr(),
+            coefficient: device.get(u.coefficient).as_ptr(),
+            c_x: device.get(u.c_x).as_ptr(),
+            c_y: device.get(u.c_y).as_ptr(),
+            c_z: device.get(u.c_z).as_ptr(),
+            ao_offset: device.get(u.ao_offset).as_ptr(),
+            rank: device.get(u.rank).as_ptr(),
+        };
+        let n = cls.n_rec;
         let key = device.take_mut(rows.key);
         let perm = device.take_mut(rows.perm);
         let workspace = device.take_mut(rows.workspace);
-        let mut first = 0;
-        for (c, (pairs, cls)) in self.tables.classes.iter().zip(&rows.classes).enumerate() {
-            let n_pairs = pairs.bra.len();
-            let class = [cls.la, cls.lb];
-            let src = fb_primitive_pair_source {
-                n_pairs: n_pairs as i32,
-                // In bounds: the class's pairs, and its prefix, lie inside
-                // the concatenated rows (TableRows::rec_begin).
-                bra: bra.wrapping_add(first),
-                ket: ket.wrapping_add(first),
-                rec_begin: rec_begin.wrapping_add(first + c),
-                prim_begin,
-                exponent,
-                coefficient,
-                c_x,
-                c_y,
-                c_z,
-                ao_offset,
-                rank,
-            };
-            first += n_pairs;
-            let n = cls.n_rec;
-            // SAFETY: key and perm are n_max >= n long, the workspace is the
-            // largest class's query, every array of src is device memory
-            // the uploads above wrote on this stream from tables
-            // RecordTables::new checked (each index the kernels follow is
-            // inside its array), and none overlap: each is a row of its own.
-            launched("fb_mmd_order", &class, unsafe {
-                fb_mmd_order(
-                    stream,
-                    n,
-                    &src,
-                    key.as_mut_ptr(),
-                    perm.as_mut_ptr(),
-                    workspace.as_mut_ptr().cast(),
-                    workspace.len(),
-                )
-            })?;
-            let f = |row| device.take_mut(row);
-            let (zeta, p_x, p_y, p_z) = (f(cls.zeta), f(cls.p_x), f(cls.p_y), f(cls.p_z));
-            let (pa_x, pa_y, pa_z) = (f(cls.pa_x), f(cls.pa_y), f(cls.pa_z));
-            let (pb_x, pb_y, pb_z) = (f(cls.pb_x), f(cls.pb_y), f(cls.pb_z));
-            let (sv, ea, eb) = (f(cls.s), f(cls.ea), f(cls.eb));
-            let (mut bound, mut bound_ab, mut bound_ba) =
-                (f(cls.bound), f(cls.bound_ab), f(cls.bound_ba));
-            let g = |row| device.take_mut(row);
-            let (off_a, off_b, rank_a, rank_b) =
-                (g(cls.off_a), g(cls.off_b), g(cls.rank_a), g(cls.rank_b));
-            let out = fb_primitive_pair_records {
-                zeta: zeta.as_mut_ptr(),
-                p_x: p_x.as_mut_ptr(),
-                p_y: p_y.as_mut_ptr(),
-                p_z: p_z.as_mut_ptr(),
-                pa_x: pa_x.as_mut_ptr(),
-                pa_y: pa_y.as_mut_ptr(),
-                pa_z: pa_z.as_mut_ptr(),
-                pb_x: pb_x.as_mut_ptr(),
-                pb_y: pb_y.as_mut_ptr(),
-                pb_z: pb_z.as_mut_ptr(),
-                s: sv.as_mut_ptr(),
-                ea: ea.as_mut_ptr(),
-                eb: eb.as_mut_ptr(),
-                off_a: off_a.as_mut_ptr(),
-                off_b: off_b.as_mut_ptr(),
-                rank_a: rank_a.as_mut_ptr(),
-                rank_b: rank_b.as_mut_ptr(),
-            };
-            // SAFETY: perm is the order just written, a permutation of the
-            // class's n host records; src is as above; and every array of
-            // out is an n-long row of its own.
-            launched("fb_mmd_records", &class, unsafe {
-                fb_mmd_records(stream, n, &src, perm.as_ptr(), &out)
-            })?;
+        // SAFETY: key and perm are n long, the workspace is this class's
+        // query, every array of src is a device row the uploads wrote, on
+        // this lane or ordered before it by an event, from tables
+        // RecordTables::new checked (each index the kernels follow is
+        // inside its array), and none overlap: each is a row of its own.
+        launched("fb_mmd_order", &class, unsafe {
+            fb_mmd_order(
+                stream,
+                n,
+                &src,
+                key.as_mut_ptr(),
+                perm.as_mut_ptr(),
+                workspace.as_mut_ptr().cast(),
+                workspace.len(),
+            )
+        })?;
+        let f = |row| device.take_mut(row);
+        let (zeta, p_x, p_y, p_z) = (f(cls.zeta), f(cls.p_x), f(cls.p_y), f(cls.p_z));
+        let (pa_x, pa_y, pa_z) = (f(cls.pa_x), f(cls.pa_y), f(cls.pa_z));
+        let (pb_x, pb_y, pb_z) = (f(cls.pb_x), f(cls.pb_y), f(cls.pb_z));
+        let (sv, ea, eb) = (f(cls.s), f(cls.ea), f(cls.eb));
+        let (mut bound, mut bound_ab, mut bound_ba) =
+            (f(cls.bound), f(cls.bound_ab), f(cls.bound_ba));
+        let g = |row| device.take_mut(row);
+        let (off_a, off_b, rank_a, rank_b) =
+            (g(cls.off_a), g(cls.off_b), g(cls.rank_a), g(cls.rank_b));
+        let out = fb_primitive_pair_records {
+            zeta: zeta.as_mut_ptr(),
+            p_x: p_x.as_mut_ptr(),
+            p_y: p_y.as_mut_ptr(),
+            p_z: p_z.as_mut_ptr(),
+            pa_x: pa_x.as_mut_ptr(),
+            pa_y: pa_y.as_mut_ptr(),
+            pa_z: pa_z.as_mut_ptr(),
+            pb_x: pb_x.as_mut_ptr(),
+            pb_y: pb_y.as_mut_ptr(),
+            pb_z: pb_z.as_mut_ptr(),
+            s: sv.as_mut_ptr(),
+            ea: ea.as_mut_ptr(),
+            eb: eb.as_mut_ptr(),
+            off_a: off_a.as_mut_ptr(),
+            off_b: off_b.as_mut_ptr(),
+            rank_a: rank_a.as_mut_ptr(),
+            rank_b: rank_b.as_mut_ptr(),
+        };
+        // SAFETY: perm is the order just written, a permutation of the
+        // class's n host records; src is as above; and every array of out
+        // is an n-long row of its own.
+        launched("fb_mmd_records", &class, unsafe {
+            fb_mmd_records(stream, n, &src, perm.as_ptr(), &out)
+        })?;
 
-            // A class above a family's table keeps that family's bounds
-            // zero, as the C++ does; every build refuses such a class. The
-            // pair bound depends on la + lb alone, so a two-basis class
-            // with la > lb takes (lb, la)'s kernel, the one emitted.
-            let (lo, hi) = (cls.la.min(cls.lb), cls.la.max(cls.lb));
-            if hi <= FB_PAIR_BOUND_MAX_MOMENTUM {
-                // SAFETY: zeta and bound are n-long rows of their own.
-                launched("fb_mmd_bound", &class, unsafe {
-                    fb_mmd_bound(stream, lo, hi, n, zeta.as_ptr(), bound.as_mut_ptr())
-                })?;
-            } else {
-                memset::zero(&mut bound, worker)?;
-            }
-            if hi <= FB_RECORD_BOUND_MAX_MOMENTUM {
-                let view = fb_primitive_pair_class_view {
-                    la: cls.la,
-                    lb: cls.lb,
-                    n_rec: n,
-                    zeta: zeta.as_ptr(),
-                    p_x: p_x.as_ptr(),
-                    p_y: p_y.as_ptr(),
-                    p_z: p_z.as_ptr(),
-                    pa_x: pa_x.as_ptr(),
-                    pa_y: pa_y.as_ptr(),
-                    pa_z: pa_z.as_ptr(),
-                    pb_x: pb_x.as_ptr(),
-                    pb_y: pb_y.as_ptr(),
-                    pb_z: pb_z.as_ptr(),
-                    s: sv.as_ptr(),
-                    ea: ea.as_ptr(),
-                    eb: eb.as_ptr(),
-                    bound: bound.as_ptr(),
-                    bound_ab: bound_ab.as_ptr(),
-                    bound_ba: bound_ba.as_ptr(),
-                    off_a: off_a.as_ptr(),
-                    off_b: off_b.as_ptr(),
-                    rank_a: rank_a.as_ptr(),
-                    rank_b: rank_b.as_ptr(),
-                };
-                // The swap: la and lb, and P - A and P - B, exchanged.
-                let swapped = fb_primitive_pair_class_view {
-                    la: cls.lb,
-                    lb: cls.la,
-                    pa_x: view.pb_x,
-                    pa_y: view.pb_y,
-                    pa_z: view.pb_z,
-                    pb_x: view.pa_x,
-                    pb_y: view.pa_y,
-                    pb_z: view.pa_z,
-                    ..view
-                };
-                // SAFETY: the view's arrays are the class's n-long rows,
-                // written above on this stream, and each bound is a row of
-                // its own that the kernel only writes.
-                launched("fb_ordered_pair_bound", &class, unsafe {
-                    fb_ordered_pair_bound(stream, &view, bound_ab.as_mut_ptr())
-                })?;
-                // SAFETY: as above, the view swapped.
-                launched("fb_ordered_pair_bound (swapped)", &class, unsafe {
-                    fb_ordered_pair_bound(stream, &swapped, bound_ba.as_mut_ptr())
-                })?;
-            } else {
-                memset::zero(&mut bound_ab, worker)?;
-                memset::zero(&mut bound_ba, worker)?;
-            }
+        // A class above a family's table keeps that family's bounds zero,
+        // as the C++ does; every build refuses such a class. The pair bound
+        // depends on la + lb alone, so a two-basis class with la > lb takes
+        // (lb, la)'s kernel, the one emitted.
+        let (lo, hi) = (cls.la.min(cls.lb), cls.la.max(cls.lb));
+        if hi <= FB_PAIR_BOUND_MAX_MOMENTUM {
+            // SAFETY: zeta and bound are n-long rows of their own.
+            launched("fb_mmd_bound", &class, unsafe {
+                fb_mmd_bound(stream, lo, hi, n, zeta.as_ptr(), bound.as_mut_ptr())
+            })?;
+        } else {
+            memset::zero(&mut bound, lane)?;
+        }
+        if hi <= FB_RECORD_BOUND_MAX_MOMENTUM {
+            let view = fb_primitive_pair_class_view {
+                la: cls.la,
+                lb: cls.lb,
+                n_rec: n,
+                zeta: zeta.as_ptr(),
+                p_x: p_x.as_ptr(),
+                p_y: p_y.as_ptr(),
+                p_z: p_z.as_ptr(),
+                pa_x: pa_x.as_ptr(),
+                pa_y: pa_y.as_ptr(),
+                pa_z: pa_z.as_ptr(),
+                pb_x: pb_x.as_ptr(),
+                pb_y: pb_y.as_ptr(),
+                pb_z: pb_z.as_ptr(),
+                s: sv.as_ptr(),
+                ea: ea.as_ptr(),
+                eb: eb.as_ptr(),
+                bound: bound.as_ptr(),
+                bound_ab: bound_ab.as_ptr(),
+                bound_ba: bound_ba.as_ptr(),
+                off_a: off_a.as_ptr(),
+                off_b: off_b.as_ptr(),
+                rank_a: rank_a.as_ptr(),
+                rank_b: rank_b.as_ptr(),
+            };
+            // The swap: la and lb, and P - A and P - B, exchanged.
+            let swapped = fb_primitive_pair_class_view {
+                la: cls.lb,
+                lb: cls.la,
+                pa_x: view.pb_x,
+                pa_y: view.pb_y,
+                pa_z: view.pb_z,
+                pb_x: view.pa_x,
+                pb_y: view.pa_y,
+                pb_z: view.pa_z,
+                ..view
+            };
+            // SAFETY: the view's arrays are the class's n-long rows, written
+            // above on this lane, and each bound is a row of its own that
+            // the kernel only writes.
+            launched("fb_ordered_pair_bound", &class, unsafe {
+                fb_ordered_pair_bound(stream, &view, bound_ab.as_mut_ptr())
+            })?;
+            // SAFETY: as above, the view swapped.
+            launched("fb_ordered_pair_bound (swapped)", &class, unsafe {
+                fb_ordered_pair_bound(stream, &swapped, bound_ba.as_mut_ptr())
+            })?;
+        } else {
+            memset::zero(&mut bound_ab, lane)?;
+            memset::zero(&mut bound_ba, lane)?;
         }
         Ok(())
     }
-}
-
-/// The pinned row `src` copied on `worker`'s stream to the device row
-/// `dst` of the same length; returns `dst`'s pointer, for the launches to
-/// read.
-fn upload<T: Element>(
-    worker: &DeviceStream,
-    device: &Bufs<'_, Device>,
-    dst: RowId<Device, T>,
-    host: &CopyOnly<'_, Pinned>,
-    src: RowId<Pinned, T>,
-) -> Result<*const T> {
-    let mut dst = device.take_mut(dst);
-    memcpy_p2d(&mut dst, host, src, worker)?;
-    Ok(dst.as_ptr())
 }
 
 #[cfg(test)]

@@ -36,10 +36,10 @@
 //!
 //! - [`RecordTables`], a basis's shell table ([`ShellTable`]) and class
 //!   pairs ([`ClassPairs`]) with every index the kernels follow checked
-//!   when it is made, and [`add_record_tasks`], the two tasks that form
-//!   every class's records from it on a stream (`fb_mmd_order`,
-//!   `fb_mmd_records`, `fb_mmd_bound`, `fb_ordered_pair_bound`), returning
-//!   one [`ClassRows`] per class.
+//!   when it is made, and [`add_record_tasks`], the tasks that stage and
+//!   upload it and form every class's records from it, each class on a
+//!   lane of its own (`fb_mmd_order`, `fb_mmd_records`, `fb_mmd_bound`,
+//!   `fb_ordered_pair_bound`), returning one [`ClassRows`] per class.
 //! - [`overlap_class`], [`kinetic_class`] and [`potential_en_class`], over
 //!   a [`ClassRows`] and an output
 //!   [`DeviceSliceMut`](fb_core_wwr::device_slice::DeviceSliceMut) whose
