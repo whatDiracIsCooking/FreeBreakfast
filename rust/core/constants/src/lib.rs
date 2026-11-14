@@ -11,7 +11,8 @@
 //! | `kBohrPerAngstrom<double>` | [`BOHR_PER_ANGSTROM`] |
 //! | `kBohrPerAngstrom<T>` for another `T` | not ported yet: only `double` is named |
 //! | `kAngstromPerBohr`, the other physical constants, `kPi`, `kSqrt2`, `kInvSqrt2`, the SI prefixes | not ported yet: nothing above names them |
-//! | `kZero` ... `kNegHalf`, `kImaginaryUnit` | not ported yet: they exist for BLAS's by-address scalars |
+//! | `kOne`, `kZero` | `fb_core_wwr::blas::BlasScalar`'s `ONE` and `ZERO`: they exist for BLAS's scalars, which Rust passes by value |
+//! | `kTwo` ... `kNegHalf`, `kImaginaryUnit` | not ported yet: they exist for BLAS's by-address scalars |
 //!
 //! **A constant is an `f64`, not a template.** The C++ variable templates
 //! give each constant every precision through one `static_cast`; a Rust

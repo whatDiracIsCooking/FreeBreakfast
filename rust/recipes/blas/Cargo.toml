@@ -1,6 +1,6 @@
 [package]
 name = "fb-recipes-blas"
-description = "recipes/blas: BLAS conveniences over fb_core_wwr's checked calls, packed operands, ops and sides fixed at compile time"
+description = "recipes/blas: BLAS conveniences over fb_core_wwr's checked calls, packed operands, ops and sides fixed at compile time, and the sandwich products gemmwich and gmmwich"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -16,3 +16,4 @@ wwr-sys = { workspace = true, features = ["blas"] }
 
 [dev-dependencies]
 fb-core-wwr = { workspace = true, features = ["test-support"] }
+fb-test-support.workspace = true
