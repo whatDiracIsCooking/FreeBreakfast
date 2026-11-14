@@ -37,7 +37,9 @@ pub enum Lane<'r, S> {
     Stream {
         /// The stream worker's index.
         index: usize,
-        /// Its stream.
+        /// Its stream; under the `Device` backend, the
+        /// [`DeviceStream`](super::DeviceStream) that also carries the
+        /// worker's library handles.
         stream: &'r S,
     },
 }

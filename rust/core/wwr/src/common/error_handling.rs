@@ -14,11 +14,10 @@ pub type SourceLocation = &'static Location<'static>;
 /// As in wwr, implementing it *is* the registration, and a half-registered
 /// type cannot exist: the compiler demands all three.
 ///
-/// `wwr_status` is the only one registered today. The C ABI's library
-/// surfaces each have their own (`wwr_blas_status`,
-/// `wwr_wrappers_solver_status`, ...), so a library handle's
-/// [`HandleKind::Error`](crate::handle::HandleKind::Error) will
-/// be another.
+/// `wwr_status` and `wwr_blas_status` ([`crate::blas`]) are registered
+/// today. The C ABI's other library surfaces each have their own
+/// (`wwr_wrappers_solver_status`, ...), so each library handle's
+/// [`HandleKind::Error`](crate::handle::HandleKind::Error) is another.
 pub trait ErrorCode: Copy + Eq + std::fmt::Debug {
     /// The success value: `success_code<T>()`.
     const SUCCESS: Self;

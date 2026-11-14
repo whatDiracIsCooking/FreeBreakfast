@@ -5,6 +5,8 @@
 //! - [`handle`]: wwr's `src/extension/handle`, the RAII handles and views.
 //! - [`runtime`]: wwr's `src/extension/runtime`, the streams, events,
 //!   memory pools and graphs built on them.
+//! - [`blas`]: wwr's `src/extension/blas`, the BLAS status as an error code
+//!   and the BLAS handle bound to a [`Stream`](runtime::Stream).
 //!
 //! And free_breakfast's own partitions of `free_breakfast.core.wwr`, over
 //! [`fb_core_error_handling`] and [`fb_core_log`]:
@@ -17,6 +19,7 @@
 //!   here that rule is two calls rather than two types ([`common`] has
 //!   why).
 
+pub mod blas;
 pub mod common;
 pub mod handle;
 pub mod runtime;

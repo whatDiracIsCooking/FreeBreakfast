@@ -515,7 +515,7 @@ fn device_edges_wait_for_the_work_they_consume() {
         // A blocking copy on the legacy stream would hide a missing wait, so
         // read with an async copy on a fresh non-blocking stream and sync it
         // alone.
-        let s = DeviceStream::new(0);
+        let s = fb_core_wwr::runtime::Stream::new(0);
         // SAFETY: both ranges are N bytes; the edge's event sync ordered the
         // copy before this read.
         ok(unsafe {
@@ -537,4 +537,46 @@ fn device_edges_wait_for_the_work_they_consume() {
         *seen_by_cpu.lock().unwrap() == pattern,
         "a device edge did not wait"
     );
+}
+
+/// Device 0: each stream worker's BLAS handle is made with the backend, on
+/// the worker's device and bound to its stream, and is the same handle at
+/// every run, so no task makes one.
+#[cfg(feature = "device-tests")]
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn device_library_handles_are_the_workers_made_before_the_run() {
+    use fb_core_wwr::handle::{DeviceHandle, DeviceHandleStream};
+    use wwr_sys::{wwr_blas_status, wwr_stream};
+
+    let seen = Mutex::new(Vec::new());
+    let mut plan: Plan<'_, DeviceStream> = Plan::new();
+    for s in 0..2 {
+        plan.add(format!("blas{s}"), Placement::Stream(s), &[], |lane| {
+            let Lane::Stream { index, stream } = lane else {
+                unreachable!()
+            };
+            let blas = stream.blas();
+            let mut bound: wwr_stream = std::ptr::null_mut();
+            // SAFETY: the handle is live for the backend's life; writes one
+            // stream through a valid local.
+            let status = unsafe { wwr_sys::wwr_blas_get_stream(blas.get(), &mut bound) };
+            assert_eq!(status, wwr_blas_status::WWR_BLAS_STATUS_SUCCESS);
+            assert_eq!(bound, stream.stream());
+            assert_eq!(blas.dev_idx(), stream.dev_idx());
+            seen.lock().unwrap().push((index, blas.get() as usize));
+            Ok(())
+        });
+    }
+    let device = Device::new(&[0, 0], &plan);
+    let mut runs = Vec::new();
+    for _ in 0..2 {
+        run(&plan, &device, 1).result.unwrap();
+        let mut handles = std::mem::take(&mut *seen.lock().unwrap());
+        handles.sort_unstable();
+        runs.push(handles);
+    }
+    assert_eq!(runs[0].len(), 2);
+    assert_ne!(runs[0][0].1, runs[0][1].1, "one handle per stream worker");
+    assert_eq!(runs[0], runs[1], "a run made a handle of its own");
 }
