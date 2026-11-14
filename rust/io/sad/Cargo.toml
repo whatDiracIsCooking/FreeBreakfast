@@ -1,0 +1,20 @@
+[package]
+name = "fb-io-sad"
+description = "io/sad: the SAD stamps of data/sad/ compiled in, found by basis-set name and atomic number"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-core-error-handling.workspace = true
+fb-io-npy.workspace = true
+
+[dev-dependencies]
+fb-atom.workspace = true
+fb-basis.workspace = true
+fb-core-types.workspace = true
+fb-io-basis.workspace = true
+fb-sad.workspace = true

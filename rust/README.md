@@ -21,8 +21,8 @@ Outside `rust/`, the tree reads six things, and nothing under `src/`:
   and test").
 - **`test/sad/data/atomic_scf.json`**: the PySCF reference `fb-sad`'s
   tests read from where the C++ test reads it, so the two trees hold one.
-- **`data/sad/STO-3G/`**: the SAD stamps `fb-io-npy`'s tests read and
-  write back byte for byte.
+- **`data/sad/`**: the SAD stamps `fb-io-sad` compiles in, and whose
+  `STO-3G/` files `fb-io-npy`'s tests read and write back byte for byte.
 
 The device code the crates call is forked into `rust/` (`device_headers/`,
 `recipes/kernels/`, `integrals/kernels/`) and built by `CMakeLists.txt`
@@ -67,6 +67,7 @@ tree, not inputs to its build.
 | `fb_sad` | `src/sad`, its serial form | `sad_density`, the SAD guess: one spherically averaged, fractionally occupied atomic RHF per distinct (Z, shells) over closed-form one-center integrals, each density placed on its atoms' diagonal blocks, and `SadStampLookup`, the baked block that skips an element's SCF (checked by size). Every loop in the C++ order, so its stamps compare bitwise with the C++ generator's. The task form is the guess-tasks issue's |
 | `fb_io_npy` | `src/io/npy` | `NpyArray` (a shape and its float64 elements, column-major) and `element_count`; `parse_npy` / `read_npy`, versions 1.0 to 3.0, `'<f8'` only, a C-order payload reordered, every refusal of a document (a bad magic, version, length or header field, another dtype, a payload the shape disagrees with, a file that cannot be read) an `Io` error and an overflowing shape `InvalidConfig`; `npy_header`, `npy_to_bytes` and `write_npy`, version 1.0 with `np.save`'s canonical header, byte for byte the C++ writer's (the `data/sad/STO-3G/` stamps written back are their files) |
 | `fb_recipes_matrix_ao` | `src/recipes/matrix_ao`'s `upload_spherical_transform_matrix` and `MatrixAOPair::cartesian_to_spherical` | `add_cartesian_to_spherical`: the spherical form `Uᵀ M_cart U` of a Cartesian AO matrix row as tasks of a `Dag`, `harmonics` on the CPU (U into a pinned row), added by the first call over a basis and shared through the caller's slot by every later one, and `spherical transform` on the stream (U copied into scratch, two `wwr_blas_dgemm`s, the intermediate scratch too). Every one-electron matrix calls it; `spherical_to_cartesian` is not ported yet |
+| `fb_io_sad` | `src/io/sad` | `builtin_sad_density`, `fb-sad`'s `SadStampLookup`: every `data/sad/<basis>/<Z>.npy` compiled in with `include_bytes!` (the table written by `build.rs`), found by the directory name compared exactly with `BasisSet::name` and the atomic number, parsed by `fb-io-npy`; bytes that are not a square matrix abort. A directory naming no `data/basis` set fails a unit test, a stem that is not a three-digit Z the build |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -90,7 +91,8 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `primitives` and `error_handling`; `io/npy` on `error_handling`; and
 `recipes/matrix_ao` on `basis`,
 `planner`, `arena`, `thread_pool`, `wwr` and `error_handling`, with
-`integrals/one_electron/overlap` on it too.
+`integrals/one_electron/overlap` on it too; `io/sad` on `io/npy` and
+`error_handling`.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -167,7 +169,7 @@ cargo test -p fb-core-log -p fb-core-error-handling -p fb-doc-check \
   -p fb-core-types -p fb-core-primitives -p fb-core-constants \
   -p fb-atom -p fb-molecule -p fb-basis -p fb-device-check \
   -p fb-io-xyz -p fb-io-basis -p fb-kernel-abi -p fb-sad \
-  -p fb-io-npy --no-default-features
+  -p fb-io-npy -p fb-io-sad --no-default-features
 ```
 
 `CMakeLists.txt` here is a CMake project of its own, which the root
@@ -207,7 +209,7 @@ tests (the fake handle kind, error codes and contracts) need no GPU, and
 `fb-core-log`, `fb-core-error-handling`, `fb-core-types`,
 `fb-core-primitives`, `fb-core-constants`, `fb-atom`, `fb-molecule`,
 `fb-basis`, `fb-io-xyz`, `fb-io-basis`, `fb-test-support`, `fb-doc-check`,
-`fb-kernel-abi`, `fb-device-check`, `fb-sad` and `fb-io-npy` do not link the library at all: they build and pass
+`fb-kernel-abi`, `fb-device-check`, `fb-sad`, `fb-io-npy` and `fb-io-sad` do not link the library at all: they build and pass
 with it missing.
 `fb-core-arena`, `fb-core-thread-pool` and `fb-core-planner` link it
 through their `device` feature, which is on by default: without it
