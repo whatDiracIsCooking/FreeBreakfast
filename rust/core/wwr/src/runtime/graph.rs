@@ -96,10 +96,8 @@ mod tests {
     fn adopt_owns_the_graph() {
         let mut raw: wwr_graph = std::ptr::null_mut();
         // SAFETY: writes one graph handle through a valid local.
-        assert_eq!(
-            unsafe { wwr_sys::wwr_graph_create(&mut raw, 0) },
-            wwr_status::WWR_STATUS_SUCCESS
-        );
+        let status = unsafe { wwr_sys::wwr_graph_create(&mut raw, 0) };
+        assert_eq!(status, wwr_status::WWR_STATUS_SUCCESS);
         // SAFETY: `raw` is live and nothing else destroys it.
         let g = unsafe { Graph::adopt(raw) };
         assert_eq!(g.get(), raw);

@@ -60,10 +60,8 @@ impl<K: StreamBoundKind, S: DeviceHandleStream> StreamBoundHandle<K, S> {
         )?;
         // SAFETY: the handle was just created and is live; the stream is
         // live for as long as `owner` is, which this handle retains.
-        gpu_status_at(
-            unsafe { K::set_stream(handle.get(), owner.stream()) },
-            location,
-        )?;
+        let status = unsafe { K::set_stream(handle.get(), owner.stream()) };
+        gpu_status_at(status, location)?;
         Ok(StreamBoundHandle { handle, owner })
     }
 
@@ -125,10 +123,8 @@ mod tests {
             (h.get(), 0, owner.stream())
         );
         // SAFETY: the event is live and was recorded on the stream.
-        assert_eq!(
-            unsafe { wwr_sys::wwr_event_synchronize(v.get()) },
-            wwr_status::WWR_STATUS_SUCCESS
-        );
+        let status = unsafe { wwr_sys::wwr_event_synchronize(v.get()) };
+        assert_eq!(status, wwr_status::WWR_STATUS_SUCCESS);
 
         drop(h);
         assert_eq!(Rc::strong_count(&owner), 1);

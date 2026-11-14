@@ -57,7 +57,7 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// class's fields and `t` are rows of `device`'s view, declared by the
 /// calling task's layout ([`ClassRows::read`], an output for `t`), so none
 /// is null and none overlaps another; `t` is the row's only writer while
-/// the call lasts. Checked in debug builds: the bounds below. Not checked:
+/// the call lasts. Its contracts hold the bounds. Not checked:
 /// that the records are of the basis `t` is the matrix of, since their AO
 /// offsets are device data.
 ///
@@ -113,8 +113,6 @@ pub fn kinetic_classes(
 /// `worker` by [`fb_integrals_mmd::add_records`] earlier in `dag`, so one
 /// build serves every reader of the plan; `u` is the plan's slot for U over
 /// `basis` on `worker`, shared with every other matrix the plan transforms.
-///
-/// Requires, checked in debug builds: `basis` has at least one shell.
 ///
 /// # Panics
 /// If `nao_cart²` does not fit an `i32` (the kinetic kernels index the

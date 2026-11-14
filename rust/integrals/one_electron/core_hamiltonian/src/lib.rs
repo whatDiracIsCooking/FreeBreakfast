@@ -71,8 +71,6 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// nuclear-attraction wrapper's refusal, at planning), before anything is
 /// added.
 ///
-/// Requires, checked in debug builds: `basis` has at least one shell.
-///
 /// # Panics
 /// If `nao_cart²` does not fit an `i32` (the kernels index the matrix in
 /// 32 bits), or `classes` or `nuclei` are rows of another worker's or

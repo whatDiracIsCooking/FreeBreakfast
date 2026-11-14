@@ -87,13 +87,17 @@ spec, and the two would drift. The crate has one README, its front page, and
 no other Markdown under `src/`. What the C++ README said about a module goes
 in the module's doc comment, which is also where `missing_docs` can see it.
 
-**A contract appears in the reference.** The testing document makes contracts
-part of the spec ([`testing.md`](testing.md), "Contracts are part of the
-spec"), so a reader of the reference must see them without opening the
-source. Whether the `contracts` crate writes its conditions into the item's
-rustdoc is an open question below; until it is answered, a doc comment
-restates each `#[requires]` in a line of its own, as the crate's README does
-for its two today.
+**A contract appears in the reference, and only once.** The testing document
+makes contracts part of the spec ([`testing.md`](testing.md), "Contracts are
+part of the spec"), so a reader of the reference must see them without
+opening the source. The `contracts` crate writes them there itself: each
+`#[debug_requires]`, `#[debug_ensures]` and `#[debug_invariant]` renders as a
+`§ Contracts` section after the item's own, one line per condition with its
+message (`Pre-condition - debug: a matrix of at least one row`) over its
+expression (`n > 0`). A doc comment therefore never restates a contract: a
+hand-written copy is a second spec that drifts from the first.
+`fb-doc-check`'s `tests/contracts.rs` fails a doc comment that does, by the
+old restating phrase or by the contract's own message.
 
 **The verification record is the metrics branch, not the README.** The
 crate's README carries two dated "Verified" paragraphs: card, test counts,
@@ -346,6 +350,7 @@ and run where the testing document puts those tiers:
 | Doctests, including `compile_fail` | 1 and 3 | Every PR, on a card host (they link) |
 | Bibliography keys match citations | 3 | Every PR, on the runner |
 | Section citations name a heading that exists; `mdbook-linkcheck` | 3 | Every PR, on the runner |
+| No doc comment restates a contract | 3 | Every PR, on the runner |
 | The config reference matches the config type | 3 | Every PR, on the runner; it is generated, so the check is that the committed page is the generated one |
 | Plan diagrams match their goldens | 3 | Every PR, on a card host (the planner is in the crate) |
 | The book builds, with every equation and diagram rendered | 3 | Every PR, on the runner; `mdbook-katex` and `mdbook-mermaid` fail on a construct they cannot render |
@@ -364,12 +369,6 @@ and run where the testing document puts those tiers:
   LaTeX's; one in a book page is `mdbook-katex`'s; a doc comment's `$$` has
   none. Whether one labelling convention can span all three, or the doc
   comments only cite and never define, is open.
-- **Contracts in rustdoc.** The `contracts` crate's documentation describes
-  its attributes and its feature flags (`disable_contracts`, `override_debug`,
-  `override_log`, `mirai_assertions`) and does not say whether a condition is
-  written into the item's rustdoc. Reading one rendered page answers it. If
-  it is, the restating rule above goes; if not, a tier-3 check that every
-  `#[requires]` has a line in the doc comment holds the rule.
 - **The site's version.** One site for `main`, or one per tag as well? The
   tree has no tags today, so one site, rebuilt on merge, is the answer until
   it has.

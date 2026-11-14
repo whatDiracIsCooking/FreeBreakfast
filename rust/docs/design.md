@@ -264,7 +264,7 @@ a check lives"):
 | The DAG's shape | The emitted diagram, a committed tier-3 golden |
 | The boundary and the bar | The reference comparison, one run |
 | The partition and its reduce order | One worker against many |
-| What a launch wrapper requires | The C header's `///` comment, carried into the `-sys` crate by `devtools/rust-bindings.py`, and the safe wrapper's `debug_requires` ([`gpu_layer.md`](gpu_layer.md), "The safe wrapper") |
+| What a launch wrapper requires | The C header's `///` comment, carried into the `-sys` crate by `devtools/rust-bindings.py`. In the safe wrapper, every length or extent the launcher trusts is an always-on `assert!` named in `# Panics`, and only the rules a launch's correctness alone rests on (`la <= lb`, a momentum within the table, the stream's device current) are `debug_requires` ([`gpu_layer.md`](gpu_layer.md), "The safe wrapper") |
 
 Three rules hold for all of them. Contracts are debug-only, so a release
 build pays nothing and the PR gate, a debug build, has every one on; a
@@ -275,9 +275,9 @@ status or a `Result`, a failure is an expected result, and making it a
 contract would turn it into a panic. A
 contract's reach is every caller, but its strength is the inputs those
 callers happen to pass, so it complements a dedicated test and never
-replaces one. The doc comment restates each contract in a line of its own
-until the `contracts` crate is known to render them
-([`documentation.md`](documentation.md), "Open questions").
+replaces one. rustdoc renders each contract as its item's `§ Contracts`
+section, so the doc comment never restates one
+([`documentation.md`](documentation.md), "Code: rustdoc").
 
 The capabilities a task may not have are contracts the manifest holds:
 `unsafe_code` forbidden outside the core wrappers, the `-sys` bindings and

@@ -83,9 +83,8 @@ impl<K: HandleKind> BaseHandle<K> {
         gpu_status_at(create(raw.as_mut_ptr()), location)?;
         // SAFETY: the create succeeded, which is when it promises to have
         // written a live handle.
-        Ok(BaseHandle {
-            raw: unsafe { raw.assume_init() },
-        })
+        let raw = unsafe { raw.assume_init() };
+        Ok(BaseHandle { raw })
     }
 
     /// Own `raw`, a handle made elsewhere: wwr's `adopt`. It is destroyed

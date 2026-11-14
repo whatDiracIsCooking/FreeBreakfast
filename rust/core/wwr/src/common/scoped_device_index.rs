@@ -45,10 +45,8 @@ impl ScopedDeviceIndex {
     fn try_new_at(target_idx: i32, location: SourceLocation) -> Result<Self> {
         let mut original_idx = -1;
         // SAFETY: a plain runtime call writing one i32 through a valid local.
-        gpu_status_at(
-            unsafe { wwr_sys::wwr_get_device(&mut original_idx) },
-            location,
-        )?;
+        let status = unsafe { wwr_sys::wwr_get_device(&mut original_idx) };
+        gpu_status_at(status, location)?;
         // SAFETY: a plain runtime call; a bad index is a status, not UB.
         gpu_status_at(unsafe { wwr_sys::wwr_set_device(target_idx) }, location)?;
         Ok(ScopedDeviceIndex {
@@ -60,12 +58,11 @@ impl ScopedDeviceIndex {
 
 impl Drop for ScopedDeviceIndex {
     fn drop(&mut self) {
-        // SAFETY: as in try_new_at. The location reported is this line, as
-        // wwr's destructor reports its own.
-        check_or_abort(gpu_status_at(
-            unsafe { wwr_sys::wwr_set_device(self.original_idx) },
-            Location::caller(),
-        ));
+        // SAFETY: as in try_new_at.
+        let status = unsafe { wwr_sys::wwr_set_device(self.original_idx) };
+        // The location reported is this line, as wwr's destructor reports
+        // its own.
+        check_or_abort(gpu_status_at(status, Location::caller()));
     }
 }
 
@@ -78,10 +75,8 @@ mod tests {
     fn current() -> i32 {
         let mut d = -1;
         // SAFETY: as in ScopedDeviceIndex::try_new_at.
-        assert_eq!(
-            unsafe { wwr_sys::wwr_get_device(&mut d) },
-            wwr_status::WWR_STATUS_SUCCESS
-        );
+        let status = unsafe { wwr_sys::wwr_get_device(&mut d) };
+        assert_eq!(status, wwr_status::WWR_STATUS_SUCCESS);
         d
     }
 

@@ -51,8 +51,6 @@ pub use workspace::add_blas_workspace;
 /// slot for every matrix of the plan over `basis` on `worker`, and U is
 /// staged once and read by every transform.
 ///
-/// Requires, checked in debug builds: `basis` has at least one shell.
-///
 /// # Panics
 /// If `u` holds a row of another worker's table ([`Dag::add`]).
 #[debug_requires(basis.nshells() > 0, "a basis of at least one shell")]

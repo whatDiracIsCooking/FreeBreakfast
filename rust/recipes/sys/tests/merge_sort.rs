@@ -148,46 +148,44 @@ fn sorts_keys_alone_as_the_host_sort() {
 /// to the alignment and the values' half after it. Host only.
 #[test]
 fn workspace_query_is_the_two_halves() {
-    // SAFETY: host functions of their arguments alone.
-    unsafe {
-        assert_eq!(fb_merge_sort_workspace_bytes(0, true), 0);
-        assert_eq!(fb_merge_sort_workspace_bytes(2816, true), 0);
-        // 2817 keys are 22536 bytes, 22784 at 256; the values 11268 more.
-        assert_eq!(fb_merge_sort_workspace_bytes(2817, false), 22784);
-        assert_eq!(fb_merge_sort_workspace_bytes(2817, true), 22784 + 11268);
-    }
+    // SAFETY: a host function of its arguments alone.
+    let bytes = |n, with_values| unsafe { fb_merge_sort_workspace_bytes(n, with_values) };
+    assert_eq!(bytes(0, true), 0);
+    assert_eq!(bytes(2816, true), 0);
+    // 2817 keys are 22536 bytes, 22784 at 256; the values 11268 more.
+    assert_eq!(bytes(2817, false), 22784);
+    assert_eq!(bytes(2817, true), 22784 + 11268);
 }
 
 /// A null key array, or a workspace one byte short, is refused before any
 /// launch: no device is touched.
 #[test]
 fn refuses_null_keys_and_a_short_workspace() {
-    // SAFETY: each call is refused before it reads a pointer.
-    unsafe {
-        let null = std::ptr::null_mut();
-        assert_eq!(
-            fb_merge_sort(null, 5, null.cast(), null.cast(), null, 0),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        let bytes = fb_merge_sort_workspace_bytes(5000, true);
-        let dangling = std::ptr::NonNull::<f64>::dangling().as_ptr();
-        assert_eq!(
-            fb_merge_sort(
-                null,
-                5000,
-                dangling,
-                dangling.cast(),
-                dangling.cast(),
-                bytes - 1
-            ),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        // n = 0 enqueues nothing and succeeds, whatever the pointers.
-        assert_eq!(
-            fb_merge_sort(null, 0, null.cast(), null.cast(), null, 0),
-            FB_LAUNCH_SUCCESS
-        );
-    }
+    let null = std::ptr::null_mut();
+    // SAFETY: every call below is refused, or enqueues nothing, before it
+    // reads a pointer.
+    let sort =
+        |n: u32,
+         keys: *mut f64,
+         values: *mut u32,
+         workspace: *mut core::ffi::c_void,
+         bytes: usize| unsafe { fb_merge_sort(null, n, keys, values, workspace, bytes) };
+    assert_eq!(
+        sort(5, null.cast(), null.cast(), null, 0),
+        FB_LAUNCH_INVALID_ARGUMENT
+    );
+    // SAFETY: a host function of its arguments alone.
+    let bytes = unsafe { fb_merge_sort_workspace_bytes(5000, true) };
+    let dangling = std::ptr::NonNull::<f64>::dangling().as_ptr();
+    assert_eq!(
+        sort(5000, dangling, dangling.cast(), dangling.cast(), bytes - 1),
+        FB_LAUNCH_INVALID_ARGUMENT
+    );
+    // n = 0 enqueues nothing and succeeds, whatever the pointers.
+    assert_eq!(
+        sort(0, null.cast(), null.cast(), null, 0),
+        FB_LAUNCH_SUCCESS
+    );
 }
 
 /// The library this binary loaded is the one the bindings describe: the

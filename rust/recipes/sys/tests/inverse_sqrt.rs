@@ -91,15 +91,8 @@ fn maps_each_element_as_the_host_does() {
 #[test]
 fn refuses_a_null_array() {
     let null = std::ptr::null_mut();
-    // SAFETY: each call returns before it reads a pointer.
-    unsafe {
-        assert_eq!(
-            fb_inverse_sqrt(null, 5, null.cast(), FLOOR),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        assert_eq!(
-            fb_inverse_sqrt(null, 0, null.cast(), FLOOR),
-            FB_LAUNCH_SUCCESS
-        );
-    }
+    // SAFETY: every call below returns before it reads a pointer.
+    let inverse_sqrt = |count: u32| unsafe { fb_inverse_sqrt(null, count, null.cast(), FLOOR) };
+    assert_eq!(inverse_sqrt(5), FB_LAUNCH_INVALID_ARGUMENT);
+    assert_eq!(inverse_sqrt(0), FB_LAUNCH_SUCCESS);
 }

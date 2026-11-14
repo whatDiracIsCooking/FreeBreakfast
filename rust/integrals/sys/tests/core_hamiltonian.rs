@@ -255,32 +255,30 @@ fn outside(max: i32) -> [(i32, i32); 5] {
 #[test]
 fn kinetic_refuses_a_class_with_no_kernel() {
     let dangling = std::ptr::NonNull::<f64>::dangling().as_ptr();
-    // SAFETY: each call is refused before it reads a device pointer.
-    unsafe {
-        for (la, lb) in outside(FB_KINETIC_MAX_MOMENTUM) {
-            assert_eq!(
-                fb_kinetic_class(null_mut(), &empty_view(la, lb, 1), 4, dangling),
-                FB_LAUNCH_UNSUPPORTED,
-                "({la}, {lb})"
-            );
-        }
+    // SAFETY: every call below is refused before it reads a device pointer.
+    let kinetic = |cls: *const fb_primitive_pair_class_view, n_ao: i32, t: *mut f64| unsafe {
+        fb_kinetic_class(null_mut(), cls, n_ao, t)
+    };
+    for (la, lb) in outside(FB_KINETIC_MAX_MOMENTUM) {
         assert_eq!(
-            fb_kinetic_class(null_mut(), &empty_view(0, 0, 0), 4, dangling),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        assert_eq!(
-            fb_kinetic_class(null_mut(), &empty_view(0, 0, 1), 0, dangling),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        assert_eq!(
-            fb_kinetic_class(null_mut(), null(), 4, dangling),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        assert_eq!(
-            fb_kinetic_class(null_mut(), &empty_view(0, 0, 1), 4, null_mut()),
-            FB_LAUNCH_INVALID_ARGUMENT
+            kinetic(&empty_view(la, lb, 1), 4, dangling),
+            FB_LAUNCH_UNSUPPORTED,
+            "({la}, {lb})"
         );
     }
+    assert_eq!(
+        kinetic(&empty_view(0, 0, 0), 4, dangling),
+        FB_LAUNCH_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        kinetic(&empty_view(0, 0, 1), 0, dangling),
+        FB_LAUNCH_INVALID_ARGUMENT
+    );
+    assert_eq!(kinetic(null(), 4, dangling), FB_LAUNCH_INVALID_ARGUMENT);
+    assert_eq!(
+        kinetic(&empty_view(0, 0, 1), 4, null_mut()),
+        FB_LAUNCH_INVALID_ARGUMENT
+    );
 }
 
 /// Every class outside the nuclear attraction's table is
@@ -296,39 +294,42 @@ fn potential_en_refuses_a_class_with_no_kernel() {
         c: dangling,
     };
     let none = fb_nuclei_view { n_nuc: 0, ..nuclei };
-    // SAFETY: each call is refused before it reads a device pointer.
-    unsafe {
-        for (la, lb) in outside(FB_POTENTIAL_EN_MAX_MOMENTUM) {
-            assert_eq!(
-                fb_potential_en_class(null_mut(), &empty_view(la, lb, 1), &nuclei, 4, dangling),
-                FB_LAUNCH_UNSUPPORTED,
-                "({la}, {lb})"
-            );
-        }
-        let view = empty_view(0, 0, 1);
+    // SAFETY: every call below is refused before it reads a device pointer.
+    let potential =
+        |cls: *const fb_primitive_pair_class_view,
+         nuclei: *const fb_nuclei_view,
+         n_ao: i32,
+         v: *mut f64| unsafe { fb_potential_en_class(null_mut(), cls, nuclei, n_ao, v) };
+    for (la, lb) in outside(FB_POTENTIAL_EN_MAX_MOMENTUM) {
         assert_eq!(
-            fb_potential_en_class(null_mut(), &empty_view(0, 0, 0), &nuclei, 4, dangling),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        assert_eq!(
-            fb_potential_en_class(null_mut(), &view, &none, 4, dangling),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        assert_eq!(
-            fb_potential_en_class(null_mut(), &view, &nuclei, 0, dangling),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        assert_eq!(
-            fb_potential_en_class(null_mut(), null(), &nuclei, 4, dangling),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        assert_eq!(
-            fb_potential_en_class(null_mut(), &view, null(), 4, dangling),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        assert_eq!(
-            fb_potential_en_class(null_mut(), &view, &nuclei, 4, null_mut()),
-            FB_LAUNCH_INVALID_ARGUMENT
+            potential(&empty_view(la, lb, 1), &nuclei, 4, dangling),
+            FB_LAUNCH_UNSUPPORTED,
+            "({la}, {lb})"
         );
     }
+    let view = empty_view(0, 0, 1);
+    assert_eq!(
+        potential(&empty_view(0, 0, 0), &nuclei, 4, dangling),
+        FB_LAUNCH_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        potential(&view, &none, 4, dangling),
+        FB_LAUNCH_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        potential(&view, &nuclei, 0, dangling),
+        FB_LAUNCH_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        potential(null(), &nuclei, 4, dangling),
+        FB_LAUNCH_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        potential(&view, null(), 4, dangling),
+        FB_LAUNCH_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        potential(&view, &nuclei, 4, null_mut()),
+        FB_LAUNCH_INVALID_ARGUMENT
+    );
 }

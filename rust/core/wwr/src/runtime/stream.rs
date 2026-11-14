@@ -33,13 +33,11 @@ impl HandleKind for StreamKind {
     }
 
     unsafe fn destroy(raw: wwr_stream) -> wwr_status {
+        // SAFETY: `raw` is a live stream.
+        let drained = unsafe { wwr_sys::wwr_stream_synchronize(raw) };
         // SAFETY: `raw` is a live stream, destroyed once, after it drains.
-        unsafe {
-            first_failure(
-                wwr_sys::wwr_stream_synchronize(raw),
-                wwr_sys::wwr_stream_destroy(raw),
-            )
-        }
+        let destroyed = unsafe { wwr_sys::wwr_stream_destroy(raw) };
+        first_failure(drained, destroyed)
     }
 }
 

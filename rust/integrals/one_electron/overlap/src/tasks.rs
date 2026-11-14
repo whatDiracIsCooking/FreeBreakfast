@@ -27,8 +27,6 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// every reader of the plan; `u` is the plan's slot for U over `basis` on
 /// `worker`, shared with every other matrix the plan transforms.
 ///
-/// Requires, checked in debug builds: `basis` has at least one shell.
-///
 /// # Panics
 /// If `nao_cart²` does not fit an `i32` (the overlap kernels index the
 /// matrix in 32 bits), or `classes` are rows of another worker's or another

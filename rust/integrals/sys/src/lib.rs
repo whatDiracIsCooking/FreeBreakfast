@@ -44,8 +44,11 @@ pub use bindings::*;
 ///
 /// A mismatch, with a message naming the found and the expected values.
 pub fn check_library() -> Result<(), String> {
-    // SAFETY: two host functions with no arguments, which call no runtime.
-    let found = unsafe { (fb_integrals_abi_version(), fb_integrals_backend()) };
+    // SAFETY: a host function with no arguments, which calls no runtime.
+    let version = unsafe { fb_integrals_abi_version() };
+    // SAFETY: as above.
+    let backend = unsafe { fb_integrals_backend() };
+    let found = (version, backend);
     fb_kernel_abi::check(
         "integrals",
         found,
