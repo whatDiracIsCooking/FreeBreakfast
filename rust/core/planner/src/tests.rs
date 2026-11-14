@@ -633,6 +633,10 @@ impl CpuTask<Heap> for Parent {
     }
 }
 
+/// What a random loop's body node adds to its position per iteration, in
+/// what its output mixes in.
+const ITERATION: usize = 100;
+
 /// A node of a random loop's body: reads its rows, writes the row it
 /// carries from them and the value the iteration before left, writes its
 /// scratch with junk and its output from what it read.
@@ -659,7 +663,7 @@ impl<const GPU: bool> BodyNode<GPU> {
         }
     }
 
-    /// Either sort's run.
+    /// Either sort's run: in iteration `k`, its output mixes `k` in.
     fn compute(&self, rows: &NodeRows, h: &Bufs<'_, Heap>) -> Status {
         let ins: Vec<&[u64]> = self.reads.iter().map(|&r| h.get(r)).collect();
         if let Some(row) = self.carries {
@@ -669,8 +673,9 @@ impl<const GPU: bool> BodyNode<GPU> {
         }
         h.take_mut(rows.scratch).fill(u64::MAX - self.pos as u64);
         let out = h.take_mut(rows.out);
+        let at = self.pos + ITERATION * h.iteration();
         for (i, x) in out.iter_mut().enumerate() {
-            *x = mix(self.pos, i, &ins);
+            *x = mix(at, i, &ins);
         }
         Ok(())
     }
@@ -775,6 +780,8 @@ struct BodySpec {
 /// A loop between a node that makes the parent's rows and one that reads
 /// some of them, and some of the body's outputs, after it: the body's
 /// shape, the rows it and its decision carry, and its iteration count.
+/// A counted loop's (`depth` above 0) carried rows and outputs read after
+/// it have one user in the body each, and it has no decision.
 #[derive(Debug)]
 struct LoopSpec {
     parent: Vec<usize>,
@@ -784,6 +791,8 @@ struct LoopSpec {
     after: Vec<bool>,
     iterations: usize,
     max_iterations: usize,
+    /// A counted loop's depth, or 0 for a decision loop.
+    depth: usize,
 }
 
 impl LoopSpec {
@@ -806,14 +815,15 @@ impl LoopSpec {
         let mut rows: Vec<Vec<u64>> = (0..p).map(|k| parent_value(k, self.parent[k])).collect();
         rows.extend(self.body.iter().map(|b| vec![0; b.len]));
         let decision = self.body.len() + 1;
-        for _ in 0..self.iterations {
+        for it in 0..self.iterations {
             for (j, b) in self.body.iter().enumerate() {
                 let ins: Vec<Vec<u64>> = b.reads.iter().map(|&k| rows[k].clone()).collect();
                 let ins: Vec<&[u64]> = ins.iter().map(Vec::as_slice).collect();
                 if let Some(c) = b.carries {
                     rows[c] = carried_value(j + 1, &rows[c], &ins);
                 }
-                rows[p + j] = (0..b.len).map(|i| mix(j + 1, i, &ins)).collect();
+                let at = j + 1 + ITERATION * it;
+                rows[p + j] = (0..b.len).map(|i| mix(at, i, &ins)).collect();
             }
             if let Some(c) = self.decision_carries {
                 rows[c] = carried_value(decision, &rows[c], &[]);
@@ -853,12 +863,16 @@ impl LoopSpec {
             };
             rows.push(made.out);
         }
-        let decision = Count {
-            pos: dag.len(),
-            carries: self.decision_carries.map(|c| rows[c]),
-            iterations: self.iterations,
-        };
-        dag.add_loop("count", 0, body, self.max_iterations, decision);
+        if self.depth > 0 {
+            dag.add_counted(body, self.iterations, self.depth);
+        } else {
+            let decision = Count {
+                pos: dag.len(),
+                carries: self.decision_carries.map(|c| rows[c]),
+                iterations: self.iterations,
+            };
+            dag.add_loop("count", 0, body, self.max_iterations, decision);
+        }
         let out = Arc::new(std::sync::Mutex::new(Vec::new()));
         let collected = self.collected().into_iter().map(|k| (k, rows[k])).collect();
         dag.add_cpu("collect", 0, Collect(collected, Arc::clone(&out)));
@@ -868,9 +882,11 @@ impl LoopSpec {
 
 /// A random loop: up to four parent rows, up to five body nodes each
 /// reading up to three earlier rows and carrying at most one parent row,
-/// the decision perhaps carrying one more, and one to five iterations.
-/// Lengths are small, so most rows pad to one alignment and any dead one's
-/// bytes fit the next.
+/// the decision perhaps carrying one more, and one to five iterations;
+/// or, a third of the time, a counted loop of depth one to three (at most
+/// its trip count) with no decision, each row it carries or leaves read by
+/// no other body node. Lengths are small, so most rows pad to one
+/// alignment and any dead one's bytes fit the next.
 fn arb_loop() -> impl Strategy<Value = LoopSpec> {
     let node = (
         any::<bool>(),
@@ -886,8 +902,11 @@ fn arb_loop() -> impl Strategy<Value = LoopSpec> {
         prop::option::of(any::<prop::sample::Index>()),
         1..6usize,
         0..3usize,
+        0..9usize,
     )
-        .prop_map(|(parent, raw, decision, iterations, slack)| {
+        .prop_map(|(parent, raw, decision, iterations, slack, depth)| {
+            // Depth 0 to 5 a decision loop, 6 to 8 a counted one.
+            let depth = depth.saturating_sub(5).min(iterations);
             let p = parent.len();
             // Each parent row's writer, by body index; the decision's is
             // the body's length.
@@ -922,7 +941,19 @@ fn arb_loop() -> impl Strategy<Value = LoopSpec> {
             }
             let decision_carries = decision
                 .map(|c| c.index(p))
-                .filter(|&c| writer[c].is_none());
+                .filter(|&c| writer[c].is_none() && depth == 0);
+            if depth > 0 {
+                // A counted loop's row it writes and does not own has one
+                // user in the body: no other node reads a carried row, or
+                // an output read after the loop.
+                let lone: Vec<usize> = (0..p)
+                    .filter(|&k| writer[k].is_some())
+                    .chain((0..body.len()).filter(|&j| body[j].after).map(|j| p + j))
+                    .collect();
+                for b in &mut body {
+                    b.reads.retain(|k| !lone.contains(k));
+                }
+            }
             LoopSpec {
                 after: parent.iter().map(|&(_, a)| a).collect(),
                 parent: parent.into_iter().map(|(len, _)| len).collect(),
@@ -930,6 +961,7 @@ fn arb_loop() -> impl Strategy<Value = LoopSpec> {
                 decision_carries,
                 iterations,
                 max_iterations: iterations + slack,
+                depth,
             }
         })
 }
@@ -937,13 +969,17 @@ fn arb_loop() -> impl Strategy<Value = LoopSpec> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
-    /// Any loop, through the planner and the executor, twice over the same
-    /// blocks: the rows it carries and its outputs, read after it, are the
-    /// serial model's after its iteration count, and its decision ran that
-    /// many times. A row the layout lets another take the bytes of while
-    /// the loop still needs it, a carried row or one the body reads every
-    /// iteration, shows as a wrong value; a missing dependency, as a wrong
-    /// value or a borrow panic.
+    /// Any loop, decision or counted, through the planner and the
+    /// executor, twice over the same blocks: the rows it carries and its
+    /// outputs, read after it, are the serial model's after its iteration
+    /// count, and a decision ran that many times. A row the layout lets
+    /// another take the bytes of while the loop still needs it, a carried
+    /// row or one the body reads every iteration, shows as a wrong value;
+    /// a missing dependency, as a wrong value or a borrow panic. A counted
+    /// loop runs its iterations overlapped, up to its depth, each in its
+    /// own copy of the body's rows: a copy two iterations share, or an
+    /// iteration started before the one `depth` back has finished, shows
+    /// the same way.
     #[test]
     fn every_loop_carries_what_the_model_does(spec in arb_loop()) {
         let (dag, out) = spec.dag();
@@ -958,7 +994,8 @@ proptest! {
                 .iter()
                 .map(|(&node, &n)| (node.index(), n))
                 .collect();
-            prop_assert_eq!(iterations, vec![(decision, spec.iterations)]);
+            let decided = if spec.depth > 0 { vec![] } else { vec![(decision, spec.iterations)] };
+            prop_assert_eq!(iterations, decided);
             prop_assert_eq!(&*out.lock().unwrap(), &expect);
         }
     }

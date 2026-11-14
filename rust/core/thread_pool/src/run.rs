@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::backend::Backend;
-use super::plan::{Lane, LaneId, NodeId, Placement, Plan, Work};
+use super::plan::{Lane, LaneId, LoopKind, NodeId, Placement, Plan, Work};
 use fb_core_error_handling::{Error, Status};
 use fb_core_log::TaskScope;
 use log::debug;
@@ -41,8 +41,8 @@ pub struct TaskTime {
     /// none were.
     pub dims: BTreeMap<String, usize>,
     /// For a loop's body node or decision, the iteration it ran in, from 0:
-    /// such a node has one entry per iteration. `None` for a node outside
-    /// every loop.
+    /// such a node has one entry per iteration, a counted loop's body node
+    /// one per trip. `None` for a node outside every loop.
     pub iteration: Option<usize>,
     /// Wall time of its callable alone, not the waits before it: a CPU
     /// node's compute, a GPU node's enqueueing.
@@ -141,8 +141,9 @@ pub struct Record {
     /// synced, and has none. An edge between two lanes is a wait on the
     /// device, and has none either.
     pub syncs: Vec<SyncPoint>,
-    /// Each loop that began, by its decision node ([`Plan::add_loop`]): the
-    /// number of iterations its body began. For a loop that stopped, its
+    /// Each decision loop that began, by its decision node
+    /// ([`Plan::add_loop`]): the number of iterations its body began. A
+    /// counted loop's count is its plan's, and is not here. For a loop that stopped, its
     /// decision's last index plus one; for one that failed, the iteration
     /// it failed in plus one. In `timing.json`, the keys are the ranks as
     /// strings.
@@ -322,20 +323,22 @@ pub fn run<B: Backend>(plan: &mut Plan<'_, B::Stream>, backend: &mut B, n_cpu: u
         "run: {} nodes on {n_cpu} CPU and {n_gpu} GPU workers",
         plan.len()
     );
-    let shared = Shared::new(plan, n_gpu);
+    let graph = Graph::new(plan);
+    let shared = Shared::new(plan, &graph, n_gpu);
     let backend = &RunBackend(backend);
     let start = Instant::now();
     thread::scope(|scope| {
         let shared = &shared;
         let mut workers = Vec::with_capacity(n_cpu + n_gpu);
+        let graph = &graph;
         for i in 0..n_cpu {
             workers.push(spawn(scope, format!("cpu{i}"), move |name| {
-                cpu_worker(plan, &**backend, shared, name)
+                cpu_worker((plan, graph), &**backend, shared, name)
             }));
         }
         for worker in 0..n_gpu {
             workers.push(spawn(scope, format!("gpu{worker}"), move |_| {
-                gpu_worker(plan, &**backend, shared, worker)
+                gpu_worker((plan, graph), &**backend, shared, worker)
             }));
         }
         // Joined here rather than by the scope, so a node's panic is
@@ -362,11 +365,11 @@ pub fn run<B: Backend>(plan: &mut Plan<'_, B::Stream>, backend: &mut B, n_cpu: u
     // of it (a sticky fault reads back as itself), so only a run that
     // otherwise succeeded reports one, and only the first.
     tasks.sort_by_key(|t| (t.node, t.iteration));
-    for (id, iteration) in scoped {
+    for (id, iteration, trip) in scoped {
         let at = tasks
             .binary_search_by_key(&(NodeId(id), iteration), |t| (t.node, t.iteration))
             .expect("a scoped node has an entry");
-        match backend.elapsed(NodeId(id)) {
+        match backend.elapsed(NodeId(id), trip) {
             Ok(device) => tasks[at].device = device,
             Err(error) if failures.is_empty() => {
                 let task = &tasks[at];
@@ -391,7 +394,7 @@ pub fn run<B: Backend>(plan: &mut Plan<'_, B::Stream>, backend: &mut B, n_cpu: u
         .iter()
         .zip(began)
         .filter(|&(_, n)| n > 0)
-        .map(|(l, n)| (NodeId(l.decision), n))
+        .filter_map(|(l, n)| Some((NodeId(l.decision()?), n)))
         .collect();
     Record {
         wall,
@@ -444,6 +447,105 @@ fn spawn<'scope, 'env>(
         .expect("the OS refused a worker thread the plan admitted")
 }
 
+/// The run's unit of scheduling, an instance: a node in one trip of the
+/// counted loop it is in, or once for a node outside every counted loop.
+/// Instances are numbered in rank order with each counted loop's body
+/// unrolled iteration by iteration, which is a topological order of
+/// their edges: each node's own, taken within one trip of a counted body
+/// and from a closed counted body's last trip after it; each counted body
+/// node's after itself in the trip before; and the ring, each source of
+/// trip `k` of a counted body after each of its sinks in trip
+/// `k - depth`. A decision loop's body is a run of instances its decision
+/// readies again. Built once per run, before the workers start.
+struct Graph {
+    /// Per instance, its node.
+    node: Vec<usize>,
+    /// Per instance, its trip: 0 outside a counted loop.
+    trip: Vec<usize>,
+    preds: Vec<Vec<usize>>,
+    succs: Vec<Vec<usize>>,
+    /// Per node, its instance in trip 0.
+    first: Vec<usize>,
+}
+
+impl Graph {
+    fn new<S>(plan: &Plan<'_, S>) -> Self {
+        let n = plan.len();
+        let counted = |p: usize| match plan.nodes[p].in_loop.map(|l| &plan.loops[l]) {
+            Some(l) => match l.kind {
+                LoopKind::Counted { trips, depth } => Some((l.body.clone(), trips, depth)),
+                LoopKind::Decide { .. } => None,
+            },
+            None => None,
+        };
+        let (mut node, mut trip, mut first) = (Vec::new(), Vec::new(), vec![0; n]);
+        let mut r = 0;
+        while r < n {
+            let Some((body, trips, _)) = counted(r) else {
+                first[r] = node.len();
+                node.push(r);
+                trip.push(0);
+                r += 1;
+                continue;
+            };
+            for k in 0..trips {
+                for p in body.clone() {
+                    if k == 0 {
+                        first[p] = node.len();
+                    }
+                    node.push(p);
+                    trip.push(k);
+                }
+            }
+            r = body.end;
+        }
+        // Node `p`'s instance in trip `k`, and its last trip.
+        let at = |p: usize, k: usize| first[p] + counted(p).map_or(0, |(b, _, _)| k * b.len());
+        let last = |p: usize| counted(p).map_or(0, |(_, trips, _)| trips - 1);
+        let mut preds: Vec<Vec<usize>> = (0..node.len())
+            .map(|i| {
+                let (p, k) = (node[i], trip[i]);
+                let body = counted(p);
+                let inside = |q: &usize| body.as_ref().is_some_and(|(b, _, _)| b.contains(q));
+                let mut preds: Vec<usize> = plan.nodes[p]
+                    .preds
+                    .iter()
+                    .map(|&q| if inside(&q) { at(q, k) } else { at(q, last(q)) })
+                    .collect();
+                if let Some((b, _, depth)) = &body {
+                    if k >= 1 {
+                        preds.push(at(p, k - 1));
+                    }
+                    if k >= *depth && !plan.nodes[p].preds.iter().any(inside) {
+                        let sinks = b.clone().filter(|&s| !plan.succs[s].iter().any(inside));
+                        preds.extend(sinks.map(|s| at(s, k - depth)));
+                    }
+                }
+                preds
+            })
+            .collect();
+        let mut succs = vec![Vec::new(); node.len()];
+        for (i, ps) in preds.iter_mut().enumerate() {
+            ps.sort_unstable();
+            ps.dedup();
+            for &q in ps.iter() {
+                succs[q].push(i);
+            }
+        }
+        Graph {
+            node,
+            trip,
+            preds,
+            succs,
+            first,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.node.len()
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mark {
     Pending,
@@ -459,12 +561,12 @@ enum Queue {
 }
 
 struct State {
-    /// Per node, its predecessors not yet finished.
+    /// Per instance, its predecessors not yet finished.
     waiting: Vec<usize>,
     mark: Vec<Mark>,
     cpu_ready: BinaryHeap<Reverse<usize>>,
     gpu_ready: Vec<BinaryHeap<Reverse<usize>>>,
-    /// Nodes neither finished nor skipped.
+    /// Instances neither finished nor skipped.
     remaining: usize,
     /// Each failure with the rank it is reported at.
     failures: Vec<(usize, Error)>,
@@ -473,12 +575,12 @@ struct State {
     /// Each sync point, in the order they ended.
     syncs: Vec<SyncPoint>,
     /// The GPU nodes whose stream scope closed, those that succeeded, each
-    /// with its iteration, and not yet read: a loop's are read by its
-    /// decision before the body is replayed.
-    scoped: Vec<(usize, Option<usize>)>,
-    /// Per loop, the index of the iteration its body is in.
+    /// with its iteration and trip, and not yet read: a decision loop's
+    /// are read by its decision before the body is replayed.
+    scoped: Vec<(usize, Option<usize>, usize)>,
+    /// Per loop, the index of the iteration a decision loop's body is in.
     iteration: Vec<usize>,
-    /// Per loop, the iterations its body began.
+    /// Per loop, the iterations a decision loop's body began.
     began: Vec<usize>,
     /// A worker panicked: everyone stops.
     aborted: bool,
@@ -490,11 +592,21 @@ struct Shared {
     gpus: Vec<Condvar>,
 }
 
+/// An instance a worker took to run: the instance, its node, the
+/// iteration it runs in (`None` outside every loop) and its trip.
+#[derive(Clone, Copy)]
+struct Job {
+    instance: usize,
+    node: usize,
+    iteration: Option<usize>,
+    trip: usize,
+}
+
 impl Shared {
-    fn new<S>(plan: &Plan<'_, S>, n_gpu: usize) -> Self {
-        let n = plan.len();
+    fn new<S>(plan: &Plan<'_, S>, graph: &Graph, n_gpu: usize) -> Self {
+        let n = graph.len();
         let mut state = State {
-            waiting: plan.nodes.iter().map(|node| node.preds.len()).collect(),
+            waiting: graph.preds.iter().map(Vec::len).collect(),
             mark: vec![Mark::Pending; n],
             cpu_ready: BinaryHeap::new(),
             gpu_ready: (0..n_gpu).map(|_| BinaryHeap::new()).collect(),
@@ -507,9 +619,10 @@ impl Shared {
             began: vec![0; plan.loops.len()],
             aborted: false,
         };
-        for (id, node) in plan.nodes.iter().enumerate() {
-            if node.preds.is_empty() {
-                state.queue(node.placement).push(Reverse(id));
+        for (i, preds) in graph.preds.iter().enumerate() {
+            if preds.is_empty() {
+                let placement = plan.nodes[graph.node[i]].placement;
+                state.queue(placement).push(Reverse(i));
             }
         }
         Shared {
@@ -538,9 +651,9 @@ impl Shared {
         self.gpus.iter().for_each(Condvar::notify_all);
     }
 
-    /// The next node for `queue` and its iteration, waiting for one; `None`
-    /// when the run is over.
-    fn next<S>(&self, plan: &Plan<'_, S>, queue: Queue) -> Option<(usize, Option<usize>)> {
+    /// The next instance for `queue`, waiting for one; `None` when the run
+    /// is over.
+    fn next<S>(&self, (plan, graph): (&Plan<'_, S>, &Graph), queue: Queue) -> Option<Job> {
         let mut state = self.lock();
         loop {
             if state.aborted || state.remaining == 0 {
@@ -550,13 +663,24 @@ impl Shared {
                 Queue::Cpu => &mut state.cpu_ready,
                 Queue::Gpu(w) => &mut state.gpu_ready[w],
             };
-            if let Some(Reverse(id)) = ready.pop() {
-                // Fixed until the node finishes: its loop's decision is after it.
-                let iteration = plan.nodes[id].in_loop.map(|l| state.iteration[l]);
-                if let Some(l) = plan.nodes[id].in_loop {
-                    state.began[l] = state.iteration[l] + 1;
-                }
-                return Some((id, iteration));
+            if let Some(Reverse(instance)) = ready.pop() {
+                let (node, trip) = (graph.node[instance], graph.trip[instance]);
+                let iteration = plan.nodes[node].in_loop.map(|l| {
+                    match plan.loops[l].kind {
+                        // Fixed until the node finishes: its decision is after it.
+                        LoopKind::Decide { .. } => {
+                            state.began[l] = state.iteration[l] + 1;
+                            state.iteration[l]
+                        }
+                        LoopKind::Counted { .. } => trip,
+                    }
+                });
+                return Some(Job {
+                    instance,
+                    node,
+                    iteration,
+                    trip,
+                });
             }
             state = self
                 .condvar(queue)
@@ -565,10 +689,10 @@ impl Shared {
         }
     }
 
-    /// Node `id` finished as [`Ran`] says: record its entry and sync
-    /// points, and replay its loop's body, ready its successors or skip its
+    /// `job` finished as [`Ran`] says: record its entry and sync points,
+    /// and replay its loop's body, ready its successors or skip its
     /// descendants.
-    fn finish<S>(&self, plan: &Plan<'_, S>, id: usize, ran: Ran) {
+    fn finish<S>(&self, (plan, graph): (&Plan<'_, S>, &Graph), job: Job, ran: Ran) {
         let Ran {
             result,
             time,
@@ -576,12 +700,18 @@ impl Shared {
             replay,
             scopes,
         } = ran;
+        let Job {
+            instance,
+            node: id,
+            iteration,
+            trip,
+        } = job;
         let mut state = self.lock();
         state.syncs.extend(syncs);
-        state.mark[id] = Mark::Done;
+        state.mark[instance] = Mark::Done;
         state.remaining -= 1;
         if result.is_ok() && matches!(plan.nodes[id].placement, Placement::Stream(_)) {
-            state.scoped.push((id, time.iteration));
+            state.scoped.push((id, iteration, trip));
         }
         state.tasks.push(time);
         if let Work::Decide(l, _) = plan.nodes[id].work
@@ -589,7 +719,7 @@ impl Shared {
         {
             // The decision read every body scope of this iteration.
             let body = &plan.loops[l].body;
-            state.scoped.retain(|(n, _)| !body.contains(n));
+            state.scoped.retain(|(n, _, _)| !body.contains(n));
             let iteration = Some(state.iteration[l]);
             for (node, device) in scopes {
                 let task = state
@@ -609,31 +739,30 @@ impl Shared {
                 let lp = &plan.loops[l];
                 state.iteration[l] += 1;
                 debug!("{}: iteration {}", plan.nodes[id].name, state.iteration[l]);
-                state.remaining += lp.body.len() + 1;
-                for n in lp.body.start..=lp.decision {
+                // A decision loop's body holds no counted loop, so its
+                // instances are a run ending at the decision's.
+                let start = graph.first[lp.body.start];
+                state.remaining += instance + 1 - start;
+                for i in start..=instance {
                     // Its predecessors before the body ran once, for good.
-                    let waiting = plan.nodes[n]
-                        .preds
-                        .iter()
-                        .filter(|&&p| p >= lp.body.start)
-                        .count();
-                    state.mark[n] = Mark::Pending;
-                    state.waiting[n] = waiting;
+                    let waiting = graph.preds[i].iter().filter(|&&q| q >= start).count();
+                    state.mark[i] = Mark::Pending;
+                    state.waiting[i] = waiting;
                     if waiting == 0 {
-                        let placement = plan.nodes[n].placement;
-                        state.queue(placement).push(Reverse(n));
+                        let placement = plan.nodes[graph.node[i]].placement;
+                        state.queue(placement).push(Reverse(i));
                         self.condvar(Queue::from(placement)).notify_one();
                     }
                 }
             }
             Ok(()) => {
-                for &s in &plan.succs[id] {
+                for &s in &graph.succs[instance] {
                     if state.mark[s] != Mark::Pending {
                         continue;
                     }
                     state.waiting[s] -= 1;
                     if state.waiting[s] == 0 {
-                        let placement = plan.nodes[s].placement;
+                        let placement = plan.nodes[graph.node[s]].placement;
                         state.queue(placement).push(Reverse(s));
                         self.condvar(Queue::from(placement)).notify_one();
                     }
@@ -641,12 +770,12 @@ impl Shared {
             }
             Err(error) => {
                 state.failures.push((id, error));
-                let mut stack = plan.succs[id].clone();
+                let mut stack = graph.succs[instance].clone();
                 while let Some(s) = stack.pop() {
                     if state.mark[s] == Mark::Pending {
                         state.mark[s] = Mark::Skipped;
                         state.remaining -= 1;
-                        stack.extend_from_slice(&plan.succs[s]);
+                        stack.extend_from_slice(&graph.succs[s]);
                     }
                 }
             }
@@ -689,35 +818,39 @@ impl Drop for AbortOnUnwind<'_> {
     }
 }
 
-fn cpu_worker<B: Backend>(plan: &Plan<'_, B::Stream>, backend: &B, shared: &Shared, name: &str) {
+/// What a worker reads the run through: the plan and its instances.
+type Run<'r, 'a, S> = (&'r Plan<'a, S>, &'r Graph);
+
+fn cpu_worker<B: Backend>(run: Run<'_, '_, B::Stream>, backend: &B, shared: &Shared, name: &str) {
     let _abort = AbortOnUnwind(shared);
-    while let Some((id, iteration)) = shared.next(plan, Queue::Cpu) {
-        let ran = execute(plan, backend, (id, iteration), name, None);
-        shared.finish(plan, id, ran);
+    while let Some(job) = shared.next(run, Queue::Cpu) {
+        let ran = execute(run, backend, job, name, None);
+        shared.finish(run, job, ran);
     }
 }
 
 /// GPU worker `worker`: its device current for the whole run, it enqueues
 /// its ready nodes in rank order across all its lanes, each on its lane's
-/// stream, and never waits on the device until it exits.
-fn gpu_worker<B: Backend>(plan: &Plan<'_, B::Stream>, backend: &B, shared: &Shared, worker: usize) {
+/// stream, a counted loop's iterations back to back, and never waits on
+/// the device until it exits.
+fn gpu_worker<B: Backend>(
+    run: Run<'_, '_, B::Stream>,
+    backend: &B,
+    shared: &Shared,
+    worker: usize,
+) {
     let _abort = AbortOnUnwind(shared);
     let _binding = backend.bind(worker);
+    let plan = run.0;
     // Per lane that ran a node, the last one.
     let mut last: BTreeMap<LaneId, usize> = BTreeMap::new();
-    while let Some((id, iteration)) = shared.next(plan, Queue::Gpu(worker)) {
-        let Placement::Stream(lane) = plan.nodes[id].placement else {
+    while let Some(job) = shared.next(run, Queue::Gpu(worker)) {
+        let Placement::Stream(lane) = plan.nodes[job.node].placement else {
             unreachable!("a GPU worker's queue holds its lanes' nodes")
         };
-        let ran = execute(
-            plan,
-            backend,
-            (id, iteration),
-            &lane.to_string(),
-            Some(lane),
-        );
-        shared.finish(plan, id, ran);
-        last.insert(lane, id);
+        let ran = execute(run, backend, job, &lane.to_string(), Some(lane));
+        shared.finish(run, job, ran);
+        last.insert(lane, job.node);
     }
     // The end of the run is a sync point on each lane: nothing is left
     // enqueued, and a fault surfacing here is the lane's, reported against
@@ -757,19 +890,25 @@ struct Ran {
     scopes: Vec<(usize, Duration)>,
 }
 
-/// Wait for the node's GPU predecessors as its edges need, and run it inside
-/// its scopes: wall time around each host wait and around the callable, and
-/// for a GPU node the stream scope, whose closing event is the one its
-/// consumers wait on. A decision, once its waits have made its whole body
-/// complete, first reads the body's stream scopes of this iteration, before
-/// the replay records them again.
+/// Wait for the instance's GPU predecessors as its edges need, and run it
+/// inside its scopes: wall time around each host wait and around the
+/// callable, and for a GPU node the stream scope of its trip, whose closing
+/// event is the one its consumers wait on. A decision, once its waits have
+/// made its whole body complete, first reads the body's stream scopes of
+/// this iteration, before the replay records them again.
 fn execute<B: Backend>(
-    plan: &Plan<'_, B::Stream>,
+    (plan, graph): Run<'_, '_, B::Stream>,
     backend: &B,
-    (id, iteration): (usize, Option<usize>),
+    job: Job,
     worker: &str,
     lane: Option<LaneId>,
 ) -> Ran {
+    let Job {
+        instance,
+        node: id,
+        iteration,
+        trip,
+    } = job;
     let node = &plan.nodes[id];
     let _task = TaskScope::enter(&node.name, worker);
     debug!("start");
@@ -778,14 +917,15 @@ fn execute<B: Backend>(
     let mut replay = false;
     let mut scopes = Vec::new();
     let result = (|| {
-        for &p in &node.preds {
+        for &q in &graph.preds[instance] {
+            let (p, from_trip) = (graph.node[q], graph.trip[q]);
             let Placement::Stream(from) = plan.nodes[p].placement else {
                 continue;
             };
             match lane {
                 None => {
                     let start = Instant::now();
-                    let waited = backend.host_wait(NodeId(p));
+                    let waited = backend.host_wait(NodeId(p), from_trip);
                     syncs.push(SyncPoint {
                         node: Some(NodeId(id)),
                         iteration,
@@ -795,18 +935,21 @@ fn execute<B: Backend>(
                     });
                     waited?;
                 }
-                Some(to) if to != from => backend.wait(to, NodeId(p))?,
+                Some(to) if to != from => backend.wait(to, NodeId(p), from_trip)?,
                 Some(_) => {}
             }
         }
         match (&node.work, lane) {
             (Work::Decide(l, decide), _) => {
                 let lp = &plan.loops[*l];
+                let LoopKind::Decide { max_iterations, .. } = lp.kind else {
+                    unreachable!("a decision is its decision loop's")
+                };
                 for n in lp.body.clone() {
                     if plan.nodes[n].placement == Placement::Cpu {
                         continue;
                     }
-                    let read = backend.elapsed(NodeId(n)).map_err(|e| {
+                    let read = backend.elapsed(NodeId(n), 0).map_err(|e| {
                         e.with_context(format!("stream scope of {}", plan.nodes[n].name))
                     })?;
                     scopes.extend(read.map(|device| (n, device)));
@@ -816,10 +959,9 @@ fn execute<B: Backend>(
                 let flow = decide(index);
                 host = start.elapsed();
                 if let ControlFlow::Continue(()) = flow? {
-                    if index + 1 == lp.max_iterations {
+                    if index + 1 == max_iterations {
                         return Err(Error::max_iterations_exceeded(format!(
-                            "the loop did not stop in {} iterations",
-                            lp.max_iterations
+                            "the loop did not stop in {max_iterations} iterations"
                         )));
                     }
                     replay = true;
@@ -828,20 +970,23 @@ fn execute<B: Backend>(
             }
             (Work::Task(run), None) => {
                 let start = Instant::now();
-                let result = run(Lane::Cpu);
+                let result = run(Lane::Cpu {
+                    iteration: iteration.unwrap_or(0),
+                });
                 host = start.elapsed();
                 result
             }
             (Work::Task(run), Some(lane)) => {
-                backend.begin(lane, NodeId(id))?;
+                backend.begin(lane, NodeId(id), trip)?;
                 let start = Instant::now();
                 let result = run(Lane::Stream {
                     lane,
                     stream: backend.stream(lane),
+                    iteration: iteration.unwrap_or(0),
                 });
                 host = start.elapsed();
                 result?;
-                backend.record(lane, NodeId(id))
+                backend.record(lane, NodeId(id), trip)
             }
         }
     })();

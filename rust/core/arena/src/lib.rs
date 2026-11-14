@@ -8,9 +8,10 @@
 //!   one node's [`Layout`], what a task declares through.
 //!   [`TableBuilder::add_loop`] marks a loop's positions, whose body's
 //!   rows are a table of their own laid out in a region the rest of the
-//!   table holds for the loop; [`TableBuilder::write`] is a row the loop
-//!   carries from one iteration to the next (`docs/memory.md`, "Nested
-//!   plans").
+//!   table holds for the loop; [`TableBuilder::add_counted`] a counted
+//!   loop's, whose region holds that table once per iteration in flight;
+//!   [`TableBuilder::write`] is a row the loop carries from one iteration
+//!   to the next (`docs/memory.md`, "Nested plans").
 //! - [`TableBuilder::build`] lays them out with [`assign`], the pure offset
 //!   assigner, into a [`Table`]: an offset per row and the block's total,
 //!   which is the plan's peak for that worker and kind. Its text is the
@@ -27,8 +28,9 @@
 //! - [`Block::new`] makes the table's one allocation, on the device or
 //!   pinned, filled with `0xFF`; it is freed when the block drops.
 //!   [`allocations`] counts them, for a test that a run allocates nothing.
-//! - [`Block::partition`] is what a node is handed when it runs: a
-//!   [`Bufs`] that gives it its own rows and no others, as `&[T]` /
+//! - [`Block::partition`] is what a node is handed when it runs, in one
+//!   iteration: a [`Bufs`] that gives it its own rows and no others, a
+//!   counted loop's body rows in its iteration's copy, as `&[T]` /
 //!   `&mut [T]` on the host and [`DeviceRef`] / [`DeviceMut`] pointers on
 //!   the device. A stream node is handed its host rows as a [`CopyOnly`],
 //!   which only its copies can take. With `device`, `Block::hold` holds a worker row outside
@@ -76,8 +78,10 @@
 //! plan's rank order whatever lane a node is on, and the assigner packs to
 //! the fewest bytes, so a reuse between two lanes is a handoff the planner
 //! adds as an edge, an event on the device that serializes the two
-//! (`docs/memory.md`, "Lifetimes"). A loop's region holds one body; the max over several inner shapes, the
-//! semi-numerical Hessian's, and a loop in a loop's body are not built. Declaring rows from tasks, and turning the table's
+//! (`docs/memory.md`, "Lifetimes"). A loop's region holds one body, a
+//! counted loop's one per copy; the max over several inner shapes, the
+//! semi-numerical Hessian's, and a loop in a loop's body (#1613) are not
+//! built. Declaring rows from tasks, and turning the table's
 //! [`reads`](Table::reads) and [`handoffs`](Table::handoffs) into a plan's
 //! dependencies, is `fb_core_planner`'s. A block is
 //! allocated on the thread that makes it, not its worker's: a block lives

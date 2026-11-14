@@ -71,7 +71,9 @@ pub trait GpuTask<H: HostKind = Pinned, S = DeviceStream>: Send + Sync {
     }
 
     /// Enqueue its work on `stream`, through the rows `layout` returned,
-    /// and return. Called once per run.
+    /// and return. Called once per run, and in a loop once per iteration,
+    /// whose index its views give ([`Bufs::iteration`]): a counted loop's
+    /// body task picks its batch by it.
     ///
     /// # Errors
     /// Whatever the enqueue fails with; the orchestrator adds
@@ -127,7 +129,9 @@ pub trait CpuTask<P: HostKind = Pinned>: Send + Sync {
         Vec::new()
     }
 
-    /// Compute, through the rows `layout` returned. Called once per run.
+    /// Compute, through the rows `layout` returned. Called once per run,
+    /// and in a loop once per iteration, whose index its view gives
+    /// ([`Bufs::iteration`]).
     ///
     /// # Errors
     /// Whatever the work fails with; the orchestrator adds `name@cpu` and

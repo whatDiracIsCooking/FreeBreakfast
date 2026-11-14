@@ -51,7 +51,7 @@ pub fn allocations() -> u64 {
 /// let mut b = TableBuilder::<Device>::new();
 /// let s = b.output::<f64>(0, "S", 24 * 24);
 /// let block = Block::new(0, b.build());
-/// let bufs = block.partition(0);
+/// let bufs = block.partition(0, 0);
 /// let s = bufs.take_mut(s);
 /// assert_eq!(s.len(), 24 * 24);
 /// // s.as_mut_ptr() goes to a launch wrapper.
@@ -61,9 +61,11 @@ pub struct Block<K: Kind> {
     pub(super) base: *mut u8,
     dev_idx: i32,
     pub(super) table: Table<K>,
-    /// Per row: 0 free, `n > 0` shared by `n` views, -1 held by one
-    /// writer.
+    /// Per row and copy of it, row `i`'s copy `c` at `flags[i] + c`: 0
+    /// free, `n > 0` shared by `n` views, -1 held by one writer.
     pub(super) borrows: Box<[AtomicIsize]>,
+    /// Per row, the index of its first copy's flag in `borrows`.
+    pub(super) flags: Box<[usize]>,
 }
 
 // SAFETY: the base pointer is what makes `Block` neither `Send` nor `Sync`.
@@ -125,12 +127,21 @@ impl<K: Kind> Block<K> {
                 check_or_abort(unsafe { K::fill(base, total, location) });
             }
         }
-        let borrows = (0..table.n_rows()).map(|_| AtomicIsize::new(0)).collect();
+        let flags: Box<[usize]> = (0..table.n_rows())
+            .scan(0, |next, i| {
+                let first = *next;
+                *next += table.copies(i).0;
+                Some(first)
+            })
+            .collect();
+        let n_flags = (0..table.n_rows()).map(|i| table.copies(i).0).sum();
+        let borrows = (0..n_flags).map(|_| AtomicIsize::new(0)).collect();
         Block {
             base,
             dev_idx,
             table,
             borrows,
+            flags,
         }
     }
 
@@ -144,20 +155,31 @@ impl<K: Kind> Block<K> {
         self.dev_idx
     }
 
-    /// The rows of node `pos`: what the orchestrator hands the node when it
-    /// runs. A row is borrowed when the node first asks for it and returned
-    /// when the [`Bufs`] drops.
-    pub fn partition(&self, pos: usize) -> Bufs<'_, K> {
+    /// The rows of node `pos` in iteration `iteration` of the loop it is
+    /// in, 0 outside every loop: what the orchestrator hands the node when
+    /// it runs. A row is borrowed when the node first asks for it and
+    /// returned when the [`Bufs`] drops.
+    ///
+    /// A counted loop's body row is reached in copy `iteration mod depth`
+    /// of its region ([`TableBuilder::add_counted`]), each copy with a
+    /// borrow flag of its own, so two iterations in flight hold their own
+    /// bytes; every other row has one copy, whatever the iteration.
+    ///
+    /// [`TableBuilder::add_counted`]: super::TableBuilder::add_counted
+    pub fn partition(&self, pos: usize, iteration: usize) -> Bufs<'_, K> {
         Bufs {
             block: self,
             pos,
+            iteration,
             held: RefCell::new(Vec::new()),
         }
     }
 
-    /// Row `index`'s first byte. Never dereferenced here.
-    pub(super) fn row_ptr(&self, index: usize) -> *mut u8 {
-        self.base.wrapping_add(self.table.offsets[index])
+    /// Row `index`'s copy `copy`, its first byte. Never dereferenced here.
+    pub(super) fn row_ptr(&self, index: usize, copy: usize) -> *mut u8 {
+        let (_, stride) = self.table.copies(index);
+        self.base
+            .wrapping_add(self.table.offsets[index] + copy * stride)
     }
 }
 

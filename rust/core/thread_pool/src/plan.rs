@@ -80,10 +80,15 @@ impl NodeId {
     }
 }
 
-/// What a node is handed when it runs.
+/// What a node is handed when it runs: where, and in which iteration of
+/// the loop it is in, from 0, or 0 outside every loop. A counted loop's
+/// body node picks its batch by it ([`Plan::add_counted`]).
 pub enum Lane<'r, S> {
     /// A CPU worker: compute on the host.
-    Cpu,
+    Cpu {
+        /// The iteration.
+        iteration: usize,
+    },
     /// A lane of a GPU worker: enqueue on `stream` and return. The worker's
     /// device is current.
     Stream {
@@ -93,6 +98,8 @@ pub enum Lane<'r, S> {
         /// [`DeviceStream`](super::DeviceStream) that also carries the
         /// lane's library handles.
         stream: &'r S,
+        /// The iteration.
+        iteration: usize,
     },
 }
 
@@ -116,11 +123,40 @@ pub(super) struct Node<'a, S> {
     pub(super) work: Work<'a, S>,
 }
 
-/// A loop of a [`Plan`]: its body's ranks, its decision's, and its bound.
+/// A loop of a [`Plan`]: its body's ranks, and how it ends.
 pub(super) struct Loop {
     pub(super) body: Range<usize>,
-    pub(super) decision: usize,
-    pub(super) max_iterations: usize,
+    pub(super) kind: LoopKind,
+}
+
+/// How a loop ends: at a decision, or after a trip count.
+#[derive(Clone, Copy)]
+pub(super) enum LoopKind {
+    /// [`Plan::add_loop`]'s: its decision's rank and its bound.
+    Decide {
+        decision: usize,
+        max_iterations: usize,
+    },
+    /// [`Plan::add_counted`]'s: its trip count and its depth.
+    Counted { trips: usize, depth: usize },
+}
+
+impl Loop {
+    /// Its last rank: its decision's, or its body's last.
+    pub(super) fn last(&self) -> usize {
+        match self.kind {
+            LoopKind::Decide { decision, .. } => decision,
+            LoopKind::Counted { .. } => self.body.end - 1,
+        }
+    }
+
+    /// Its decision's rank, for a loop that has one.
+    pub(super) fn decision(&self) -> Option<usize> {
+        match self.kind {
+            LoopKind::Decide { decision, .. } => Some(decision),
+            LoopKind::Counted { .. } => None,
+        }
+    }
 }
 
 /// A DAG of nodes, each placed, over the stream type `S` its GPU nodes
@@ -153,15 +189,18 @@ impl<'a, S> Plan<'a, S> {
 
     /// Add a node after its predecessors `deps`, which must already be in
     /// the plan; that is what makes the plan acyclic and the ids a
-    /// topological order. A node after a loop reads what the loop's body
-    /// wrote through the loop's decision, never from a body node, which
-    /// runs once per iteration.
+    /// topological order. A node after a decision loop reads what the
+    /// loop's body wrote through the loop's decision, never from a body
+    /// node, which runs once per iteration. A node after a counted loop
+    /// may follow a body node: it runs after that node's last iteration.
     #[debug_requires(
         deps.iter().all(|d| d.0 < self.nodes.len()),
         "every predecessor is in the plan"
     )]
     #[debug_requires(
-        deps.iter().all(|d| self.loops.iter().all(|l| !l.body.contains(&d.0))),
+        deps.iter().all(|d| self.loops.iter().all(|l| {
+            l.decision().is_none() || !l.body.contains(&d.0)
+        })),
         "no predecessor is in a closed loop's body"
     )]
     pub fn add(
@@ -240,7 +279,7 @@ impl<'a, S> Plan<'a, S> {
     /// ```
     #[debug_requires(body.0 < self.nodes.len(), "the body has a node")]
     #[debug_requires(
-        self.loops.last().is_none_or(|l| l.decision < body.0),
+        self.loops.last().is_none_or(|l| l.last() < body.0),
         "a body holds no loop"
     )]
     #[debug_requires(max_iterations > 0, "the bound admits an iteration")]
@@ -273,10 +312,80 @@ impl<'a, S> Plan<'a, S> {
         }
         self.loops.push(Loop {
             body,
-            decision: decision.0,
-            max_iterations,
+            kind: LoopKind::Decide {
+                decision: decision.0,
+                max_iterations,
+            },
         });
         decision
+    }
+
+    /// Close a counted loop: the nodes from `body` to the last one added
+    /// are its body, run `trips` times in the same run, with no decision
+    /// and no host wait between iterations (`docs/programming_model.md`,
+    /// "Plan once, run many"). Each body node is handed its iteration's
+    /// index ([`Lane`]), by which it picks its batch.
+    ///
+    /// Iterations overlap: iteration `k` waits on iteration `k - depth`
+    /// alone, each body node with no predecessor in the body after every
+    /// body node with no successor there, the ring that lets a planner
+    /// hold `depth` copies of the body's rows. Each body node also runs
+    /// after itself in the iteration before, which on a lane is the
+    /// stream's order anyway. Each edge is satisfied as any edge is ([`thread_pool`](super),
+    /// "When an edge is satisfied"), so between two lanes the wait is on
+    /// the device and no GPU node of the loop adds a sync point: a GPU
+    /// worker enqueues every iteration back to back, and a CPU body node
+    /// waits on the host only for what it reads. A body node's
+    /// predecessors before the body are satisfied once, by their single
+    /// run.
+    ///
+    /// A node added after the loop may follow a body node, and then runs
+    /// after its last iteration, so after all of them. A failed body node
+    /// skips its descendants, every later iteration among them.
+    ///
+    /// ```
+    /// use std::sync::Mutex;
+    /// use fb_core_thread_pool::{HostOnly, Lane, LaneId, Placement, Plan, run};
+    ///
+    /// // A batch per iteration: lane 1 stages it, lane 0 adds it in.
+    /// let staged = Mutex::new([0; 2]);
+    /// let sum = Mutex::new(0);
+    /// let lane = |lane| Placement::Stream(LaneId { worker: 0, lane });
+    /// let mut plan = Plan::new();
+    /// let stage = plan.add("stage", lane(1), &[], |at| {
+    ///     let Lane::Stream { iteration, .. } = at else { unreachable!() };
+    ///     staged.lock().unwrap()[iteration % 2] = iteration + 1;
+    ///     Ok(())
+    /// });
+    /// let add = plan.add("add", lane(0), &[stage], |at| {
+    ///     let Lane::Stream { iteration, .. } = at else { unreachable!() };
+    ///     *sum.lock().unwrap() += staged.lock().unwrap()[iteration % 2];
+    ///     Ok(())
+    /// });
+    /// plan.add_counted(stage, 8, 2);
+    /// plan.add("report", Placement::Cpu, &[add], |_| Ok(()));
+    /// let record = run(&mut plan, &mut HostOnly::new(1), 1);
+    /// record.result.unwrap();
+    /// assert_eq!(*sum.lock().unwrap(), (1..=8).sum::<usize>());
+    /// assert_eq!(record.tasks.iter().filter(|t| t.name == "add").count(), 8);
+    /// ```
+    #[debug_requires(body.0 < self.nodes.len(), "the body has a node")]
+    #[debug_requires(
+        self.loops.last().is_none_or(|l| l.last() < body.0),
+        "a body holds no loop"
+    )]
+    #[debug_requires(trips > 0, "the loop has an iteration")]
+    #[debug_requires(0 < depth && depth <= trips, "the depth is from 1 to the trip count")]
+    pub fn add_counted(&mut self, body: NodeId, trips: usize, depth: usize) {
+        let body = body.0..self.nodes.len();
+        let index = self.loops.len();
+        for n in body.clone() {
+            self.nodes[n].in_loop = Some(index);
+        }
+        self.loops.push(Loop {
+            body,
+            kind: LoopKind::Counted { trips, depth },
+        });
     }
 
     /// Name `node`'s dimensions, each by its name, for its entry in the
@@ -306,6 +415,16 @@ impl<'a, S> Plan<'a, S> {
     /// `node`'s name.
     pub fn name(&self, node: NodeId) -> &str {
         &self.nodes[node.0].name
+    }
+
+    /// How many trips `node` runs per run of its loop: its counted loop's
+    /// trip count, else 1.
+    #[cfg_attr(not(feature = "device"), allow(dead_code))]
+    pub(super) fn trips(&self, node: &Node<'_, S>) -> usize {
+        match node.in_loop.map(|l| self.loops[l].kind) {
+            Some(LoopKind::Counted { trips, .. }) => trips,
+            _ => 1,
+        }
     }
 
     /// The lanes the plan uses, per GPU worker: for each worker up to the

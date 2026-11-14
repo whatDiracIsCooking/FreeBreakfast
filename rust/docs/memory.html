@@ -231,13 +231,15 @@ order over launches, so the interval's ends are positions in that order:</p>
 <li><strong>On one stream</strong>, the stream's order is total, and a lifetime is a pair
 of positions. Reuse is the C++ <code>then</code> / <code>drop</code> algebra with the implicit
 frees made explicit.</li>
-<li><strong>Across streams</strong>, two positions are ordered only through an event one
-stream records and the other waits on, or through a chain of edges that
-implies one. Two buffers on different streams may share bytes only when
-such a path runs from one's end to the other's start. Whether the planner
-adds an event edge to create a path is the programming model's open
-question on reuse across streams
-(<a href="programming_model.html"><code>programming_model.md</code></a>, &quot;Open questions&quot;).</li>
+<li><strong>Across streams</strong>, the lanes of one GPU worker
+(<a href="programming_model.html"><code>programming_model.md</code></a>, &quot;Workers are a
+hierarchy&quot;), two positions are ordered only through an event one lane
+records and the other waits on, or through a chain of edges that implies
+one. Two buffers on different lanes may share bytes only when such a path
+runs from one's end to the other's start, and the planner makes one
+wherever the assigner reused bytes: each handoff below is an edge, and
+between two lanes an edge is that event, so the path is added uniformly,
+not looked for.</li>
 <li><strong>Across a CPU node</strong>, the node's completion is a host event, not a stream
 one. A pinned row read by a file-write node ends when the write returns,
 and the next row to take those bytes is a device-to-pinned copy the
@@ -304,12 +306,18 @@ predecessor. So the table returns its <strong>handoffs</strong> (<code>Table::ha
 for every pair of rows that share bytes, each user of the earlier paired
 with the later one's producer. Each handoff points forward in rank and is
 added to the plan as a dependency, which is the rule above, an offset's
-previous owner counts as a predecessor, made uniform. On one stream a
+previous owner counts as a predecessor, made uniform. On one lane a
 handoff between two stream nodes costs nothing, the stream's order already
-holds it; from a CPU node it is the wait the rule asks for. A tier-3
-property test runs random DAGs in random orders consistent with their
-edges and handoffs and checks that no two rows sharing bytes are live at
-once.</p>
+holds it; between two lanes of a worker it is an event on the device, no
+host wait, that serializes the two lanes there; from a CPU node it is the
+wait the rule asks for. The positions are the ranks whatever lane a node is
+on, so the assigner packs to the fewest bytes and pays for every reuse
+across lanes in concurrency: bytes win, always, as in the C++ mmd, whose
+classes' sorts share one carve, &quot;which is why the forks chain&quot;. A tier-3
+property test runs random DAGs over one to three lanes, enqueued in random
+orders consistent with their edges and handoffs, each node a random time on
+the device, its lane's stream and its edges' events alone ordering it, and
+checks that no two rows sharing bytes are live at once.</p>
 <p><strong>An alias is free of synchronization.</strong> The ERI step is the case. Issue
 1153 found the DF chain's packing broken because B was allocated while the
 metric pair's frees were still pending on the stream, and the pool took new
@@ -376,8 +384,8 @@ new kind.</p>
 </tr>
 <tr>
 <td>Pinned</td>
-<td><code>block &lt;= pinned_cap</code>, and <code>sum over the node's workers &lt;= MemAvailable - margin</code></td>
-<td>The per-GPU cap, and the C++ <code>check_pinned_node</code> carried over</td>
+<td><code>block &lt;= pinned_cap</code>, and <code>sum over the node's workers &lt;= MemAvailable</code></td>
+<td>The per-GPU cap, and the C++ <code>check_pinned_node</code> carried over, with no margin, as there</td>
 </tr>
 </tbody>
 </table></div>
@@ -410,14 +418,38 @@ and the stack.</p>
 <p><strong>The reserve is measured, with the constant as its floor.</strong> At process
 start, after the devices' handles exist and before any block, each worker
 reads its device's free memory against its total; the difference is that
-device's reserve, and the C++ <code>kDeviceReserve</code> of 256 MiB is the least it may
-be taken as. A card another process holds part of shows up here, as a
-smaller cap, rather than at the first allocation.</p>
-<p><strong>Without a cap, the cap is the card.</strong> A config with no <code>[memory]</code> table is
-admitted against the device's free memory at planning less the reserve and
-the stack, so an uncapped plan that does not fit is still refused before the
-first launch. Today an uncapped plan is checked against nothing but the
-device workspace.</p>
+device's reserve, and the C++ <code>kDeviceReserve</code> of 256 MiB
+(<code>fb_pipeline_config::DEVICE_RESERVE</code>) is the least it may be taken as. A card
+another process holds part of shows up here, as a smaller cap, rather than at
+the first allocation. The binary makes the reading at planning, for each
+worker with a device block, with that worker's stream and handles made for it
+(the run's own are made with its backend, after the blocks); it is the one
+reading of the card, so the card's bound below and the reserve agree.</p>
+<p><strong>The stack is what it can still take.</strong> The C++ <code>Device::stack_growth</code>: what
+the kernels' stack can still take for a kernel of <code>kKernelStackBytes</code> per
+thread (<code>fb_pipeline_config::KERNEL_STACK_BYTES</code>, the C++ tree's largest,
+which bounds the Rust forks of its kernels), 0 once a kernel that large has
+run, and 0 under HIP, whose scratch is sized per dispatch. wwr's C ABI has no
+device attribute, so the Rust term is measured rather than computed from the
+resident threads: the free memory read either side of raising the stack limit
+to that size, and the limit set back (<code>fb_core_wwr::runtime::stack_growth</code>).</p>
+<p><strong>Each cap's default is its floor.</strong> The caps are the config's <code>[memory]</code>
+keys, the C++ ones with the C++ size strings: <code>max_device_mem_per_gpu</code>,
+default 8 GiB, and <code>max_pinned_mem_per_gpu</code>, default 2 GiB. Each key's one
+compiled-in value is both its default and its floor: a config with no key
+runs at it, and one that sets a key under it is refused, naming the key and
+the value, so a key can only raise a cap. A floor is what lets a compiled-in
+size, a streamed tensor's batch, be relied on to fit without a search; as the
+default it means a card with more than 8 GiB is used past that only when the
+config says so. The heap block's cap, <code>max_host_mem</code>, is not built.</p>
+<p><strong>Every cap is bounded by the card.</strong> A device block is admitted against the
+smaller of its cap and the card's total memory, less the reserve and the
+stack. The reserve being the total less the free memory, a cap past the card
+admits its free memory less the stack, so a card under its cap, or one
+another process holds part of, still refuses the plan before the first
+launch. The binary admits every worker's device and
+pinned table after planning and before it makes the blocks, and the node
+check before either (<code>fb_pipeline_config::admit_plan</code>).</p>
 <p><strong>Admission is a search over order.</strong> The orchestrator's first job on one
 GPU is an order whose peak fits (<a href="programming_model.html"><code>programming_model.md</code></a>,
 &quot;The pipeline is already an instance&quot;). The search is: the plan order from
@@ -637,6 +669,26 @@ iteration edge nothing needs ordering: the decision is after every body
 node and the replay after the decision. A dependency from a body node to a
 node after the loop is taken from the decision instead, since a body node
 runs once per iteration and the decision's <code>Break</code> once.</p>
+<p><strong>A counted loop's region is <code>R</code> copies of its body's table.</strong> A counted
+loop (<a href="programming_model.html"><code>programming_model.md</code></a>, &quot;Plan once, run
+many&quot;) has no decision, and up to <code>R</code>, its depth, of its iterations are in
+flight at once. Its body's table is laid out once, alone, as a decision
+loop's is, and its region holds it <code>R</code> times, a stride apart, the body's
+total aligned: iteration <code>k</code> runs in copy <code>k mod R</code>, so admission counts
+<code>R</code> bodies once at each of the loop's positions, by the same name. Two
+iterations in flight hold different copies, and the copy iteration <code>k</code>
+takes back was last used by iteration <code>k - R</code>, on which iteration <code>k</code>
+waits, the ring. Within an iteration the body's rows share bytes as any
+table's do. A row outside the body that shares bytes with any copy is
+ordered against it as against one, whatever copy it meets. A body row has
+a borrow flag per copy, so two iterations' views hold their own.</p>
+<p><strong>What a counted loop writes and does not own has one user in its body.</strong>
+Two iterations in flight would otherwise reach the row's one copy in no
+order. An accumulator, K summed over batches, is produced before the loop,
+read and written by its one body node, which runs after itself in the
+iteration before, so the batches add in order; an output read after the
+loop is its producer's in the last iteration. <code>TableBuilder::build</code>
+refuses any other.</p>
 <p><strong>A carried row is the parent's.</strong> The density, the occupied factor and
 DIIS's history pass from one iteration to the next. Such a row is produced
 before the loop (the guess, a zero fill, <code>add_diis</code>'s <code>diis history</code> task),
@@ -748,7 +800,9 @@ type, as it is in every <code>RowId&lt;K, T&gt;</code>, so a device row cannot b
 a host write.</li>
 <li><code>Block::&lt;K&gt;::partition(&amp;self, node) -&gt; Bufs</code>, called by the orchestrator
 once per node per run. A pinned row is a real <code>&amp;[T]</code> or <code>&amp;mut [T]</code>; a
-device row is a pointer-and-length view with no <code>Deref</code>.</li>
+device row is a pointer-and-length view with no <code>Deref</code>. A stream node's
+pinned view is wrapped in a <code>CopyOnly</code>, which yields no slice and which
+only <code>memcpy_p2d</code> and <code>memcpy_d2p</code> take.</li>
 </ul>
 <p><strong>The view's checks are always on, not <code>debug_requires</code>.</strong> Two nodes
 running at once both need rows of one block, so <code>partition</code> takes <code>&amp;self</code>,
@@ -765,8 +819,13 @@ stream adds no wait, because the stream already orders their device work,
 but it does not order a host write against an earlier copy still in flight
 out of the same bytes. Host reads and writes of pinned rows are CPU nodes',
 which the executor starts only after the events of the stream nodes before
-them.</p>
-<p><code>run(bufs, stream)</code> receives the <code>Bufs</code> and nothing else that can allocate.</p>
+them. The type holds it: a GPU task's <code>run</code> is handed its pinned rows as a
+<code>CopyOnly</code>, never as a <code>Bufs</code>, so a host read of one does not build.</p>
+<p><strong>A CPU task holds no device row.</strong> Its <code>layout</code> is handed the host
+<code>Layout</code> alone and its <code>run</code> the host <code>Bufs</code>, so a device row is not
+something it can declare or ask for.</p>
+<p>A GPU task's <code>run(device, pinned, stream)</code> and a CPU task's <code>run(pinned)</code>
+receive their views and nothing else that can allocate.</p>
 <h2 id="what-is-checked">What is checked</h2>
 <div class="table"><table>
 <thead>
@@ -809,7 +868,7 @@ them.</p>
 </tr>
 <tr>
 <td>Reusing bytes is ordered</td>
-<td>Random DAGs run in random orders consistent with their edges and handoffs, no two rows sharing bytes live at once</td>
+<td>Random DAGs over random lanes run in random orders consistent with their edges and handoffs, each node a random time on its lane, no two rows sharing bytes live at once</td>
 <td>3</td>
 </tr>
 <tr>
@@ -819,17 +878,17 @@ them.</p>
 </tr>
 <tr>
 <td>Replay allocates nothing</td>
-<td>Free memory read by a device loop's decision every iteration, never falling from one iteration to the next: the reading is the device's, so another tenant's free can raise it, and an allocation of this process can only lower it</td>
+<td>The arena's count of this process's blocks (<code>fb_core_arena::allocations</code>), read by a device loop's decision every iteration, the same at every one: no other tenant of the card moves it, as one moves the device's free memory (#1573). A library allocating behind the arena at a launch is not in it: the next row's</td>
 <td>4</td>
 </tr>
 <tr>
 <td>Declared equals allocated</td>
-<td>Free memory before and after instantiation differs by the block, under the reserve's growth</td>
+<td>Free memory before and after instantiation differs by the block, under the reserve's growth: the device's reading, the one measure of the driver's cost of a block, over a window of one allocation, which a display client allocating inside it can fail (#1589)</td>
 <td>4</td>
 </tr>
 <tr>
 <td>No library allocates behind the arena</td>
-<td>The same measurement across a run: free memory never falling from the first launch to the last sync</td>
+<td>On an AMD card, this process's VRAM from amdgpu's DRM fdinfo (<code>drm-memory-vram</code>, per open file, once per client), which the kernel keeps per process so no other tenant moves it, and which counts every buffer of ours, the arena's and a library's: the same from the DF-RHF loop's second iteration to its last: once every kernel of the body has run, the DIIS solve's from the second, a replay takes nothing. What a kernel's first launch takes (24 KiB on the gfx1200, at the first DIIS solve) is not told apart from the code the runtime loads at a first launch, so it is outside the bar. On CUDA unenforced: nothing counts a library's allocations per process in a container, and the device-wide free memory moves with the card's other tenants (#1573), so the planner's and the SCF's cases print it and assert nothing of it (#1589)</td>
 <td>4</td>
 </tr>
 <tr>
@@ -851,10 +910,11 @@ against.</p>
 <ul>
 <li><strong>Bytes against concurrency.</strong> The assigner always packs to the fewest
 bytes, and every byte it reuses is a handoff, an edge the plan did not
-otherwise have. Two independent nodes whose rows share bytes are then
-serialized when a larger block would have let them overlap. On one stream
-that costs nothing; once there are several, admission's search should
-decide which reuse to give up for concurrency when the cap leaves room.</li>
+otherwise have. Two independent nodes on two lanes whose rows share bytes
+are then serialized when a larger block would have let them overlap. That
+is the rule today (&quot;Lifetimes&quot;): on one lane it costs nothing, and across
+lanes the planner pays it. The open part is admission's search deciding
+which reuse to give up for concurrency when the cap leaves room.</li>
 <li><strong>Iterating the adaptive pass.</strong> One pass in schedule order is pre-flight's
 model today. A plan whose adaptive tasks are large relative to its fixed
 rows may leave room the pass does not find.</li>

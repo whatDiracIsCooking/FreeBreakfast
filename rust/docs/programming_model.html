@@ -170,7 +170,10 @@ orchestrator derives the rest. Keeping them apart is what stops two tasks from
 disagreeing about the edge between them, and keeps each task's spec short.</p>
 <h3 id="a-task-declares">A task declares</h3>
 <ol>
-<li><strong>Device.</strong> CPU or GPU.</li>
+<li><strong>Device.</strong> CPU or GPU, and the two are different sorts of task. A GPU
+task holds device rows and pinned rows and runs on a stream, and reaches
+a pinned row only through a copy it enqueues; a CPU task holds host rows
+alone and runs on the CPU pool, so a CPU task holds no device row.</li>
 <li><strong>Layout.</strong> Every buffer it will hold, as a function of its dimensions
 (<code>nbf</code>, <code>naux</code>, <code>nocc</code>, ...): each one's size, and whether it is scratch,
 freed when the task ends, or an output that outlives it. The footprint is
@@ -262,10 +265,15 @@ and reaches a buffer only through the layout it declared. The footprint is
 read off the layout by the orchestrator and never written by the author. The
 layout is what admission reads, what a tier-3 test checks with no device, and
 what the arena is built from. In the crate the two are <code>core::planner</code>'s
-<code>Task</code>: the task's value is its dimensions, so <code>dims</code> is <code>&amp;self</code>, and
-<code>layout</code> declares through one <code>Layout</code> per memory kind, reading an earlier
-task's output by the row id that task's layout returned. <code>run</code> is handed
-those rows, one <code>Bufs</code> per kind, and the lane it runs on.</p>
+<code>GpuTask</code> and <code>CpuTask</code>, one trait per sort: the task's value is its
+dimensions, so <code>dims</code> is <code>&amp;self</code>, and <code>layout</code> declares through one
+<code>Layout</code> per memory kind the sort holds, reading an earlier task's output
+by the row id that task's layout returned. A GPU task's <code>layout</code> is handed
+a device and a pinned <code>Layout</code>, and its <code>run</code> its device rows as a <code>Bufs</code>,
+its pinned rows as a <code>CopyOnly</code> that only its stream's copies can take, and
+the stream. A CPU task's <code>layout</code> is handed a host <code>Layout</code> alone, and its
+<code>run</code> those rows as a <code>Bufs</code>. The sort decides the worker: <code>Dag::add_gpu</code>
+puts a task on its GPU worker's stream, <code>Dag::add_cpu</code> on the CPU pool.</p>
 <p><strong>Allocation is a capability, held by one module.</strong> The raw allocation
 bindings in <code>wwr-sys</code> are <code>unsafe</code>, one arena module wraps them, and a
 task's <code>run</code> receives its buffers already carved. There is no handle a task
@@ -581,7 +589,7 @@ backend by reference, through a wrapper only <code>run</code> can make (a <code>
 is sealed and need not be <code>Sync</code>, and a <code>Device</code> is not, so outside a run
 no backend reaches a second thread at all); independent
 (instance, backend) pairs run on threads of their own; and several GPUs
-are one run, a <code>Device</code> spanning its stream workers' devices.</p>
+are one run, a <code>Device</code> spanning its GPU workers' devices.</p>
 <p>Stream capture into a replayed graph is the same split one level down, which
 is a sign the split is real rather than imposed. A loop is therefore not a
 special node: it is a planned sub-DAG run repeatedly, with a host decision
@@ -601,7 +609,9 @@ handed the iteration's index. The iteration count has a bound, fixed at
 planning beside the dimensions: a decision that would start one iteration
 past it fails the run with <code>MaxIterationsExceeded</code>, and a failed body node
 ends the loop and skips what follows it, as any failure skips its
-descendants. A loop in a loop's body is not built.</p>
+descendants. A loop in a loop's body is not built: a counted loop inside a
+decision loop, which J and K over a streamed tensor need every SCF
+iteration, is #1613.</p>
 <p><strong>The planner closes a loop the same way.</strong> <code>fb_core_planner::Dag::add_loop</code>
 takes the position of the body's first task, its bound and a <code>Decision</code>: a
 CPU node that declares host rows as a task does, reads what the body copied
@@ -610,6 +620,48 @@ table laid out once, in a region of each worker's tables the parent holds
 while the loop runs, and the rows it carries between iterations are the
 parent's (<a href="memory.html"><code>memory.md</code></a>, &quot;Nested plans&quot;), so a replay is
 admitted with the plan and allocates nothing.</p>
+<p><strong>A counted loop has a trip count and a depth, and no decision.</strong> Beside
+the decision loop, whose next iteration waits on a host answer, a loop
+over the batches of a streamed tensor knows how many iterations it has at
+planning, and a host decision per batch would sync the host once a batch
+and keep a batch's upload from overlapping the GEMMs of the one before.
+<code>Plan::add_counted</code> and <code>Dag::add_counted</code> close the body over a trip
+count <code>N</code> and a depth <code>R</code>, both fixed at planning beside the dimensions:</p>
+<ul>
+<li><strong>Ordering.</strong> Iteration <code>k</code> waits on iteration <code>k - R</code> alone: each body
+node with no predecessor in the body runs after each one with no
+successor there, <code>R</code> iterations back. That is the one edge across
+iterations, the ring. Each body node also runs after itself in the
+iteration before, which on a lane is the stream's order anyway and on
+the CPU pool keeps a row the body accumulates into in order. Within an
+iteration the body's edges hold as in any plan.</li>
+<li><strong>No host wait.</strong> Every edge is satisfied as any edge is, so between
+lanes it is a wait on the device and the GPU worker's thread enqueues
+every iteration back to back; the run's record holds no sync point for
+a GPU body node. A CPU body node waits on the host for what it reads,
+off the device's path.</li>
+<li><strong>The iteration index.</strong> A body node is handed its iteration's index,
+<code>k</code> from 0, by which it picks its batch: the executor's <code>Lane</code>, and a
+task's views (<code>Bufs::iteration</code>).</li>
+<li><strong>Memory.</strong> The body's rows are <code>R</code> copies of its table, iteration <code>k</code>
+in copy <code>k mod R</code>, and a row it accumulates into across iterations is
+the parent's (<a href="memory.html"><code>memory.md</code></a>, &quot;Nested plans&quot;).</li>
+<li><strong>Events.</strong> Each GPU body node has an event pair per iteration, so each
+iteration's stream scope is its own, read after the run, and no wait in
+the run finds its event recorded again by a later iteration.</li>
+</ul>
+<p>For batched density fitting the body is an upload on a copy lane and the
+GEMMs on a compute lane, with <code>R = 2</code>: the next batch's upload runs under
+this one's GEMMs, ordered against the GEMMs two batches back by the ring.
+A node after a counted loop may follow a body node directly, and runs
+after its last iteration.</p>
+<p><strong>A wait on an event binds to its recording at the time the wait is
+enqueued</strong>, on both backends: record an event, enqueue a wait for it on
+another stream, record it again, and the wait is released by the first
+recording. The host enqueues ahead of the device, so a design that waits
+on an event while later recordings of it are being enqueued rests on
+this; the counted loop does not today, since each iteration has events of
+its own, and a ring of <code>R</code> events per node, which would, is open to it.</p>
 <p><strong>DAGs nest.</strong> A node may be a sub-DAG with dimensions of its own. The
 pipeline is a DAG of steps; a step is a DAG of tasks; the RHF step's body is a
 sub-DAG replayed per iteration. Dimensions attach to the sub-DAG, not to the
@@ -676,6 +728,63 @@ the orchestrator prices it by where the two ends landed:</p>
 an in-place accumulate, and the workers are streams. One DAG description
 serves every row, which is the point of wanting all of them. The transport
 behind the lower rows is an orchestrator detail, decided later and not here.</p>
+<p><strong>A GPU worker is one card, one thread, one block per kind, and several
+streams, its lanes.</strong> A GPU node is placed on a lane of its worker
+(<code>fb_core_thread_pool::LaneId</code>), and the worker's tables and blocks are its
+lanes', so the &quot;streams on one GPU&quot; row costs what it says: the reader
+reads the producer's row in place. How an edge is ordered follows from where
+its two ends landed:</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Edge</th>
+<th>Ordering</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Same lane</td>
+<td>The stream's order; no event</td>
+</tr>
+<tr>
+<td>Different lanes of one worker</td>
+<td>An event the producer's lane records and the consumer's waits on, on the device; no host wait</td>
+</tr>
+<tr>
+<td>Lane to CPU</td>
+<td>A host wait on the producer's event, a sync point</td>
+</tr>
+</tbody>
+</table></div>
+<p>The worker's one thread enqueues its ready nodes in rank order across all
+its lanes and never waits on the device, so lanes overlap on the card as
+streams do, and the thread count stays one per worker however many lanes it
+has. The C++ <code>src/integrals/mmd</code> is the pattern adapted: a stream there
+belongs to a piece of data, each primitive-pair class carrying its own, its
+readers enqueued on it, and one host thread feeds every stream, since an
+enqueue does not block. Here too the code that builds the DAG names the
+lane, as mmd names one per class; deriving lanes from the DAG's shape is
+not built (&quot;Open questions&quot;). A worker's lanes are the ones its tasks name,
+so the count grows as the builder names them and is fixed when the DAG is
+planned, before the backend makes one stream per lane.</p>
+<p><strong>Each lane has its own library handles.</strong> Two lanes run at once on the
+card, and a BLAS or solver handle's state and workspace are one stream's at
+a time, so the <code>Device</code> backend makes a BLAS and a dense-solver handle per
+lane, bound to its stream (<a href="gpu_layer.md"><code>gpu_layer.md</code></a>, &quot;Layering&quot;),
+and a declared BLAS workspace is a worker row per lane.</p>
+<p><strong>Reuse across lanes is a handoff, and every one serializes.</strong> The assigner
+packs a worker's table to the fewest bytes against the plan's ranks,
+whatever lane a node is on, and every reuse it makes is a handoff the
+planner adds as an edge (<a href="memory.html"><code>memory.md</code></a>, &quot;Lifetimes&quot;). Between
+two lanes that edge is an event, so a row that takes another lane's bytes
+waits for that lane's last user, and two lanes whose rows share bytes do
+not overlap there. The rule is the one the C++ mmd makes by hand, whose
+classes' sorts share one carve, &quot;which is why the forks chain&quot;: bytes win
+over concurrency, always, and the planner adds the event edge uniformly,
+through the handoffs, rather than exploiting only the paths the DAG
+already has. Giving a reuse up for concurrency when the cap leaves room is
+admission's search, and not built (<a href="memory.html"><code>memory.md</code></a>, &quot;Open
+questions&quot;).</p>
 <h3 id="cpu-workers">CPU workers</h3>
 <p>A CPU node is a file write, a host decision between runs of a sub-DAG, or a
 small host-side assembly. It runs on a CPU worker, which is one thread the
@@ -686,8 +795,9 @@ because the place a thread count gets out of hand is never the one that was
 designed.</p>
 <p><strong>A run owns a fixed set of threads.</strong> At the start of a run the orchestrator
 opens one <code>std::thread::scope</code> and creates <code>n_cpu</code> CPU workers and one thread
-per stream worker inside it; the scope joins them all when the run ends. A
-ready queue of node ids feeds the CPU workers, and a stream worker's thread
+per GPU worker inside it, whatever its lanes; the scope joins them all when
+the run ends. A ready queue of node ids feeds the CPU workers, another per
+GPU worker feeds its thread across all its lanes, and a GPU worker's thread
 has its device made current for the life of the run
 (<a href="gpu_layer.md"><code>gpu_layer.md</code></a>, &quot;Layering&quot;). No node is ever given a thread
 of its own, so the thread count is a property of the plan, fixed at planning,
@@ -703,7 +813,7 @@ workers. Only the top-level run owns threads. Nesting adds nodes to the
 queue, never workers, and a loop re-adds its body's nodes to it, as the
 thread-count test below checks across a replay.</p>
 <p><strong>The count is a budget, admitted beside memory.</strong> <code>n_cpu</code> defaults to the
-host's <code>available_parallelism</code> less the stream workers' threads, floored at
+host's <code>available_parallelism</code> less the GPU workers' threads, floored at
 one, and the config overrides it beside the <code>[memory]</code> caps. A placement that
 needs more CPU workers than the budget is refused in the same admission pass
 that refuses an arena that does not fit.</p>
@@ -761,7 +871,7 @@ worker, and no crate has it in the DAG-with-placement shape the model wants,
 so it is written under either choice. The usual crates would each add
 something unwanted. Rayon is a work-stealing scheduler, and stealing is
 placement, which is the orchestrator's; its idle workers spin before they
-sleep; and a stream worker is a thread dedicated to one device, which a
+sleep; and a GPU worker is a thread dedicated to one device, which a
 general pool has no notion of. Tokio is for many sockets, and its file I/O is
 a blocking thread pool underneath. The <code>threadpool</code> crate's <code>'static</code> bound on
 a job forces every edge buffer behind an <code>Arc</code> and defeats the scoped borrow.
@@ -771,8 +881,9 @@ asked for stealing on the CPU side a crate could slot in behind the same type.</
 no more threads than the plan said. The last is a tier-3 test
 (<a href="testing.md"><code>testing.md</code></a>, &quot;Tiers: where a check lives&quot;) that reads the
 <code>Threads:</code> line of <code>/proc/self/status</code> after a device-free run and compares it
-to the plan's worker total plus the main thread, and reads the same count
-before a loop's first iteration and after its last. It is the one check that
+to the plan's worker total plus the main thread, over GPU workers of several
+lanes each, and reads the same count before a loop's first iteration and
+after its last. It is the one check that
 catches what a lint cannot see: a linked host library opening a pool of its
 own at load, as a host BLAS does. If one is ever linked, its thread count is
 set to one at initialization, and this test is what notices when that slips.</p>
@@ -999,10 +1110,12 @@ the room the schedule leaves, and the schedule's peak depends on the
 widths. Is one pass enough, laying the fixed layouts out first and handing
 each adaptive task the remainder in schedule order, as <code>check_plan</code>'s
 room line does today, or does the planner iterate?</li>
-<li><strong>Reuse across streams.</strong> Offset reuse between buffers on different
-streams needs a DAG path between their lifetimes. Should the planner add an
-event edge to create one when the saving is large, or only exploit the
-paths the DAG already has?</li>
+<li><strong>Lanes from the DAG's shape.</strong> The builder names each GPU node's lane
+today, as the C++ mmd names a stream per class. Two nodes with no path
+between them could be put on two lanes by the planner instead, but a
+lane is a stream, a library handle pair and a BLAS workspace row, so the
+count is a cost, and which nodes are worth splitting is the schedule
+search's question below.</li>
 <li><strong>How loose is too loose.</strong> A bound from the dimensions is the preferred
 answer to a data-dependent size. At what ratio of bound to typical size
 does a sizing node pay for its extra host round trip?</li>

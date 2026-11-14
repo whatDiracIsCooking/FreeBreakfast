@@ -458,16 +458,26 @@ proptest! {
 type DrawnLoopRow = (usize, u16, usize, u8, usize);
 
 proptest! {
-    /// A loop's body in its parent's table: every body row lies inside the
-    /// loop's region, and none shares a byte with a parent row live across
-    /// the loop. And every reuse is ordered across iterations: with the
-    /// body unrolled `iterations` times, each iteration after the decision
-    /// of the one before and before its own, and the table's reads and
-    /// handoffs (plus some edges of the plan's own) as edges, any order the
-    /// run may take keeps two rows that share bytes apart in time. A body
-    /// row is live once per iteration; any other row from its first use to
-    /// its last over every iteration. No pair runs from a body node to a
-    /// node after the loop but from the decision, which the executor's
+    // A row before the loop on a copy past the first, and on no row of the
+    // first, is a rare draw: `a_row_on_a_later_copy_is_handed_off` holds it
+    // by hand, and more cases than the default meet it now and then.
+    #![proptest_config(ProptestConfig::with_cases(2048))]
+
+    /// A loop's body in its parent's table, for a decision loop and a
+    /// counted one of depth one to three: every body row, each copy of it,
+    /// lies inside the loop's region, and none shares a byte with a parent
+    /// row live across the loop. And every reuse is ordered across
+    /// iterations: with the body unrolled `iterations` times and the
+    /// table's reads and handoffs (plus some edges of the plan's own) as
+    /// edges, any order the run may take keeps two rows that share bytes
+    /// apart in time. A decision loop's iteration runs after the decision
+    /// of the one before and before its own; a counted loop's iteration
+    /// `k` after iteration `k - depth`, its sources after that iteration's
+    /// sinks, and each body node after itself in the iteration before,
+    /// the edges the executor adds. A body row is live once per iteration,
+    /// in its iteration's copy; any other row from its first use to its
+    /// last over every iteration. No pair runs from a body node to a node
+    /// after a decision loop but from the decision, which the executor's
     /// contract asks.
     #[test]
     fn loop_bodies_lie_in_their_regions(
@@ -479,11 +489,15 @@ proptest! {
             0..24,
         ),
         extra in prop::collection::vec((0usize..64, 0usize..64), 0..16),
-        iterations in 1usize..4,
+        iterations in 1usize..6,
+        depth in 0usize..4,
         seed in any::<u64>(),
     ) {
+        // Depth 0 draws a decision loop, whose last position decides.
+        let counted = depth > 0;
         let first = start % n;
         let last = first + len % (n - first);
+        let in_loop = |p: usize| first <= p && p <= last;
         let mut b = TableBuilder::<Device>::new();
         for &(p, mask, bytes, what, pick) in &drawn as &[DrawnLoopRow] {
             let p = p % n;
@@ -493,10 +507,15 @@ proptest! {
             }
             let carried = what == 2 && p < first;
             let writer = first + pick % (last - first + 1);
+            // A counted loop's row it writes and does not own has one user
+            // in the body: its producer or its carrying writer.
+            let leaves = (p + 1..n).any(|r| !in_loop(r) && mask & (1 << (r % 16)) != 0);
+            let lone = counted && (carried || (in_loop(p) && leaves));
             let id = b.output::<u8>(p, "o", bytes);
             for r in (p + 1)..n {
                 let after_writer = carried && writer <= r && r <= last;
-                if mask & (1 << (r % 16)) != 0 && !after_writer {
+                let shared = lone && in_loop(r);
+                if mask & (1 << (r % 16)) != 0 && !after_writer && !shared {
                     b.read(r, id);
                 }
             }
@@ -504,16 +523,26 @@ proptest! {
                 b.write(writer, id);
             }
         }
-        b.add_loop(first..=last);
+        if counted {
+            b.add_counted(first..=last, depth);
+        } else {
+            b.add_loop(first..=last);
+        }
         let table = b.build();
-        let in_loop = |p: usize| first <= p && p <= last;
+        let copies = depth.max(1);
 
         let g = &table.regions[0];
+        prop_assert_eq!(g.copies, copies);
+        // A row's bytes over every copy: a body row's, one region apart.
+        let extent = |i: usize| {
+            let (c, stride) = table.copies(i);
+            (table.offsets[i], (c - 1) * stride + table.rows[i].bytes)
+        };
         for i in 0..table.rows.len() {
             if table.body[i].is_none() || table.rows[i].bytes == 0 {
                 continue;
             }
-            let (o, bytes) = (table.offsets[i], table.rows[i].bytes);
+            let (o, bytes) = extent(i);
             prop_assert!(g.offset <= o && o + bytes <= g.offset + g.bytes);
             for j in 0..table.rows.len() {
                 let across = matches!(table.lives[j], Life::Span { first: f, last: l } if f <= last && first <= l);
@@ -533,7 +562,7 @@ proptest! {
         for &(u, v) in &deps {
             prop_assert!(u < v, "{}->{} points backward", u, v);
             prop_assert!(
-                !(in_loop(u) && v > last) || u == last,
+                counted || !(in_loop(u) && v > last) || u == last,
                 "{}->{} leaves the body from a body node", u, v
             );
         }
@@ -541,22 +570,25 @@ proptest! {
             extra
                 .iter()
                 .map(|&(u, v)| (u % n, v % n))
-                .filter(|(u, v)| u < v && !(in_loop(*u) && *v > last && *u != last)),
+                .filter(|(u, v)| {
+                    u < v && (counted || !(in_loop(*u) && *v > last && *u != last))
+                }),
         );
 
         // The unrolled plan: the nodes before the loop, the body once per
         // iteration, the nodes after it.
         let pre = first;
+        let body_len = last - first + 1;
         let id = |p: usize, it: usize| {
             if p < first {
                 p
             } else if p <= last {
-                pre + it * (last - first + 1) + (p - first)
+                pre + it * body_len + (p - first)
             } else {
-                pre + iterations * (last - first + 1) + (p - last - 1)
+                pre + iterations * body_len + (p - last - 1)
             }
         };
-        let total_nodes = n + (iterations - 1) * (last - first + 1);
+        let total_nodes = n + (iterations - 1) * body_len;
         let mut edges = Vec::new();
         for &(u, v) in &deps {
             match (in_loop(u), in_loop(v)) {
@@ -566,45 +598,73 @@ proptest! {
                 (false, false) => edges.push((id(u, 0), id(v, 0))),
             }
         }
-        for it in 0..iterations {
-            for p in first..last {
-                edges.push((id(p, it), id(last, it)));
-                if it + 1 < iterations {
-                    edges.push((id(last, it), id(p, it + 1)));
+        if counted {
+            // The executor's: the ring, from the sinks of iteration
+            // `k - depth` to the sources of `k`, and each body node after
+            // itself in the iteration before.
+            let inner: Vec<(usize, usize)> =
+                deps.iter().copied().filter(|&(u, v)| in_loop(u) && in_loop(v)).collect();
+            let sources: Vec<usize> =
+                (first..=last).filter(|&p| inner.iter().all(|&(_, v)| v != p)).collect();
+            let sinks: Vec<usize> =
+                (first..=last).filter(|&p| inner.iter().all(|&(u, _)| u != p)).collect();
+            for it in 1..iterations {
+                edges.extend((first..=last).map(|p| (id(p, it - 1), id(p, it))));
+                if it >= depth {
+                    for &s in &sinks {
+                        edges.extend(sources.iter().map(|&t| (id(s, it - depth), id(t, it))));
+                    }
                 }
             }
-            if it + 1 < iterations {
-                edges.push((id(last, it), id(last, it + 1)));
+        } else {
+            for it in 0..iterations {
+                for p in first..last {
+                    edges.push((id(p, it), id(last, it)));
+                    if it + 1 < iterations {
+                        edges.push((id(last, it), id(p, it + 1)));
+                    }
+                }
+                if it + 1 < iterations {
+                    edges.push((id(last, it), id(last, it + 1)));
+                }
             }
         }
         let time = &random_order(total_nodes, &edges, seed);
 
-        // Each row's intervals in time: a body row's per iteration, any
-        // other's over every iteration.
-        let intervals = |i: usize| -> Vec<(usize, usize)> {
+        // Each row's holdings: its bytes and its interval in time, a body
+        // row's per iteration in that iteration's copy, any other's over
+        // every iteration.
+        let holdings = |i: usize| -> Vec<(usize, usize, usize, usize)> {
             let users = &table.rows[i].users;
+            let (o, bytes) = (table.offsets[i], table.rows[i].bytes);
             let span = |ts: Vec<usize>| (*ts.iter().min().unwrap(), *ts.iter().max().unwrap());
             if table.body[i].is_some() {
                 (0..iterations)
-                    .map(|it| span(users.iter().map(|&(p, _)| time[id(p, it)]).collect()))
+                    .map(|it| {
+                        let at = o + (it % copies) * g.stride;
+                        let (t0, t1) = span(users.iter().map(|&(p, _)| time[id(p, it)]).collect());
+                        (at, at + bytes, t0, t1)
+                    })
                     .collect()
             } else {
                 let ts = users.iter().flat_map(|&(p, _)| {
                     let its = if in_loop(p) { 0..iterations } else { 0..1 };
                     its.map(move |it| time[id(p, it)])
                 });
-                vec![span(ts.collect())]
+                let (t0, t1) = span(ts.collect());
+                vec![(o, o + bytes, t0, t1)]
             }
         };
         for i in 0..table.rows.len() {
             for j in (i + 1)..table.rows.len() {
-                let (a, c) = (&table.rows[i], &table.rows[j]);
-                let (oa, oc) = (table.offsets[i], table.offsets[j]);
-                if a.bytes == 0 || c.bytes == 0 || oa >= oc + c.bytes || oc >= oa + a.bytes {
+                if table.rows[i].bytes == 0 || table.rows[j].bytes == 0 {
                     continue;
                 }
-                for &(a0, a1) in &intervals(i) {
-                    for &(c0, c1) in &intervals(j) {
+                for &(a, a_end, a0, a1) in &holdings(i) {
+                    for &(c, c_end, c0, c1) in &holdings(j) {
+                        if a >= c_end || c >= a_end {
+                            continue;
+                        }
                         prop_assert!(
                             a1 < c0 || c1 < a0,
                             "rows {} and {} share bytes and run at times {}..{} and {}..{}",
@@ -615,6 +675,61 @@ proptest! {
             }
         }
     }
+}
+
+/// A counted loop's region is its body's table once per copy, each copy
+/// a stride apart, and a row before the loop that shares bytes with a
+/// later copy only is handed off to the body, as one on the first copy
+/// would be: iteration 1 writes that copy.
+#[test]
+fn a_row_on_a_later_copy_is_handed_off() {
+    let mut b = TableBuilder::<Device>::new();
+    let p = b.output::<u8>(0, "P", 256);
+    b.read(2, p);
+    let q = b.scratch::<u8>(1, "Q", 256);
+    let y = b.scratch::<u8>(3, "Y", 200);
+    let z = b.output::<u8>(4, "Z", 8);
+    b.add_counted(3..=4, 2);
+    let table = b.build();
+    let g = &table.regions[0];
+    assert_eq!((g.copies, g.stride, g.offset), (2, 256, 0));
+    assert_eq!(table.offset(y), 0);
+    assert_eq!(table.offset(z), 0, "Z takes Y's bytes within an iteration");
+    assert_eq!((table.offset(p), table.offset(q)), (0, 256));
+    let (y, i) = (table.index(y), table.index(q));
+    assert_eq!(table.copies(y), (2, 256));
+    assert_eq!(table.copies(i), (1, 0));
+    // P meets Y's and Z's first copies, Q their second only; both are
+    // handed off to each.
+    assert_eq!(
+        table.handoffs(),
+        vec![(0, 3), (0, 4), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)]
+    );
+    let text = table.to_string();
+    assert!(
+        text.contains("loop 3-4: region of 456 bytes at 0, 2 copies 256 bytes apart"),
+        "{text}"
+    );
+}
+
+/// A counted loop's rows it writes and does not own have one user in its
+/// body each: an accumulator read by a second body node is refused, since
+/// two iterations in flight would reach its one copy in no order.
+#[test]
+#[cfg(debug_assertions)] // the contract is compiled out of release
+fn a_counted_loop_refuses_a_shared_accumulator() {
+    let m = panic_message(|| {
+        let mut b = TableBuilder::<Device>::new();
+        let k = b.output::<f64>(0, "K", 8);
+        b.read(1, k);
+        b.write(2, k);
+        b.add_counted(1..=2, 2);
+        let _ = b.build();
+    });
+    assert!(
+        m.contains("a row a counted loop writes and does not own has one user in its body"),
+        "{m}"
+    );
 }
 
 /// An SCF iteration's table at `nbf`: S, H, X, D, F and C as outputs, J and
@@ -941,7 +1056,7 @@ fn views_give_a_node_its_rows_and_no_others() {
     let block = Block::new(0, b.build());
 
     {
-        let v0 = block.partition(0);
+        let v0 = block.partition(0, 0);
         assert!(v0.get(s).iter().all(|&x| x == u64::MAX), "the 0xFF fill");
         let a0 = v0.take_mut(a);
         assert!(a0.iter().all(|x| x.is_nan()), "the 0xFF fill");
@@ -952,7 +1067,7 @@ fn views_give_a_node_its_rows_and_no_others() {
             v0.take_mut(a);
         });
         assert!(m.contains("A is already borrowed by this view"), "{m}");
-        let v1 = block.partition(1);
+        let v1 = block.partition(1, 0);
         let m = panic_message(|| {
             v1.get(a);
         });
@@ -960,7 +1075,7 @@ fn views_give_a_node_its_rows_and_no_others() {
     }
 
     // Readers share, once the writer's view has dropped.
-    let (v1, v2) = (block.partition(1), block.partition(2));
+    let (v1, v2) = (block.partition(1, 0), block.partition(2, 0));
     assert_eq!(v1.get(a), &[1.0, 2.0, 3.0, 4.0]);
     assert_eq!(v2.get(a), v1.get(a));
     assert_eq!(v1.take_mut(w), &[7]);
@@ -973,7 +1088,7 @@ fn views_give_a_node_its_rows_and_no_others() {
         v1.take_mut(a);
     });
     assert!(m.contains("node 1: A is read-only to it"), "{m}");
-    let v3 = block.partition(3);
+    let v3 = block.partition(3, 0);
     let m = panic_message(|| {
         v3.take_mut(w);
     });
@@ -992,7 +1107,7 @@ fn an_empty_block_allocates_nothing() {
     let e = b.output::<f64>(0, "E", 0);
     let block = Block::new(0, b.build());
     assert!(block.base.is_null());
-    assert!(block.partition(0).take_mut(e).is_empty());
+    assert!(block.partition(0, 0).take_mut(e).is_empty());
 }
 
 /// The host copies move a node's data in and out of its rows, and refuse a
@@ -1003,9 +1118,45 @@ fn host_copies_round_trip_and_check_lengths() {
     let a = b.output::<f64>(0, "A", 3);
     b.read(1, a);
     let block = Block::new(0, b.build());
-    memcpy_h2p(&block.partition(0), a, &[1.0, 2.0, 3.0]);
-    assert_eq!(memcpy_p2h(&block.partition(1), a), vec![1.0, 2.0, 3.0]);
+    memcpy_h2p(&block.partition(0, 0), a, &[1.0, 2.0, 3.0]);
+    assert_eq!(memcpy_p2h(&block.partition(1, 0), a), vec![1.0, 2.0, 3.0]);
 
-    let m = panic_message(|| memcpy_h2p(&block.partition(0), a, &[1.0]));
+    let m = panic_message(|| memcpy_h2p(&block.partition(0, 0), a, &[1.0]));
     assert!(m.contains("memcpy_h2p: the lengths differ"), "{m}");
+}
+
+/// A counted loop's body row is one copy per iteration in flight: the
+/// view of iteration `k` reaches copy `k mod depth`, each with a borrow
+/// flag of its own, so two iterations' writers hold the row at once and
+/// each keeps its own bytes; iteration `k + depth` is back on the first
+/// copy, and finds it held while iteration `k`'s view lives. A row
+/// outside the body has one copy whatever the iteration.
+#[test]
+fn each_iteration_reaches_its_own_copy() {
+    let mut b = TableBuilder::<Heap>::new();
+    let d = b.output::<f64>(0, "D", 2);
+    let batch = b.output::<f64>(1, "batch", 2);
+    b.read(1, d);
+    b.read(2, batch);
+    let acc = b.output::<f64>(0, "acc", 2);
+    b.write(2, acc);
+    b.add_counted(1..=2, 2);
+    let block = Block::new(0, b.build());
+    assert_eq!(block.partition(1, 5).iteration(), 5);
+
+    let (v0, v1) = (block.partition(1, 0), block.partition(1, 1));
+    v0.take_mut(batch).copy_from_slice(&[0.0, 0.5]);
+    v1.take_mut(batch).copy_from_slice(&[1.0, 1.5]);
+    let m = panic_message(|| {
+        block.partition(1, 2).take_mut(batch);
+    });
+    assert!(m.contains("batch is held by another node's view"), "{m}");
+    assert_eq!(v0.get(d).as_ptr(), v1.get(d).as_ptr(), "one copy of D");
+    drop((v0, v1));
+    for k in [2, 3] {
+        let v = block.partition(2, k);
+        assert_eq!(v.get(batch), &[(k - 2) as f64, (k - 2) as f64 + 0.5]);
+        v.take_mut(acc).fill(k as f64);
+    }
+    assert_eq!(block.partition(2, 1).get(acc), &[3.0, 3.0]);
 }

@@ -380,6 +380,28 @@ node and the replay after the decision. A dependency from a body node to a
 node after the loop is taken from the decision instead, since a body node
 runs once per iteration and the decision's `Break` once.
 
+**A counted loop's region is `R` copies of its body's table.** A counted
+loop ([`programming_model.md`](programming_model.md), "Plan once, run
+many") has no decision, and up to `R`, its depth, of its iterations are in
+flight at once. Its body's table is laid out once, alone, as a decision
+loop's is, and its region holds it `R` times, a stride apart, the body's
+total aligned: iteration `k` runs in copy `k mod R`, so admission counts
+`R` bodies once at each of the loop's positions, by the same name. Two
+iterations in flight hold different copies, and the copy iteration `k`
+takes back was last used by iteration `k - R`, on which iteration `k`
+waits, the ring. Within an iteration the body's rows share bytes as any
+table's do. A row outside the body that shares bytes with any copy is
+ordered against it as against one, whatever copy it meets. A body row has
+a borrow flag per copy, so two iterations' views hold their own.
+
+**What a counted loop writes and does not own has one user in its body.**
+Two iterations in flight would otherwise reach the row's one copy in no
+order. An accumulator, K summed over batches, is produced before the loop,
+read and written by its one body node, which runs after itself in the
+iteration before, so the batches add in order; an output read after the
+loop is its producer's in the last iteration. `TableBuilder::build`
+refuses any other.
+
 **A carried row is the parent's.** The density, the occupied factor and
 DIIS's history pass from one iteration to the next. Such a row is produced
 before the loop (the guess, a zero fill, `add_diis`'s `diis history` task),
