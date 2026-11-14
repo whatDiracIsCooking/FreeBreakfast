@@ -427,6 +427,25 @@ iteration before, so the batches add in order; an output read after the
 loop is its producer's in the last iteration. `TableBuilder::build`
 refuses any other.
 
+**Regions nest: a counted loop in a decision loop's body has its region
+in that body's table.** The one nesting built is a counted loop in a
+decision loop's body ([`programming_model.md`](programming_model.md),
+"Plan once, run many"), J and K over a streamed B every SCF iteration. A
+row is the body of the innermost loop that holds all its users. The
+counted loop's body is laid out alone, as at the top level, its region of
+`R` copies is one row of the decision loop's body table, live over the
+counted loop's span, and that body is laid out alone around it, its region
+a row of the parent. A row's lifetime is extended over every loop it
+overlaps that is not its own or one holding its own: a row of the decision
+loop's body used before and after the counted loop is live across the
+whole of it, so no copy takes its bytes, and a row outside both is live
+across the decision loop. Admission counts the outer region alone, the
+inner inside it. A handoff or read leaving the decision loop is taken from
+its decision; one leaving only the counted loop, to a later node of the
+decision loop's body, from the writer's last trip. The accumulator above
+may be a row of the decision loop's body: K zeroed in the SCF's body before the batches, written by the counted
+loop's one user, and read after it, every iteration.
+
 **A carried row is the parent's.** The density, the occupied factor and
 DIIS's history pass from one iteration to the next. Such a row is produced
 before the loop (the guess, a zero fill, `add_diis`'s `diis history` task),

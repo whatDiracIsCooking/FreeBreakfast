@@ -453,9 +453,14 @@ proptest! {
 
 /// A row as the loop property draws it: its producer, a mask of later
 /// nodes that read it, its bytes, what it is (0 scratch, 1 output, 2 an
-/// output the loop carries when produced before it), and a pick of the
-/// carrying writer.
+/// output a loop carries, when produced before the loop the writer is
+/// in), and a pick of the carrying writer.
 type DrawnLoopRow = (usize, u16, usize, u8, usize);
+
+/// A counted loop nested in the drawn decision loop's body, as drawn: a
+/// pick of its first position and of its length, its depth and its trip
+/// count.
+type DrawnInner = (usize, usize, usize, usize);
 
 proptest! {
     // A row before the loop on a copy past the first, and on no row of the
@@ -463,22 +468,26 @@ proptest! {
     // by hand, and more cases than the default meet it now and then.
     #![proptest_config(ProptestConfig::with_cases(2048))]
 
-    /// A loop's body in its parent's table, for a decision loop and a
-    /// counted one of depth one to three: every body row, each copy of it,
-    /// lies inside the loop's region, and none shares a byte with a parent
-    /// row live across the loop. And every reuse is ordered across
-    /// iterations: with the body unrolled `iterations` times and the
+    /// A loop's body in its parent's table, for a decision loop, a counted
+    /// one of depth one to three, and a decision loop whose body holds a
+    /// counted one: every body row, each copy of it, lies inside its loop's
+    /// region, a nested region inside its parent's, and none shares a byte
+    /// with a row outside its loop live across it. And every reuse is
+    /// ordered across iterations: with the body unrolled `iterations`
+    /// times, a nested counted loop's `trips` times in each, and the
     /// table's reads and handoffs (plus some edges of the plan's own) as
     /// edges, any order the run may take keeps two rows that share bytes
     /// apart in time. A decision loop's iteration runs after the decision
     /// of the one before and before its own; a counted loop's iteration
     /// `k` after iteration `k - depth`, its sources after that iteration's
     /// sinks, and each body node after itself in the iteration before,
-    /// the edges the executor adds. A body row is live once per iteration,
-    /// in its iteration's copy; any other row from its first use to its
-    /// last over every iteration. No pair runs from a body node to a node
-    /// after a decision loop but from the decision, which the executor's
-    /// contract asks.
+    /// the edges the executor adds, a nested one's within each iteration of
+    /// the decision loop. An edge leaving a counted loop is from its last
+    /// trip, as the executor takes it. A body row is live once per
+    /// iteration, in its iteration's copy; any other row from its first
+    /// use to its last over every iteration. No pair runs from a body node
+    /// to a node after a decision loop but from the decision, which the
+    /// executor's contract asks.
     #[test]
     fn loop_bodies_lie_in_their_regions(
         n in 2usize..12,
@@ -491,6 +500,7 @@ proptest! {
         extra in prop::collection::vec((0usize..64, 0usize..64), 0..16),
         iterations in 1usize..6,
         depth in 0usize..4,
+        inner in prop::option::of((0usize..12, 0usize..12, 1usize..4, 1usize..5)),
         seed in any::<u64>(),
     ) {
         // Depth 0 draws a decision loop, whose last position decides.
@@ -498,6 +508,15 @@ proptest! {
         let first = start % n;
         let last = first + len % (n - first);
         let in_loop = |p: usize| first <= p && p <= last;
+        // A counted loop in a decision loop's body, before its decision.
+        let inner = inner
+            .filter(|_| !counted && last > first)
+            .map(|(s, l, d, trips): DrawnInner| {
+                let f = first + s % (last - first);
+                (f, f + l % (last - f), d, trips)
+            });
+        let in_inner = |p: usize| inner.is_some_and(|(f, l, ..)| f <= p && p <= l);
+        let trips = inner.map_or(1, |(.., t)| t);
         let mut b = TableBuilder::<Device>::new();
         for &(p, mask, bytes, what, pick) in &drawn as &[DrawnLoopRow] {
             let p = p % n;
@@ -505,23 +524,40 @@ proptest! {
                 let _ = b.scratch::<u8>(p, "s", bytes);
                 continue;
             }
-            let carried = what == 2 && p < first;
-            let writer = first + pick % (last - first + 1);
+            let reads = |r: usize| mask & (1 << (r % 16)) != 0;
+            // Carried by the outer loop, from before it, its writer perhaps
+            // in the nested loop; or by the nested loop, from before it in
+            // the outer loop's body.
+            let writer = match inner {
+                _ if what != 2 => None,
+                _ if p < first => Some(first + pick % (last - first + 1)),
+                Some((f, l, ..)) if first <= p && p < f => Some(f + pick % (l - f + 1)),
+                _ => None,
+            };
+            // The span after the writer no other user may take: the rest of
+            // the outer loop for a writer it carries from before it.
+            let after_writer = |r: usize| {
+                writer.is_some_and(|w| p < first && w <= r && r <= last)
+            };
             // A counted loop's row it writes and does not own has one user
             // in the body: its producer or its carrying writer.
-            let leaves = (p + 1..n).any(|r| !in_loop(r) && mask & (1 << (r % 16)) != 0);
-            let lone = counted && (carried || (in_loop(p) && leaves));
+            let leaves = (p + 1..n).any(|r| !in_loop(r) && reads(r));
+            let lone = counted && (writer.is_some() || (in_loop(p) && leaves));
+            let leaves_inner = (p + 1..n).any(|r| !in_inner(r) && reads(r));
+            let lone_inner = writer.is_some_and(in_inner) || (in_inner(p) && leaves_inner);
             let id = b.output::<u8>(p, "o", bytes);
             for r in (p + 1)..n {
-                let after_writer = carried && writer <= r && r <= last;
-                let shared = lone && in_loop(r);
-                if mask & (1 << (r % 16)) != 0 && !after_writer && !shared {
+                let shared = (lone && in_loop(r)) || (lone_inner && in_inner(r));
+                if reads(r) && !after_writer(r) && !shared && Some(r) != writer {
                     b.read(r, id);
                 }
             }
-            if carried {
-                b.write(writer, id);
+            if let Some(w) = writer {
+                b.write(w, id);
             }
+        }
+        if let Some((f, l, d, _)) = inner {
+            b.add_counted(f..=l, d);
         }
         if counted {
             b.add_counted(first..=last, depth);
@@ -530,29 +566,44 @@ proptest! {
         }
         let table = b.build();
         let copies = depth.max(1);
+        // The regions: a nested loop's first, as it was declared.
+        let outer = usize::from(inner.is_some());
+        prop_assert_eq!(table.regions.len(), outer + 1);
+        prop_assert_eq!(table.regions[outer].copies, copies);
+        prop_assert_eq!(table.regions[outer].parent, None);
+        if let Some((.., d, _)) = inner {
+            let (c, g) = (&table.regions[0], &table.regions[outer]);
+            prop_assert_eq!((c.copies, c.parent), (d, Some(outer)));
+            prop_assert!(g.offset <= c.offset && c.offset + c.bytes <= g.offset + g.bytes);
+        }
 
-        let g = &table.regions[0];
-        prop_assert_eq!(g.copies, copies);
         // A row's bytes over every copy: a body row's, one region apart.
         let extent = |i: usize| {
             let (c, stride) = table.copies(i);
             (table.offsets[i], (c - 1) * stride + table.rows[i].bytes)
         };
+        // Whether row `j` is of region `g`'s body or a region it holds.
+        let owned = |g: usize, j: usize| {
+            table.body[j].is_some_and(|h| h == g || table.regions[h].parent == Some(g))
+        };
         for i in 0..table.rows.len() {
-            if table.body[i].is_none() || table.rows[i].bytes == 0 {
+            let Some(g) = table.body[i] else { continue };
+            if table.rows[i].bytes == 0 {
                 continue;
             }
+            let region = &table.regions[g];
             let (o, bytes) = extent(i);
-            prop_assert!(g.offset <= o && o + bytes <= g.offset + g.bytes);
+            prop_assert!(region.offset <= o && o + bytes <= region.offset + region.bytes);
+            let (gf, gl) = (*region.positions.start(), *region.positions.end());
             for j in 0..table.rows.len() {
-                let across = matches!(table.lives[j], Life::Span { first: f, last: l } if f <= last && first <= l);
-                if table.body[j].is_some() || !across || table.rows[j].bytes == 0 {
+                let across = matches!(table.lives[j], Life::Span { first: f, last: l } if f <= gl && gf <= l);
+                if owned(g, j) || !across || table.rows[j].bytes == 0 {
                     continue;
                 }
-                let p = table.offsets[j];
+                let (p, pb) = extent(j);
                 prop_assert!(
-                    o + bytes <= p || p + table.rows[j].bytes <= o,
-                    "body row {} overlaps row {}, live across the loop", i, j
+                    o + bytes <= p || p + pb <= o,
+                    "body row {} overlaps row {}, live across its loop", i, j
                 );
             }
         }
@@ -575,85 +626,128 @@ proptest! {
                 }),
         );
 
-        // The unrolled plan: the nodes before the loop, the body once per
-        // iteration, the nodes after it.
-        let pre = first;
-        let body_len = last - first + 1;
-        let id = |p: usize, it: usize| {
-            if p < first {
-                p
-            } else if p <= last {
-                pre + it * body_len + (p - first)
-            } else {
-                pre + iterations * body_len + (p - last - 1)
-            }
+        // The unrolled plan: each node's instances, by (iteration, trip),
+        // the outer loop's iteration and the nested loop's trip, each 0
+        // outside its loop, numbered in plan order.
+        let indices = |p: usize| -> Vec<(usize, usize)> {
+            let its = if in_loop(p) { iterations } else { 1 };
+            let ts = if in_inner(p) { trips } else { 1 };
+            (0..its).flat_map(|a| (0..ts).map(move |t| (a, t))).collect()
         };
-        let total_nodes = n + (iterations - 1) * body_len;
+        let mut order: Vec<(usize, usize, usize)> = Vec::new();
+        for p in (0..first).chain(last + 1..n) {
+            order.push((p, 0, 0));
+        }
+        for a in 0..iterations {
+            let mut p = first;
+            while p <= last {
+                match inner {
+                    Some((f, l, ..)) if p == f => {
+                        for t in 0..trips {
+                            order.extend((f..=l).map(|q| (q, a, t)));
+                        }
+                        p = l + 1;
+                    }
+                    _ => {
+                        order.push((p, a, 0));
+                        p += 1;
+                    }
+                }
+            }
+        }
+        let index: std::collections::HashMap<(usize, usize, usize), usize> =
+            order.iter().enumerate().map(|(i, &k)| (k, i)).collect();
+        let id = |p: usize, a: usize, t: usize| index[&(p, a, t)];
         let mut edges = Vec::new();
         for &(u, v) in &deps {
-            match (in_loop(u), in_loop(v)) {
-                (true, true) => edges.extend((0..iterations).map(|it| (id(u, it), id(v, it)))),
-                (false, true) => edges.push((id(u, 0), id(v, 0))),
-                (true, false) => edges.push((id(u, iterations - 1), id(v, 0))),
-                (false, false) => edges.push((id(u, 0), id(v, 0))),
+            for (a, t) in indices(v) {
+                let ua = if !in_loop(u) { 0 } else if in_loop(v) { a } else { iterations - 1 };
+                let ut = if !in_inner(u) { 0 } else if in_inner(v) { t } else { trips - 1 };
+                edges.push((id(u, ua, ut), id(v, a, t)));
             }
         }
-        if counted {
-            // The executor's: the ring, from the sinks of iteration
-            // `k - depth` to the sources of `k`, and each body node after
-            // itself in the iteration before.
-            let inner: Vec<(usize, usize)> =
-                deps.iter().copied().filter(|&(u, v)| in_loop(u) && in_loop(v)).collect();
+        // The executor's for a counted loop over `range`, of `count` trips
+        // and depth `d`, its instance of node `p` in trip `k` `at(p, k)`:
+        // the ring, from the sinks of trip `k - d` to the sources of `k`,
+        // and each body node after itself in the trip before.
+        let ring = |edges: &mut Vec<(usize, usize)>,
+                    range: std::ops::RangeInclusive<usize>,
+                    count: usize,
+                    d: usize,
+                    at: &dyn Fn(usize, usize) -> usize| {
+            let inside: Vec<(usize, usize)> = deps
+                .iter()
+                .copied()
+                .filter(|(u, v)| range.contains(u) && range.contains(v))
+                .collect();
             let sources: Vec<usize> =
-                (first..=last).filter(|&p| inner.iter().all(|&(_, v)| v != p)).collect();
+                range.clone().filter(|&p| inside.iter().all(|&(_, v)| v != p)).collect();
             let sinks: Vec<usize> =
-                (first..=last).filter(|&p| inner.iter().all(|&(u, _)| u != p)).collect();
-            for it in 1..iterations {
-                edges.extend((first..=last).map(|p| (id(p, it - 1), id(p, it))));
-                if it >= depth {
+                range.clone().filter(|&p| inside.iter().all(|&(u, _)| u != p)).collect();
+            for k in 1..count {
+                edges.extend(range.clone().map(|p| (at(p, k - 1), at(p, k))));
+                if k >= d {
                     for &s in &sinks {
-                        edges.extend(sources.iter().map(|&t| (id(s, it - depth), id(t, it))));
+                        edges.extend(sources.iter().map(|&q| (at(s, k - d), at(q, k))));
                     }
                 }
             }
+        };
+        if counted {
+            ring(&mut edges, first..=last, iterations, depth, &|p, k| id(p, k, 0));
         } else {
-            for it in 0..iterations {
+            // Every body instance of an iteration before its decision, and
+            // the decision before every instance of the next.
+            for a in 0..iterations {
                 for p in first..last {
-                    edges.push((id(p, it), id(last, it)));
-                    if it + 1 < iterations {
-                        edges.push((id(last, it), id(p, it + 1)));
+                    for (pa, t) in indices(p) {
+                        if pa != a {
+                            continue;
+                        }
+                        edges.push((id(p, a, t), id(last, a, 0)));
+                        if a + 1 < iterations {
+                            edges.push((id(last, a, 0), id(p, a + 1, t)));
+                        }
                     }
                 }
-                if it + 1 < iterations {
-                    edges.push((id(last, it), id(last, it + 1)));
+                if a + 1 < iterations {
+                    edges.push((id(last, a, 0), id(last, a + 1, 0)));
+                }
+                if let Some((f, l, d, _)) = inner {
+                    ring(&mut edges, f..=l, trips, d, &|p, k| id(p, a, k));
                 }
             }
         }
-        let time = &random_order(total_nodes, &edges, seed);
+        let time = &random_order(order.len(), &edges, seed);
 
         // Each row's holdings: its bytes and its interval in time, a body
-        // row's per iteration in that iteration's copy, any other's over
-        // every iteration.
+        // row's per iteration of its own loop, in that iteration's copy,
+        // any other's over every instance of its users.
         let holdings = |i: usize| -> Vec<(usize, usize, usize, usize)> {
             let users = &table.rows[i].users;
             let (o, bytes) = (table.offsets[i], table.rows[i].bytes);
-            let span = |ts: Vec<usize>| (*ts.iter().min().unwrap(), *ts.iter().max().unwrap());
-            if table.body[i].is_some() {
-                (0..iterations)
-                    .map(|it| {
-                        let at = o + (it % copies) * g.stride;
-                        let (t0, t1) = span(users.iter().map(|&(p, _)| time[id(p, it)]).collect());
-                        (at, at + bytes, t0, t1)
-                    })
-                    .collect()
-            } else {
-                let ts = users.iter().flat_map(|&(p, _)| {
-                    let its = if in_loop(p) { 0..iterations } else { 0..1 };
-                    its.map(move |it| time[id(p, it)])
-                });
-                let (t0, t1) = span(ts.collect());
-                vec![(o, o + bytes, t0, t1)]
+            let mut groups: std::collections::BTreeMap<(usize, usize), (usize, Vec<usize>)> =
+                Default::default();
+            for &(p, _) in users {
+                for (a, t) in indices(p) {
+                    let (key, copy) = match table.body[i] {
+                        None => ((0, 0), 0),
+                        Some(g) if inner.is_some() && g == 0 => ((a, t), t % table.regions[0].copies),
+                        Some(_) if counted => ((a, 0), a % copies),
+                        Some(_) => ((a, 0), 0),
+                    };
+                    let group = groups.entry(key).or_insert((copy, Vec::new()));
+                    group.1.push(time[id(p, a, t)]);
+                }
             }
+            let stride = table.copies(i).1;
+            groups
+                .into_values()
+                .map(|(copy, ts)| {
+                    let at = o + copy * stride;
+                    (at, at + bytes, *ts.iter().min().unwrap(), *ts.iter().max().unwrap())
+                })
+                .collect()
         };
         for i in 0..table.rows.len() {
             for j in (i + 1)..table.rows.len() {

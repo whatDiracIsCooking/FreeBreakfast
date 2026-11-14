@@ -365,16 +365,29 @@ fn a_loop_carries_its_rows_to_the_fixed_point() {
     }
 }
 
-/// A loop inside a loop's body is refused when it is added.
+/// A decision loop inside a decision loop's body is refused when it is
+/// added.
 #[test]
 #[cfg(debug_assertions)] // the contract is compiled out of release
-#[should_panic(expected = "a body holds no loop")]
-fn a_body_holds_no_loop() {
+#[should_panic(expected = "a decision loop holds no decision loop")]
+fn a_decision_loop_holds_no_decision_loop() {
     let mut dag = Dag::<PinnedStandIn, ()>::new();
     let body = dag.len();
     dag.add_gpu("inner", 0, Declares(vec![]));
     dag.add_loop("inner loop", 0, body, 2, Stops);
     dag.add_loop("outer loop", 0, body, 2, Stops);
+}
+
+/// A loop inside a counted loop's body is refused when it is added.
+#[test]
+#[cfg(debug_assertions)] // the contract is compiled out of release
+#[should_panic(expected = "a counted loop holds no loop")]
+fn a_counted_loop_holds_no_loop() {
+    let mut dag = Dag::<PinnedStandIn, ()>::new();
+    let body = dag.len();
+    dag.add_gpu("inner", 0, Declares(vec![]));
+    dag.add_counted(body, 2, 1);
+    dag.add_counted(body, 2, 1);
 }
 
 /// A node that checks every row it reads against the reference and writes
@@ -830,7 +843,9 @@ struct BodySpec {
 /// some of them, and some of the body's outputs, after it: the body's
 /// shape, the rows it and its decision carry, and its iteration count.
 /// A counted loop's (`depth` above 0) carried rows and outputs read after
-/// it have one user in the body each, and it has no decision.
+/// it have one user in the body each, and it has no decision. A decision
+/// loop's body may hold a counted loop over a run of its nodes (`inner`),
+/// with the same rule for what that loop writes and does not own.
 #[derive(Debug)]
 struct LoopSpec {
     parent: Vec<usize>,
@@ -842,6 +857,9 @@ struct LoopSpec {
     max_iterations: usize,
     /// A counted loop's depth, or 0 for a decision loop.
     depth: usize,
+    /// A counted loop in a decision loop's body: its first and last body
+    /// nodes, by body index, its trip count and its depth.
+    inner: Option<(usize, usize, usize, usize)>,
 }
 
 impl LoopSpec {
@@ -864,15 +882,32 @@ impl LoopSpec {
         let mut rows: Vec<Vec<u64>> = (0..p).map(|k| parent_value(k, self.parent[k])).collect();
         rows.extend(self.body.iter().map(|b| vec![0; b.len]));
         let decision = self.body.len() + 1;
+        // Body node `j` in the iteration of its innermost loop `index`.
+        let step = |rows: &mut Vec<Vec<u64>>, j: usize, index: usize| {
+            let b = &self.body[j];
+            let ins: Vec<Vec<u64>> = b.reads.iter().map(|&k| rows[k].clone()).collect();
+            let ins: Vec<&[u64]> = ins.iter().map(Vec::as_slice).collect();
+            if let Some(c) = b.carries {
+                rows[c] = carried_value(j + 1, &rows[c], &ins);
+            }
+            let at = j + 1 + ITERATION * index;
+            rows[p + j] = (0..b.len).map(|i| mix(at, i, &ins)).collect();
+        };
         for it in 0..self.iterations {
-            for (j, b) in self.body.iter().enumerate() {
-                let ins: Vec<Vec<u64>> = b.reads.iter().map(|&k| rows[k].clone()).collect();
-                let ins: Vec<&[u64]> = ins.iter().map(Vec::as_slice).collect();
-                if let Some(c) = b.carries {
-                    rows[c] = carried_value(j + 1, &rows[c], &ins);
+            let mut j = 0;
+            while j < self.body.len() {
+                match self.inner {
+                    Some((first, last, trips, _)) if j == first => {
+                        for trip in 0..trips {
+                            (first..=last).for_each(|j| step(&mut rows, j, trip));
+                        }
+                        j = last + 1;
+                    }
+                    _ => {
+                        step(&mut rows, j, it);
+                        j += 1;
+                    }
                 }
-                let at = j + 1 + ITERATION * it;
-                rows[p + j] = (0..b.len).map(|i| mix(at, i, &ins)).collect();
             }
             if let Some(c) = self.decision_carries {
                 rows[c] = carried_value(decision, &rows[c], &[]);
@@ -911,6 +946,11 @@ impl LoopSpec {
                 dag.add_cpu(name, 0, node!(false))
             };
             rows.push(made.out);
+            if let Some((first, last, trips, depth)) = self.inner
+                && j == last
+            {
+                dag.add_counted(body + first, trips, depth);
+            }
         }
         if self.depth > 0 {
             dag.add_counted(body, self.iterations, self.depth);
@@ -934,8 +974,10 @@ impl LoopSpec {
 /// the decision perhaps carrying one more, and one to five iterations;
 /// or, a third of the time, a counted loop of depth one to three (at most
 /// its trip count) with no decision, each row it carries or leaves read by
-/// no other body node. Lengths are small, so most rows pad to one
-/// alignment and any dead one's bytes fit the next.
+/// no other body node. Half the decision loops hold a counted loop over a
+/// run of their body nodes, of one to four trips, under the same rule.
+/// Lengths are small, so most rows pad to one alignment and any dead one's
+/// bytes fit the next.
 fn arb_loop() -> impl Strategy<Value = LoopSpec> {
     let node = (
         any::<bool>(),
@@ -952,10 +994,21 @@ fn arb_loop() -> impl Strategy<Value = LoopSpec> {
         1..6usize,
         0..3usize,
         0..9usize,
+        prop::option::of((
+            any::<prop::sample::Index>(),
+            any::<prop::sample::Index>(),
+            1..5usize,
+            1..4usize,
+        )),
     )
-        .prop_map(|(parent, raw, decision, iterations, slack, depth)| {
+        .prop_map(|(parent, raw, decision, iterations, slack, depth, inner)| {
             // Depth 0 to 5 a decision loop, 6 to 8 a counted one.
             let depth = depth.saturating_sub(5).min(iterations);
+            let n = raw.len();
+            let inner = inner.filter(|_| depth == 0).map(|(f, l, trips, d)| {
+                let first = f.index(n);
+                (first, first + l.index(n - first), trips, d.min(trips))
+            });
             let p = parent.len();
             // Each parent row's writer, by body index; the decision's is
             // the body's length.
@@ -1003,6 +1056,21 @@ fn arb_loop() -> impl Strategy<Value = LoopSpec> {
                     b.reads.retain(|k| !lone.contains(k));
                 }
             }
+            if let Some((first, last, ..)) = inner {
+                // The same for the nested loop: a row one of its nodes
+                // carries, or an output of one read after it, in the body
+                // or after the decision loop, has no other user in it.
+                let leaves = |j: usize| {
+                    body[j].after || body[last + 1..].iter().any(|b| b.reads.contains(&(p + j)))
+                };
+                let lone: Vec<usize> = (first..=last)
+                    .filter_map(|j| body[j].carries)
+                    .chain((first..=last).filter(|&j| leaves(j)).map(|j| p + j))
+                    .collect();
+                for b in &mut body[first..=last] {
+                    b.reads.retain(|k| !lone.contains(k));
+                }
+            }
             LoopSpec {
                 after: parent.iter().map(|&(_, a)| a).collect(),
                 parent: parent.into_iter().map(|(len, _)| len).collect(),
@@ -1011,6 +1079,7 @@ fn arb_loop() -> impl Strategy<Value = LoopSpec> {
                 iterations,
                 max_iterations: iterations + slack,
                 depth,
+                inner,
             }
         })
 }
@@ -1028,7 +1097,11 @@ proptest! {
     /// loop runs its iterations overlapped, up to its depth, each in its
     /// own copy of the body's rows: a copy two iterations share, or an
     /// iteration started before the one `depth` back has finished, shows
-    /// the same way.
+    /// the same way. A counted loop nested in a decision loop is replayed
+    /// whole every iteration, each of its nodes with an entry per
+    /// (iteration, trip): a trip left out of a replay, or a nested region
+    /// sharing bytes with a row of the decision loop's body live across
+    /// it, shows as a wrong value too.
     #[test]
     fn every_loop_carries_what_the_model_does(spec in arb_loop()) {
         let (dag, out) = spec.dag();
@@ -1045,6 +1118,20 @@ proptest! {
                 .collect();
             let decided = if spec.depth > 0 { vec![] } else { vec![(decision, spec.iterations)] };
             prop_assert_eq!(iterations, decided);
+            if let Some((first, last, trips, _)) = spec.inner {
+                for j in first..=last {
+                    let entries: Vec<_> = record
+                        .tasks
+                        .iter()
+                        .filter(|t| t.name == format!("b{j}"))
+                        .map(|t| (t.outer, t.iteration))
+                        .collect();
+                    let each: Vec<_> = (0..spec.iterations)
+                        .flat_map(|k| (0..trips).map(move |t| (Some(k), Some(t))))
+                        .collect();
+                    prop_assert_eq!(entries, each);
+                }
+            }
             prop_assert_eq!(&*out.lock().unwrap(), &expect);
         }
     }

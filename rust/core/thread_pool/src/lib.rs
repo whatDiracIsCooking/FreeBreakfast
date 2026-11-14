@@ -87,9 +87,10 @@
 //!
 //! A loop is a sub-DAG replayed between host decisions
 //! (`docs/programming_model.md`, "Plan once, run many"). Its decision is a
-//! CPU node after every body node, and after any node before the body it
-//! is given, so a CPU worker has waited on the host
-//! for every GPU body node's work before it runs: the body is quiescent,
+//! CPU node after the body's sinks, so after every body node, and after
+//! any node before the body it is given, so a CPU worker has waited on the
+//! host for the sinks' work, which every GPU body node's precedes on the
+//! device, before it runs: the body is quiescent,
 //! its events complete, when the decision readies it again. The replay
 //! happens under the run's one lock, in the same scope, on the same
 //! workers: nothing is spawned and nothing allocated but the record's
@@ -107,6 +108,13 @@
 //! back to back and nothing waits on the host between them. Each node is
 //! handed its trip ([`Lane`]), and a GPU node has events per trip, so its
 //! consumers wait on its own trip's.
+//!
+//! A counted loop may lie in a decision loop's body, the batches of a
+//! streamed tensor reduced every SCF iteration: its instances unroll
+//! within the decision loop's run of them, so the decision's replay
+//! readies the counted loop whole, its trips overlapped again with no
+//! host wait between them. A counted loop holds no loop, and a decision
+//! loop no decision loop.
 //!
 //! # Failure
 //!
@@ -152,7 +160,9 @@
 //! replays: a sync point the loop has anyway, so still no scope adds one.
 //! A scope that cannot be read there fails the decision. A counted loop's
 //! body node has an event pair per trip, each read after the run like any
-//! other node's, and an entry per trip.
+//! other node's, and an entry per trip; inside a decision loop, the
+//! decision reads each trip's before the replay, and the node has an entry
+//! per iteration and trip, the iteration as [`TaskTime::outer`].
 //!
 //! The record also carries each node's dimensions ([`Plan::set_dims`]) and
 //! the profile that built the executor; the plan's arena sizes
@@ -172,8 +182,9 @@
 //!
 //! # Not yet
 //!
-//! A loop inside a loop's body (#1613), and a node after a decision loop
-//! reading a body node directly: both are refused by contract. `scope!` inside a node and the
+//! A decision loop inside a decision loop's body, a loop inside a counted
+//! loop's, and a node after a decision loop reading a body node directly:
+//! each is refused by contract. `scope!` inside a node and the
 //! sync-after-every-task switch are `diagnostics.md`'s and not here.
 //!
 //! ```

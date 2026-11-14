@@ -9,7 +9,9 @@
 //!   [`TableBuilder::add_loop`] marks a loop's positions, whose body's
 //!   rows are a table of their own laid out in a region the rest of the
 //!   table holds for the loop; [`TableBuilder::add_counted`] a counted
-//!   loop's, whose region holds that table once per iteration in flight;
+//!   loop's, whose region holds that table once per iteration in flight,
+//!   and which may lie in a decision loop's body, its region a row of
+//!   that body's table;
 //!   [`TableBuilder::write`] is a row the loop carries from one iteration
 //!   to the next (`docs/memory.md`, "Nested plans").
 //! - [`TableBuilder::build`] lays them out with [`assign`], the pure offset
@@ -82,9 +84,10 @@
 //! the fewest bytes, so a reuse between two lanes is a handoff the planner
 //! adds as an edge, an event on the device that serializes the two
 //! (`docs/memory.md`, "Lifetimes"). A loop's region holds one body, a
-//! counted loop's one per copy; the max over several inner shapes, the
-//! semi-numerical Hessian's, and a loop in a loop's body (#1613) are not
-//! built. Declaring rows from tasks, and turning the table's
+//! counted loop's one per copy, and a counted loop's region may be a row
+//! of a decision loop's body; the max over several inner shapes, the
+//! semi-numerical Hessian's, a decision loop in a decision loop's body
+//! and a loop in a counted loop's are not built. Declaring rows from tasks, and turning the table's
 //! [`reads`](Table::reads) and [`handoffs`](Table::handoffs) into a plan's
 //! dependencies, is `fb_core_planner`'s. A block is
 //! allocated on the thread that makes it, not its worker's: a block lives

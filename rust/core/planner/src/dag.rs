@@ -109,7 +109,7 @@ struct Worker<H> {
 /// order: a task can only read what an earlier one produced. A loop
 /// ([`Dag::add_loop`]) is a run of them replayed between host decisions; a
 /// counted loop ([`Dag::add_counted`]) one run a trip count fixed here,
-/// with no decision.
+/// with no decision, perhaps inside a decision loop's body.
 ///
 /// Its tables are each GPU worker's device and pinned ones, which its
 /// lanes share, and the plan's one heap table, whose rows only CPU nodes
@@ -267,12 +267,22 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
     /// A task after the loop that reads a row the body wrote runs after the
     /// decision's `Break`, never after a single iteration.
     ///
+    /// The body may hold counted loops ([`Dag::add_counted`]), closed
+    /// before it, J and K over a streamed tensor every SCF iteration: each
+    /// one's region is a row of the body's table, live over its span, and
+    /// each is replayed whole every iteration, its trips overlapped with no
+    /// host wait between them (`docs/memory.md`, "Nested plans").
+    ///
     /// The decision's layout is held to the table's contracts, as a
     /// task's is in [`Dag::add_cpu`].
     #[debug_requires(body < self.nodes.len(), "the body has a task")]
     #[debug_requires(
-        self.loops.last().is_none_or(|l| l.last < body),
-        "a body holds no loop"
+        self.loops.iter().all(|l| l.last < body || l.counted.is_some()),
+        "a decision loop holds no decision loop"
+    )]
+    #[debug_requires(
+        self.loops.iter().all(|l| l.last < body || l.first >= body),
+        "a loop holds another whole or not at all"
     )]
     #[debug_requires(max_iterations > 0, "the bound admits an iteration")]
     pub fn add_loop<D>(
@@ -341,10 +351,15 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
     /// the writer's last iteration. The body's GPU tasks add no sync
     /// point: between lanes every edge, within an iteration and across
     /// the ring, is a wait on the device.
+    ///
+    /// It may lie in the body of a decision loop closed after it
+    /// ([`Dag::add_loop`]), and holds no loop itself; there the
+    /// accumulator may be the decision loop's own row, zeroed in its body
+    /// before this loop and read after it.
     #[debug_requires(body < self.nodes.len(), "the body has a task")]
     #[debug_requires(
         self.loops.last().is_none_or(|l| l.last < body),
-        "a body holds no loop"
+        "a counted loop holds no loop"
     )]
     #[debug_requires(trips > 0, "the loop has an iteration")]
     #[debug_requires(0 < depth && depth <= trips, "the depth is from 1 to the trip count")]

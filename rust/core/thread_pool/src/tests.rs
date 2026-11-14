@@ -899,6 +899,247 @@ fn a_failed_trip_skips_the_later_trips_and_what_follows() {
     assert!(iterations_of(&record, "after").is_empty());
 }
 
+/// A nested case's run, as observed: per node, each (outer iteration,
+/// trip, start, end) tick it ran at.
+type NestedTicks = Vec<Vec<(usize, usize, usize, usize)>>;
+
+/// Tier 3, random counted loops inside a decision loop: a node before the
+/// decision loop; its body a node `pre`, a counted loop of random shape
+/// over the CPU pool and three lanes of one worker, and a node `post`
+/// after a random counted body node; and the decision, stopping after a
+/// random number of iterations. In each outer iteration every counted
+/// body node runs once per trip, handed its trip, after `pre` of that
+/// iteration and the decision of the one before, within the trip after
+/// its predecessors and after itself in the trip before, after every node
+/// of the trip `depth` back, and before `post` (for the node it follows)
+/// and the decision of its own iteration: the counted loop replayed whole.
+/// Each counted body node has one entry per (iteration, trip), the
+/// iteration as `outer`, and the record counts the decision loop's
+/// iterations alone. The outer iteration a counted body node ran in is
+/// read from a counter the decision moves, so a trip run in the wrong
+/// iteration shows as a missing (iteration, trip).
+#[test]
+fn a_counted_loop_in_a_decision_loop_replays_whole_each_iteration() {
+    for seed in 1..=200u64 {
+        let mut rng = Rng(seed);
+        let n_cpu = 1 + rng.below(3);
+        let shape = random_shape(&mut rng);
+        let placements: Vec<Placement> = shape
+            .placements
+            .iter()
+            .map(|&p| match p {
+                Placement::Stream(at) => on(0, at.lane),
+                Placement::Cpu => Placement::Cpu,
+            })
+            .collect();
+        let n = placements.len();
+        let trips = 1 + rng.below(4);
+        let depth = 1 + rng.below(trips);
+        let outer = 1 + rng.below(4);
+        let tail = rng.below(n);
+        let pre_at = if rng.chance(50) {
+            on(0, rng.below(3))
+        } else {
+            Placement::Cpu
+        };
+        let post_at = if rng.chance(50) {
+            on(0, rng.below(3))
+        } else {
+            Placement::Cpu
+        };
+        let ctx = format!("seed {seed}, {trips} trips, depth {depth}, {outer} iterations");
+        // Nodes: 0 before, 1 pre, 2..2+n the counted body, n+2 post, n+3
+        // the decision.
+        let (pre, post, decision) = (1, n + 2, n + 3);
+        let clock = AtomicUsize::new(0);
+        let round = AtomicUsize::new(0);
+        let ticks: Mutex<NestedTicks> = Mutex::new(vec![Vec::new(); n + 4]);
+        let record = {
+            let (clock, round, ticks) = (&clock, &round, &ticks);
+            let tick = move |node: usize, trip: usize| {
+                let k = round.load(Ordering::SeqCst);
+                let start = clock.fetch_add(1, Ordering::SeqCst);
+                std::thread::yield_now();
+                let end = clock.fetch_add(1, Ordering::SeqCst);
+                ticks.lock().unwrap()[node].push((k, trip, start, end));
+            };
+            let trip_of = |lane: Lane<'_, ()>| match lane {
+                Lane::Cpu { iteration } | Lane::Stream { iteration, .. } => iteration,
+            };
+            let mut plan = Plan::new();
+            let before = plan.add("before", Placement::Cpu, &[], move |_: Lane<'_, ()>| {
+                tick(0, 0);
+                Ok(())
+            });
+            let first = plan.add("pre", pre_at, &[before], move |_| {
+                tick(pre, 0);
+                Ok(())
+            });
+            let mut ids = Vec::new();
+            for (j, (&placement, preds)) in placements.iter().zip(&shape.preds).enumerate() {
+                let mut deps: Vec<NodeId> = preds.iter().map(|&p| ids[p]).collect();
+                deps.push(first);
+                ids.push(plan.add(format!("b{j}"), placement, &deps, move |lane| {
+                    tick(j + 2, trip_of(lane));
+                    Ok(())
+                }));
+            }
+            plan.add_counted(ids[0], trips, depth);
+            plan.add("post", post_at, &[ids[tail]], move |_| {
+                tick(post, 0);
+                Ok(())
+            });
+            plan.add_loop("decide", first, &[], outer, move |i| {
+                tick(decision, 0);
+                round.fetch_add(1, Ordering::SeqCst);
+                Ok(if i + 1 < outer {
+                    ControlFlow::Continue(())
+                } else {
+                    ControlFlow::Break(())
+                })
+            });
+            run(&mut plan, &mut HostOnly::new(1), n_cpu)
+        };
+        record.result.as_ref().unwrap();
+        assert_eq!(
+            record.iterations,
+            BTreeMap::from([(NodeId(decision), outer)]),
+            "{ctx}"
+        );
+        let ticks = ticks.into_inner().unwrap();
+        // Per outer node, per iteration, its (start, end); per counted
+        // body node, per (iteration, trip).
+        let once = |node: usize| -> Vec<(usize, usize)> {
+            let mut runs = ticks[node].clone();
+            runs.sort_unstable();
+            let seen: Vec<usize> = runs.iter().map(|&(k, ..)| k).collect();
+            assert_eq!(seen, (0..outer).collect::<Vec<_>>(), "{ctx}: node {node}");
+            runs.iter().map(|&(_, _, s, e)| (s, e)).collect()
+        };
+        let (pre_t, post_t, decide_t) = (once(pre), once(post), once(decision));
+        let mut at = vec![vec![vec![(0, 0); trips]; outer]; n];
+        for j in 0..n {
+            let mut seen: Vec<(usize, usize)> =
+                ticks[j + 2].iter().map(|&(k, t, ..)| (k, t)).collect();
+            seen.sort_unstable();
+            let each: Vec<(usize, usize)> = (0..outer)
+                .flat_map(|k| (0..trips).map(move |t| (k, t)))
+                .collect();
+            assert_eq!(seen, each, "{ctx}: b{j}");
+            for &(k, t, s, e) in &ticks[j + 2] {
+                at[j][k][t] = (s, e);
+            }
+            let entries: Vec<_> = record
+                .tasks
+                .iter()
+                .filter(|e| e.name == format!("b{j}"))
+                .map(|e| (e.outer, e.iteration))
+                .collect();
+            let want: Vec<_> = each.iter().map(|&(k, t)| (Some(k), Some(t))).collect();
+            assert_eq!(entries, want, "{ctx}: b{j}'s entries");
+        }
+        for name in ["pre", "post", "decide"] {
+            let entries: Vec<_> = record
+                .tasks
+                .iter()
+                .filter(|e| e.name == name)
+                .map(|e| (e.outer, e.iteration))
+                .collect();
+            let want: Vec<_> = (0..outer).map(|k| (None, Some(k))).collect();
+            assert_eq!(entries, want, "{ctx}: {name}'s entries");
+        }
+        for k in 0..outer {
+            for j in 0..n {
+                for t in 0..trips {
+                    let (start, end) = at[j][k][t];
+                    let here = format!("{ctx}: b{j}@{k}.{t}");
+                    assert!(pre_t[k].1 < start, "{here} before pre@{k}");
+                    assert!(
+                        k == 0 || decide_t[k - 1].1 < start,
+                        "{here} before the decision"
+                    );
+                    assert!(end < decide_t[k].0, "{here} after its decision");
+                    for &p in &shape.preds[j] {
+                        assert!(at[p][k][t].1 < start, "{here} before b{p}");
+                    }
+                    if t >= 1 {
+                        assert!(at[j][k][t - 1].1 < start, "{here} before itself");
+                    }
+                    if t >= depth {
+                        for (i, runs) in at.iter().enumerate() {
+                            assert!(runs[k][t - depth].1 < start, "{here} before b{i}");
+                        }
+                    }
+                }
+            }
+            for &(_, end) in &at[tail][k] {
+                assert!(end < post_t[k].0, "{ctx}: post@{k} before b{tail}");
+            }
+        }
+    }
+}
+
+/// Tier 3: a counted loop on two lanes inside a decision loop, a zero
+/// before it and a download after it on lane 0, the shape of J and K over
+/// a streamed tensor every SCF iteration: the record's only host waits are
+/// the decision's on the download, one per iteration, and the lanes'
+/// exits, so the counted loop adds no host wait for its GPU nodes even
+/// though the decision follows them; and each body node's entries carry
+/// both indices, which read back from `timing.json`.
+#[test]
+fn a_counted_loop_in_a_decision_loop_adds_no_host_wait() {
+    const OUTER: usize = 3;
+    let mut plan: Plan<'_, ()> = Plan::new();
+    let zero = plan.add("zero", on(0, 0), &[], |_| Ok(()));
+    let stage = plan.add("stage", on(0, 1), &[zero], |_| Ok(()));
+    let add = plan.add("add", on(0, 0), &[stage], |_| Ok(()));
+    plan.add_counted(stage, 4, 2);
+    let down = plan.add("download", on(0, 0), &[add], |_| Ok(()));
+    // The planner names every body node to the decision: they add nothing.
+    let decision = plan.add_loop("decide", zero, &[zero, stage, add], OUTER, |i| {
+        Ok(if i + 1 < OUTER {
+            ControlFlow::Continue(())
+        } else {
+            ControlFlow::Break(())
+        })
+    });
+    let record = run(&mut plan, &mut HostOnly::new(1), 1);
+    record.result.as_ref().unwrap();
+    let syncs: Vec<_> = record
+        .syncs
+        .iter()
+        .map(|s| (s.node, s.iteration, s.outer, s.waited_for))
+        .collect();
+    let mut want: Vec<_> = (0..OUTER)
+        .map(|k| (Some(decision), Some(k), None, down))
+        .collect();
+    want.extend([(None, None, None, stage), (None, None, None, down)]);
+    assert_eq!(syncs, want);
+    for name in ["stage", "add"] {
+        let entries: Vec<_> = record
+            .tasks
+            .iter()
+            .filter(|t| t.name == name)
+            .map(|t| (t.outer, t.iteration))
+            .collect();
+        let each: Vec<_> = (0..OUTER)
+            .flat_map(|k| (0..4).map(move |t| (Some(k), Some(t))))
+            .collect();
+        assert_eq!(entries, each, "{name}");
+    }
+    assert_eq!(record.iterations, BTreeMap::from([(decision, OUTER)]));
+    let json = record.to_json();
+    assert_eq!(serde_json::from_str::<Record>(&json).unwrap(), record);
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    // Entries by rank, then outer iteration, then trip: zero's three,
+    // then stage's (0, 0) and (0, 1).
+    assert_eq!(value["tasks"][3]["name"], "stage");
+    assert_eq!(value["tasks"][4]["outer"], 0);
+    assert_eq!(value["tasks"][4]["iteration"], 1);
+    assert!(value["tasks"][0]["outer"].is_null());
+    assert!(value["syncs"][0]["outer"].is_null());
+}
+
 #[test]
 fn default_n_cpu_leaves_the_gpu_threads_and_keeps_one() {
     assert!(default_n_cpu(0) >= 1);
