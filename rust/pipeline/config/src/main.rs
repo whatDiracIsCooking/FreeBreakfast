@@ -59,9 +59,11 @@ fn main() -> ExitCode {
     if let Err(error) = &status {
         log::log_at(LogLevel::Error, error.origin, format_args!("{error}"));
     }
+    // The boundary's line above, and every failed destroy or free the
+    // teardown logged without raising it.
     println!(
         "completed: {} errors, {} warnings",
-        u8::from(status.is_err()),
+        log::error_count(),
         log::warning_count()
     );
     match status {

@@ -291,7 +291,9 @@ rule). Concretely:
 
 ### `Drop` cannot fail
 
-A failed destroy or free is logged at `error` and counted. This is the one
+A failed destroy or free is logged at `error` and counted: the logger's
+error counter, bumped in the backend as the warning counter is, counts
+every error line written, and the boundary prints it. This is the one
 place an error does not bubble, the same as the C++ `DestroyPolicy`: a destroy
 often runs during teardown after an earlier failure, where aborting would bury
 the root cause under the knock-on one.
@@ -300,7 +302,8 @@ the root cause under the knock-on one.
 
 The place an error is handled is the binary's `main`, as in C++: it logs the
 error once, at the error's origin and with its context, prints
-`completed: N errors, N warnings` with the warning counter, and returns
+`completed: N errors, N warnings` with the error and warning counters, so
+a run whose teardown failed a free does not report 0 errors, and returns
 `ErrorKind::exit_code`. Nothing between the detection site and `main` logs the
 error. The test harness is the other boundary of the same shape: a test that
 expects a failure asserts on the `Error` value it got, and a test that did not

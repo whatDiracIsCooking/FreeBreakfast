@@ -34,6 +34,7 @@ fn levels_format_counter_and_file_sink() {
     log::add_file_sink(&path).unwrap(); // the same path: nothing
     log::set_level(LogLevel::Debug);
     log::reset_warning_count();
+    let errors = log::error_count();
 
     assert!(log::should_log(LogLevel::Debug));
     assert!(!log::should_log(LogLevel::Trace));
@@ -59,6 +60,8 @@ fn levels_format_counter_and_file_sink() {
 
     // The sink's warning and the counted warn!.
     assert_eq!(log::warning_count(), 2);
+    // The failed destroy, and not the filtered error! or either critical.
+    assert_eq!(log::error_count(), errors + 1);
 
     let text = std::fs::read_to_string(&path).unwrap();
     let lines: Vec<&str> = text.lines().collect();
