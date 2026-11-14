@@ -8,6 +8,8 @@
 //! | `concept blas_handle` | nothing: a call takes the raw handle, [`BlasHandle`]'s `get()` |
 //! | `usual_fp`, the typed dispatch `gemm<T>` over `wwrblas{S,D,C,Z}gemm` | [`BlasScalar`], its `gemm_raw` |
 //! | the same `gemm<T>`, called with raw pointers | [`gemm`], over [`DeviceSlice`]s it checks |
+//! | `dgmm<T>` over `wwrblas{S,D,C,Z}dgmm` | [`BlasScalar`]'s `dgmm_raw` |
+//! | the same `dgmm<T>`, called with raw pointers | [`dgmm`], over [`DeviceSlice`]s it checks; `incx` at least 1, and C never A (no in-place call) |
 //!
 //! As in wwr, the handle is a [`StreamBoundHandle`]: made from a shared
 //! stream owner, created on its device, bound to its stream, and holding
@@ -22,20 +24,29 @@
 //! **The typed calls.** [`BlasScalar`] is wwr's typed dispatch: one trait
 //! method per routine, implemented for the four types the library computes
 //! in, each forwarding to its letter's C ABI call. It takes raw pointers
-//! and is `unsafe`, as the C ABI is; only this crate calls it. [`gemm`] is
-//! the safe call over it: its matrices are [`DeviceSlice`]s, each extent
+//! and is `unsafe`, as the C ABI is; only this crate calls it. [`gemm`] and
+//! [`dgmm`] are the safe calls over it: their operands are
+//! [`DeviceSlice`]s, each extent
 //! the call will touch is checked against the slice's length before
 //! anything is enqueued, and a slice too short panics, as an index out of
 //! a slice's bounds does. That check is what makes it safe, so it is on in
-//! every build. The conveniences above it (packed operands, ops fixed at
-//! compile time) are `fb-recipes-blas`'s, which holds no `unsafe`.
+//! every build. The conveniences above it (packed operands, ops and sides
+//! fixed at compile time) are `fb-recipes-blas`'s, which holds no `unsafe`.
+//!
+//! **What the safe calls leave out.** The library's `dgmm` may write C over
+//! A, but a slice cannot be borrowed shared and exclusive at once, so
+//! [`dgmm`] offers no in-place form: C is always memory of its own. Its
+//! stride `incx` is at least 1: the library's 0 (one scale for every
+//! row or column) and negative strides (x read backwards) are refused, as
+//! nothing in the tree asks for them.
 
 use std::ffi::c_void;
 use std::ops::Deref;
 use std::rc::Rc;
 
 use wwr_sys::{
-    wwr_blas_handle, wwr_blas_operation, wwr_blas_status, wwr_complex64, wwr_complex128, wwr_stream,
+    wwr_blas_handle, wwr_blas_operation, wwr_blas_side_mode, wwr_blas_status, wwr_complex64,
+    wwr_complex128, wwr_stream,
 };
 
 use crate::common::ErrorCode;
@@ -173,8 +184,8 @@ impl DeviceHandleStream for BlasHandle {
 
 /// A type the BLAS computes in: `f32`, `f64`, [`wwr_complex64`] and
 /// [`wwr_complex128`], wwr's `usual_fp`. Each method is the C ABI call of
-/// the type's letter. Sealed, since [`gemm`] trusts each method to be that
-/// call.
+/// the type's letter. Sealed, since [`gemm`] and [`dgmm`] trust each method
+/// to be that call.
 pub trait BlasScalar: Copy + sealed::Sealed {
     /// `wwrblas<t>gemm`: `C = alpha op_a(A) op_b(B) + beta C`, column-major,
     /// `op_a(A)` m × k, `op_b(B)` k × n, C m × n.
@@ -202,6 +213,30 @@ pub trait BlasScalar: Copy + sealed::Sealed {
         c: *mut Self,
         ldc: i32,
     ) -> wwr_blas_status;
+
+    /// `wwrblas<t>dgmm`: `C = A diag(x)` (`WWR_BLAS_SIDE_RIGHT`, x of n
+    /// entries) or `C = diag(x) A` (`_LEFT`, m entries), column-major, A and
+    /// C m × n, x read at stride `incx`.
+    ///
+    /// # Safety
+    /// The library's: `handle` is live; A, x and C are device memory on its
+    /// device covering their extents at `lda`, `incx` and `ldc`; C either A
+    /// itself at the same leading dimension or apart from A and x; all of
+    /// it alive until the work enqueued on the handle's stream has
+    /// finished.
+    #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+    unsafe fn dgmm_raw(
+        handle: wwr_blas_handle,
+        side: wwr_blas_side_mode,
+        m: i32,
+        n: i32,
+        a: *const Self,
+        lda: i32,
+        x: *const Self,
+        incx: i32,
+        c: *mut Self,
+        ldc: i32,
+    ) -> wwr_blas_status;
 }
 
 mod sealed {
@@ -209,7 +244,7 @@ mod sealed {
 }
 
 macro_rules! blas_scalar {
-    ($($t:ty => $gemm:ident),* $(,)?) => {$(
+    ($($t:ty => $gemm:ident, $dgmm:ident);* $(;)?) => {$(
         impl sealed::Sealed for $t {}
 
         impl BlasScalar for $t {
@@ -236,25 +271,42 @@ macro_rules! blas_scalar {
                     )
                 }
             }
+
+            unsafe fn dgmm_raw(
+                handle: wwr_blas_handle,
+                side: wwr_blas_side_mode,
+                m: i32,
+                n: i32,
+                a: *const Self,
+                lda: i32,
+                x: *const Self,
+                incx: i32,
+                c: *mut Self,
+                ldc: i32,
+            ) -> wwr_blas_status {
+                // SAFETY: the caller's, which are the call's.
+                unsafe { wwr_sys::$dgmm(handle, side, m, n, a, lda, x, incx, c, ldc) }
+            }
         }
     )*};
 }
 
 blas_scalar! {
-    f32 => wwr_blas_sgemm,
-    f64 => wwr_blas_dgemm,
-    wwr_complex64 => wwr_blas_cgemm,
-    wwr_complex128 => wwr_blas_zgemm,
+    f32 => wwr_blas_sgemm, wwr_blas_sdgmm;
+    f64 => wwr_blas_dgemm, wwr_blas_ddgmm;
+    wwr_complex64 => wwr_blas_cgemm, wwr_blas_cdgmm;
+    wwr_complex128 => wwr_blas_zgemm, wwr_blas_zdgmm;
 }
 
 /// Panic unless a column-major `rows` × `cols` matrix at leading dimension
 /// `ld` fits in `len` elements: `ld` is at least `max(1, rows)`, as the
-/// library requires, and the last column ends inside the slice.
+/// library requires, and the last column ends inside the slice. `routine`
+/// names the call in the message.
 #[track_caller]
-fn check_extent(name: &str, len: usize, rows: i32, cols: i32, ld: i32) {
+fn check_extent(routine: &str, name: &str, len: usize, rows: i32, cols: i32, ld: i32) {
     assert!(
         ld >= rows.max(1),
-        "gemm: {name}'s leading dimension {ld} is less than max(1, {rows} rows)"
+        "{routine}: {name}'s leading dimension {ld} is less than max(1, {rows} rows)"
     );
     if rows == 0 || cols == 0 {
         return;
@@ -263,8 +315,26 @@ fn check_extent(name: &str, len: usize, rows: i32, cols: i32, ld: i32) {
     let need = ld as u64 * (cols as u64 - 1) + rows as u64;
     assert!(
         need <= len as u64,
-        "gemm: {name} is {rows} x {cols} at leading dimension {ld}, {need} \
+        "{routine}: {name} is {rows} x {cols} at leading dimension {ld}, {need} \
          elements, but its slice holds {len}"
+    );
+}
+
+/// Panic unless a vector of `count` entries at stride `inc` fits in `len`
+/// elements: `inc` is at least 1 (the safe calls take no zero or negative
+/// stride), and the last entry, at `(count - 1) inc`, is inside the slice.
+#[track_caller]
+fn check_vector(routine: &str, name: &str, len: usize, count: i32, inc: i32) {
+    assert!(inc >= 1, "{routine}: {name}'s stride {inc} is less than 1");
+    if count == 0 {
+        return;
+    }
+    // In u64, where a product of two i32s cannot overflow.
+    let need = 1 + (count as u64 - 1) * inc as u64;
+    assert!(
+        need <= len as u64,
+        "{routine}: {name} is {count} entries at stride {inc}, {need} elements, \
+         but its slice holds {len}"
     );
 }
 
@@ -316,9 +386,9 @@ pub fn gemm<T: BlasScalar>(
     };
     let (a_rows, a_cols) = stored(op_a, m, k);
     let (b_rows, b_cols) = stored(op_b, k, n);
-    check_extent("A", a.len(), a_rows, a_cols, lda);
-    check_extent("B", b.len(), b_rows, b_cols, ldb);
-    check_extent("C", c.len(), m, n, ldc);
+    check_extent("gemm", "A", a.len(), a_rows, a_cols, lda);
+    check_extent("gemm", "B", b.len(), b_rows, b_cols, ldb);
+    check_extent("gemm", "C", c.len(), m, n, ldc);
     let c = c.as_mut_ptr();
     // SAFETY: the handle is live; each slice is device memory covering its
     // extent, checked above, and stays so until the enqueued work finishes
@@ -339,6 +409,70 @@ pub fn gemm<T: BlasScalar>(
             b.as_ptr(),
             ldb,
             &beta,
+            c,
+            ldc,
+        )
+    })
+}
+
+/// `C = A diag(x)` (`side` `WWR_BLAS_SIDE_RIGHT`) or `C = diag(x) A`
+/// (`_LEFT`) on `handle`'s stream: column-major, A and C m × n at their
+/// leading dimensions, x the diagonal, n entries on the right and m on the
+/// left, at stride `incx`. wwr's `dgmm<T>`, with every operand a slice it
+/// checks: the scale of each column (right) or row (left) of A by its
+/// entry of x, in O(mn) where a gemm against the dense diagonal would be
+/// O(mn²) or O(m²n).
+///
+/// The library also writes C over A; here C is a slice of its own, which
+/// the borrow checker keeps apart from A and x, so there is no in-place
+/// call. `incx` is at least 1: the library's 0 and negative strides are
+/// refused.
+///
+/// # Errors
+/// The library's refusal, as a `GpuRuntime` error naming the status.
+///
+/// # Panics
+/// If m or n is negative, a leading dimension is less than m (or 1),
+/// `incx` is less than 1, or a slice is shorter than its operand's extent
+/// (x's is `1 + (count - 1) incx` for a non-empty one); before anything is
+/// enqueued.
+#[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+#[track_caller]
+pub fn dgmm<T: BlasScalar>(
+    handle: &BlasHandle,
+    side: wwr_blas_side_mode,
+    m: i32,
+    n: i32,
+    a: &impl DeviceSlice<T>,
+    lda: i32,
+    x: &impl DeviceSlice<T>,
+    incx: i32,
+    c: &mut impl DeviceSliceMut<T>,
+    ldc: i32,
+) -> Status {
+    assert!(m >= 0 && n >= 0, "dgmm: m and n are {m} and {n}");
+    let count = match side {
+        wwr_blas_side_mode::WWR_BLAS_SIDE_LEFT => m,
+        wwr_blas_side_mode::WWR_BLAS_SIDE_RIGHT => n,
+    };
+    check_extent("dgmm", "A", a.len(), m, n, lda);
+    check_vector("dgmm", "x", x.len(), count, incx);
+    check_extent("dgmm", "C", c.len(), m, n, ldc);
+    let c = c.as_mut_ptr();
+    // SAFETY: the handle is live; each slice is device memory covering its
+    // extent, checked above, and stays so until the enqueued work finishes
+    // (DeviceSlice's promise); C is its memory's only user
+    // (DeviceSliceMut's), so apart from A and x.
+    gpu_status(unsafe {
+        T::dgmm_raw(
+            handle.get(),
+            side,
+            m,
+            n,
+            a.as_ptr(),
+            lda,
+            x.as_ptr(),
+            incx,
             c,
             ldc,
         )
@@ -560,10 +694,10 @@ mod tests {
     #[test]
     fn an_extent_fits_to_its_last_element() {
         // 3 × 2 at ld 5: the second column ends at element 5 + 3 = 8.
-        check_extent("A", 8, 3, 2, 5);
+        check_extent("gemm", "A", 8, 3, 2, 5);
         // Nothing to touch, but the library still wants ld >= 1.
-        check_extent("A", 0, 0, 7, 1);
-        check_extent("A", 0, 3, 0, 3);
+        check_extent("gemm", "A", 0, 0, 7, 1);
+        check_extent("gemm", "A", 0, 3, 0, 3);
     }
 
     #[test]
@@ -571,18 +705,138 @@ mod tests {
         expected = "gemm: B is 3 x 2 at leading dimension 5, 8 elements, but its slice holds 7"
     )]
     fn an_extent_one_past_the_slice_panics() {
-        check_extent("B", 7, 3, 2, 5);
+        check_extent("gemm", "B", 7, 3, 2, 5);
     }
 
     #[test]
     #[should_panic(expected = "gemm: C's leading dimension 2 is less than max(1, 3 rows)")]
     fn a_leading_dimension_under_the_rows_panics() {
-        check_extent("C", 100, 3, 2, 2);
+        check_extent("gemm", "C", 100, 3, 2, 2);
     }
 
     #[test]
-    #[should_panic(expected = "gemm: A's leading dimension 0 is less than max(1, 0 rows)")]
+    #[should_panic(expected = "dgmm: A's leading dimension 0 is less than max(1, 0 rows)")]
     fn a_zero_leading_dimension_panics() {
-        check_extent("A", 0, 0, 0, 0);
+        check_extent("dgmm", "A", 0, 0, 0, 0);
+    }
+
+    #[test]
+    fn a_vector_fits_to_its_last_entry() {
+        // 4 entries at stride 3: the last at element 9, so 10 in all.
+        check_vector("dgmm", "x", 10, 4, 3);
+        check_vector("dgmm", "x", 4, 4, 1);
+        // Nothing to touch, but the stride is still checked.
+        check_vector("dgmm", "x", 0, 0, 1);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "dgmm: x is 4 entries at stride 3, 10 elements, but its slice holds 9"
+    )]
+    fn a_vector_one_past_the_slice_panics() {
+        check_vector("dgmm", "x", 9, 4, 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "dgmm: x's stride 0 is less than 1")]
+    fn a_zero_stride_panics() {
+        check_vector("dgmm", "x", 100, 0, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "dgmm: x's stride -1 is less than 1")]
+    fn a_negative_stride_panics() {
+        check_vector("dgmm", "x", 100, 4, -1);
+    }
+
+    use wwr_blas_side_mode::{WWR_BLAS_SIDE_LEFT as LEFT, WWR_BLAS_SIDE_RIGHT as RIGHT};
+
+    /// `diag(x) A` (`left`) or `A diag(x)` on the host, column-major, m × n,
+    /// A at `lda`, x at `incx`, into C at `ldc` with C's padding kept.
+    #[allow(clippy::too_many_arguments)]
+    fn host_dgmm(
+        left: bool,
+        (m, n): (usize, usize),
+        (a, lda): (&[f64], usize),
+        (x, incx): (&[f64], usize),
+        (c, ldc): (&[f64], usize),
+    ) -> Vec<f64> {
+        let mut out = c.to_vec();
+        for j in 0..n {
+            for i in 0..m {
+                let d = x[if left { i } else { j } * incx];
+                out[i + j * ldc] = d * a[i + j * lda];
+            }
+        }
+        out
+    }
+
+    /// One dgmm on a card with padded leading dimensions and a strided x,
+    /// checked bitwise against the host's; C's padding rows left as they
+    /// were.
+    fn check_dgmm(left: bool) {
+        let (m, n) = (5, 3);
+        let (lda, ldc, incx) = (m + 2, m + 3, 2);
+        let count = if left { m } else { n };
+        let (a, x, c) = (
+            matrix(lda, n, 1),
+            matrix(1 + (count - 1) * incx, 1, 2),
+            matrix(ldc, n, 3),
+        );
+        let want = host_dgmm(left, (m, n), (&a, lda), (&x, incx), (&c, ldc));
+        let owner = Rc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner.clone());
+        let (da, dx, mut dc) = (
+            DeviceBytes::upload(&a, &owner),
+            DeviceBytes::upload(&x, &owner),
+            DeviceBytes::upload(&c, &owner),
+        );
+        let i = |v: usize| v as i32;
+        let side = if left { LEFT } else { RIGHT };
+        dgmm::<f64>(
+            &blas,
+            side,
+            i(m),
+            i(n),
+            &da,
+            i(lda),
+            &dx,
+            i(incx),
+            &mut dc,
+            i(ldc),
+        )
+        .unwrap();
+        assert_eq!(download(&dc, &owner), want);
+    }
+
+    /// Needs a GPU. `A diag(x)`: each column of A scaled by its entry of x,
+    /// every leading dimension padded and x strided.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn dgmm_scales_each_column_on_the_right() {
+        check_dgmm(false);
+    }
+
+    /// Needs a GPU. `diag(x) A`: each row scaled, x m entries long.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn dgmm_scales_each_row_on_the_left() {
+        check_dgmm(true);
+    }
+
+    /// Needs a GPU. On the left x has m entries, so an x of n (fewer) is
+    /// short, and panics before anything is enqueued.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    #[should_panic(
+        expected = "dgmm: x is 4 entries at stride 1, 4 elements, but its slice holds 3"
+    )]
+    fn dgmm_refuses_a_short_slice() {
+        let owner = Rc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner);
+        let a = DeviceBytes::new(12 * size_of::<f64>());
+        let x = DeviceBytes::new(3 * size_of::<f64>());
+        let mut c = DeviceBytes::new(12 * size_of::<f64>());
+        let _ = dgmm::<f64>(&blas, LEFT, 4, 3, &a, 4, &x, 1, &mut c, 4);
     }
 }
