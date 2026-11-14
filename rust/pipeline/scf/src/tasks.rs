@@ -1,6 +1,7 @@
 //! The Roothaan step on a stream: F transformed by X, diagonalized, and its
 //! eigenvectors transformed back.
 
+use contracts::debug_requires;
 use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
@@ -24,10 +25,12 @@ use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N, WWR_BLAS_OP_T};
 /// row `"F X"`), [`add_diagonalize`]'s `syevd` and `syevd check` on F' (C'
 /// its row `"F' U"`), and `back transform` (stream: `C = X C'`).
 ///
+/// Requires, checked in debug builds: `n` is at least 1.
+///
 /// # Panics
-/// As [`add_diagonalize`]: if `n` is 0, or `n²` or `lwork` does not fit an
-/// `i32`; or if `f` or `x` is a row of another worker's table
-/// ([`Dag::add`]).
+/// As [`add_diagonalize`]: if `n²` or `lwork` does not fit an `i32`; or if
+/// `f` or `x` is a row of another worker's table ([`Dag::add`]).
+#[debug_requires(n > 0, "a matrix of at least one row")]
 #[track_caller]
 pub fn add_solve_fock(
     dag: &mut Dag<'_>,
@@ -37,7 +40,6 @@ pub fn add_solve_fock(
     f: RowId<Device, f64>,
     x: RowId<Device, f64>,
 ) -> (RowId<Device, f64>, RowId<Device, f64>) {
-    assert!(n > 0, "add_solve_fock: an empty matrix");
     assert!(
         n.checked_mul(n).is_some_and(|n2| i32::try_from(n2).is_ok()),
         "add_solve_fock: n = {n}: n² does not fit BLAS's i32"

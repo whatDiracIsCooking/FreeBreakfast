@@ -1,6 +1,7 @@
 //! The Cartesian overlap on a stream, after the records, and its spherical
 //! transform ([`fb_recipes_matrix_ao`]).
 
+use contracts::debug_requires;
 use fb_basis::BasisSet;
 use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
@@ -26,10 +27,13 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// every reader of the plan; `u` is the plan's slot for U over `basis` on
 /// `worker`, shared with every other matrix the plan transforms.
 ///
+/// Requires, checked in debug builds: `basis` has at least one shell.
+///
 /// # Panics
-/// If `basis` has no shells, or `nao_cart²` does not fit an `i32` (the
-/// overlap kernels index the matrix in 32 bits), or `classes` are rows of
-/// another worker's or another plan's table ([`Dag::add`]).
+/// If `nao_cart²` does not fit an `i32` (the overlap kernels index the
+/// matrix in 32 bits), or `classes` are rows of another worker's or another
+/// plan's table ([`Dag::add`]).
+#[debug_requires(basis.nshells() > 0, "a basis of at least one shell")]
 #[track_caller]
 pub fn add_overlap(
     dag: &mut Dag<'_>,
@@ -38,7 +42,6 @@ pub fn add_overlap(
     classes: &[ClassRows],
     u: &mut Option<RowId<Pinned, f64>>,
 ) -> RowId<Device, f64> {
-    assert!(basis.nshells() > 0, "add_overlap: a basis with no shells");
     let n_cart = basis.nao_cart() as usize;
     assert!(
         i32::try_from(n_cart * n_cart).is_ok(),

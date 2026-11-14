@@ -36,6 +36,7 @@
 //! | `float` and `double` | `f64` only, until a caller needs `f32` |
 //! | `n <= 0`: an empty success | refused at planning: `n` is at least 1 |
 
+use contracts::debug_requires;
 use fb_core_arena::{Bufs, Device, HostKind, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
@@ -105,9 +106,12 @@ pub fn syevd_lwork(solver: &SolverHandle, n: usize) -> Result<usize> {
 /// a failed flag it may have run on what syevd left, and the run's result
 /// is the check's error either way.
 ///
+/// Requires, checked in debug builds: `n` is at least 1.
+///
 /// # Panics
-/// If `n` is 0, or `n²` or `lwork` does not fit an `i32`, or `a` is a row
-/// of another worker's table ([`Dag::add`]).
+/// If `n²` or `lwork` does not fit an `i32`, or `a` is a row of another
+/// worker's table ([`Dag::add`]).
+#[debug_requires(n > 0, "a matrix of at least one row")]
 #[track_caller]
 pub fn add_diagonalize(
     dag: &mut Dag<'_>,
@@ -117,7 +121,6 @@ pub fn add_diagonalize(
     lwork: usize,
     a: RowId<Device, f64>,
 ) -> (RowId<Device, f64>, RowId<Device, f64>) {
-    assert!(n > 0, "add_diagonalize: an empty matrix");
     assert!(
         n.checked_mul(n).is_some_and(|n2| i32::try_from(n2).is_ok()),
         "add_diagonalize: n = {n}: n² does not fit the solver's i32"

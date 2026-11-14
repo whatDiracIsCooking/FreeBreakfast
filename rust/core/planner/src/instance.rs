@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use super::dag::Planned;
+use contracts::debug_requires;
 use fb_core_arena::{Block, Device, HostKind, Kind, Pinned};
 use fb_core_thread_pool::{
     self as thread_pool, ArenaSize, Backend, DeviceStream, NodeId, Plan, Record,
@@ -27,18 +28,15 @@ impl<'a, H: HostKind, S: 'a> Planned<'a, H, S> {
     /// its [`predecessors`](Planned::predecessors). A table of zero bytes
     /// allocates nothing, so a DAG with no device rows touches no device.
     ///
-    /// Aborts, as [`Block::new`] does, if a block cannot be allocated.
+    /// Requires, checked in debug builds: `devices` has an entry per worker.
     ///
-    /// # Panics
-    /// If `devices` has fewer entries than the plan has workers.
+    /// Aborts, as [`Block::new`] does, if a block cannot be allocated.
+    #[debug_requires(
+        self.n_workers() <= devices.len(),
+        "a device for every worker of the plan"
+    )]
     #[track_caller]
     pub fn instantiate(self, devices: &[i32]) -> Instance<'a, H, S> {
-        assert!(
-            self.n_workers() <= devices.len(),
-            "the plan uses {} workers but {} devices were given",
-            self.n_workers(),
-            devices.len()
-        );
         let mut blocks = Vec::with_capacity(self.tables.len());
         for ((device, host), &dev_idx) in self.tables.into_iter().zip(devices) {
             blocks.push(Arc::new((

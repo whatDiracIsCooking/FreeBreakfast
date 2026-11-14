@@ -153,10 +153,13 @@ pub fn potential_en_classes(
 /// `InvalidConfig` for `nuclei` with no nucleus (`n_nuc` not positive: the
 /// launch wrapper's refusal, at planning), before anything is added.
 ///
+/// Requires, checked in debug builds: `basis` has at least one shell.
+///
 /// # Panics
-/// If `basis` has no shells, or `nao_cart²` does not fit an `i32` (the
-/// kernels index the matrix in 32 bits), or `classes` or `nuclei` are rows
-/// of another worker's or another plan's table ([`Dag::add`]).
+/// If `nao_cart²` does not fit an `i32` (the kernels index the matrix in
+/// 32 bits), or `classes` or `nuclei` are rows of another worker's or
+/// another plan's table ([`Dag::add`]).
+#[debug_requires(basis.nshells() > 0, "a basis of at least one shell")]
 #[track_caller]
 pub fn add_nuclear_attraction(
     dag: &mut Dag<'_>,
@@ -172,10 +175,6 @@ pub fn add_nuclear_attraction(
             nuclei.n_nuc
         )));
     }
-    assert!(
-        basis.nshells() > 0,
-        "add_nuclear_attraction: a basis with no shells"
-    );
     let n_cart = basis.nao_cart() as usize;
     assert!(
         i32::try_from(n_cart * n_cart).is_ok(),

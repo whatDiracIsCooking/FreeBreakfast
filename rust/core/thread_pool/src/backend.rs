@@ -6,6 +6,8 @@ use super::plan::NodeId;
 #[cfg(feature = "device")]
 use super::plan::{Placement, Plan};
 #[cfg(feature = "device")]
+use contracts::debug_requires;
+#[cfg(feature = "device")]
 use fb_core_error_handling::Error;
 use fb_core_error_handling::{Result, Status};
 #[cfg(feature = "device")]
@@ -203,16 +205,14 @@ impl Device {
     /// Stream worker `s` on device `devices[s]`, with an event pair for
     /// every GPU node of `plan`.
     ///
-    /// # Panics
-    /// If `plan` places a node on a stream worker past `devices`.
+    /// Requires, checked in debug builds: `devices` has an entry per stream
+    /// worker of `plan`.
+    #[debug_requires(
+        plan.n_streams() <= devices.len(),
+        "a device for every stream worker of the plan"
+    )]
     #[track_caller]
     pub fn new(devices: &[i32], plan: &Plan<'_, DeviceStream>) -> Self {
-        assert!(
-            plan.n_streams() <= devices.len(),
-            "the plan uses {} stream workers but {} devices were given",
-            plan.n_streams(),
-            devices.len()
-        );
         let streams = devices.iter().map(|&d| DeviceStream::new(d)).collect();
         let events = plan
             .nodes

@@ -30,6 +30,14 @@ The rules already in the crate carry over:
 - **The outcome of a GPU call is not a contract.** If a GPU call can fail, it
   returns a status or a `Result`, and failure is an expected result, not a
   broken promise. Making it a contract would turn it into a panic.
+- **A check that soundness rests on is not a contract.** If a release build
+  that skipped it could read or write out of bounds, it is an `assert!`,
+  always on, and the item's `# Panics` names it: an `n²` that must fit a
+  kernel's or BLAS's 32-bit index, the length an `unsafe` copy trusts, the
+  arena's row flags ([`memory.md`](memory.md), "The Rust shape"). Anything
+  else a caller must ensure (a basis has shells, a matrix has a row, a
+  predecessor is in the plan) is a `debug_requires`, and its failing test is
+  `#[cfg(debug_assertions)]`.
 
 A contract's reach is every caller, but its strength is only as good as the
 inputs those callers happen to pass. It complements a dedicated test; it does
@@ -485,10 +493,6 @@ schedule. Here they are weekly from the start.
 - **Tier 5 on this box.** The two cards here run different backends, so no
   single build sees two devices. Can several workers on one card stand in for
   most of tier 5, with true multi-GPU tested only on a multi-GPU VM?
-- **Contracts in release.** Should any contract always be checked? A cheap
-  `requires` at an API boundary might be worth keeping in release. An `ensures`
-  that has to read back GPU output would force a sync, so it should stay
-  debug-only.
 - **Determinator's path rules.** The rules that map a kernel library's
   sources to the crate that wraps them are hand-written. Who regenerates them when a
   module is added, and does the graph test catch a stale one?

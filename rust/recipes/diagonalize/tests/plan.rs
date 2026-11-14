@@ -72,7 +72,8 @@ fn plan_golden() {
 
 /// An empty matrix is refused at planning.
 #[test]
-#[should_panic(expected = "add_diagonalize: an empty matrix")]
+#[cfg(debug_assertions)] // the contract is compiled out of release
+#[should_panic(expected = "a matrix of at least one row")]
 fn an_empty_matrix_is_refused() {
     let mut dag = Dag::new();
     let s = dag.add("S", 0, Matrix);
