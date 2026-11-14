@@ -17,16 +17,13 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane};
-use fb_core_wwr::gpu_status;
-use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::solver::SolverHandle;
 use fb_recipes_diagonalize::{add_diagonalize, syevd_lwork};
-use wwr_sys::wwr_memcpy_kind;
 
 /// The residual's bar, relative to `‖A‖₂`, and the orthogonality's.
 const BAR: f64 = 1e-12;
@@ -101,29 +98,10 @@ impl Task for Transfer {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let (dst, src, kind): (*mut f64, *const f64, _) = match *rows {
-            Copied::Up(d) => (
-                device.take_mut(d).as_mut_ptr(),
-                host.get(self.pinned.unwrap()).as_ptr(),
-                wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
-            ),
-            Copied::Down(p) => (
-                host.take_mut(p).as_mut_ptr(),
-                device.get(self.device.unwrap()).as_ptr(),
-                wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
-            ),
-        };
-        // SAFETY: two rows of `len` doubles, on the task's stream; the
-        // pinned one is handed to the copy and not touched from the host.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memcpy_async(
-                dst.cast(),
-                src.cast(),
-                self.len * size_of::<f64>(),
-                kind,
-                stream.stream(),
-            )
-        })
+        match *rows {
+            Copied::Up(d) => memcpy_p2d(&device.take_mut(d), host, self.pinned.unwrap(), stream),
+            Copied::Down(p) => memcpy_d2p(host, p, device.get(self.device.unwrap()), stream),
+        }
     }
 }
 

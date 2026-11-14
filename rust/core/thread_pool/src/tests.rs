@@ -452,33 +452,28 @@ fn default_n_cpu_leaves_the_stream_threads_and_keeps_one() {
 #[ignore = "tier 4: needs a GPU"]
 fn device_edges_wait_for_the_work_they_consume() {
     use fb_core_wwr::handle::DeviceHandleStream;
+    use fb_core_wwr::runtime::Stream;
     use fb_core_wwr::runtime::tests::{DeviceBytes, ok};
-    use wwr_sys::wwr_memcpy_kind::{
-        WWR_MEMCPY_DEVICE_TO_DEVICE, WWR_MEMCPY_DEVICE_TO_HOST, WWR_MEMCPY_HOST_TO_DEVICE,
-    };
+    use wwr_sys::wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_DEVICE;
 
     const N: usize = 64 << 20;
     const HOPS: usize = 32;
     let pattern: Vec<u8> = (0..N).map(|i| (i % 251) as u8).collect();
-    let [a, b, src, dst] = [(); 4].map(|_| DeviceBytes::new(N));
-    // SAFETY: each range is N bytes; synchronous, before the run.
-    unsafe {
-        ok(wwr_sys::wwr_memcpy(
-            a.0,
-            pattern.as_ptr().cast(),
-            N,
-            WWR_MEMCPY_HOST_TO_DEVICE,
-        ));
-        ok(wwr_sys::wwr_memset(src.0, 0, N));
-        ok(wwr_sys::wwr_memset(dst.0, 0, N));
-    }
-    let [a, b, src, dst] = [&a, &b, &src, &dst].map(|d| d.0 as usize);
-    let d2d = |to: usize, from: usize, stream: &DeviceStream| {
+    let zeros = vec![0u8; N];
+    // Each upload is drained before it returns, so all of it is before the run.
+    let setup = Stream::new(0);
+    let a = DeviceBytes::upload(&pattern, &setup);
+    let b = DeviceBytes::new(N);
+    let [src, dst] = [(); 2].map(|_| DeviceBytes::upload(&zeros, &setup));
+    // The copies under test: enqueued on a worker's stream and left in
+    // flight, which is what the edges must wait for. A helper that synced
+    // would hide a missing wait, so they are written out.
+    let d2d = |to: &DeviceBytes, from: &DeviceBytes, stream: &DeviceStream| {
         // SAFETY: both device ranges are N bytes and outlive the run.
         ok(unsafe {
             wwr_sys::wwr_memcpy_async(
-                to as _,
-                from as _,
+                to.0,
+                from.0,
                 N,
                 WWR_MEMCPY_DEVICE_TO_DEVICE,
                 stream.stream(),
@@ -498,37 +493,24 @@ fn device_edges_wait_for_the_work_they_consume() {
         ok(unsafe { wwr_sys::wwr_get_device(&mut dev) });
         devices_seen.lock().unwrap().push(dev);
         for _ in 0..HOPS / 2 {
-            d2d(b, a, stream);
-            d2d(a, b, stream);
+            d2d(&b, &a, stream);
+            d2d(&a, &b, stream);
         }
-        d2d(src, a, stream);
+        d2d(&src, &a, stream);
         Ok(())
     });
     let copy = plan.add("copy", Placement::Stream(1), &[produce], |lane| {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!()
         };
-        d2d(dst, src, stream);
+        d2d(&dst, &src, stream);
         Ok(())
     });
     plan.add("read", Placement::Cpu, &[copy], |_| {
-        let mut host = seen_by_cpu.lock().unwrap();
         // A blocking copy on the legacy stream would hide a missing wait, so
-        // read with an async copy on a fresh non-blocking stream and sync it
-        // alone.
-        let s = fb_core_wwr::runtime::Stream::new(0);
-        // SAFETY: both ranges are N bytes; the edge's event sync ordered the
-        // copy before this read.
-        ok(unsafe {
-            wwr_sys::wwr_memcpy_async(
-                host.as_mut_ptr().cast(),
-                dst as _,
-                N,
-                WWR_MEMCPY_DEVICE_TO_HOST,
-                s.stream(),
-            )
-        });
-        ok(s.sync());
+        // read on a fresh non-blocking stream, synced alone; the edge's
+        // event sync is all that orders the copy before this read.
+        *seen_by_cpu.lock().unwrap() = dst.read(&Stream::new(0));
         Ok(())
     });
     let device = Device::new(&[0, 0], &plan);

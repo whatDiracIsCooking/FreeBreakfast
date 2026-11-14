@@ -349,7 +349,7 @@ pub fn gemm<T: BlasScalar>(
 mod tests {
     use super::*;
     use crate::runtime::tests::{DeviceBytes, ok};
-    use wwr_sys::{wwr_blas_operation, wwr_memcpy_kind};
+    use wwr_sys::wwr_blas_operation;
 
     #[test]
     fn every_status_has_a_name_and_a_description() {
@@ -424,7 +424,10 @@ mod tests {
             0.0,
             (&[], N),
         );
-        let (da, db) = (upload(&a), upload(&b));
+        let (da, db) = (
+            DeviceBytes::upload(&a, &owner),
+            DeviceBytes::upload(&b, &owner),
+        );
         let mut dc = DeviceBytes::new(N * N * size_of::<f64>());
         gemm(
             &blas, OP_N, OP_N, n, n, n, 1.0, &da, n, &db, n, 0.0, &mut dc, n,
@@ -479,28 +482,9 @@ mod tests {
         out
     }
 
-    fn upload(host: &[f64]) -> DeviceBytes {
-        let bytes = size_of_val(host);
-        let device = DeviceBytes::new(bytes);
-        // SAFETY: both ranges are `bytes` long; the copy is synchronous.
-        ok(unsafe {
-            wwr_sys::wwr_memcpy(
-                device.0,
-                host.as_ptr().cast(),
-                bytes,
-                wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
-            )
-        });
-        // A pageable copy may return before its DMA lands, and a created
-        // stream does not wait on the legacy one.
-        // SAFETY: no arguments.
-        ok(unsafe { wwr_sys::wwr_device_synchronize() });
-        device
-    }
-
     fn download(device: &DeviceBytes, owner: &Stream) -> Vec<f64> {
         device
-            .read(owner.stream())
+            .read(owner)
             .as_chunks::<8>()
             .0
             .iter()
@@ -530,7 +514,11 @@ mod tests {
         );
         let owner = Rc::new(Stream::new(0));
         let blas = BlasHandle::new(owner.clone());
-        let (da, db, mut dc) = (upload(&a), upload(&b), upload(&c));
+        let (da, db, mut dc) = (
+            DeviceBytes::upload(&a, &owner),
+            DeviceBytes::upload(&b, &owner),
+            DeviceBytes::upload(&c, &owner),
+        );
         let i = |x: usize| x as i32;
         gemm(
             &blas,

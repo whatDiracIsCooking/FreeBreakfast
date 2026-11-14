@@ -17,7 +17,6 @@ use fb_recipes_sys::{
     FB_DEVICE_ALIGNMENT, FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, fb_merge_sort,
     fb_merge_sort_workspace_bytes,
 };
-use wwr_sys::{wwr_memcpy_kind, wwr_status};
 
 const SIZES: &[u32] = &[
     1, 2, 31, 32, 33, 63, 64, 65, 255, 256, 257, 351, 352, 353, 703, 704, 705, 1407, 1408, 1409,
@@ -53,30 +52,6 @@ fn keys(n: u32) -> Vec<f64> {
         .collect()
 }
 
-/// `host` on the device, copied on `stream` and so ordered before the sort
-/// queued after it. A synchronous copy would not do: it runs on the legacy
-/// stream, which a non-blocking `Stream` does not wait for, and from
-/// pageable memory it returns before its DMA has landed.
-fn upload<T: Copy>(host: &[T], stream: &Stream) -> DeviceBytes {
-    let bytes = std::mem::size_of_val(host);
-    let device = DeviceBytes::new(bytes);
-    // SAFETY: both ranges are `bytes` long, and `host` outlives the copy:
-    // the stream is drained before it returns.
-    let status = unsafe {
-        let copy = wwr_sys::wwr_memcpy_async(
-            device.0,
-            host.as_ptr().cast(),
-            bytes,
-            wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
-            stream.stream(),
-        );
-        assert_eq!(copy, wwr_status::WWR_STATUS_SUCCESS);
-        wwr_sys::wwr_stream_synchronize(stream.stream())
-    };
-    assert_eq!(status, wwr_status::WWR_STATUS_SUCCESS);
-    device
-}
-
 fn workspace(n: u32, with_values: bool) -> (Option<DeviceBytes>, usize) {
     // SAFETY: a host function of its arguments alone.
     let bytes = unsafe { fb_merge_sort_workspace_bytes(n, with_values) };
@@ -98,8 +73,8 @@ fn sorts_keys_and_values_as_the_host_stable_sort() {
         order.sort_by(|&a, &b| host[a as usize].total_cmp(&host[b as usize]));
         let expected: Vec<u64> = order.iter().map(|&i| host[i as usize].to_bits()).collect();
 
-        let d_keys = upload(&host, &stream);
-        let d_values = upload(&(0..n).collect::<Vec<u32>>(), &stream);
+        let d_keys = DeviceBytes::upload(&host, &stream);
+        let d_values = DeviceBytes::upload(&(0..n).collect::<Vec<u32>>(), &stream);
         let (scratch, bytes) = workspace(n, true);
         // SAFETY: device arrays of n keys and n values, and exactly the
         // workspace the query asked for, none overlapping.
@@ -115,14 +90,14 @@ fn sorts_keys_and_values_as_the_host_stable_sort() {
         };
         assert_eq!(status, FB_LAUNCH_SUCCESS, "n = {n}");
         let got_keys: Vec<u64> = d_keys
-            .read(stream.stream())
+            .read(&stream)
             .as_chunks::<8>()
             .0
             .iter()
             .map(|c| u64::from_ne_bytes(*c))
             .collect();
         let got_order: Vec<u32> = d_values
-            .read(stream.stream())
+            .read(&stream)
             .as_chunks::<4>()
             .0
             .iter()
@@ -144,7 +119,7 @@ fn sorts_keys_alone_as_the_host_sort() {
         expected.sort_by(f64::total_cmp);
         let expected: Vec<u64> = expected.iter().map(|k| k.to_bits()).collect();
 
-        let d_keys = upload(&host, &stream);
+        let d_keys = DeviceBytes::upload(&host, &stream);
         let (scratch, bytes) = workspace(n, false);
         // SAFETY: as above, with no values.
         let status = unsafe {
@@ -159,7 +134,7 @@ fn sorts_keys_alone_as_the_host_sort() {
         };
         assert_eq!(status, FB_LAUNCH_SUCCESS, "n = {n}");
         let got: Vec<u64> = d_keys
-            .read(stream.stream())
+            .read(&stream)
             .as_chunks::<8>()
             .0
             .iter()
