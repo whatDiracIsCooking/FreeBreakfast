@@ -12,7 +12,7 @@ use fb_core_arena::{
 };
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane, Placement};
+use fb_core_thread_pool::{DeviceStream, Lane, Placement};
 use fb_core_wwr::common::ScopedDeviceIndex;
 use fb_core_wwr::memset;
 use wwr_sys::wwr_status;
@@ -185,7 +185,7 @@ fn a_round_trip_through_the_planner() {
     assert_eq!(waits, [(3, 2)]);
 
     let mut instance = planned.instantiate(&[0]);
-    let mut backend = thread_pool::Device::new(&[0], instance.plan());
+    let mut backend = instance.backend();
     let record = instance.run(&mut backend, 1);
     record.result.unwrap();
     let arena: Vec<_> = record
@@ -258,7 +258,7 @@ fn every_gpu_task_has_a_stream_scope() {
         row = dag.add(format!("stage{i}"), 0, Stage(Some(row)));
     }
     let mut instance = dag.plan().instantiate(&[0]);
-    let mut backend = thread_pool::Device::new(&[0], instance.plan());
+    let mut backend = instance.backend();
     let record = instance.run(&mut backend, 1);
     record.result.unwrap();
     let names: Vec<_> = record

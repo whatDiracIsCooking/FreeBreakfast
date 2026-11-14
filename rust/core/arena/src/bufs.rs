@@ -7,6 +7,8 @@ use std::sync::atomic::Ordering;
 
 use super::block::Block;
 use super::kind::{Device, Element, HostKind, Kind};
+#[cfg(feature = "device")]
+use super::table::Owner;
 use super::table::{Access, RowId};
 
 /// Node `pos`'s view of a [`Block`]: [`Block::partition`].
@@ -286,5 +288,99 @@ unsafe impl<T> fb_core_wwr::device_slice::DeviceSlice<T> for DeviceMut<'_, T> {
 unsafe impl<T> fb_core_wwr::device_slice::DeviceSliceMut<T> for DeviceMut<'_, T> {
     fn as_mut_ptr(&mut self) -> *mut T {
         self.ptr
+    }
+}
+
+/// A device worker row held outside any node's view, as its writer, for as
+/// long as the value lives, with the block it is in kept alive by it:
+/// [`Block::hold`]. For memory a library keeps beyond any node, such as a
+/// BLAS handle's workspace, which the handle owns by owning this.
+///
+/// It owns its memory rather than borrowing a view, so it is `'static`, and
+/// it is the row's only user while it lives: a node's view asking for the
+/// row panics, as for any row another view holds.
+#[cfg(feature = "device")]
+pub struct HeldRow<T> {
+    block: std::sync::Arc<Block<Device>>,
+    index: usize,
+    len: usize,
+    marker: PhantomData<fn() -> T>,
+}
+
+#[cfg(feature = "device")]
+impl Block<Device> {
+    /// Worker row `row`, held as its writer until the returned
+    /// [`HeldRow`] drops, and the block kept alive until then.
+    ///
+    /// Only a worker row ([`TableBuilder::worker`]) can be held: its bytes
+    /// are its own for the whole plan, where a node's row shares them with
+    /// the rows before and after it.
+    ///
+    /// [`TableBuilder::worker`]: super::TableBuilder::worker
+    ///
+    /// # Panics
+    /// If `row` is not of this block's table or not a worker row, or a
+    /// view or another [`HeldRow`] holds it.
+    pub fn hold<T: Element>(self: &std::sync::Arc<Self>, row: RowId<Device, T>) -> HeldRow<T> {
+        let index = self.table.index(row);
+        let info = &self.table.rows[index];
+        assert!(
+            info.owner == Owner::Worker,
+            "{} is not a worker row, so it cannot be held",
+            info.name
+        );
+        let taken = self.borrows[index]
+            .compare_exchange(0, -1, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok();
+        assert!(taken, "{} is already held", info.name);
+        HeldRow {
+            block: std::sync::Arc::clone(self),
+            index,
+            len: info.len,
+            marker: PhantomData,
+        }
+    }
+}
+
+#[cfg(feature = "device")]
+impl<T> HeldRow<T> {
+    /// The device its block is on.
+    pub fn dev_idx(&self) -> i32 {
+        self.block.dev_idx()
+    }
+}
+
+#[cfg(feature = "device")]
+impl<T> Drop for HeldRow<T> {
+    fn drop(&mut self) {
+        self.block.borrows[self.index].store(0, Ordering::Release);
+    }
+}
+
+// SAFETY: the row is `len` elements of `T` inside a device block on its
+// worker's device (`dev_idx`), aligned for `T` (`Element`), which the `Arc`
+// keeps allocated for as long as the value lives. A worker row's bytes
+// overlap no other row's for the plan's whole life, and its writer flag,
+// taken in `hold` and returned only in `drop`, keeps every view and every
+// other `HeldRow` off it meanwhile. What the holder enqueued through it
+// must have finished before it drops, and the holder that takes it by
+// value is what promises so: a BLAS handle drops it only once its stream
+// has drained (`fb_core_wwr::blas::BlasHandle::bind_workspace`).
+#[cfg(feature = "device")]
+unsafe impl<T> fb_core_wwr::device_slice::DeviceSlice<T> for HeldRow<T> {
+    fn as_ptr(&self) -> *const T {
+        self.block.row_ptr(self.index).cast::<T>().cast_const()
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+// SAFETY: as above: the flag makes the value the row's only user.
+#[cfg(feature = "device")]
+unsafe impl<T> fb_core_wwr::device_slice::DeviceSliceMut<T> for HeldRow<T> {
+    fn as_mut_ptr(&mut self) -> *mut T {
+        self.block.row_ptr(self.index).cast::<T>()
     }
 }

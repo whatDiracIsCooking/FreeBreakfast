@@ -527,7 +527,7 @@ list is in three tiers:
 - **Bindings:** `fb-integrals-sys`, `fb-recipes-sys`.
 - **Method crates:** `fb-integrals-mmd`,
   `fb-integrals-one-electron-overlap`, `fb-integrals-one-electron-kinetic`,
-  `fb-integrals-one-electron-potential-en`, `fb-recipes-matrix-ao`.
+  `fb-integrals-one-electron-potential-en`.
 
 The core crates hold the wrappers: `fb-core-wwr` over the `wwr-sys`
 bindings, the arena over the raw allocation and copy bindings, the two
@@ -562,13 +562,16 @@ itself, as the arena's `memcpy_*` do for the copies. A kernel library's
 launch is wrapped the same way in its binding crate, beside the generated
 bindings: `fb_recipes_sys::inverse_sqrt`, `merge_sort` and
 `merge_sort_keys` take `DeviceSlice`s and map the launch status through
-`fb_kernel_abi::launch_status`. That is the shape for the rest.
-`fb-pipeline-scf`, `fb-recipes-diagonalize`, `fb-recipes-orthogonalize`
-and `fb-integrals-one-electron-core-hamiltonian` have nothing left to
-call raw and forbid `unsafe`; `fb-recipes-matrix-ao` still calls
-`wwr-sys` for the BLAS workspace hand-off, and the other integrals method
-crates call `fb-integrals-sys`'s launchers directly, so they do not yet,
-and each call moves behind a checked wrapper of its own.
+`fb_kernel_abi::launch_status`. That is the shape for the rest. The BLAS
+workspace, which the library keeps beyond any borrow, is handed over by
+value instead: `BlasHandle::bind_workspace` owns an arena `HeldRow` until
+the handle is destroyed or rebound ([`gpu_layer.md`](gpu_layer.md),
+"Layering"). `fb-pipeline-scf`, `fb-recipes-diagonalize`,
+`fb-recipes-orthogonalize`, `fb-integrals-one-electron-core-hamiltonian`
+and `fb-recipes-matrix-ao` have nothing left to call raw and forbid
+`unsafe`; the other integrals method crates call `fb-integrals-sys`'s
+launchers directly, so they do not yet, and each call moves behind a
+checked wrapper of its own.
 
 ```toml
 [workspace.lints.clippy]            # every member: [lints] workspace = true

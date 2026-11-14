@@ -11,7 +11,7 @@ use std::process::ExitCode;
 
 use fb_core_error_handling::{Error, Status};
 use fb_core_log::{self as log, LogLevel};
-use fb_core_thread_pool::{self as thread_pool, default_n_cpu};
+use fb_core_thread_pool::default_n_cpu;
 use fb_pipeline_config::{plan, read_config};
 
 /// Read, plan, make the output directory, run, and write `timing.json`.
@@ -30,7 +30,7 @@ fn run(args: &[String]) -> Status {
         ))
     })?;
     let mut instance = planned.instantiate(&[0]);
-    let mut backend = thread_pool::Device::new(&[0], instance.plan());
+    let mut backend = instance.backend();
     let record = instance.run(&mut backend, default_n_cpu(1));
     // Written whether or not the run failed: the record holds the error,
     // and the times of what ran before it.

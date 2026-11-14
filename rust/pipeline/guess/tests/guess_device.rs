@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane};
+use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_overlap::add_overlap;
 use fb_molecule::nuclear_charge;
@@ -142,7 +142,7 @@ fn trace_of_d_s_is_the_nuclear_charge_and_the_upload_moves_bytes() {
             },
         );
         let mut instance = dag.plan().instantiate(&[0]);
-        let mut backend = thread_pool::Device::new(&[0], instance.plan());
+        let mut backend = instance.backend();
         instance.run(&mut backend, 2).result.unwrap();
         let out = std::mem::take(&mut *out.lock().unwrap());
         let [d, d_back, s] = &out[..] else {

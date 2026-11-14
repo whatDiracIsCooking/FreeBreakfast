@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane};
+use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_integrals_mmd::{ClassRows, add_records};
 
 /// The double fields, in the reference file's order.
@@ -241,7 +241,7 @@ fn records_match_the_cpp_tree() {
             },
         );
         let mut instance = dag.plan().instantiate(&[0]);
-        let mut backend = thread_pool::Device::new(&[0], instance.plan());
+        let mut backend = instance.backend();
         instance.run(&mut backend, 1).result.unwrap();
         let got = std::mem::take(&mut *out.lock().unwrap());
         let want = reference(stem);
