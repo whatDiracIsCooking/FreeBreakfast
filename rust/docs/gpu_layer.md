@@ -120,9 +120,14 @@ only in review. Each library exports two entries,
 `fb_<module>_abi_version()` and `fb_<module>_backend()`, defined in its
 `kernels/abi.cu`: the first returns the `FB_<MODULE>_ABI_VERSION` its C
 header defines, bumped by hand with any change to a declaration the header
-reaches (`FB_RECIPES_ABI_VERSION` is 1; `FB_INTEGRALS_ABI_VERSION` is 2,
-bumped when the kinetic and nuclear-attraction wrappers and `fb_nuclei_view`
-joined `fb_integrals.h`), and the second `FB_BACKEND_CUDA` or `FB_BACKEND_HIP`
+reaches (`FB_RECIPES_ABI_VERSION` is 5, bumped as the inverse square root,
+the symmetrization, the Cholesky diagonal tile and the DIIS solve joined the
+merge sort;
+`FB_INTEGRALS_ABI_VERSION` is 3, bumped as the kinetic and
+nuclear-attraction wrappers with `fb_nuclei_view`, then density fitting's
+metric and three-center launchers, joined the overlap; `fb-doc-check`'s
+`doc_lists.rs` holds these numbers to the headers), and the second
+`FB_BACKEND_CUDA` or `FB_BACKEND_HIP`
 (`fb_launch.h`), chosen by the compiler's own `__CUDACC__` or `__HIP__`
 rather than a definition the build passes. The `-sys` crate's
 `check_library()` checks the version against the constant in its committed
@@ -537,10 +542,17 @@ because nvcc accepts code that `clang -x hip` rejects.
 
 **One shared object per module.** `rust/<module>/kernels/` builds
 `libfb_<module>_kernels.so` at `<build>/<module>/kernels`:
-`libfb_recipes_kernels.so` (the merge sort) and `libfb_integrals_kernels.so`
-(the primitive-pair records, the overlap, the kinetic energy and the nuclear
-attraction: `fb_mmd_*`, `fb_ordered_pair_bound`, `fb_overlap_class`,
-`fb_kinetic_class` and `fb_potential_en_class`) today. Under CUDA each uses
+`libfb_recipes_kernels.so` (the merge sort, the inverse square root, the
+symmetrization, the Cholesky diagonal tile and the DIIS solve:
+`fb_merge_sort*`, `fb_inverse_sqrt`, `fb_symmetrize`, `fb_mirror_triangle`,
+`fb_cholesky_diagonal` and `fb_diis_solve`) and `libfb_integrals_kernels.so` (the
+primitive-pair records, the overlap, the kinetic energy, the nuclear
+attraction, and density fitting's metric, three-center integrals and their
+symmetrization: `fb_mmd_*`, `fb_ordered_pair_bound`, `fb_overlap_class`,
+`fb_kinetic_class`, `fb_potential_en_class`, `fb_metric_class`,
+`fb_three_center_class` and `fb_three_center_symmetrize`) today, each beside
+its two ABI entries; `fb-doc-check`'s `doc_lists.rs` fails a function a
+library's bindings declare that this list does not name. Under CUDA each uses
 separable compilation with the device link resolved inside the `.so`
 (`CUDA_RESOLVE_DEVICE_SYMBOLS`), so nothing relocatable crosses the ABI, and
 links the shared vendor runtime, not CMake's static default, so that the

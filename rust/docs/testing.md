@@ -269,10 +269,17 @@ a case runs in full, so what runs the slow cases is any `cargo test` without
 the switch: `cargo test -p <crate>` by hand, and the nightly's cargo half
 ("What runs when"), which clears it and says so on a `slow cases run` line. It is the C++ rule's case, past about 1.5 s
 outside its family's representative, and it carries the reason in the
-case. The one today is `fb-io-sad`'s
-`baked_matches_computed_through_argon`, every element through argon in
-every compiled-in set against the atomic SCF; `baked_matches_computed_for_hco`
-is its fast representative.
+case. A case reads the switch through a function named `fast_tests`, and
+every case that calls it is named here, which `fb-doc-check`'s
+`doc_lists.rs` holds:
+
+- `fb-io-sad`'s `baked_matches_computed_through_argon`, every element
+  through argon in every compiled-in set against the atomic SCF;
+  `baked_matches_computed_for_hco` is its fast representative.
+- `fb-integrals-eri-density-fitting-three-center`'s
+  `high_aux_matches_pyscf_through_ff_i`, all 70 three-center classes
+  through (ff|i) against PySCF; `water_matches_pyscf_and_is_exactly_symmetric`
+  is its family's representative.
 
 libtest has no skipped state, so a returned case counts as passed; the
 gate's line, not the count, is what says it did not run. `#[ignore]` is
