@@ -282,13 +282,15 @@ fn scratch(case: &str) -> PathBuf {
 /// The loaded guess of `from` over `basis`, through a plan.
 fn load(basis: &BasisSet, from: &Path) -> (Record, Vec<f64>) {
     let mut dag = Dag::new();
-    let d = add_loaded_guess(&mut dag, 0, basis, from.to_owned());
+    let d = add_loaded_guess(&mut dag, 0, basis, from.to_owned()).unwrap();
     run(dag, d, 1)
 }
 
 /// `PipelineGuess.ALoadedGuessIsTheSavedDensityBitwise`, and
 /// `test/pipeline/guess_host.cpp`'s refusals: the wrong shape is
-/// `InvalidConfig` and a missing file `Io`, each when the node runs.
+/// `InvalidConfig` and a missing file `Io`, each naming the file, at
+/// planning here with nothing added (the C++ refuses when the step runs);
+/// and the node's own check, of a file replaced after planning.
 #[test]
 fn a_loaded_guess_is_the_saved_density_bitwise() {
     let atoms = formaldehyde();
@@ -298,30 +300,45 @@ fn a_loaded_guess_is_the_saved_density_bitwise() {
     let n = basis.nao_sphe() as usize;
     let dir = scratch("load");
     let saved = dir.join("d.npy");
-    write_npy(
-        &saved,
-        &NpyArray {
-            shape: vec![n, n],
-            data: d.clone(),
-        },
-    )
-    .unwrap();
+    let square = NpyArray {
+        shape: vec![n, n],
+        data: d.clone(),
+    };
+    write_npy(&saved, &square).unwrap();
     let (record, loaded) = load(&basis, &saved);
     record.result.unwrap();
     assert_eq!(bits(&loaded), bits(&d));
 
     let wrong = dir.join("wrong.npy");
-    write_npy(
-        &wrong,
-        &NpyArray {
-            shape: vec![n, n - 1],
-            data: d[..n * (n - 1)].to_vec(),
-        },
-    )
-    .unwrap();
-    let error = load(&basis, &wrong).0.result.unwrap_err();
+    let narrow = NpyArray {
+        shape: vec![n, n - 1],
+        data: d[..n * (n - 1)].to_vec(),
+    };
+    write_npy(&wrong, &narrow).unwrap();
+    let missing = dir.join("missing.npy");
+    for (path, kind) in [
+        (&wrong, ErrorKind::InvalidConfig),
+        (&missing, ErrorKind::Io),
+    ] {
+        let mut dag: Dag<'static, Heap, ()> = Dag::new();
+        let error = add_loaded_guess(&mut dag, 0, &basis, path.clone()).unwrap_err();
+        assert_eq!(error.kind, kind, "{}", error.message);
+        assert!(
+            error.message.contains(&path.display().to_string()),
+            "{}",
+            error.message
+        );
+        assert!(dag.plan().is_empty());
+    }
+
+    // Planned over the square file, which is then replaced: the node checks
+    // the file it reads.
+    let replaced = dir.join("replaced.npy");
+    write_npy(&replaced, &square).unwrap();
+    let mut dag = Dag::new();
+    let d = add_loaded_guess(&mut dag, 0, &basis, replaced.clone()).unwrap();
+    write_npy(&replaced, &narrow).unwrap();
+    let error = run(dag, d, 1).0.result.unwrap_err();
     assert_eq!(error.kind, ErrorKind::InvalidConfig, "{}", error.message);
-    let error = load(&basis, &dir.join("missing.npy")).0.result.unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Io, "{}", error.message);
     std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -41,7 +41,7 @@
 //! | `MoleculeStep::xyz`, `BasisSetStep::basis` | [`MoleculeStep::xyz`], [`BasisSetStep::basis`] |
 //! | `[overlap] write_npy`, `OverlapStep::npy` | [`Calculation::Overlap`], which always writes `overlap.npy` |
 //! | `[guess] type`, `GuessStep::type`, `GuessType::Sad` | [`GuessStep::kind`], [`GuessKind::Sad`] |
-//! | `[guess] from`, `Load<GuessStep>`, `GuessStep::load` | [`GuessStep::from`], [`fb_pipeline_guess::add_loaded_guess`] |
+//! | `[guess] from`, `Load<GuessStep>`, `GuessStep::load` | [`GuessStep::from`], [`fb_pipeline_guess::add_loaded_guess`], its file's header checked at planning |
 //! | `[guess] from` with another key: `loads 'from' a file, so takes no option` | the same refusal, `InvalidConfig` |
 //! | the density the C++ pipeline names `d.npy` | [`Calculation::Guess`], which always writes `d.npy` |
 //! | `write_overlap_npy`, after a stream sync inside the step | [`add_write_npy`]: a download node and a write node that feeds nothing |
@@ -149,8 +149,9 @@ pub struct GuessStep {
     pub kind: Option<GuessKind>,
     /// `from`: a float64 `.npy` file of D, `nao_sphe × nao_sphe` in the
     /// basis's spherical AO order, read in place of computing one
-    /// ([`fb_pipeline_guess::add_loaded_guess`]). A path, relative to the
-    /// config file's directory. Optional; no default.
+    /// ([`fb_pipeline_guess::add_loaded_guess`]), its header checked when
+    /// the run is planned. A path, relative to the config file's directory.
+    /// Optional; no default.
     pub from: Option<PathBuf>,
 }
 
@@ -247,11 +248,14 @@ fn refusal(kind: ErrorKind, path: &Path, text: &str, e: &toml::de::Error) -> Err
 ///
 /// # Errors
 /// The readers' refusals, the message led by the key that named the file
-/// (`[molecule] xyz: `, `[basis_set] basis: `): an XYZ file that cannot be
-/// read or parsed (`Io`), a basis that is neither a compiled-in name nor a
-/// readable document (`Io`), an element the basis lacks; and the kernel
-/// library's load check ([`add_records`]). A loaded guess's file is read
-/// when the plan runs, so its refusals are the run's.
+/// (`[molecule] xyz: `, `[basis_set] basis: `, `[guess] from: `): an XYZ
+/// file that cannot be read or parsed (`Io`), a basis that is neither a
+/// compiled-in name nor a readable document (`Io`), an element the basis
+/// lacks; a loaded guess's file that cannot be opened or whose header
+/// cannot be parsed (`Io`), or whose shape is not the basis's (`InvalidConfig`),
+/// checked from its header alone ([`add_loaded_guess`]); and the kernel
+/// library's load check ([`add_records`]). The guess's data is read when
+/// the plan runs.
 pub fn plan(config: &Config) -> Result<Planned<'static>> {
     // Charge and multiplicity enter neither the overlap nor the SAD guess,
     // which is of neutral atoms.
@@ -271,7 +275,8 @@ pub fn plan(config: &Config) -> Result<Planned<'static>> {
         Calculation::Guess => {
             let from = config.guess.as_ref().and_then(|g| g.from.clone());
             let d = match from {
-                Some(from) => add_loaded_guess(&mut dag, 0, &basis, from),
+                Some(from) => add_loaded_guess(&mut dag, 0, &basis, from)
+                    .map_err(|e| keyed(e, "[guess] from"))?,
                 None => add_sad_guess(&mut dag, 0, &basis, molecule.atoms())?,
             };
             let n = basis.nao_sphe() as usize;

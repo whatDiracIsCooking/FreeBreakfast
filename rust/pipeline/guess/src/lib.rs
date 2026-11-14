@@ -24,12 +24,14 @@
 //!   it.
 //!
 //! [`add_loaded_guess`] is the step's `load`: one CPU node, `load guess`,
-//! that reads D from a `.npy` file in place of the stamps. Either row is a
+//! that reads D from a `.npy` file in place of the stamps, the file's
+//! header checked at planning. Either row is a
 //! host row; [`add_guess_upload`] adds `upload guess`, the copy on the
 //! worker's stream that makes it the device output row the SCF reads.
 //!
-//! **Errors.** A basis not placed over these atoms is refused at planning.
-//! Every other failure is a node's, at run time. The stamps are independent,
+//! **Errors.** A basis not placed over these atoms is refused at planning,
+//! and so is a loaded guess's file that cannot be read or whose header's
+//! shape is not the basis's. Every other failure is a node's, at run time. The stamps are independent,
 //! so every one runs; the run's error is the failure lowest in rank
 //! ([`fb_core_thread_pool::run`]), which is the first failing stamp in stamp
 //! order, the serial form's, and `sad guess`, their descendant, is skipped.
@@ -43,11 +45,11 @@
 //! | `GuessType`, `GuessStep::type` | `fb_pipeline_config`'s `GuessKind` and `GuessStep`, the binary's config: SAD is the only kind |
 //! | `GuessStep::run(in, subflow)`, over `sad_density(flow, …, builtin_sad_density)` | [`add_sad_guess`]: a node per stamp and `sad guess` |
 //! | `sad_density`'s task form: one task, a subtask per distinct stamp, its explicit join | the stamp nodes and `sad guess`, ordered by the rows they write and read |
-//! | `GuessStep::load(from, in)` | [`add_loaded_guess`], whose `load guess` node reads the file when it runs |
+//! | `GuessStep::load(from, in)`, the file read and its shape checked when it runs | [`add_loaded_guess`]: the file's header checked at planning ([`fb_io_npy::read_npy_shape`]), and the `load guess` node, which reads it when it runs |
 //! | `GuessOutput`, a host `std::vector<double>` the first device reader uploads | the host row `D`, and [`add_guess_upload`]'s device row `D` |
 //! | `GuessStep::footprint`, nothing | the rows' sizes in the plan's tables |
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use fb_atom::{Atom, Element};
 use fb_basis::{BasisSet, Shell};
@@ -130,29 +132,40 @@ pub fn add_sad_guess<'a, H: HostKind, S: 'a>(
 /// `worker`, in place of [`add_sad_guess`], and return D: a host output row
 /// of `nao_sphe²` doubles, column-major, as [`add_sad_guess`] returns it.
 ///
-/// One CPU node, `load guess`, which reads the file when it runs: a float64
-/// array of `basis`'s spherical AO order, in either layout. The file carries
-/// only the numbers, so only the shape is checked: a basis of the same size
-/// but another order is not caught.
+/// The file's header is read here, so a file that is missing, unreadable
+/// or of the wrong shape is refused before anything runs. One CPU node,
+/// `load guess`, then reads the data when it runs: a float64 array of
+/// `basis`'s spherical AO order, in either layout. The file carries only
+/// the numbers, so only the shape is checked: a basis of the same size but
+/// another order is not caught.
 ///
 /// # Errors
-/// At run time: `Io` for a file that cannot be read or parsed
-/// ([`fb_io_npy::read_npy`]), `InvalidConfig` for a shape other than
-/// `nao_sphe × nao_sphe`.
+/// Before anything is added, each naming `from`: `Io` for a file that
+/// cannot be opened or whose header cannot be parsed
+/// ([`fb_io_npy::read_npy_shape`]), `InvalidConfig` for a shape other than
+/// `nao_sphe × nao_sphe`. At run time, the same for the file as it is then,
+/// and `Io` for a payload its header disagrees with
+/// ([`fb_io_npy::read_npy`]).
 pub fn add_loaded_guess<'a, H: HostKind, S: 'a>(
     dag: &mut Dag<'a, H, S>,
     worker: usize,
     basis: &BasisSet,
     from: PathBuf,
-) -> RowId<H, f64> {
-    dag.add(
-        "load guess",
-        worker,
-        Load {
-            from,
-            n: basis.nao_sphe() as usize,
-        },
-    )
+) -> Result<RowId<H, f64>> {
+    let n = basis.nao_sphe() as usize;
+    check_shape(&from, &fb_io_npy::read_npy_shape(&from)?, n)?;
+    Ok(dag.add("load guess", worker, Load { from, n }))
+}
+
+/// `InvalidConfig` naming `from` unless `shape` is `n × n`.
+fn check_shape(from: &Path, shape: &[usize], n: usize) -> Status {
+    if shape == [n, n] {
+        return Ok(());
+    }
+    Err(Error::config(format!(
+        "'{}' is not {n} x {n}, the basis's spherical AO count",
+        from.display()
+    )))
 }
 
 /// Add `upload guess` to `dag` on GPU worker `worker`: the host guess `d`
@@ -262,7 +275,7 @@ impl<H: HostKind, S> Task<H, S> for Assemble<H> {
     }
 }
 
-/// CPU: D read from a `.npy` file, its shape checked.
+/// CPU: D read from a `.npy` file, its shape checked again.
 struct Load {
     from: PathBuf,
     n: usize,
@@ -283,14 +296,9 @@ impl<H: HostKind, S> Task<H, S> for Load {
         host: &Bufs<'_, H>,
         _: Lane<'_, S>,
     ) -> Status {
+        // Checked at planning, and again for the file as it is now.
         let array = fb_io_npy::read_npy(&self.from)?;
-        let n = self.n;
-        if array.shape != [n, n] {
-            return Err(Error::config(format!(
-                "[guess] {} is not {n} x {n}, the basis's spherical AO count",
-                self.from.display()
-            )));
-        }
+        check_shape(&self.from, &array.shape, self.n)?;
         host.take_mut(*d).copy_from_slice(&array.data);
         Ok(())
     }

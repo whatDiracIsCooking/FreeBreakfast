@@ -240,3 +240,42 @@ fn an_unknown_basis_is_refused() {
         &["[basis_set] basis", "no-such-basis"],
     );
 }
+
+/// A loaded guess whose file is not there: `Io`, naming the key and the
+/// path, at planning.
+#[test]
+fn a_missing_guess_file_is_refused() {
+    let config = "calculation = \"guess\"\n\n[molecule]\nxyz = \"water.xyz\"\n\n[basis_set]\nbasis = \"sto-3g\"\n\n[guess]\nfrom = \"missing.npy\"\n";
+    refused(
+        "refused_missing_guess",
+        config,
+        ErrorKind::Io,
+        &["[guess] from", "missing.npy"],
+    );
+}
+
+/// A loaded guess of the wrong shape, water's STO-3G count less one:
+/// `InvalidConfig`, naming the key and the path, at planning.
+#[test]
+fn a_guess_file_of_the_wrong_shape_is_refused() {
+    let dir = workdir("refused_wrong_guess_file");
+    let wrong = dir.join("wrong.npy");
+    fb_io_npy::write_npy(
+        &wrong,
+        &fb_io_npy::NpyArray {
+            shape: vec![6, 6],
+            data: vec![0.0; 36],
+        },
+    )
+    .unwrap();
+    let config = format!(
+        "calculation = \"guess\"\n\n[molecule]\nxyz = \"water.xyz\"\n\n[basis_set]\nbasis = \"sto-3g\"\n\n[guess]\nfrom = \"{}\"\n",
+        wrong.display()
+    );
+    refused(
+        "refused_wrong_guess",
+        &config,
+        ErrorKind::InvalidConfig,
+        &["[guess] from", &wrong.display().to_string(), "is not 7 x 7"],
+    );
+}
