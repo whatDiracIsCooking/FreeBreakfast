@@ -18,6 +18,8 @@
 //! | `:shared`: `element_count(shape)` | [`element_count`]`(shape)` |
 //! | `:reader`: `parse_npy(string_view)` | [`parse_npy`]`(&[u8])` |
 //! | `:reader`: `read_npy(path)` | [`read_npy`]`(path)` |
+//! | nothing: the C++ reads a whole file | [`read_npy_shape`]`(path)`, a file's shape from its header alone |
+//! | nothing | the private `header_bounds` and `header_fields`, the header's checks, which [`parse_npy`] and [`read_npy_shape`] share |
 //! | `:writer`: `npy_header(shape)`, a `std::string` | [`npy_header`]`(shape)`, a `Vec<u8>` |
 //! | `:writer`: `npy_to_bytes(array)`, a `std::string` | [`npy_to_bytes`]`(array)`, a `Vec<u8>` |
 //! | `:writer`: `write_npy(path, array)` | [`write_npy`]`(path, array)` |
@@ -54,6 +56,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::io::Read;
 use std::path::Path;
 
 use fb_core_error_handling::{Error, Result, Status};
@@ -206,11 +209,10 @@ fn c_to_fortran_order(c_order: &[f64], shape: &[usize]) -> Vec<f64> {
     out
 }
 
-/// Parse a `.npy` document from its bytes: `parse_npy`.
-///
-/// Every refusal is an [`ErrorKind::Io`] error but an overflowing shape's,
-/// [`ErrorKind::InvalidConfig`]; the crate doc lists them.
-pub fn parse_npy(npy_bytes: &[u8]) -> Result<NpyArray> {
+/// Where the header dict of a document opening with `npy_bytes` starts and
+/// where its payload does: the magic, the version and the length field
+/// checked, the payload's offset not yet checked against the bytes held.
+fn header_bounds(npy_bytes: &[u8]) -> Result<(usize, usize)> {
     if npy_bytes.len() < 8 || &npy_bytes[..6] != MAGIC {
         return Err(Error::io("not an NPY file: bad magic"));
     }
@@ -226,10 +228,15 @@ pub fn parse_npy(npy_bytes: &[u8]) -> Result<NpyArray> {
     let data_offset = usize::try_from(header_len)
         .ok()
         .and_then(|header_len| (8 + len_bytes).checked_add(header_len))
-        .filter(|&offset| offset <= npy_bytes.len())
         .ok_or_else(|| Error::io("truncated NPY header"))?;
-    let header = String::from_utf8_lossy(&npy_bytes[8 + len_bytes..data_offset]);
+    Ok((8 + len_bytes, data_offset))
+}
 
+/// The header dict's `fortran_order` and `shape`, its `descr` checked to
+/// be `'<f8'`, and the shape's element and byte counts checked not to
+/// overflow; returns the payload's byte count too.
+fn header_fields(header: &[u8]) -> Result<(bool, Vec<usize>, usize)> {
+    let header = String::from_utf8_lossy(header);
     let descr = quoted_value(&header, "descr")?;
     if descr != "<f8" {
         return Err(Error::io(format!(
@@ -238,10 +245,22 @@ pub fn parse_npy(npy_bytes: &[u8]) -> Result<NpyArray> {
     }
     let fortran = bool_value(&header, "fortran_order")?;
     let shape = shape_value(&header)?;
-
-    let expected = element_count(&shape)?
+    let bytes = element_count(&shape)?
         .checked_mul(ELEMENT_BYTES)
         .ok_or_else(|| Error::config("NPY shape element count overflows"))?;
+    Ok((fortran, shape, bytes))
+}
+
+/// Parse a `.npy` document from its bytes: `parse_npy`.
+///
+/// Every refusal is an [`ErrorKind::Io`] error but an overflowing shape's,
+/// [`ErrorKind::InvalidConfig`]; the crate doc lists them.
+pub fn parse_npy(npy_bytes: &[u8]) -> Result<NpyArray> {
+    let (header_start, data_offset) = header_bounds(npy_bytes)?;
+    if data_offset > npy_bytes.len() {
+        return Err(Error::io("truncated NPY header"));
+    }
+    let (fortran, shape, expected) = header_fields(&npy_bytes[header_start..data_offset])?;
     let payload = &npy_bytes[data_offset..];
     if payload.len() != expected {
         return Err(Error::io(format!(
@@ -270,6 +289,38 @@ pub fn read_npy(path: &Path) -> Result<NpyArray> {
     let bytes = std::fs::read(path)
         .map_err(|e| Error::io(format!("cannot open '{}': {e}", path.display())))?;
     parse_npy(&bytes)
+}
+
+/// The shape of the `.npy` file at `path`, read from its header alone: the
+/// payload is neither read nor checked against it, so a file this accepts
+/// [`read_npy`] can still refuse for its length. For a check before the
+/// data is wanted, as a planner makes one.
+///
+/// The header's refusals are [`parse_npy`]'s, of the same kinds; every one,
+/// and a file that cannot be read, names `path`.
+pub fn read_npy_shape(path: &Path) -> Result<Vec<usize>> {
+    let named = |mut e: Error| {
+        e.message = format!("'{}': {}", path.display(), e.message);
+        e
+    };
+    let cannot = |e: std::io::Error| Error::io(format!("cannot open '{}': {e}", path.display()));
+    let mut file = std::fs::File::open(path).map_err(cannot)?;
+    // The magic, the version and the longest length field.
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(12)
+        .read_to_end(&mut bytes)
+        .map_err(cannot)?;
+    let (header_start, data_offset) = header_bounds(&bytes).map_err(named)?;
+    if data_offset > bytes.len() {
+        let rest = (data_offset - bytes.len()) as u64;
+        file.take(rest).read_to_end(&mut bytes).map_err(cannot)?;
+    }
+    if data_offset > bytes.len() {
+        return Err(named(Error::io("truncated NPY header")));
+    }
+    let (_, shape, _) = header_fields(&bytes[header_start..data_offset]).map_err(named)?;
+    Ok(shape)
 }
 
 /// A shape as the header spells it, `()`, `(5,)` or `(2, 3)`:

@@ -7,7 +7,9 @@
 use std::path::{Path, PathBuf};
 
 use fb_core_error_handling::ErrorKind;
-use fb_io_npy::{NpyArray, element_count, npy_to_bytes, parse_npy, read_npy, write_npy};
+use fb_io_npy::{
+    NpyArray, element_count, npy_to_bytes, parse_npy, read_npy, read_npy_shape, write_npy,
+};
 
 /// Hand-assemble a `.npy` document: any version, any header dict, any
 /// payload, for the reader's refusals, which the writer cannot make:
@@ -411,6 +413,87 @@ fn read_of_missing_file_is_io_error() {
     let dir = scratch("read_of_missing_file_is_io_error");
     let error = read_npy(&dir.join("missing.npy")).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Io);
+}
+
+// --- read_npy_shape --------------------------------------------------------
+
+/// A file's shape from its header alone: a written file's, in either
+/// version's length field, and one whose payload is cut short, which
+/// [`read_npy`] refuses and the header does not show.
+#[test]
+fn read_npy_shape_reads_the_header_alone() {
+    let dir = scratch("read_npy_shape_reads_the_header_alone");
+    let written = dir.join("a.npy");
+    write_npy(
+        &written,
+        &NpyArray {
+            shape: vec![3, 2],
+            data: vec![0.0; 6],
+        },
+    )
+    .unwrap();
+    assert_eq!(read_npy_shape(&written).unwrap(), [3, 2]);
+
+    let dict = "{'descr': '<f8', 'fortran_order': True, 'shape': (4, 5), }";
+    for major in [1, 2, 3] {
+        let cut = dir.join(format!("cut{major}.npy"));
+        std::fs::write(&cut, make_npy(dict, &[0; 8], major)).unwrap();
+        assert_eq!(read_npy_shape(&cut).unwrap(), [4, 5], "version {major}");
+        let error = read_npy(&cut).unwrap_err();
+        assert!(
+            error.message.contains("payload is 8 bytes"),
+            "{}",
+            error.message
+        );
+    }
+}
+
+/// Every refusal of [`read_npy_shape`] names the path, of [`parse_npy`]'s
+/// kind: a missing file, a bad magic, a header cut short, and a dtype
+/// other than `'<f8'` are `Io`.
+#[test]
+fn read_npy_shape_refusals_name_the_path() {
+    let dir = scratch("read_npy_shape_refusals_name_the_path");
+    let dict = "{'descr': '<f8', 'fortran_order': False, 'shape': (2,), }";
+    let whole = make_npy(dict, &[0; 16], 1);
+    let cases: [(&str, Vec<u8>, &str); 4] = [
+        ("magic.npy", b"\x93NUMPX\x01\x00".to_vec(), "bad magic"),
+        ("short.npy", whole[..20].to_vec(), "truncated NPY header"),
+        (
+            "dtype.npy",
+            make_npy(
+                "{'descr': '<i8', 'fortran_order': False, 'shape': (2,), }",
+                &[],
+                1,
+            ),
+            "unsupported NPY dtype",
+        ),
+        (
+            "tiny.npy",
+            b"\x93NUMPY\x01\x00\x10".to_vec(),
+            "truncated NPY header length",
+        ),
+    ];
+    for (file, bytes, needle) in cases {
+        let path = dir.join(file);
+        std::fs::write(&path, bytes).unwrap();
+        let error = read_npy_shape(&path).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Io, "{file}");
+        assert!(error.message.contains(needle), "{file}: {}", error.message);
+        assert!(
+            error.message.contains(&path.display().to_string()),
+            "{file}: {}",
+            error.message
+        );
+    }
+    let missing = dir.join("missing.npy");
+    let error = read_npy_shape(&missing).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Io);
+    assert!(
+        error.message.contains(&missing.display().to_string()),
+        "{}",
+        error.message
+    );
 }
 
 // --- The SAD stamps --------------------------------------------------------
