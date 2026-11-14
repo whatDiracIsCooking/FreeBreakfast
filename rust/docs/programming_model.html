@@ -331,9 +331,10 @@ the sizing node is for the case where the bound is too loose to admit.</p>
 <p><strong>The offset assigner is a pure planner function.</strong> Its input is every
 buffer in the planned DAG with its size, its alignment and its lifetime, an
 interval of the schedule on one stream or a DAG-path relation across streams.
-Its output is an offset per buffer and the block's total. Greedy in start
-order with best-fit placement, the static memory planning a tensor compiler
-does, is enough for the DAGs this tree has; the general problem is hard, and
+Its output is an offset per buffer and the block's total. Greedy best-fit
+placement, the static memory planning a tensor compiler does, run in a few
+orders and kept at the smallest total (<a href="memory.html"><code>memory.md</code></a>,
+&quot;Lifetimes&quot;), is enough for the DAGs this tree has; the general problem is hard, and
 &quot;The schedule search&quot; under the open questions says when greedy may not be.
 It touches no device, so it is tier 3
 (<a href="testing.md"><code>testing.md</code></a>, &quot;Tiers: where a check lives&quot;), it is fuzzed as a
@@ -568,11 +569,47 @@ budget. It happens once.</li>
 <li><strong>Running</strong> moves data through the planned DAG. It happens any number of
 times, and nothing is re-admitted.</li>
 </ul>
+<p><strong>One run at a time, enforced by types.</strong> <code>Instance::run</code> takes the
+instance and the backend by <code>&amp;mut</code>, as <code>fb_core_thread_pool::run</code> takes
+the plan and the backend, so neither is ever in two runs at once. The run
+model needs exactly that: a block's row borrow flags are host-side and a
+GPU task's rows are returned while its device work may still be in flight,
+and a <code>Device</code> backend's events are one plan's nodes' and its streams and
+library handles one run's workers'. The concurrency the model does have
+keeps working. Within a run the workers share the instance's plan and the
+backend by reference, through a wrapper only <code>run</code> can make (a <code>Backend</code>
+is sealed and need not be <code>Sync</code>, and a <code>Device</code> is not, so outside a run
+no backend reaches a second thread at all); independent
+(instance, backend) pairs run on threads of their own; and several GPUs
+are one run, a <code>Device</code> spanning its stream workers' devices.</p>
 <p>Stream capture into a replayed graph is the same split one level down, which
 is a sign the split is real rather than imposed. A loop is therefore not a
 special node: it is a planned sub-DAG run repeatedly, with a host decision
 between runs. The decision is a node (convergence, a step accepted, the walk
 reaching a minimum) whose output is read on the host.</p>
+<p><strong>The executor replays the body in the run it is in.</strong> In
+<code>fb_core_thread_pool</code>, a loop is its body, the nodes added after a given
+one, and a decision node <code>Plan::add_loop</code> adds after the body's sinks and
+any node before the body it is given, so after every body node. The decision is a CPU node, so a worker has waited
+on the host for every GPU body node before it runs: the body's work has
+completed, and its rows and events are free to be used again, when the
+decision returns. Its <code>Continue</code> readies the body again, under the run's
+one lock, in the same scope and on the same workers, so a replay spawns no
+thread and allocates nothing; its <code>Break</code> readies what follows the loop,
+which depends on the decision and never on a body node. The decision is
+handed the iteration's index. The iteration count has a bound, fixed at
+planning beside the dimensions: a decision that would start one iteration
+past it fails the run with <code>MaxIterationsExceeded</code>, and a failed body node
+ends the loop and skips what follows it, as any failure skips its
+descendants. A loop in a loop's body is not built.</p>
+<p><strong>The planner closes a loop the same way.</strong> <code>fb_core_planner::Dag::add_loop</code>
+takes the position of the body's first task, its bound and a <code>Decision</code>: a
+CPU node that declares host rows as a task does, reads what the body copied
+to the host for it, and returns <code>Continue</code> or <code>Break</code>. The body's rows are a
+table laid out once, in a region of each worker's tables the parent holds
+while the loop runs, and the rows it carries between iterations are the
+parent's (<a href="memory.html"><code>memory.md</code></a>, &quot;Nested plans&quot;), so a replay is
+admitted with the plan and allocates nothing.</p>
 <p><strong>DAGs nest.</strong> A node may be a sub-DAG with dimensions of its own. The
 pipeline is a DAG of steps; a step is a DAG of tasks; the RHF step's body is a
 sub-DAG replayed per iteration. Dimensions attach to the sub-DAG, not to the
@@ -663,7 +700,8 @@ if each opened a scope of its own, one config line would make hundreds of
 threads. The rule is the arena rule restated: a sub-DAG's arena is carved
 from its parent's, and a sub-DAG's nodes are scheduled onto its parent's
 workers. Only the top-level run owns threads. Nesting adds nodes to the
-queue, never workers.</p>
+queue, never workers, and a loop re-adds its body's nodes to it, as the
+thread-count test below checks across a replay.</p>
 <p><strong>The count is a budget, admitted beside memory.</strong> <code>n_cpu</code> defaults to the
 host's <code>available_parallelism</code> less the stream workers' threads, floored at
 one, and the config overrides it beside the <code>[memory]</code> caps. A placement that
@@ -733,7 +771,8 @@ asked for stealing on the CPU side a crate could slot in behind the same type.</
 no more threads than the plan said. The last is a tier-3 test
 (<a href="testing.md"><code>testing.md</code></a>, &quot;Tiers: where a check lives&quot;) that reads the
 <code>Threads:</code> line of <code>/proc/self/status</code> after a device-free run and compares it
-to the plan's worker total plus the main thread. It is the one check that
+to the plan's worker total plus the main thread, and reads the same count
+before a loop's first iteration and after its last. It is the one check that
 catches what a lint cannot see: a linked host library opening a pool of its
 own at load, as a host BLAS does. If one is ever linked, its thread count is
 set to one at initialization, and this test is what notices when that slips.</p>
@@ -764,26 +803,25 @@ per crate: a crate on the list below leaves it at its default, and every
 other crate forbids it with <code>#![forbid(unsafe_code)]</code> at its root. That is
 an attribute rather than a manifest line because Cargo refuses a member that
 inherits <code>[workspace.lints]</code> and adds a <code>[lints.rust]</code> table of its own. The
-list is in three tiers:</p>
+list is in two tiers:</p>
 <ul>
 <li><strong>Core:</strong> <code>fb-core-wwr</code>, <code>fb-core-arena</code>, <code>fb-core-log</code>,
 <code>fb-core-thread-pool</code>.</li>
 <li><strong>Bindings:</strong> <code>fb-integrals-sys</code>, <code>fb-recipes-sys</code>.</li>
-<li><strong>Method crates:</strong> <code>fb-integrals-mmd</code>,
-<code>fb-integrals-one-electron-overlap</code>, <code>fb-integrals-one-electron-kinetic</code>,
-<code>fb-integrals-one-electron-potential-en</code>,
-<code>fb-integrals-one-electron-core-hamiltonian</code>, <code>fb-recipes-matrix-ao</code>,
-<code>fb-recipes-diagonalize</code>, <code>fb-recipes-orthogonalize</code>.</li>
 </ul>
 <p>The core crates hold the wrappers: <code>fb-core-wwr</code> over the <code>wwr-sys</code>
 bindings, the arena over the raw allocation and copy bindings, the two
-<code>libc</code> calls in <code>core::log</code>, and the one <code>unsafe impl Sync</code> on
-<code>core::thread_pool</code>'s <code>Device</code> backend. The binding crates declare a kernel
-library's <code>extern &quot;C&quot;</code> functions and check its version at load. A method
-crate's <code>unsafe</code> is a direct call into its kernels' launchers, the BLAS or
-the solver, or <code>wwr_memset_async</code>, each block with a <code>// SAFETY:</code> comment
-saying why its pointers and lengths hold; those calls could later be wrapped
-safely in the core and binding crates, which would empty the third tier.
+<code>libc</code> calls in <code>core::log</code>, and the one <code>unsafe impl Sync</code> in
+<code>core::thread_pool</code>, on <code>run</code>'s private wrapper of the backend it shares
+with its workers, which rests on a run borrowing the backend exclusively
+and on <code>Backend</code> being sealed (&quot;Plan once, run many&quot;). The binding crates declare a kernel
+library's <code>extern &quot;C&quot;</code> functions, check its version at load, and wrap its
+launches safely beside the bindings (<code>fb-integrals-sys</code> its records tasks
+too, since the class launchers trust records only those tasks write). There
+was a third tier, the method crates, whose <code>unsafe</code> was a direct call into
+their kernels' launchers, the BLAS or the solver; each such call has moved
+into a safe wrapper in the core and binding crates, and a method crate that
+needs a new one adds it there rather than joining the list.
 <code>fb-doc-check</code>'s <code>tests/unsafe_code.rs</code> reads this list: a crate root that
 neither forbids <code>unsafe_code</code> nor is listed fails it, and so does a listed
 crate with no <code>unsafe</code> left, so the list only shrinks.</p>
@@ -795,15 +833,29 @@ a rule and names the blocks that lack one, and
 comment justifies exactly one thing. Miri covers what a lint cannot
 (<a href="testing.md"><code>testing.md</code></a>, &quot;Sanitizers&quot;).</p>
 <p>A library call reaches the crates above <code>core</code> through a safe wrapper, not
-<code>wwr-sys</code>: <code>fb_core_wwr::blas::gemm</code> takes its matrices as <code>DeviceSlice</code>s
-(device memory with its length, which the arena's rows implement) and
-checks each extent against them in every build, and <code>fb-recipes-blas</code>, its
-packed shorthand, forbids <code>unsafe</code> itself, as the arena's <code>memcpy_*</code> do for
-the copies. That is the shape for the rest. <code>fb-pipeline-scf</code> has nothing
-left to call raw and forbids <code>unsafe</code>; the recipe crates still call
-<code>wwr-sys</code> or a kernel library directly (<code>dgmm</code>, <code>syevd</code>, the BLAS
-workspace, their kernels), so they do not yet, and each call moves behind
-a checked wrapper of its own.</p>
+<code>wwr-sys</code>: <code>fb_core_wwr::blas::gemm</code> and <code>dgmm</code> and
+<code>fb_core_wwr::solver::syevd</code> take their operands as <code>DeviceSlice</code>s (device
+memory with its length, which the arena's rows implement) and check each
+extent against them in every build (syevd's work against the solver's own
+query), <code>fb_core_wwr::memset::zero</code> zeroes one on a stream, and
+<code>fb-recipes-blas</code>, the BLAS calls' packed shorthand, forbids <code>unsafe</code>
+itself, as the arena's <code>memcpy_*</code> do for the copies. A kernel library's
+launch is wrapped the same way in its binding crate, beside the generated
+bindings: <code>fb_recipes_sys::inverse_sqrt</code>, <code>merge_sort</code> and
+<code>merge_sort_keys</code> take <code>DeviceSlice</code>s and map the launch status through
+<code>fb_kernel_abi::launch_status</code>, and <code>fb-integrals-sys</code>'s <code>overlap_class</code>,
+<code>kinetic_class</code> and <code>potential_en_class</code> take the output as a
+<code>DeviceSliceMut</code> whose <code>n_cart²</code> they assert, and the records as a
+<code>ClassRows</code>, a type only its own records tasks make, since the AO offsets
+the kernels write at are device data no host check can read. That is the
+shape for the rest. The BLAS
+workspace, which the library keeps beyond any borrow, is handed over by
+value instead: <code>BlasHandle::bind_workspace</code> owns an arena <code>HeldRow</code> until
+the handle is destroyed or rebound (<a href="gpu_layer.md"><code>gpu_layer.md</code></a>,
+&quot;Layering&quot;). Every crate above the core and binding crates now has nothing
+left to call raw and forbids <code>unsafe</code>: <code>fb-pipeline-scf</code>, the recipe
+crates, <code>fb-integrals-mmd</code> and the four <code>fb-integrals-one-electron-*</code>
+crates among them.</p>
 <pre><code class="language-toml">[workspace.lints.clippy]            # every member: [lints] workspace = true
 disallowed_methods = &quot;deny&quot;
 undocumented_unsafe_blocks = &quot;deny&quot;

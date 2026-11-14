@@ -194,9 +194,10 @@ Two pieces, and the first is the one with the content.
 **The offset assigner is a pure planner function.** Its input is every
 buffer in the planned DAG with its size, its alignment and its lifetime, an
 interval of the schedule on one stream or a DAG-path relation across streams.
-Its output is an offset per buffer and the block's total. Greedy in start
-order with best-fit placement, the static memory planning a tensor compiler
-does, is enough for the DAGs this tree has; the general problem is hard, and
+Its output is an offset per buffer and the block's total. Greedy best-fit
+placement, the static memory planning a tensor compiler does, run in a few
+orders and kept at the smallest total ([`memory.md`](memory.md),
+"Lifetimes"), is enough for the DAGs this tree has; the general problem is hard, and
 "The schedule search" under the open questions says when greedy may not be.
 It touches no device, so it is tier 3
 ([`testing.md`](testing.md), "Tiers: where a check lives"), it is fuzzed as a
