@@ -1,3 +1,19 @@
+//! `src/pipeline/scf` (module `free_breakfast.pipeline.scf`), its
+//! closed-shell density-fitted path: restricted Hartree-Fock iterated to
+//! self-consistency with Pulay DIIS on the Fock matrix, as tasks of a
+//! [`Dag`](fb_core_planner::Dag) whose loop replays one iteration's
+//! sub-DAG until its decision says converged. The C++
+//! `src/pipeline/scf`'s `scf_loop` and `DfFockBuilder` are the reference
+//! design, and its README "The step" the algorithm at length.
+//!
+//! [`add_scf`] is the step: the guess's factor before the loop, the body
+//! (J and K over the fitted B, F, E and the residual, DIIS, the Roothaan
+//! step, the density), the decision, and the converged F's orbitals after
+//! it; its doc has each task. [`ScfStep`] holds the C++ step's options the
+//! loop reads. [`Run`] is the whole run for the tests: an XYZ file, a basis
+//! and a fitting set planned once, from the SAD guess, returning an
+//! [`ScfOutput`] and the timing record.
+//!
 //! The Roothaan step at a fixed operator, `F C = S C ε` solved through the
 //! orthogonalizer `X = S^(-1/2)`, as tasks of a [`Dag`](fb_core_planner::Dag):
 //! what the C++ SCF does once per iteration. The C++
@@ -16,7 +32,8 @@
 //!   the output row C.
 //!
 //! The operator is a row, not a matrix of this crate: the core Hamiltonian
-//! here, the Fock matrix of each SCF iteration later, with no change to the
+//! in the tests' plan of its orbitals, the Fock matrix of each SCF
+//! iteration and the converged one in [`add_scf`], with no change to the
 //! step.
 //!
 //! **One closed-shell iteration's dense nodes**, steps 2, 3 and 6 of the
@@ -36,12 +53,6 @@
 //! J and K are input rows: the density-fitted build is
 //! `fb_integrals_eri_density_fitting_jk`'s.
 //!
-//! [`Run`] is the whole run at the core Hamiltonian, the core guess's
-//! orbitals: an XYZ file and a basis name planned once (the nuclei, the
-//! records, built once for both S and H, S, H, X and the step), laid out
-//! in one arena per kind, and run on one stream, returning ε, C and the
-//! timing record.
-//!
 //! | C++ | Here |
 //! |---|---|
 //! | `solve_fock(res, st, open, fock, x, n_alpha, n_beta)`: `gemmwich`, `diagonalize`, `gemm` | [`add_solve_fock`]: `fock transform`, the eigensolver's two tasks, `back transform` |
@@ -54,14 +65,29 @@
 //! | `DfFockBuilder::build`'s `F = H; F += J; F -= K/2` (copy and two axpys) | [`add_fock`]'s `fock`: `H + J`, then `- K/2`, by two geams, the same sums in the same order |
 //! | `electronic_energy`, two `dot`s into host scalars, each a stream sync | `fock`'s two gemvs (`vec(D)` as an n² × 1 matrix) into one device scalar, copied down to a pinned row; E_nuc added by `energy and norm` |
 //! | `commutator`: `F D`, `(F D) S`, `geam(N, T)`, `gemmwich`, `nrm2` into a host scalar | `residual`: the same gemms and geam, `Xᵀ (M - Mᵀ) X` by two gemms, `‖e‖²` by a gemv down to a pinned row, its root taken by `energy and norm` |
-//! | the core guess, `ScfStep` over the pipeline's S, H and X | [`Run`], one plan from the XYZ file and the basis |
+//! | `ScfStep::run`, `scf_loop` with a `DfFockBuilder` | [`add_scf`], the loop a planned sub-DAG and its decision a CPU node |
+//! | `ScfStep`'s `max_iterations`, `energy_tolerance`, `commutator_tolerance`, `diis_history`, an option out of range `InvalidConfig` | [`ScfStep`], checked at planning |
+//! | `fock_rebuild_interval`, `tau_j`, incremental builds, `DirectFockBuilder` | not ported: every DF build is full, and the direct ERIs are not ported |
+//! | ROHF, `roothaan_fock`, `publish_open`, `molden` | not ported: an odd electron count is refused |
+//! | `guess_exchange`: `syevd(D)`, `C̃ = V (Λ/2)^(1/2)` over the eigenvalues above 1e-12 of the largest, `df_exchange` over `n_alpha` columns at a time, summed | `syevd` on the guess, `guess factor` (the floor 1e-12 absolute, applied on the device by `fb_recipes_sys::inverse_sqrt`), the largest `nocc` columns the carried factor, the other `n - nocc` one K before the loop that `guess exchange` adds to the first iteration's and then zeroes |
+//! | a loaded guess that is not PSD: its negative part left out, with a warning | left out, silently: the eigenvalues never reach the host |
+//! | the guess rescaled by `N / Σ Z` for an ion | not ported: it moves only the first iterate, and [`Run`] plans a neutral molecule |
+//! | `previous = 0.0`, the loop's local | the pinned row `E before`, which the decision carries (`docs/memory.md`, "Nested plans") |
+//! | converged: `full && iteration > 1 && \|dE\| < energy_tolerance && norm < commutator_tolerance` | the decision's test, from its second iteration (index 1) on |
+//! | on convergence, `solve_fock` on F as built, not on the extrapolation | the same after the loop, `published density` its D; the last body iteration's extrapolated step is computed and left |
+//! | a singular extrapolation: logged, `diis.reset()`, the pair pushed again with every later residual scaled by `1/\|[F,D]\|` | logged, [`Diis::reset`](fb_recipes_diis::Diis::reset) from the decision; not pushed again, so the next iteration is a plain step too, and no residual scaled |
+//! | `err_max_iterations_exceeded`, naming the tolerances | the loop's bound, `MaxIterationsExceeded` from the executor |
+//! | `FBF_LOG_INFO` per iteration and on convergence | `log::info!` from the decision, the same lines |
+//! | the core guess's orbitals, a test vehicle of the Roothaan step | not here: the tests build that plan themselves |
 
 #![forbid(unsafe_code)]
 
 mod iteration;
 mod run;
+mod scf;
 mod tasks;
 
 pub use iteration::{add_density, add_fock, occupied_orbitals};
-pub use run::Run;
+pub use run::{Run, ScfOutput};
+pub use scf::{ScfStep, add_scf};
 pub use tasks::add_solve_fock;

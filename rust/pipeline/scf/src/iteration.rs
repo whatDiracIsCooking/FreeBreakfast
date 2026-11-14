@@ -75,6 +75,21 @@ pub fn add_density(
     );
 }
 
+/// Add **`published density`** (stream) to `dag` on GPU worker `worker`,
+/// and return D: an output row of `n²` doubles named `"D"`,
+/// `D = 2 C_occ C_occᵀ` from the first `nocc` columns of `c` by one gemm
+/// that reads them in place, as the C++ forms it. The density a converged
+/// loop publishes, after the loop, where nothing carries it.
+pub(crate) fn add_published_density(
+    dag: &mut Dag<'_>,
+    worker: usize,
+    n: usize,
+    nocc: usize,
+    c: RowId<Device, f64>,
+) -> RowId<Device, f64> {
+    dag.add("published density", worker, PublishedDensity { c, n, nocc })
+}
+
 /// Add the Fock matrix of J and K, its energy and its DIIS residual to
 /// `dag` on GPU worker `worker`, and return `(F, e, scalars)`: F and e
 /// device output rows of `n²` doubles, column-major, named `"F"` and `"e"`,
@@ -228,6 +243,58 @@ impl Task for Density {
             &c_occ,
             n,
             &c_occ,
+            n,
+            0.0,
+            &mut d,
+            n,
+        )
+    }
+}
+
+/// GPU: `D = 2 C[:, :nocc] C[:, :nocc]ᵀ` into an output row.
+struct PublishedDensity {
+    c: RowId<Device, f64>,
+    n: usize,
+    nocc: usize,
+}
+
+impl Task for PublishedDensity {
+    type Rows = RowId<Device, f64>;
+    const GPU: bool = true;
+
+    fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
+        device.read(self.c);
+        device.output("D", self.n * self.n)
+    }
+
+    fn dims(&self) -> Vec<(&'static str, usize)> {
+        vec![("n", self.n), ("nocc", self.nocc)]
+    }
+
+    fn run(
+        &self,
+        d: &Self::Rows,
+        device: &Bufs<'_, Device>,
+        _: &Bufs<'_, Pinned>,
+        lane: Lane<'_, DeviceStream>,
+    ) -> Status {
+        let Lane::Stream { stream: worker, .. } = lane else {
+            unreachable!("a GPU task runs on a stream")
+        };
+        // add_scf checked that n² fits an i32, and nocc <= n.
+        let (n, nocc) = (self.n as i32, self.nocc as i32);
+        let (c, mut d) = (device.get(self.c), device.take_mut(*d));
+        gemm(
+            worker.blas(),
+            OP_N,
+            OP_T,
+            n,
+            n,
+            nocc,
+            2.0,
+            &c,
+            n,
+            &c,
             n,
             0.0,
             &mut d,

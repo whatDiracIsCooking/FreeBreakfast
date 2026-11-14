@@ -3,11 +3,16 @@
 //! fixture, `FB_BLESS=1` rewriting it (`docs/testing.md`, "Performance"),
 //! at a fixed syevd work of 1234 doubles, since the vendor's number needs a
 //! device: the nuclei, S and H over one staging of U, X and the step. And
-//! the refusals planning passes on. And one SCF iteration's dense nodes as
-//! a loop body, with the refusal of an open shell. Planning touches no
+//! one SCF iteration's dense nodes as a loop body, with the refusal of an
+//! open shell. And the whole DF-RHF run's plan for water in cc-pVDZ over
+//! cc-pVDZ-JKFIT, with the refusals planning passes on. Planning touches no
 //! device, but the records' layout asks the kernel library for the sort's
 //! workspace, so the library must be built.
 
+#[allow(
+    dead_code,
+    reason = "the plans here are never run: `core_orbitals.rs` runs them"
+)]
 mod common;
 
 use std::ops::ControlFlow;
@@ -16,7 +21,7 @@ use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, ErrorKind, Result, Status};
 use fb_core_planner::{Dag, Decision, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_pipeline_scf::{Run, add_density, add_fock};
+use fb_pipeline_scf::{Run, ScfStep, add_density, add_fock};
 use fb_test_support::golden;
 
 /// The work every plan here is laid out with.
@@ -42,22 +47,126 @@ fn plan_goldens() {
     }
 }
 
-/// A file that is not there, a basis that is neither carried nor a file,
-/// and `lwork`'s own error are each the run's error, before anything is
-/// planned; `lwork` is asked at the number of spherical AOs.
+/// The text of `planned`, each line's trailing space dropped: the table's
+/// text ends an empty handoffs line in a space, which the
+/// trailing-whitespace hook strips from the committed file.
+fn text(planned: &impl std::fmt::Display) -> String {
+    planned
+        .to_string()
+        .lines()
+        .map(|l| format!("{}\n", l.trim_end()))
+        .collect()
+}
+
+/// Water's DF-RHF planned by [`Run`] with `step`.
+fn scf_run(step: &ScfStep) -> Result<Run> {
+    Run::new(
+        &common::xyz("h2o.xyz"),
+        "cc-pvdz",
+        "cc-pvdz-jkfit",
+        step,
+        |_| Ok(LWORK),
+    )
+}
+
+/// The whole DF-RHF run of water in cc-pVDZ over cc-pVDZ-JKFIT, at the
+/// default options: the setup, B, the SAD guess, the guess's factor and
+/// the rest's K before the loop, the iteration as the loop's body (its rows
+/// in the region, D, the factor, the rest's K, DIIS's rings and `E before`
+/// carried, F read after it), and the converged F's orbitals and density
+/// after it. The plan text, the arena's size among it, is the committed
+/// golden.
+#[test]
+fn scf_plan_golden() {
+    let run = scf_run(&ScfStep::default()).expect("water plans");
+    assert_eq!(run.n_ao(), 24);
+    golden(
+        env!("CARGO_MANIFEST_DIR"),
+        "plan_scf_h2o_cc-pvdz_cc-pvdz-jkfit.txt",
+        &text(run.planned()),
+    );
+}
+
+/// A file that is not there, a basis that is neither carried nor a file, a
+/// fitting set that is not carried, and `lwork`'s own error are each the
+/// run's error, before the loop is planned; `lwork` is asked at the number
+/// of spherical AOs.
 #[test]
 fn a_refused_input_is_an_error() {
-    assert!(Run::new(&common::xyz("none.xyz"), "sto-3g", |_| Ok(LWORK)).is_err());
-    assert!(Run::new(&common::xyz("h2o.xyz"), "no-such-basis", |_| Ok(LWORK)).is_err());
+    let step = ScfStep::default();
+    let plan = |xyz: &str, basis: &str, aux: &str| {
+        Run::new(&common::xyz(xyz), basis, aux, &step, |_| Ok(LWORK))
+    };
+    assert!(plan("none.xyz", "cc-pvdz", "cc-pvdz-jkfit").is_err());
+    assert!(plan("h2o.xyz", "no-such-basis", "cc-pvdz-jkfit").is_err());
+    let err = plan("h2o.xyz", "cc-pvdz", "no-such-jkfit")
+        .err()
+        .expect("refused");
+    assert_eq!(err.kind, ErrorKind::InvalidConfig);
     let mut asked = None;
-    let err = Run::new(&common::xyz("h2o.xyz"), "sto-3g", |n| {
-        asked = Some(n);
-        Err(Error::gpu("no device"))
-    })
+    let err = Run::new(
+        &common::xyz("h2o.xyz"),
+        "sto-3g",
+        "cc-pvdz-jkfit",
+        &step,
+        |n| {
+            asked = Some(n);
+            Err(Error::gpu("no device"))
+        },
+    )
     .err()
     .expect("lwork's error is the run's");
     assert_eq!(err.kind, ErrorKind::GpuRuntime);
     assert_eq!(asked, Some(7), "asked at H2O/STO-3G's 7 AOs");
+}
+
+/// Each option out of range is refused at planning as `InvalidConfig`,
+/// naming it, as the C++ step refuses it: no iteration, a negative or NaN
+/// tolerance, and a DIIS history of none or past the limit.
+#[test]
+fn an_option_out_of_range_is_refused() {
+    let default = ScfStep::default();
+    for (key, step) in [
+        (
+            "max_iterations",
+            ScfStep {
+                max_iterations: 0,
+                ..default.clone()
+            },
+        ),
+        (
+            "energy_tolerance",
+            ScfStep {
+                energy_tolerance: -1e-10,
+                ..default.clone()
+            },
+        ),
+        (
+            "commutator_tolerance",
+            ScfStep {
+                commutator_tolerance: f64::NAN,
+                ..default.clone()
+            },
+        ),
+        (
+            "diis_history",
+            ScfStep {
+                diis_history: 0,
+                ..default.clone()
+            },
+        ),
+        (
+            "diis_history",
+            ScfStep {
+                diis_history: 65,
+                ..default.clone()
+            },
+        ),
+    ] {
+        let err = scf_run(&step).err().expect("refused");
+        assert_eq!(err.kind, ErrorKind::InvalidConfig, "{key}");
+        assert!(err.message.contains(key), "{key}: {}", err.message);
+    }
 }
 
 /// GPU: an input, declared and never computed.

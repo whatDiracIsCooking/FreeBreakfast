@@ -280,6 +280,9 @@ every case that calls it is named here, which `fb-doc-check`'s
   `high_aux_matches_pyscf_through_ff_i`, all 70 three-center classes
   through (ff|i) against PySCF; `water_matches_pyscf_and_is_exactly_symmetric`
   is its family's representative.
+- `fb-pipeline-scf`'s `benzene_converges_to_pyscf`, the DF-RHF loop for
+  benzene in cc-pVDZ / cc-pVDZ-JKFIT against PySCF;
+  `water_converges_to_pyscf` is its family's representative.
 
 libtest has no skipped state, so a returned case counts as passed; the
 gate's line, not the count, is what says it did not run. `#[ignore]` is
