@@ -14,18 +14,20 @@
 //! normalization (the metric's argument).
 //!
 //! [`add_three_center`] adds, after the kernel library's load check and the
-//! kernels' limits at planning, the three tasks of
-//! [`fb_integrals_sys::add_three_center_tasks`]:
+//! kernels' limits at planning, `harmonics` for each basis whose U the
+//! caller's slot does not hold yet ([`add_harmonics`]), and the three tasks
+//! of [`fb_integrals_sys::add_three_center_tasks`]:
 //!
 //! - **`three-center download`**, on the worker's stream: the orbital
 //!   records' bra fields (`fb_integrals_mmd`'s, read as an edge) into
 //!   pinned rows.
 //! - **`three-center tables`**, on the CPU: those records regrouped by
 //!   shell pair, the aux records (the metric's, one per aux primitive,
-//!   `s = c (π/α)^{3/2}`), U and U_aux into one pinned row, and the cells,
-//!   one per (shell pair, aux shell) in its class `(la, lb, lP)`, into
-//!   another.
-//! - **`three-center`**, on the worker's stream: both uploaded; one launch
+//!   `s = c (π/α)^{3/2}`) into one pinned row, and the cells, one per
+//!   (shell pair, aux shell) in its class `(la, lb, lP)`, into another.
+//! - **`three-center`**, on the worker's stream: both uploaded, and U and
+//!   U_aux from the plan's `harmonics` rows, which the metric's transform
+//!   over the same aux basis reads too; one launch
 //!   per class into the Cartesian tensor, `nao_cart² naux_cart` doubles,
 //!   every element a plain store by the one cell it belongs to, so nothing
 //!   is zeroed; the three spherical GEMMs (the aux index against `U_auxᵀ`,
@@ -40,7 +42,8 @@
 //!
 //! | C++ | Here |
 //! |---|---|
-//! | `three_center(res, basis, classes, aux, b, max_bytes)`, into the caller's `b` | [`add_three_center`]`(dag, worker, basis, classes, aux)`, returning (mn\|P)'s row |
+//! | `three_center(res, basis, classes, aux, b, max_bytes)`, into the caller's `b` | [`add_three_center`]`(dag, worker, basis, classes, aux, u, u_aux)`, returning (mn\|P)'s row; the slots of U and U_aux passed in, as every transform takes them |
+//! | U and U_aux staged with the records and cells | the plan's `harmonics` rows ([`add_harmonics`]), each staged once for every reader over its basis and copied into the last task's scratch |
 //! | `mmd`'s records copied back and regrouped on the host, the call synchronizing after the copy | `three-center download` and `three-center tables`: a stream task, its pinned outputs read by a CPU task after the executor waits on its event |
 //! | the staging, the cells, the Cartesian tensor and the work, the call's own buffers | pinned rows and the stream task's device scratch, all in the plan's arena |
 //! | `three_center_class` per class, `gemm` and `gemmStridedBatched` (`recipes/blas`, wwr) | [`fb_integrals_sys::add_three_center_tasks`], over `fb_core_wwr::blas`'s `gemm` and `gemm_strided_batched` |
@@ -57,13 +60,14 @@ use std::collections::BTreeMap;
 
 use contracts::debug_requires;
 use fb_basis::BasisSet;
-use fb_core_arena::{Device, RowId};
+use fb_core_arena::{Device, Pinned, RowId};
 use fb_core_error_handling::{Error, Result};
 use fb_core_planner::Dag;
 use fb_integrals_sys::{
     AuxTable, ClassRows, FB_THREE_CENTER_AUX_MAX_MOMENTUM, FB_THREE_CENTER_MAX_MOMENTUM,
     add_three_center_tasks,
 };
+use fb_recipes_matrix_ao::add_harmonics;
 
 /// Add the spherical three-center integrals (mn|P) of the orbital basis
 /// `basis` and the auxiliary basis `aux` to `dag` on GPU worker `worker`,
@@ -74,10 +78,14 @@ use fb_integrals_sys::{
 ///
 /// `classes` are the records of `basis`, added on `worker` by
 /// [`fb_integrals_mmd::add_records`] earlier in `dag`, so one build serves
-/// every reader of the plan. The tasks are `three-center download`
+/// every reader of the plan. `u` and `u_aux` are the plan's slots for U
+/// over `basis` and over `aux` on `worker`, shared with every other reader
+/// of each (the metric's transform takes `u_aux`'s): `harmonics` (CPU)
+/// is added for each that is `None`, and its row left there
+/// ([`add_harmonics`]). The tasks are then `three-center download`
 /// (stream), `three-center tables` (CPU) and `three-center` (stream), whose
-/// scratch holds the Cartesian tensor (`naux_cart · nao_cart²` doubles) and
-/// the transform's intermediate (`naux · nao_cart²`).
+/// scratch holds U, U_aux, the Cartesian tensor (`naux_cart · nao_cart²`
+/// doubles) and the transform's intermediate (`naux · nao_cart²`).
 ///
 /// First, before anything is added, the kernel library's load check
 /// ([`fb_integrals_sys::check_library`]), and then what the kernels can
@@ -93,8 +101,8 @@ use fb_integrals_sys::{
 /// added to `dag` on an error.
 ///
 /// # Panics
-/// If `classes` are rows of another worker's or another plan's table
-/// ([`Dag::add`]).
+/// If `classes`, or a row `u` or `u_aux` holds, are rows of another
+/// worker's or another plan's table ([`Dag::add`]).
 #[debug_requires(basis.nshells() > 0, "an orbital basis of at least one shell")]
 #[debug_requires(aux.nshells() > 0, "an aux basis of at least one shell")]
 #[debug_requires(are_records_of(classes, basis), "classes are the records of basis")]
@@ -105,6 +113,8 @@ pub fn add_three_center(
     basis: &BasisSet,
     classes: &[ClassRows],
     aux: &BasisSet,
+    u: &mut Option<RowId<Pinned, f64>>,
+    u_aux: &mut Option<RowId<Pinned, f64>>,
 ) -> Result<RowId<Device, f64>> {
     // Not `map_err(Error::gpu)`: through a function pointer the error's
     // origin would be core's, not this call's caller.
@@ -153,14 +163,13 @@ pub fn add_three_center(
         .iter()
         .map(|c| pairs.get(&(c.la(), c.lb())).map_or(0, |&(n, _)| n))
         .collect();
+    let u = [
+        add_harmonics(dag, worker, basis, u),
+        add_harmonics(dag, worker, aux, u_aux),
+    ];
+    let n_sph = [basis.nao_sphe() as usize, aux.nao_sphe() as usize];
     Ok(add_three_center_tasks(
-        dag,
-        worker,
-        classes,
-        &n_pairs,
-        &table,
-        fb_basis::spherical_transform_matrix(basis),
-        fb_basis::spherical_transform_matrix(aux),
+        dag, worker, classes, &n_pairs, &table, u, n_sph,
     ))
 }
 

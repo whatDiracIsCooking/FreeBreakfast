@@ -77,7 +77,8 @@ fn a_shell_past_the_kernels_is_unsupported_at_planning() {
     ] {
         let mut dag = Dag::new();
         let classes = fb_integrals_mmd::add_records(&mut dag, 0, &basis).unwrap();
-        let err = add_three_center(&mut dag, 0, &basis, &classes, &aux).unwrap_err();
+        let err = add_three_center(&mut dag, 0, &basis, &classes, &aux, &mut None, &mut None)
+            .unwrap_err();
         assert_eq!(err.kind, ErrorKind::Unsupported, "{err}");
         assert!(err.message.contains(named), "{err}");
         let mut records = Dag::new();
@@ -86,6 +87,46 @@ fn a_shell_past_the_kernels_is_unsupported_at_planning() {
             dag.plan().to_string(),
             records.plan().to_string(),
             "nothing added"
+        );
+    }
+}
+
+/// U and U_aux come from the caller's slots (`fb_recipes_matrix_ao::add_harmonics`):
+/// empty ones get one `harmonics` task each and are left holding its row,
+/// and a second build over the same slots adds none and runs after both,
+/// reading their rows, so neither transform is staged twice.
+#[test]
+fn u_and_u_aux_are_read_from_the_slots() {
+    let (basis, aux) = common::water();
+    let mut dag = Dag::new();
+    let classes = fb_integrals_mmd::add_records(&mut dag, 0, &basis).unwrap();
+    let (mut u, mut u_aux) = (None, None);
+    add_three_center(&mut dag, 0, &basis, &classes, &aux, &mut u, &mut u_aux).unwrap();
+    assert!(u.is_some() && u_aux.is_some(), "both slots are filled");
+    add_three_center(&mut dag, 0, &basis, &classes, &aux, &mut u, &mut u_aux).unwrap();
+    let planned = dag.plan();
+    let names: Vec<String> = planned
+        .to_string()
+        .lines()
+        .skip(2)
+        .take(planned.len())
+        .map(|l| l.split_whitespace().skip(3).collect::<Vec<_>>().join(" "))
+        .map(|l| l.split(':').next().unwrap().to_owned())
+        .collect();
+    let harmonics: Vec<usize> = (0..names.len())
+        .filter(|&t| names[t] == "harmonics")
+        .collect();
+    assert_eq!(harmonics.len(), 2, "one harmonics per basis: {names:?}");
+    let last = names.len() - 1;
+    assert_eq!(names[last], "three-center", "{names:?}");
+    assert!(
+        harmonics.iter().all(|&t| t < last - 2),
+        "the second build adds no harmonics: {names:?}"
+    );
+    for t in harmonics {
+        assert!(
+            planned.predecessors(last).contains(&t),
+            "the second build reads harmonics {t}"
         );
     }
 }

@@ -94,7 +94,8 @@ pub struct Fixture {
 pub fn plan(basis: &BasisSet, aux: &BasisSet) -> Fixture {
     let mut dag = Dag::new();
     let classes = fb_integrals_mmd::add_records(&mut dag, 0, basis).expect("the library loads");
-    let b = add_three_center(&mut dag, 0, basis, &classes, aux).expect("the kernels cover both");
+    let b = add_three_center(&mut dag, 0, basis, &classes, aux, &mut None, &mut None)
+        .expect("the kernels cover both");
     let (n_ao, n_aux) = (basis.nao_sphe() as usize, aux.nao_sphe() as usize);
     let pinned = dag.add(
         "download",

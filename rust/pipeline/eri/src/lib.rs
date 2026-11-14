@@ -20,10 +20,13 @@
 //! Then it adds, on one GPU worker:
 //!
 //! - the three-center integrals (mn|P)
-//!   ([`add_three_center`]: `three-center download`, `three-center tables`,
+//!   ([`add_three_center`]: `harmonics` for the orbital basis and for the
+//!   aux one, `three-center download`, `three-center tables`,
 //!   `three-center`), over the orbital records the caller built once;
-//! - the metric M ([`add_metric`]: `metric tables`, `metric`, `harmonics`,
-//!   `spherical transform`, `metric average`);
+//! - the metric M ([`add_metric`]: `metric tables`, `metric`, `spherical
+//!   transform`, `metric average`), reading the aux basis's U from the
+//!   `harmonics` row the three-center integrals added, so U_aux is staged
+//!   once;
 //! - the fit ([`add_density_fit`]: `cholesky`, `cholesky check`, `density
 //!   fit`), B and L its output rows. A metric that is not positive definite
 //!   fails the run as `Numerical` at the check, and nothing that reads B
@@ -88,7 +91,9 @@ pub struct DensityFitted {
 /// resolved and placed over `molecule`, the atoms `basis` is placed on,
 /// here at planning. `classes` are the records of `basis`, added on
 /// `worker` by `fb_integrals_mmd::add_records` earlier in `dag`. The tasks
-/// are the crate doc's: (mn|P), then M, then the fit. The step declares no
+/// are the crate doc's: (mn|P), then M, then the fit, the aux basis's U
+/// staged once for (mn|P) and M; the orbital basis's U is staged here for
+/// (mn|P) alone. The step declares no
 /// BLAS workspace; the plan's caller does
 /// ([`Dag::blas_workspace`]).
 ///
@@ -126,8 +131,9 @@ pub fn add_df_eri(
             e.message = format!("add_df_eri: fitting set '{aux_basis}': {}", e.message);
             e
         })?;
-    let tensor = add_three_center(dag, worker, basis, classes, &aux)?;
-    let metric = add_metric(dag, worker, &aux, &mut None)?;
+    let mut u_aux = None;
+    let tensor = add_three_center(dag, worker, basis, classes, &aux, &mut None, &mut u_aux)?;
+    let metric = add_metric(dag, worker, &aux, &mut u_aux)?;
     let (nao, naux) = (basis.nao_sphe() as usize, aux.nao_sphe() as usize);
     let (b, l) = add_density_fit(dag, worker, nao, naux, metric, tensor)?;
     Ok(DensityFitted { b, l, aux })
