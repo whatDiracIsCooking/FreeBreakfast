@@ -438,7 +438,8 @@ Nothing in ctest runs cargo. Both gates do, for a diff under `rust/`:
 over every member whose graph declares no `links` under
 `--no-default-features` (found from `cargo tree`, so a new link-free crate
 is gated without being named), then `RUSTDOCFLAGS='-D warnings' cargo doc
---no-deps` over the members whose default features link nothing, in
+--no-deps` over the same members with `--no-default-features`, and over the
+members whose default features link nothing with their defaults, in
 `target/nodef` ([`docs/testing.md`](../docs/testing.md), "Gates", at the
 root). A commit touching `rust/` runs `devtools/test.py cargo-lint`, `cargo
 fmt --check` and clippy with warnings denied in both feature sets, and so
@@ -485,7 +486,7 @@ config, in waves:
 
 | Wave | Issues |
 |---|---|
-| 0 | #1402 one conversion from `fb_launch_status`, done; #1403 library handles per device; #1404 `cargo doc` without the library; #1405 the kinetic and nuclear-attraction forks, done; #1406 the shared spherical transform, done; #1407 the nuclei upload task, done; #1408 the timing record's JSON, done; #1417 io/npy, done; #1418 sad, done |
+| 0 | #1402 one conversion from `fb_launch_status`, done; #1403 library handles per device; #1404 `cargo doc` without the library, done; #1405 the kinetic and nuclear-attraction forks, done; #1406 the shared spherical transform, done; #1407 the nuclei upload task, done; #1408 the timing record's JSON, done; #1417 io/npy, done; #1418 sad, done |
 | 1 | #1409 the kinetic energy, done; #1410 the nuclear attraction, done; #1411 the symmetric eigensolver, done; #1412 the binary, done; #1419 io/sad, done; #1420 the SAD stamp generator, done |
 | 2 | #1413 the core Hamiltonian, done; #1414 the symmetric orthogonalizer, done; #1421 the SAD guess as tasks, done |
 | 3 | #1415 the core-Hamiltonian orbitals; #1422 the SAD guess from a config, through the binary, done |
