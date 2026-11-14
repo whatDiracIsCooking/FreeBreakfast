@@ -315,7 +315,7 @@ fn rhf_example() {
             "converged",
             "write c.npy",
             "write d.npy",
-            "download scf.json",
+            "download epsilon",
             "write scf.json",
         ],
     );

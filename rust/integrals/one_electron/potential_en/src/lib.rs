@@ -99,7 +99,7 @@ pub fn potential_en_classes(
 /// `potential en` (stream: the Cartesian matrix zeroed and
 /// [`potential_en_classes`], reading the records and the nuclei as edges),
 /// then the spherical transform of
-/// [`add_cartesian_to_spherical`]: `harmonics` and `harmonics upload` (U
+/// [`add_cartesian_to_spherical`]: `harmonics` and `upload U` (U
 /// into a pinned row, then its device row), only when `u` is `None`, and `spherical transform` (stream:
 /// `V = Uᵀ V_cart U`). `nuclei` are the molecule's, uploaded on `worker` by
 /// [`fb_molecule_nuclei::add_nuclei`] earlier in `dag`, the molecule the

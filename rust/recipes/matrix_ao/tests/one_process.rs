@@ -15,48 +15,45 @@
 
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{
-    Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p, memcpy_h2p, memcpy_p2d,
-};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2d};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_recipes_matrix_ao::{add_cartesian_to_spherical, add_harmonics};
 
-/// CPU: a fixed Cartesian matrix into a pinned row.
-struct Fill(Vec<f64>);
+/// CPU: the `k`-th fixed, non-symmetric Cartesian matrix, `len` doubles,
+/// computed into a pinned row: every element its own value.
+struct Fill {
+    k: usize,
+    len: usize,
+}
 
 impl CpuTask for Fill {
     type Rows = RowId<Pinned, f64>;
 
     fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        host.output("cartesian host", self.0.len())
+        host.output("cartesian host", self.len)
     }
 
     fn run(&self, row: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
-        memcpy_h2p(host, *row, &self.0);
+        for (i, x) in host.take_mut(*row).iter_mut().enumerate() {
+            *x = (((i * 7919 + self.k * 104_729) % 1000) as f64 / 997.0).sin();
+        }
         Ok(())
     }
 }
 
-/// GPU: a pinned row copied into a device output row, or (`device`) a
-/// device row copied into one, the unused task.
-struct CopyRow {
-    host: Option<RowId<Pinned, f64>>,
-    device: Option<RowId<Device, f64>>,
+/// GPU: a device row copied into a device output row, the unused task.
+struct Unused {
+    device: RowId<Device, f64>,
     len: usize,
 }
 
-impl GpuTask for CopyRow {
+impl GpuTask for Unused {
     type Rows = RowId<Device, f64>;
 
-    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        if let Some(h) = self.host {
-            host.read(h);
-        }
-        if let Some(d) = self.device {
-            device.read(d);
-        }
+    fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
+        device.read(self.device);
         device.output("copy", self.len)
     }
 
@@ -64,45 +61,10 @@ impl GpuTask for CopyRow {
         &self,
         row: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &CopyOnly<'_, Pinned>,
+        _: &CopyOnly<'_, Pinned>,
         stream: &DeviceStream,
     ) -> Status {
-        let mut dst = device.take_mut(*row);
-        match (self.host, self.device) {
-            (Some(h), _) => memcpy_p2d(&mut dst, host, h, stream),
-            (_, Some(d)) => memcpy_d2d(&dst, device.get(d), stream),
-            _ => unreachable!("a copy has a source"),
-        }
-    }
-}
-
-/// GPU, then CPU: every spherical matrix copied down and read out.
-struct Down(Vec<RowId<Device, f64>>, usize);
-
-impl GpuTask for Down {
-    type Rows = Vec<RowId<Pinned, f64>>;
-
-    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        self.0
-            .iter()
-            .map(|&m| {
-                device.read(m);
-                host.output("spherical host", self.1)
-            })
-            .collect()
-    }
-
-    fn run(
-        &self,
-        rows: &Self::Rows,
-        device: &Bufs<'_, Device>,
-        host: &CopyOnly<'_, Pinned>,
-        stream: &DeviceStream,
-    ) -> Status {
-        for (&m, &h) in self.0.iter().zip(rows) {
-            memcpy_d2p(host, h, device.get(m), stream)?;
-        }
-        Ok(())
+        memcpy_d2d(&device.take_mut(*row), device.get(self.device), stream)
     }
 }
 
@@ -138,29 +100,23 @@ fn transformed(basis: &fb_basis::BasisSet, extended: bool) -> Vec<f64> {
         dag.add_gpu(
             "unused",
             0,
-            CopyRow {
-                host: None,
-                device: Some(u_row),
+            Unused {
+                device: u_row,
                 len: n_cart * n_sph,
             },
         );
     }
     let mut spherical = Vec::new();
     for k in 0..3_usize {
-        // A fixed, non-symmetric matrix: every element its own value.
-        let values = (0..n_cart * n_cart)
-            .map(|i| (((i * 7919 + k * 104_729) % 1000) as f64 / 997.0).sin())
-            .collect();
-        let host = dag.add_cpu("fill", 0, Fill(values));
-        let cartesian = dag.add_gpu(
-            "upload",
+        let host = dag.add_cpu(
+            "fill",
             0,
-            CopyRow {
-                host: Some(host),
-                device: None,
+            Fill {
+                k,
                 len: n_cart * n_cart,
             },
         );
+        let cartesian = dag.upload(0, host, "copy", n_cart * n_cart);
         spherical.push(add_cartesian_to_spherical(
             &mut dag,
             0,
@@ -170,7 +126,10 @@ fn transformed(basis: &fb_basis::BasisSet, extended: bool) -> Vec<f64> {
             cartesian,
         ));
     }
-    let down = dag.add_gpu("download", 0, Down(spherical, n_sph * n_sph));
+    let down = spherical
+        .into_iter()
+        .map(|m| dag.download(0, m, "spherical host", n_sph * n_sph))
+        .collect();
     let out = Arc::new(Mutex::new(Vec::new()));
     dag.add_cpu("collect", 0, Collect(down, Arc::clone(&out)));
     dag.blas_workspace(0);

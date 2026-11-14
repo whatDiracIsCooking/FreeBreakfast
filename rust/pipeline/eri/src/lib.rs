@@ -20,7 +20,7 @@
 //! Then it adds, on one GPU worker:
 //!
 //! - the three-center integrals (mn|P)
-//!   ([`add_three_center`]: `harmonics` and `harmonics upload` for the aux
+//!   ([`add_three_center`]: `harmonics` and `upload U` for the aux
 //!   basis, and for the
 //!   orbital one unless the caller's slot holds its U already,
 //!   `three-center download`, `three-center tables`, `three-center`), over
@@ -95,7 +95,7 @@ pub struct DensityFitted {
 /// `worker` by `fb_integrals_mmd::add_records` earlier in `dag`. `u` is the
 /// plan's slot for the orbital basis's U, the one its one-electron
 /// matrices fill (`fb_recipes_matrix_ao::add_harmonics`): (mn|P) reads the
-/// row it holds, and when it is `None` `harmonics` and `harmonics upload`
+/// row it holds, and when it is `None` `harmonics` and `upload U`
 /// are added here and U's device row left in it. The tasks are the crate doc's: (mn|P), then M, then the
 /// fit, the aux basis's U staged once for (mn|P) and M. The step declares no
 /// BLAS workspace; the plan's caller does

@@ -25,7 +25,10 @@
 //!   after them: the body replayed in one run until the decision says
 //!   `Break`, its rows laid out once in a region of each worker's tables,
 //!   the rows it carries between iterations and its outputs the parent's
-//!   (`docs/memory.md`, "Nested plans").
+//!   (`docs/memory.md`, "Nested plans"). With `device`, `Dag::upload` and
+//!   `Dag::download` add a copy node, a pinned row to a new device row or
+//!   back, named after the new row: a copy that is a node's whole work is
+//!   never a hand-written task (`docs/memory.md`, "The table").
 //! - [`Planned`] ([`Dag::plan`]): each worker's device and host tables laid
 //!   out, and each task's dependencies derived, all pure. A task runs after
 //!   the producer of every row it reads ([`Table::reads`]) and after every
@@ -124,6 +127,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "device")]
+mod copy;
 mod dag;
 #[cfg(all(test, feature = "device-tests"))]
 mod device_tests;

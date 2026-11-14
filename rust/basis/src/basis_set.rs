@@ -1,6 +1,7 @@
 //! `:basis_set`: an ordered collection of shells with its two AO layouts,
 //! and the Cartesian-to-spherical transform built from it.
 
+use contracts::debug_requires;
 use fb_core_error_handling::{Error, check_or_abort};
 use fb_core_primitives::double_factorial_odd;
 
@@ -203,8 +204,8 @@ impl BasisSet {
     }
 }
 
-/// The Cartesian-to-spherical transform `U` for `basis`: `nao_cart` ×
-/// `nao_sphe`, column-major (`(i, j)` at `i + j * nao_cart`, ready for a
+/// The Cartesian-to-spherical transform `U` for `basis`, written into `u`,
+/// every element of it: `nao_cart` × `nao_sphe`, column-major (`(i, j)` at `i + j * nao_cart`, ready for a
 /// BLAS call), so that `Uᵀ M U` turns a Cartesian-AO matrix `M` into the same
 /// quantity over the spherical layout: `spherical_transform_matrix`.
 ///
@@ -224,11 +225,16 @@ impl BasisSet {
 ///
 /// `U`'s columns are orthonormal under the Cartesian overlap, not the plain
 /// dot product: `Uᵀ U` is not the identity.
-#[must_use]
-pub fn spherical_transform_matrix(basis: &BasisSet) -> Vec<f64> {
+///
+/// It writes into a slice, so a task computes `U` straight into the row
+/// it is bound for (`docs/memory.md`, "The table").
+#[debug_requires(
+    u.len() == basis.nao_cart() as usize * basis.nao_sphe() as usize,
+    "u holds nao_cart × nao_sphe"
+)]
+pub fn spherical_transform_matrix(basis: &BasisSet, u: &mut [f64]) {
     let nrow = basis.nao_cart() as usize;
-    let ncol = basis.nao_sphe() as usize;
-    let mut u = vec![0.0; nrow * ncol];
+    u.fill(0.0);
     for (s, shell) in (0u32..).zip(basis.shells()) {
         let l = shell.angular_momentum();
         let row0 = basis.ao_offset_cart(s) as usize;
@@ -243,7 +249,6 @@ pub fn spherical_transform_matrix(basis: &BasisSet) -> Vec<f64> {
             }
         }
     }
-    u
 }
 
 /// `test/basis/basis_set_host.cpp`, one test per case, each named after it,
@@ -256,6 +261,13 @@ mod tests {
     use crate::{Primitive, ShellStamp};
     use fb_core_types::Double3;
     use std::f64::consts::PI;
+
+    /// U of `basis`, into a `Vec` of its size.
+    fn transform(basis: &BasisSet) -> Vec<f64> {
+        let mut u = vec![0.0; basis.nao_cart() as usize * basis.nao_sphe() as usize];
+        spherical_transform_matrix(basis, &mut u);
+        u
+    }
 
     const ORIGIN: Double3 = Double3 {
         x: 0.0,
@@ -283,7 +295,7 @@ mod tests {
         assert_eq!(basis.nao_cart(), 0);
         assert_eq!(basis.nao_sphe(), 0);
         assert!(basis.aos_cart().is_empty());
-        assert!(spherical_transform_matrix(&basis).is_empty());
+        assert!(transform(&basis).is_empty());
         // An empty shell list is the same basis.
         let built = BasisSet::new(Vec::new());
         assert_eq!(built.nao_cart(), 0);
@@ -389,7 +401,17 @@ mod tests {
         assert_eq!(basis.nao_cart(), 20);
         assert_eq!(basis.nao_sphe(), 16);
         assert_eq!(basis.aos_cart().len(), 20);
-        assert_eq!(spherical_transform_matrix(&basis).len(), 20 * 16);
+        assert_eq!(transform(&basis).len(), 20 * 16);
+    }
+
+    /// A slice of another size than `nao_cart × nao_sphe` is refused, by
+    /// the contract.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "u holds nao_cart × nao_sphe")]
+    fn a_transform_into_a_slice_of_another_size_is_refused() {
+        let basis = BasisSet::new(vec![shell(2, 1.0, 1.0)]);
+        spherical_transform_matrix(&basis, &mut [0.0; 29]);
     }
 
     /// `BasisSet.SphericalTransformMatrixIsIdentityBelowD`.
@@ -403,7 +425,7 @@ mod tests {
         ]);
         let n = basis.nao_cart() as usize;
         assert_eq!(basis.nao_sphe() as usize, n);
-        let u = spherical_transform_matrix(&basis);
+        let u = transform(&basis);
         assert_eq!(u.len(), n * n);
         for i in 0..n {
             for j in 0..n {
@@ -434,7 +456,7 @@ mod tests {
             let nsph = basis.nao_sphe() as usize;
             assert_eq!(nsph, 2 * l as usize + 1);
 
-            let u = spherical_transform_matrix(&basis);
+            let u = transform(&basis);
             for m1 in 0..nsph {
                 for m2 in 0..nsph {
                     let mut s = 0.0;
@@ -466,7 +488,7 @@ mod tests {
         let ncol = basis.nao_sphe() as usize;
         assert_eq!(basis.nao_cart(), 7);
         assert_eq!(ncol, 6);
-        let u = spherical_transform_matrix(&basis);
+        let u = transform(&basis);
         let d = solid_harmonic_block(2);
         assert_eq!(u[0], 1.0);
         for j in 1..ncol {
@@ -489,7 +511,7 @@ mod tests {
         let basis = BasisSet::new(vec![shell(2, 1.0, 1.0)]);
         let ncart = basis.nao_cart() as usize;
         let nsph = basis.nao_sphe() as usize;
-        let u = spherical_transform_matrix(&basis);
+        let u = transform(&basis);
         assert_eq!(u.len(), ncart * nsph);
 
         let mut utu = vec![0.0; nsph * nsph];

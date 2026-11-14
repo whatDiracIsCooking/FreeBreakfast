@@ -4,10 +4,10 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2h};
+use fb_core_arena::{Bufs, Layout, Pinned, RowId, memcpy_p2h};
 use fb_core_error_handling::{Result, Status};
-use fb_core_planner::{CpuTask, Dag, GpuTask, Planned};
-use fb_core_thread_pool::{DeviceStream, Record};
+use fb_core_planner::{CpuTask, Dag, Planned};
+use fb_core_thread_pool::Record;
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_integrals_one_electron_overlap::add_overlap;
@@ -46,9 +46,9 @@ pub struct ScfOutput {
 /// `X = S^(-1/2)` ([`add_orthogonalize`], at the default floor), the SAD
 /// guess and its upload
 /// ([`add_sad_guess`], [`add_guess_upload`]), the loop ([`add_scf`]), and
-/// two tasks that bring the products to the host, `download` (stream: ε,
-/// C and D copied into pinned rows) and `collect` (CPU: the pinned rows
-/// copied out). [`Run::planned`] is the plan, its arena sizes among it,
+/// the nodes that bring the products to the host, `download epsilon`,
+/// `download C` and `download D` (the planner's copy nodes,
+/// [`Dag::download`]) and `collect` (CPU: the pinned rows copied out). [`Run::planned`] is the plan, its arena sizes among it,
 /// with no device; [`Run::run`] lays the arena out on a device and runs it
 /// on one stream.
 pub struct Run {
@@ -117,13 +117,11 @@ impl Run {
             [h, s, x],
             guess,
         )?;
-        let pinned = dag.add_gpu(
-            "download",
-            0,
-            Download {
-                rows: [(eps, n_ao), (c, n_ao * n_ao), (d, n_ao * n_ao)],
-            },
-        );
+        let pinned = [
+            dag.download(0, eps, "epsilon", n_ao),
+            dag.download(0, c, "C", n_ao * n_ao),
+            dag.download(0, d, "D", n_ao * n_ao),
+        ];
         let out = Arc::new(Mutex::new(None));
         dag.add_cpu(
             "collect",
@@ -164,38 +162,6 @@ impl Run {
             out = self.out.lock().unwrap_or_else(|e| e.into_inner()).take();
         }
         (record, out)
-    }
-}
-
-/// GPU: ε, C and D, each with its length, copied into pinned rows.
-struct Download {
-    rows: [(RowId<Device, f64>, usize); 3],
-}
-
-impl GpuTask for Download {
-    type Rows = [RowId<Pinned, f64>; 3];
-
-    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        let names = ["epsilon", "C", "D"];
-        let mut pinned = [None; 3];
-        for (slot, (&(row, len), name)) in pinned.iter_mut().zip(self.rows.iter().zip(names)) {
-            device.read(row);
-            *slot = Some(host.output(name, len));
-        }
-        pinned.map(|p| p.expect("each row declared"))
-    }
-
-    fn run(
-        &self,
-        pinned: &Self::Rows,
-        device: &Bufs<'_, Device>,
-        host: &CopyOnly<'_, Pinned>,
-        stream: &DeviceStream,
-    ) -> Status {
-        for (&(src, _), &dst) in self.rows.iter().zip(pinned) {
-            memcpy_d2p(host, dst, device.get(src), stream)?;
-        }
-        Ok(())
     }
 }
 

@@ -37,8 +37,8 @@ fn plan_goldens() {
 
 /// Nuclei with no nucleus, outside the launch wrapper's `n_nuc >= 1`, are
 /// refused at planning with an `InvalidConfig` error, and nothing is added:
-/// the plan holds the nuclei's and the records' two tasks each alone, so no
-/// V would launch.
+/// the plan holds the nuclei's three nodes and the records' two tasks
+/// alone, so no V would launch.
 #[test]
 fn no_nucleus_is_refused_at_planning() {
     let molecule = fb_io_xyz::read_xyz(&common::data("h2o.xyz"), 0, 1).unwrap();
@@ -60,8 +60,8 @@ fn no_nucleus_is_refused_at_planning() {
         assert!(u.is_none(), "U was not staged");
         assert_eq!(
             dag.plan().len(),
-            4,
-            "only the nuclei's and the records' tasks"
+            5,
+            "only the nuclei's and the records' nodes"
         );
     }
 }

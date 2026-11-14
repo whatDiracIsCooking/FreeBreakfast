@@ -95,7 +95,8 @@ pub(crate) fn atomic_integrals(z: i32, shells: &[Shell]) -> Result<AtomicIntegra
         )));
     }
 
-    let u = spherical_transform_matrix(&basis);
+    let mut u = vec![0.0; ncart * nsph];
+    spherical_transform_matrix(&basis, &mut u);
     Ok(AtomicIntegrals {
         nao_sphe: nsph,
         overlap: to_spherical(one_center_overlap(&basis), &u, ncart, nsph, 2),

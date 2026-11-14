@@ -1,4 +1,4 @@
-//! Three rules of the design docs that a scan of the Rust sources holds,
+//! Four rules of the design docs that a scan of the Rust sources holds,
 //! each failing with the file and line of what breaks it:
 //!
 //! - **Nothing between the detection site and `main` logs an error**
@@ -13,6 +13,11 @@
 //!   "Allocation is a planning-time error"): an `Allocation` error is made
 //!   only where [`ALLOCATIONS`] says, and the block's failed allocation
 //!   makes one only to abort with it.
+//! - **A copy between kinds that is a node's whole work is a planner copy
+//!   node** (`docs/memory.md`, "The table"): an `impl GpuTask` whose `run`
+//!   calls `memcpy_p2d` or `memcpy_d2p` and no other free function, its
+//!   other calls the views' and iterators' methods, is in [`COPY_TASKS`]:
+//!   the planner's own two and the ones not moved yet.
 //!
 //! Every member's `.rs` is read, and the two at `rust/`'s top that the
 //! `build.rs` files include. Tier 3: it reads files and nothing else.
@@ -117,6 +122,28 @@ const LAUNCH_SHAPE: &[&str] = &[
     "dim3",
     "threadsperblock",
     "launchbounds",
+];
+
+/// The `GpuTask`s whose whole work is a copy between kinds, as `(file, how
+/// many, why)`, counted as [`ERROR_LOGS`] is, in non-test code: everything
+/// else adds a copy node (`Dag::upload`, `Dag::download`). The list only
+/// shrinks.
+const COPY_TASKS: &[(&str, usize, &str)] = &[
+    (
+        "core/planner/src/copy.rs",
+        2,
+        "the planner's copy nodes themselves, `Dag::upload` and `Dag::download`",
+    ),
+    (
+        "integrals/one_electron/overlap/src/run.rs",
+        1,
+        "the overlap run's download of S, not moved yet (#1611)",
+    ),
+    (
+        "integrals/sys/src/three_center.rs",
+        1,
+        "`three-center download`, each class's bra fields and offsets, not moved yet (#1611)",
+    ),
 ];
 
 /// The checks that name what they forbid: this file, and
@@ -394,6 +421,125 @@ fn allocation_failures(files: &[(String, String)]) -> Vec<String> {
         ALLOCATIONS,
     ));
     failures
+}
+
+/// The end of the brace block opening at or after `from` in `code`.
+fn block_end(code: &str, from: usize) -> Option<(usize, usize)> {
+    let open = code[from..].find('{')? + from;
+    let mut depth = 0;
+    for (i, c) in code.bytes().enumerate().skip(open) {
+        match c {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((open, i + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The line of each `impl … GpuTask … for` in `code` (from [`code_only`],
+/// test items removed) whose `run` is a copy between kinds alone: it calls
+/// `memcpy_p2d` or `memcpy_d2p`, and every other call is a method (`.name(`)
+/// or `Ok(`, never another free or path function, a kernel's launch, a
+/// BLAS call or another copy.
+fn copy_tasks(code: &str) -> Vec<usize> {
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(at) = code[from..].find("impl").map(|e| from + e) {
+        from = at + 4;
+        let Some((open, close)) = block_end(code, at) else {
+            break;
+        };
+        let header = &code[at..open];
+        let bounded = at == 0 || !is_ident(code.as_bytes()[at - 1]);
+        if !bounded || !idents(header).any(|(_, w)| w == "GpuTask") {
+            continue;
+        }
+        let body = &code[open..close];
+        let Some(run) = body.find("fn run") else {
+            continue;
+        };
+        let Some((run_open, run_close)) = block_end(body, run) else {
+            continue;
+        };
+        let run_body = &body[run_open..run_close];
+        let mut copies = 0;
+        let mut other = false;
+        for (i, w) in idents(run_body) {
+            let after = run_body[i + w.len()..].trim_start();
+            if !after.starts_with('(') {
+                continue;
+            }
+            let method = run_body[..i].trim_end().ends_with('.');
+            match w {
+                "memcpy_p2d" | "memcpy_d2p" => copies += 1,
+                _ if method => {}
+                // A tuple pattern or a condition, not a call.
+                "Ok" | "Some" | "for" | "in" | "if" | "while" | "match" | "return" | "let" => {}
+                _ => other = true,
+            }
+        }
+        if copies > 0 && !other {
+            found.push(line_of(code, at));
+        }
+        from = close;
+    }
+    found
+}
+
+fn copy_task_failures(files: &[(String, String)]) -> Vec<String> {
+    let hits: Vec<(String, usize, String)> = files
+        .iter()
+        .filter(|(p, _)| !is_test_file(p) && !CHECKS.contains(&p.as_str()))
+        .flat_map(|(p, src)| {
+            copy_tasks(&without_test_items(&code_only(src)))
+                .into_iter()
+                .map(move |l| {
+                    (
+                        p.clone(),
+                        l,
+                        "a `GpuTask` whose `run` is a copy alone".to_owned(),
+                    )
+                })
+        })
+        .collect();
+    against(
+        "a copy between kinds that is a node's whole work is a planner copy node:          `Dag::upload` or `Dag::download`, not a hand-written task          (docs/memory.md, \"The table\")",
+        &hits,
+        COPY_TASKS,
+    )
+}
+
+#[test]
+fn a_whole_copy_is_a_planner_copy_node() {
+    let failures = copy_task_failures(&sources());
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The copy scan finds a task whose `run` copies alone, in a loop or not,
+/// and passes one that copies beside a launch, a BLAS call or a device
+/// copy, and a CPU task.
+#[test]
+fn the_copy_scan_sees_a_copy_alone() {
+    let alone = "impl GpuTask for Up {\n    fn layout(&self) {}\n    fn run(&self, r: &R, d: &Bufs, h: &CopyOnly, s: &S) -> Status {\n        \
+                 memcpy_p2d(&mut d.take_mut(*r), h, self.0, s)\n    }\n}\n";
+    assert_eq!(copy_tasks(alone), [1]);
+    let looped = "fn f() {}\nimpl<T> GpuTask for Down<T> {\n    fn run(&self) -> Status {\n        \
+                  for (a, b) in self.rows.iter().zip(r) {\n            memcpy_d2p(h, b, d.get(a), s)?;\n        }\n        Ok(())\n    }\n}\n";
+    assert_eq!(copy_tasks(looped), [2]);
+    for busy in [
+        "impl GpuTask for G {\n    fn run(&self) -> Status {\n        memcpy_p2d(&mut a, h, x, s)?;\n        gemm(s.blas(), a)\n    }\n}\n",
+        "impl GpuTask for G {\n    fn run(&self) -> Status {\n        memcpy_d2p(h, x, &f, s)?;\n        fb_recipes_sys::inverse_sqrt(s, n, f)\n    }\n}\n",
+        "impl GpuTask for G {\n    fn run(&self) -> Status {\n        memcpy_d2d(&a, b, s)\n    }\n}\n",
+        "impl CpuTask for C {\n    fn run(&self) -> Status {\n        memcpy_h2p(h, r, &v);\n        Ok(())\n    }\n}\n",
+    ] {
+        assert!(copy_tasks(busy).is_empty(), "{busy}");
+    }
 }
 
 #[test]

@@ -92,7 +92,7 @@ fn a_shell_past_the_kernels_is_unsupported_at_planning() {
 }
 
 /// U and U_aux come from the caller's slots (`fb_recipes_matrix_ao::add_harmonics`):
-/// empty ones get one `harmonics` and one `harmonics upload` task each and
+/// empty ones get one `harmonics` task and one `upload U` copy node each and
 /// are left holding the upload's device row, and a second build over the
 /// same slots adds none and runs after both uploads, reading their rows, so
 /// neither transform is staged or copied up twice.
@@ -117,7 +117,7 @@ fn u_and_u_aux_are_read_from_the_slots() {
     let count = |name: &str| names.iter().filter(|n| *n == name).count();
     assert_eq!(count("harmonics"), 2, "one harmonics per basis: {names:?}");
     let uploads: Vec<usize> = (0..names.len())
-        .filter(|&t| names[t] == "harmonics upload")
+        .filter(|&t| names[t] == "upload U")
         .collect();
     assert_eq!(uploads.len(), 2, "one upload per basis: {names:?}");
     let last = names.len() - 1;

@@ -3,7 +3,7 @@
 
 use std::ops::ControlFlow;
 
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_p2d};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{CpuTask, Dag, Decision, GpuTask};
 use fb_core_thread_pool::DeviceStream;
@@ -120,8 +120,9 @@ impl ScfStep {
 /// **Before the loop**, the guess enters as its factor, as the C++ first
 /// build does, since K is built from a factor of D, never from D: the
 /// eigendecomposition `D = U diag(w) Uᵀ` ([`add_diagonalize`] on the rows
-/// `"guess U"`, `"guess w"`); **`guess w down`** (stream), `w` copied to
-/// the pinned row `"guess w host"`; **`guess check`** (CPU), which reads it
+/// `"guess U"`, `"guess w"`); **`download guess w host`**, the planner's
+/// copy node ([`Dag::download`]), `w` copied to the pinned row
+/// `"guess w host"`; **`guess check`** (CPU), which reads it
 /// and writes the floor, 1e-12 of the largest eigenvalue (0 if none is
 /// positive), to the pinned row `"guess floor"`, and warns of an eigenvalue
 /// below minus that floor, possible only for a guess loaded from a file,
@@ -202,7 +203,7 @@ pub fn add_scf(
     // Before the loop: the guess's factor, the rest's K, DIIS's rings and
     // the decision's last energy.
     let (u, w) = add_diagonalize(dag, worker, "guess", n, lwork, guess);
-    let w_host = dag.add_gpu("guess w down", worker, GuessDown { w, n });
+    let w_host = dag.download(worker, w, "guess w host", n);
     let floor = dag.add_cpu("guess check", worker, GuessCheck { w: w_host });
     let factor = dag.add_gpu(
         "guess factor",
@@ -261,35 +262,6 @@ pub fn add_scf(
     let (eps, c) = add_solve_fock(dag, worker, n, lwork, f, x);
     let d = add_published_density(dag, worker, n, nocc, c);
     Ok((previous, [eps, c, d]))
-}
-
-/// GPU: the guess's eigenvalues copied down to a pinned row of their own.
-struct GuessDown {
-    w: RowId<Device, f64>,
-    n: usize,
-}
-
-impl GpuTask for GuessDown {
-    type Rows = RowId<Pinned, f64>;
-
-    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        device.read(self.w);
-        host.output("guess w host", self.n)
-    }
-
-    fn dims(&self) -> Vec<(&'static str, usize)> {
-        vec![("n", self.n)]
-    }
-
-    fn run(
-        &self,
-        w_host: &Self::Rows,
-        device: &Bufs<'_, Device>,
-        host: &CopyOnly<'_, Pinned>,
-        worker: &DeviceStream,
-    ) -> Status {
-        memcpy_d2p(host, *w_host, device.get(self.w), worker)
-    }
 }
 
 /// CPU, before the loop: the guess's eigenvalues, ascending, read for the

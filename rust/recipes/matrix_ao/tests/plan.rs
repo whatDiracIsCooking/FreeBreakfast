@@ -1,5 +1,5 @@
 //! Two matrices transformed in one plan (tier 3): U is staged once, by one
-//! `harmonics` task, copied up once, by one `harmonics upload` task, and
+//! `harmonics` task, copied up once, by one `upload U` copy node, and
 //! both transforms read that one device row. Planning touches no device;
 //! the tasks producing the Cartesian matrices declare a row and are never
 //! run.
@@ -93,7 +93,7 @@ fn two_matrices_share_one_device_u() {
         [
             "T cartesian",
             "harmonics",
-            "harmonics upload",
+            "upload U",
             "spherical transform",
             "V cartesian",
             "spherical transform"
@@ -112,7 +112,8 @@ fn two_matrices_share_one_device_u() {
     let device_text = text
         .split("worker 0 pinned table")
         .next()
-        .expect("the text before the pinned table");
+        .and_then(|t| t.split("worker 0 device table").nth(1))
+        .expect("the device table's text");
     // Each row: offset, bytes, owner, life, `name:`, users.
     let u_rows: Vec<String> = device_text
         .lines()

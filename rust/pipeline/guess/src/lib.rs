@@ -26,8 +26,8 @@
 //! [`add_loaded_guess`] is the step's `load`: one CPU node, `load guess`,
 //! that reads D from a `.npy` file in place of the stamps, the file's
 //! header checked at planning. Either row is a
-//! host row; [`add_guess_upload`] adds `upload guess`, the copy on the
-//! worker's stream that makes it the device output row the SCF reads.
+//! host row; [`add_guess_upload`] adds `upload D`, the planner's copy node
+//! ([`Dag::upload`]) that makes it the device output row the SCF reads.
 //!
 //! **Errors.** A basis not placed over these atoms is refused at planning,
 //! and so is a loaded guess's file that cannot be read or whose header's
@@ -55,12 +55,9 @@ use std::path::{Path, PathBuf};
 
 use fb_atom::{Atom, Element};
 use fb_basis::{BasisSet, Shell};
-use fb_core_arena::{
-    Bufs, CopyOnly, Device, HostKind, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d,
-};
+use fb_core_arena::{Bufs, Device, HostKind, Layout, Pinned, RowId, memcpy_h2p};
 use fb_core_error_handling::{Error, Result, Status};
-use fb_core_planner::{CpuTask, Dag, GpuTask};
-use fb_core_thread_pool::DeviceStream;
+use fb_core_planner::{CpuTask, Dag};
 use fb_io_sad::{builtin_sad_density, carries_sad_stamp};
 use fb_sad::{AtomicDensityStamp, SadStampLookup, distinct_stamps, stamp_density};
 
@@ -169,13 +166,13 @@ fn check_shape(from: &Path, shape: &[usize], n: usize) -> Status {
     )))
 }
 
-/// Add `upload guess` to `dag` on GPU worker `worker`: the host guess `d`
-/// of [`add_sad_guess`] or [`add_loaded_guess`] over `basis` copied on the
+/// Add `upload D` to `dag` on GPU worker `worker`: the host guess `d` of
+/// [`add_sad_guess`] or [`add_loaded_guess`] over `basis` copied on the
 /// worker's stream into a device output row `D`, which it returns, for the
-/// SCF to read.
+/// SCF to read ([`Dag::upload`]).
 ///
 /// # Panics
-/// If `d` is a row of another worker's table ([`Dag::add_gpu`]).
+/// If `d` is a row of another worker's table ([`Dag::upload`]).
 pub fn add_guess_upload(
     dag: &mut Dag<'_>,
     worker: usize,
@@ -183,7 +180,7 @@ pub fn add_guess_upload(
     d: RowId<Pinned, f64>,
 ) -> RowId<Device, f64> {
     let n = basis.nao_sphe() as usize;
-    dag.add_gpu("upload guess", worker, Upload { d, len: n * n })
+    dag.upload(worker, d, "D", n * n)
 }
 
 /// CPU: one distinct (Z, shells)'s block, its SCF's or its baked one, into
@@ -281,30 +278,5 @@ impl<H: HostKind> CpuTask<H> for Load {
         check_shape(&self.from, &array.shape, self.n)?;
         memcpy_h2p(host, *d, &array.data);
         Ok(())
-    }
-}
-
-/// GPU: the host guess copied into a device row on the worker's stream.
-struct Upload {
-    d: RowId<Pinned, f64>,
-    len: usize,
-}
-
-impl GpuTask for Upload {
-    type Rows = RowId<Device, f64>;
-
-    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        host.read(self.d);
-        device.output("D", self.len)
-    }
-
-    fn run(
-        &self,
-        d: &Self::Rows,
-        device: &Bufs<'_, Device>,
-        host: &CopyOnly<'_, Pinned>,
-        stream: &DeviceStream,
-    ) -> Status {
-        memcpy_p2d(&mut device.take_mut(*d), host, self.d, stream)
     }
 }
