@@ -102,6 +102,9 @@ tier 4 is skipped whole with a line saying so. `rust/docs/testing.md`
 cargo-lint`: `cargo fmt --check`, and `cargo clippy --all-targets -D
 warnings` in both of those feature sets, over the link-free members only;
 CI's `lint` job runs it too. A crate that links is linted by tier 4.
+`rust/Cargo.lock` is tracked, and every one of those cargo calls but `cargo
+fmt` passes `--locked`, so a manifest change committed without its lock
+update fails the gate, loudly, as `uv sync --frozen` does for `uv.lock`.
 
 **The push gate runs `pr`'s selection on its GPU binaries** (#1126). Its job is
 "is this obviously broken", and before it, its GPU smoke ran every fast case

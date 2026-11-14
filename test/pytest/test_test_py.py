@@ -296,14 +296,23 @@ def test_push_by_hand_without_a_base_exits_2(
 
 # A stand-in `cargo` on PATH: a two-member workspace, one member linking
 # wwr-sys, and a `cargo test` that exits FAKE_CARGO_TEST_RC. Each call's
-# arguments go to FAKE_CARGO_LOG. Without --no-default-features, `test` is
-# tier 4: fb-core-wwr's one device case is ignored unless --include-ignored.
+# arguments go to FAKE_CARGO_LOG. With FAKE_CARGO_STALE_LOCK, every --locked
+# call fails as cargo does on a lock its manifests have outgrown. Without
+# --no-default-features, `test` is tier 4: fb-core-wwr's one device case is
+# ignored unless --include-ignored.
 # `clippy` exits FAKE_CARGO_CLIPPY_RC, printing a lint error when non-zero.
 _FAKE_CARGO = """
 import json, os, sys
 args = sys.argv[1:]
 with open(os.environ["FAKE_CARGO_LOG"], "a") as f:
     f.write(" ".join(args) + "\\n")
+if os.environ.get("FAKE_CARGO_STALE_LOCK") and "--locked" in args:
+    print("    Updating crates.io index", file=sys.stderr)
+    print("error: cannot update the lock file /ws/rust/Cargo.lock because"
+          " --locked was passed to prevent this", file=sys.stderr)
+    print("help: to generate the lock file without accessing the network,"
+          " remove the --locked flag and use --offline instead.", file=sys.stderr)
+    sys.exit(101)
 if args[0] == "test":
     with open(os.environ["FAKE_CARGO_LOG"] + ".fast", "a") as f:
         f.write(os.environ.get("FREE_BREAKFAST_FAST_TESTS", "unset") + "\\n")
@@ -441,7 +450,7 @@ def test_push_runs_the_cargo_half_and_prints_its_counts(
     assert "test.py push PASS  rev=abc1234  ran=cargo" in out
     calls = fake_cargo.read_text().splitlines()
     test = next(c for c in calls if c.startswith("test"))
-    assert test == "test -j 4 --no-default-features -p fb-core-log"
+    assert test == "test --locked -j 4 --no-default-features -p fb-core-log"
     # The slow cases return at once, whatever the caller's shell exported.
     assert "slow cases skipped (FREE_BREAKFAST_FAST_TESTS=1)" in out
     assert Path(f"{fake_cargo}.fast").read_text() == "1\n"
@@ -449,8 +458,8 @@ def test_push_runs_the_cargo_half_and_prints_its_counts(
     # feature's docs must resolve without it (#1404).
     docs = [c for c in calls if c.startswith("doc")]
     assert docs == [
-        "doc -j 4 --no-deps --no-default-features -p fb-core-log",
-        "doc -j 4 --no-deps -p fb-core-log",
+        "doc --locked -j 4 --no-deps --no-default-features -p fb-core-log",
+        "doc --locked -j 4 --no-deps -p fb-core-log",
     ]
 
 
@@ -670,9 +679,9 @@ def test_tier4_without_a_device_lists_every_device_case_as_skipped(
     assert rc == 0
     out = capsys.readouterr().out
     test = next(c for c in calls if c.startswith("test"))
-    assert test == "test -j 4 -p fb-core-wwr -- --test-threads=1"
+    assert test == "test --locked -j 4 -p fb-core-wwr -- --test-threads=1"
     # Clippy over the same crates, before the tests.
-    clippy = "clippy -j 4 --all-targets -p fb-core-wwr -- -D warnings"
+    clippy = "clippy --locked -j 4 --all-targets -p fb-core-wwr -- -D warnings"
     assert calls.index(clippy) < calls.index(test)
     assert "tier 4 clippy: ok" in out
     assert "tier 4: 1 passed, 0 failed, 1 ignored" in out
@@ -748,7 +757,7 @@ def test_a_lint_error_fails_tier4_before_the_card_and_the_tests(
     assert _HeldCard.backend is None
     # The lint output and the result line are in the gate's log.
     text = log.read_text()
-    assert "--- tier 4 clippy: cargo clippy -j 4 --all-targets" in text
+    assert "--- tier 4 clippy: cargo clippy --locked -j 4 --all-targets" in text
     assert "unsafe block missing a safety comment" in text
     assert "tier 4 clippy: FAILED" in text
 
@@ -783,6 +792,41 @@ def test_tier4_skips_without_cmake(
     assert "skipping tier 4" in capsys.readouterr().out
 
 
+def test_every_cargo_call_of_the_gates_is_locked(
+    fake_cargo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """rust/Cargo.lock is tracked, and a manifest change that did not update
+    it fails the gates: every cargo call tier 4, cargo-lint and the push's
+    cargo half make passes --locked, but `cargo fmt`, which resolves
+    nothing. Tier 4 first, since _push_cargo stubs it out."""
+    assert _tier4(monkeypatch, tmp_path, devices=1)[0] == 0
+    assert gates.cmd_cargo_lint() == 0
+    assert _push_cargo(monkeypatch, tmp_path, ["rust/core/log/src/lib.rs"]) == 0
+    calls = [c.split() for c in fake_cargo.read_text().splitlines()]
+    assert {c[0] for c in calls} == {"metadata", "tree", "clippy", "test", "doc", "fmt"}
+    assert [c for c in calls if c[0] != "fmt" and c[1] != "--locked"] == []
+
+
+def test_a_stale_lock_fails_the_cargo_half_and_says_so(
+    fake_cargo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A Cargo.toml change committed without its lock: the first cargo call
+    fails, and the gate names cargo's error line, not the help after it."""
+    monkeypatch.setenv("FAKE_CARGO_STALE_LOCK", "1")
+    assert _push_cargo(monkeypatch, tmp_path, ["rust/Cargo.toml"]) == 1
+    err = capsys.readouterr().err
+    assert (
+        "cannot list the link-free crates: cargo metadata exited 101: error:"
+        " cannot update the lock file" in err
+    )
+    assert "failed=cargo" in err
+    calls = fake_cargo.read_text().splitlines()
+    assert not any(c.startswith(("test", "doc")) for c in calls)
+
+
 # --- the nightly's cargo half (#1459) ----------------------------------------
 
 
@@ -809,11 +853,11 @@ def test_nightly_cargo_runs_the_slow_cases_in_both_tiers(
     calls = fake_cargo.read_text().splitlines()
     tests = [c for c in calls if c.startswith("test")]
     assert tests == [
-        "test -j 4 --no-default-features -p fb-core-log",
+        "test --locked -j 4 --no-default-features -p fb-core-log",
         # Every crate's tier 4, as `pr --all`.
-        "test -j 4 -p fb-core-wwr -- --test-threads=1 --include-ignored",
+        "test --locked -j 4 -p fb-core-wwr -- --test-threads=1 --include-ignored",
     ]
-    assert "clippy -j 4 --all-targets -p fb-core-wwr -- -D warnings" in calls
+    assert "clippy --locked -j 4 --all-targets -p fb-core-wwr -- -D warnings" in calls
     out = capsys.readouterr().out
     assert out.count("slow cases run (no FREE_BREAKFAST_FAST_TESTS)") == 2
     assert "FREE_BREAKFAST_FAST_TESTS=1" not in out

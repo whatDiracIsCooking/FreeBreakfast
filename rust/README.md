@@ -189,6 +189,16 @@ cargo test --workspace --release       # the contract tests are skipped
 cargo test -p fb-core-arena            # one crate, with only its own features
 ```
 
+`Cargo.lock` is tracked, as the repository's `uv.lock` is: it is the one
+place the crates' versions are written down, and every cargo call of the
+gates and the commit hook passes `--locked`, so a manifest edit that leaves
+the lock behind fails there instead of resolving whatever crates.io serves
+that day ([`testing.md`](docs/testing.md), "What runs when"). After
+changing a requirement in a `Cargo.toml`, run any cargo command without
+`--locked` (`cargo metadata` is the quickest) and commit the lock with it.
+A `[workspace.dependencies]` requirement is a plain caret one; the lock,
+not an `=` pin, holds the exact version.
+
 A device case is `#[ignore = "tier 4: needs a GPU"]`, so a plain `cargo
 test` lists it as ignored, and `-- --include-ignored` runs it; `#[ignore]`
 means nothing else here ([`testing.md`](docs/testing.md), "Selecting GPU

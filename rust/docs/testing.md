@@ -159,6 +159,12 @@ go with the table:
   ("Selecting GPU tiers in cargo", below).
   rustfmt's defaults are the style; `docs/style.md` gains a Rust section the
   first time a rule is needed that rustfmt does not hold.
+- **The lock is the build's, and a stale one fails.** `Cargo.lock` is
+  tracked, and every cargo call of the gates and of `cargo-lint` passes
+  `--locked` (`cargo fmt` alone resolves nothing), so a `Cargo.toml` change
+  committed without its lock update fails the gate rather than resolving
+  that day's crates.io. A lock change affects every crate ("Selection: the
+  workspace graph is the selection graph", below).
 - **A diff under `rust/` fires the cargo half of the gates and nothing
   else.** `test.py push` and `test.py pr` pick it through the diff dispatch
   they have for `.py` and C++: any path under `rust/`, its `.cu` files and
