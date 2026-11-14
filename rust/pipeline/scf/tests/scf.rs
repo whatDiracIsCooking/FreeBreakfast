@@ -32,11 +32,18 @@
 //! own readings, the case alone in its process, were flat to the byte, and
 //! failed it (#1573), so a bar on it holds no direction on a shared card.
 //! What the count does not see is a library allocating behind the arena, a
-//! cuBLAS or cuSOLVER workspace taken at a launch: nothing reachable counts
-//! that per process on CUDA in a container (wwr's pool attributes see only
-//! the stream-ordered pool, and NVML is unwrapped and cannot map this
-//! process's PID), so `docs/memory.md` marks that half unenforced. The free
-//! memory is still read at the same lines and printed beside the count, to
+//! BLAS or solver workspace taken at a launch. On an AMD card amdgpu's DRM
+//! fdinfo counts it: this process's VRAM
+//! ([`fb_test_support::amdgpu_process_vram`]), every buffer of ours, read
+//! at the same lines, must be the same from the second iteration to the
+//! last. The first is left out: it launches no DIIS solve, and what a
+//! kernel's first launch takes (24 KiB on the gfx1200, at the first DIIS
+//! solve) is not told apart from the code the runtime loads for it. Once
+//! every kernel of the body has run, a replay takes nothing. On CUDA nothing
+//! reachable counts it per process in a container (wwr's pool attributes
+//! see only the stream-ordered pool, and NVML is unwrapped and cannot map
+//! this process's PID), so `docs/memory.md` marks that half unenforced
+//! there. The free memory is still read at the same lines and printed, to
 //! be read against the card's other tenants, but nothing is asserted of it.
 
 use std::path::{Path, PathBuf};
@@ -57,6 +64,7 @@ use fb_pipeline_guess::{add_guess_upload, add_loaded_guess};
 use fb_pipeline_scf::{Run, ScfOutput, ScfStep, add_scf};
 use fb_recipes_diagonalize::syevd_lwork;
 use fb_recipes_orthogonalize::{ORTHOGONALIZE_EIGENVALUE_FLOOR, add_orthogonalize};
+use fb_test_support::amdgpu_process_vram;
 use wwr_sys::wwr_status;
 
 /// The energy bar, hartree.
@@ -67,9 +75,18 @@ const ENERGY_BAR: f64 = 1e-9;
 static TURN: Mutex<()> = Mutex::new(());
 
 /// At each `scf: iteration` line, in order: the arena's count of this
-/// process's blocks, which a case asserts, and the card's free memory,
-/// which it only prints.
-static SAMPLES: Mutex<Vec<(u64, usize)>> = Mutex::new(Vec::new());
+/// process's blocks and, on an AMD card, this process's VRAM from amdgpu's
+/// fdinfo ([`amdgpu_process_vram`]), which a case asserts; and the card's
+/// free memory, which it only prints.
+static SAMPLES: Mutex<Vec<Sample>> = Mutex::new(Vec::new());
+
+/// One iteration line's readings.
+#[derive(Clone, Copy, Debug)]
+struct Sample {
+    blocks: u64,
+    vram: Option<u64>,
+    free: usize,
+}
 
 /// Every line logged at `warn`, in order.
 static WARNED: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -106,7 +123,11 @@ impl log::Log for Sampler {
     fn log(&self, record: &log::Record<'_>) {
         let line = record.args().to_string();
         if line.starts_with("scf: iteration") {
-            lock(&SAMPLES).push((fb_core_arena::allocations(), free_bytes()));
+            lock(&SAMPLES).push(Sample {
+                blocks: fb_core_arena::allocations(),
+                vram: amdgpu_process_vram(),
+                free: free_bytes(),
+            });
         }
         if record.level() == log::Level::Warn {
             lock(&WARNED).push(line.clone());
@@ -170,7 +191,8 @@ fn run(xyz: &Path, step: &ScfStep) -> (fb_core_thread_pool::Record, Option<ScfOu
 
 /// The case `stem` run with `step`, converged and held to the energy bar,
 /// the residual under the tolerance, the arena's count the same at every
-/// iteration, and no warning: the SAD guess is positive
+/// iteration, on an AMD card this process's VRAM the same from the second
+/// iteration on, and no warning: the SAD guess is positive
 /// semidefinite, so `guess check` has nothing to say. Returns the lines the
 /// decision logged as it restarted a singular DIIS subspace.
 fn converges_to_pyscf(stem: &str, xyz: &Path, step: &ScfStep) -> Vec<String> {
@@ -206,7 +228,8 @@ fn converges_to_pyscf(stem: &str, xyz: &Path, step: &ScfStep) -> Vec<String> {
         out.iterations,
         "{stem}: one line per iteration"
     );
-    let (counts, free): (Vec<u64>, Vec<usize>) = samples.iter().copied().unzip();
+    let counts: Vec<u64> = samples.iter().map(|s| s.blocks).collect();
+    let free: Vec<usize> = samples.iter().map(|s| s.free).collect();
     println!("{stem}: the card's free memory at each iteration: {free:?}");
     let grew = counts.windows(2).position(|w| w[1] != w[0]);
     assert!(
@@ -214,6 +237,20 @@ fn converges_to_pyscf(stem: &str, xyz: &Path, step: &ScfStep) -> Vec<String> {
         "{stem}: the arena allocated after iteration {}: blocks {counts:?}",
         grew.map_or(0, |i| i + 1)
     );
+    // On an AMD card, nothing behind the arena either: this process's VRAM
+    // the same from the second iteration on (the first launches no DIIS
+    // solve, and its first launch's 24 KiB is not told apart from loaded
+    // code); on CUDA there is no per-process reading (`docs/memory.md`).
+    let vram: Vec<Option<u64>> = samples.iter().map(|s| s.vram).collect();
+    println!("{stem}: this process's VRAM (amdgpu fdinfo) at each iteration: {vram:?}");
+    if vram.iter().all(Option::is_some) {
+        let moved = vram[1..].windows(2).position(|w| w[1] != w[0]);
+        assert!(
+            moved.is_none(),
+            "{stem}: this process's VRAM moved after iteration {}: {vram:?}",
+            moved.map_or(0, |i| i + 2)
+        );
+    }
     std::mem::take(&mut *lock(&RESTARTED))
 }
 
