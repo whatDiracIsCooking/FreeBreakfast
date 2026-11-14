@@ -23,6 +23,7 @@
 //! | `metric_class` (`src/integrals/eri/density_fitting/metric`) | [`fb_metric_class`], the records and pairs as field segments, as there; the safe path is [`add_metric_tasks`] over an [`AuxTable`] |
 //! | `metric`'s host staging: one record per aux primitive, the pairs P <= Q per class, swapped to the lower momentum first | [`AuxTable::push_shell`] and the `metric tables` task of [`add_metric_tasks`] |
 //! | `three_center_class`, `three_center_symmetrize` (`.../three_center`) | [`fb_three_center_class`], [`fb_three_center_symmetrize`]`(stream, n_ao, n_aux, input, output)`, overlapping arrays refused |
+//! | `three_center`'s host staging: `mmd`'s records copied back and regrouped by shell pair, the aux records, the cells, U and U_aux in one upload; the launches, the three spherical GEMMs and the average | [`add_three_center_tasks`]: `three-center download`, `three-center tables` and `three-center` |
 //! | `kMetricMaxMomentum`, `kThreeCenterMaxMomentum`, `kThreeCenterAuxMaxMomentum` | [`FB_METRIC_MAX_MOMENTUM`], [`FB_THREE_CENTER_MAX_MOMENTUM`], [`FB_THREE_CENTER_AUX_MAX_MOMENTUM`] |
 //! | `kMetricRecordFields`, `kMetricPairFields`, `kThreeCenterBraFields`, `kThreeCenterAuxFields`, `kThreeCenterCellFields` | [`FB_METRIC_RECORD_FIELDS`], [`FB_METRIC_PAIR_FIELDS`], [`FB_THREE_CENTER_BRA_FIELDS`], [`FB_THREE_CENTER_AUX_FIELDS`], [`FB_THREE_CENTER_CELL_FIELDS`], for a safe layer to size its segments by |
 //! | `wwrErrorInvalidValue` for a refusal | [`FB_LAUNCH_INVALID_ARGUMENT`] (a count, a null pointer, a short workspace) or [`FB_LAUNCH_UNSUPPORTED`] (no kernel for the class) |
@@ -53,9 +54,14 @@
 //!   from the table and held in the tasks' own rows, so no device table a
 //!   caller could fill reaches the launch.
 //!
-//! The three-center wrappers ([`fb_three_center_class`],
-//! [`fb_three_center_symmetrize`]) have no safe call yet: the raw bindings
-//! alone, for the crate that ports the module.
+//! - [`add_three_center_tasks`], the three tasks of (mn\|P) over a
+//!   basis's [`ClassRows`] and an [`AuxTable`]: the records' bra fields
+//!   downloaded, regrouped by shell pair on the CPU with the cells formed
+//!   from them, then one upload, one [`fb_three_center_class`] per class
+//!   into a Cartesian scratch row, the spherical GEMMs
+//!   (`fb_core_wwr::blas`) and [`fb_three_center_symmetrize`] into an
+//!   output row. Every cell index is one the CPU task wrote, from the
+//!   regroup and the table, and checked there.
 //!
 //! A class kernel writes at AO offsets held in device memory, so
 //! [`ClassRows`] is a type only [`add_record_tasks`] makes; its doc comment
@@ -68,11 +74,13 @@ mod bindings;
 mod classes;
 mod metric;
 mod records;
+mod three_center;
 
 pub use bindings::*;
 pub use classes::{kinetic_class, overlap_class, potential_en_class};
 pub use metric::{AuxTable, add_metric_tasks};
 pub use records::{ClassPairs, ClassRows, RecordTables, ShellTable, add_record_tasks};
+pub use three_center::add_three_center_tasks;
 
 use fb_core_error_handling::Status;
 use fb_core_wwr::common::wwr_status_from_code;
@@ -128,11 +136,18 @@ const _: () = {
     assert!(offset_of!(fb_nuclei_view, c) == 16);
 };
 
-/// A launch status as a [`Status`] naming the wrapper and the class: a
-/// launch error by its `wwr_status` name, at the safe call's caller.
+/// A launch status as a [`Status`] naming the wrapper and the class by its
+/// momenta, `fb_metric_class (2, 3)`, or the wrapper alone when `momenta`
+/// is empty: a launch error by its `wwr_status` name, at the safe call's
+/// caller.
 #[track_caller]
-fn launched(what: &str, class: &ClassRows, status: fb_launch_status) -> Status {
-    let what = format!("{what} ({}, {})", class.la(), class.lb());
+fn launched(what: &str, momenta: &[i32], status: fb_launch_status) -> Status {
+    let what = if momenta.is_empty() {
+        what.to_owned()
+    } else {
+        let momenta: Vec<String> = momenta.iter().map(i32::to_string).collect();
+        format!("{what} ({})", momenta.join(", "))
+    };
     fb_kernel_abi::launch_status(&what, status, |code, at| {
         Some(gpu_status_at(wwr_status_from_code(code)?, at))
     })

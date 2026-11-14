@@ -377,6 +377,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "fb-integrals-eri-density-fitting-three-center"
+version = "0.1.0"
+dependencies = [
+ "contracts",
+ "fb-basis",
+ "fb-core-arena",
+ "fb-core-error-handling",
+ "fb-core-planner",
+ "fb-core-thread-pool",
+ "fb-core-types",
+ "fb-integrals-mmd",
+ "fb-integrals-sys",
+ "fb-io-basis",
+ "fb-io-npy",
+ "fb-io-xyz",
+ "fb-test-support",
+ "serde_json",
+]
+
+[[package]]
 name = "fb-integrals-mmd"
 version = "0.1.0"
 dependencies = [

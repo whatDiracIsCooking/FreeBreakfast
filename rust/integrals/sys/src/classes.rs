@@ -77,7 +77,7 @@ pub fn overlap_class(
     // enqueued work finishes (DeviceSliceMut's promise); the view is a host
     // struct that outlives the call, which only enqueues.
     let status = unsafe { fb_overlap_class(stream.stream(), &view, n_ao, s) };
-    launched("fb_overlap_class", class, status)
+    launched("fb_overlap_class", &[class.la(), class.lb()], status)
 }
 
 /// Adds `class`'s kinetic-energy contributions into the `n_cart × n_cart`
@@ -107,7 +107,7 @@ pub fn kinetic_class(
     let t = t.as_mut_ptr();
     // SAFETY: as in overlap_class, for `t`.
     let status = unsafe { fb_kinetic_class(stream.stream(), &view, n_ao, t) };
-    launched("fb_kinetic_class", class, status)
+    launched("fb_kinetic_class", &[class.la(), class.lb()], status)
 }
 
 /// Adds `class`'s nuclear-attraction contributions over the nuclei of
@@ -159,5 +159,5 @@ pub fn potential_en_class(
     // n_nuc and 3 n_nuc doubles, checked above, unwritten until the
     // enqueued work finishes (DeviceSlice's promise).
     let status = unsafe { fb_potential_en_class(stream.stream(), &view, &nuclei, n_ao, v) };
-    launched("fb_potential_en_class", class, status)
+    launched("fb_potential_en_class", &[class.la(), class.lb()], status)
 }
