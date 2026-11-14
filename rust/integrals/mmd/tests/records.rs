@@ -240,9 +240,9 @@ fn records_match_the_cpp_tree() {
                 out: Arc::clone(&out),
             },
         );
-        let instance = dag.plan().instantiate(&[0]);
-        let backend = thread_pool::Device::new(&[0], instance.plan());
-        instance.run(&backend, 1).result.unwrap();
+        let mut instance = dag.plan().instantiate(&[0]);
+        let mut backend = thread_pool::Device::new(&[0], instance.plan());
+        instance.run(&mut backend, 1).result.unwrap();
         let got = std::mem::take(&mut *out.lock().unwrap());
         let want = reference(stem);
 

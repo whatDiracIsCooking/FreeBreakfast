@@ -31,6 +31,8 @@ use std::rc::Rc;
 ///
 /// Every method is called from the worker the comment names, so an
 /// implementation shared by reference across the run's threads is `Sync`.
+/// [`run`](super::run) borrows it exclusively, so those threads are one
+/// run's: the backend is never in two runs at once.
 pub trait Backend: Sync {
     /// What a GPU node enqueues on.
     type Stream;
@@ -178,7 +180,8 @@ pub enum DeviceStream {}
 /// timing events per GPU node: its stream scope, recorded before it runs
 /// and after it returns. The second is also what its consumers wait on.
 ///
-/// Built once per plan and reused every run: the streams, handles and
+/// Built once per plan and reused every run, one run at a time
+/// ([`run`](super::run) borrows it exclusively): the streams, handles and
 /// events are created here, never during a run.
 pub struct Device {
     devices: Vec<i32>,
@@ -189,12 +192,17 @@ pub struct Device {
 
 #[cfg(feature = "device")]
 // SAFETY: the stream, event and library handles are raw runtime pointers,
-// which is why the wrappers are neither `Send` nor `Sync`. The runtime API is
-// thread-safe for every call made on them here (record, wait, synchronize,
-// elapsed time). A library handle is called through only by the tasks of
-// its own stream worker, which runs one at a time on one thread, and cuBLAS,
-// hipBLAS, cuSOLVER and hipSOLVER allow a handle to be used from any thread
-// one call at a time.
+// which is why the wrappers are neither `Send` nor `Sync`. A `&Device` is
+// shared across threads only by `run`'s workers, inside one run: `run`
+// takes the backend by `&mut`, so one run at a time uses it, and nothing
+// else in the tree reaches it from another thread meanwhile (spawning is
+// the executor's alone, `clippy.toml`'s `disallowed-methods`). Within the
+// run, the runtime API is thread-safe for every call made through a shared
+// reference here (record, wait, synchronize, elapsed time), on events that
+// are this plan's and no other run's. A library handle is called through
+// only by the nodes of its own stream worker, which runs one node at a time
+// on one thread, and cuBLAS, hipBLAS, cuSOLVER and hipSOLVER allow a handle
+// to be used from any thread one call at a time.
 // Every handle is created before any run and destroyed only when the
 // `Device` drops, which a run's borrow of it rules out; so is every `Rc` a
 // `DeviceStream` holds, cloned and dropped only then, never during a run.

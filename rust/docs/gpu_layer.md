@@ -214,7 +214,10 @@ run on `HostOnly` workers under `--no-default-features`, with no wwr crate
 in their graph. BLAS and the
 dense solver are the libraries so far.
 Every task of the worker shares the handles, so a task that changes one's
-state (its pointer mode) sets it back before it returns.
+state (its pointer mode) sets it back before it returns. A run borrows the
+backend exclusively (`Instance::run` takes it by `&mut`), so the handles
+serve one run at a time, and within it each is called only from its own
+stream worker's thread.
 
 **A library's workspace is part of the layout.** The solvers' is
 already a dimension: the pipeline treats `syevd_lwork` as one, and a layout

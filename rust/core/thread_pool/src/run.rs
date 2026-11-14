@@ -265,9 +265,17 @@ mod status {
 /// failure lowest in rank, with `name@worker` and any other failures
 /// (`also: ...`) on its context.
 ///
+/// Both are borrowed exclusively, so a plan and a backend are each in at
+/// most one run at a time: a backend's events are its plan's and its
+/// streams and handles are its stream workers', and a plan's nodes reach
+/// whatever its closures captured, an instance's blocks among them
+/// ([`thread_pool`](super), "One run at a time"). Inside the run the
+/// workers share both by reference.
+///
 /// # Panics
 /// If a node panics, after every worker has stopped; see "Failure".
-pub fn run<B: Backend>(plan: &Plan<'_, B::Stream>, backend: &B, n_cpu: usize) -> Record {
+pub fn run<B: Backend>(plan: &mut Plan<'_, B::Stream>, backend: &mut B, n_cpu: usize) -> Record {
+    let (plan, backend) = (&*plan, &*backend);
     let n_streams = backend.n_streams();
     if plan.n_streams() > n_streams {
         return Record::new(Err(Error::config(format!(

@@ -121,7 +121,7 @@ fn compute(jobs: &[Job]) -> Status {
             Ok(())
         });
     }
-    thread_pool::run(&plan, &HostOnly::new(0), default_n_cpu(0)).result
+    thread_pool::run(&mut plan, &mut HostOnly::new(0), default_n_cpu(0)).result
 }
 
 /// The BSE `name` of every `<data>/basis/*.json` document, in file-name

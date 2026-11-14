@@ -263,7 +263,7 @@ mod tests {
         dag.add("syevd check", 0, Check { info: row });
         dag.plan()
             .instantiate(&[0])
-            .run(&HostOnly::new(0), 1)
+            .run(&mut HostOnly::new(0), 1)
             .result
     }
 

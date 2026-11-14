@@ -34,6 +34,22 @@
 //!    the run opens and joined before [`run`] returns. Nothing else spawns:
 //!    `clippy.toml` disallows the spawning functions everywhere but here.
 //!
+//! # One run at a time
+//!
+//! [`run`] takes the plan and the backend by `&mut`, so the borrow checker
+//! holds what the run model needs: neither is in two runs at once. A
+//! `Device` backend's events are its plan's nodes', recorded and waited on
+//! within one run, and its streams and library handles are each one stream
+//! worker's; and a plan's nodes reach what their closures captured, which
+//! for a planner instance is its blocks, whose rows' borrow flags are
+//! released when a node returns while its device work may still be in
+//! flight. Two runs sharing either would race on both. The two kinds of
+//! concurrency the model has keep working: within one run the workers share
+//! the plan and the backend by reference (which is why [`Backend`] is
+//! `Sync`), and independent (plan, backend) pairs run on threads of their
+//! own. Several GPUs are one run: a `Device` spans its stream workers'
+//! devices.
+//!
 //! # When an edge is satisfied
 //!
 //! A GPU node *returns* once it has enqueued its work; that work *completes*
@@ -127,7 +143,7 @@
 //!     assert_eq!(total.load(Ordering::Relaxed), 11);
 //!     Ok(())
 //! });
-//! let record = run(&plan, &HostOnly::new(1), 2);
+//! let record = run(&mut plan, &mut HostOnly::new(1), 2);
 //! record.result.unwrap();
 //! assert_eq!(record.tasks.len(), 3);
 //! ```
