@@ -5,14 +5,20 @@
 //! of 1234 doubles, since the vendor's number needs a device. Planning
 //! touches no device, but the records ask the kernel library for the
 //! sort's workspace, so the library must be built. And the config's paths,
-//! its `[guess]`, `[eri]` and `[scf]` tables read and refused, and every
-//! key of the config set by an example.
+//! its `[guess]`, `[eri]`, `[scf]` and `[memory]` tables read and refused,
+//! every key of the config set by an example, and admission against the
+//! caps, each card's free memory a number the case gives.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use fb_core_error_handling::ErrorKind;
-use fb_pipeline_config::{Calculation, GuessKind, GuessStep, plan, read_config};
+use std::cell::Cell;
+
+use fb_core_planner::{Dag, Planned};
+use fb_pipeline_config::{
+    Calculation, DEVICE_RESERVE, GuessKind, GuessStep, MemoryCaps, admit_plan, plan, read_config,
+};
 use fb_pipeline_scf::ScfStep;
 use fb_test_support::golden;
 
@@ -20,7 +26,7 @@ use fb_test_support::golden;
 const LWORK: usize = 1234;
 
 /// The examples, by file name.
-const EXAMPLES: [&str; 3] = ["overlap.toml", "guess.toml", "rhf.toml"];
+const EXAMPLES: [&str; 4] = ["overlap.toml", "guess.toml", "rhf.toml", "memory.toml"];
 
 /// `rust/examples/`.
 fn examples() -> PathBuf {
@@ -378,4 +384,257 @@ fn every_key_is_set_by_an_example() {
     }
     let unknown: Vec<_> = set.difference(&accepted).collect();
     assert!(unknown.is_empty(), "set but not accepted: {unknown:?}");
+}
+
+const GIB: usize = 1 << 30;
+
+/// The overlap of water in STO-3G, `extra` appended.
+fn overlap_config(extra: &str) -> String {
+    format!(
+        "calculation = \"overlap\"\n[molecule]\nxyz = \"m.xyz\"\n[basis_set]\nbasis = \
+         \"sto-3g\"\n{extra}"
+    )
+}
+
+/// `[memory]` is optional, each key at its default, which is its floor;
+/// a key set replaces its default alone, read as the C++ reads a byte
+/// size: an integer of bytes, or a number and a unit, rounded down.
+#[test]
+fn memory_is_read() {
+    let caps = |name: &str, table: &str| {
+        let (_, config) = read_text(name, &overlap_config(table));
+        config.unwrap().memory
+    };
+    assert_eq!(
+        caps("memory_absent", ""),
+        MemoryCaps {
+            max_device_mem_per_gpu: 8 * GIB,
+            max_pinned_mem_per_gpu: 2 * GIB,
+        }
+    );
+    assert_eq!(caps("memory_empty", "[memory]\n"), MemoryCaps::default());
+    let example = read_config(&examples().join("memory.toml")).unwrap();
+    assert_eq!(
+        example.memory,
+        MemoryCaps {
+            max_device_mem_per_gpu: 10 * GIB,
+            max_pinned_mem_per_gpu: 4 * GIB,
+        }
+    );
+    for (value, bytes) in [
+        ("8589934592", 8 * GIB),
+        ("\"8GiB\"", 8 * GIB),
+        ("\"8192 MiB\"", 8 * GIB),
+        ("\"9GB\"", 9_000_000_000),
+        ("\"8.5GiB\"", 8 * GIB + GIB / 2),
+        ("\"0.01TiB\"", (0.01 * 1024.0 * GIB as f64) as usize),
+        ("\"10000000000B\"", 10_000_000_000),
+    ] {
+        let device = caps(
+            "memory_value",
+            &format!("[memory]\nmax_device_mem_per_gpu = {value}\n"),
+        );
+        assert_eq!(
+            device,
+            MemoryCaps {
+                max_device_mem_per_gpu: bytes,
+                ..MemoryCaps::default()
+            },
+            "{value}"
+        );
+    }
+}
+
+/// Each key's default is its floor: a value under it is refused,
+/// `InvalidConfig`, naming the key and the value, and the floor itself is
+/// read.
+#[test]
+fn memory_floors() {
+    let cases = [
+        (
+            "max_device_mem_per_gpu = \"7GiB\"",
+            "[memory] max_device_mem_per_gpu = 7516192768 bytes (7.000 GiB) is under its floor \
+             of 8589934592 bytes (8 GiB)",
+        ),
+        (
+            "max_device_mem_per_gpu = 8589934591",
+            "[memory] max_device_mem_per_gpu = 8589934591 bytes",
+        ),
+        (
+            "max_pinned_mem_per_gpu = \"1GiB\"",
+            "[memory] max_pinned_mem_per_gpu = 1073741824 bytes (1.000 GiB) is under its floor \
+             of 2147483648 bytes (2 GiB)",
+        ),
+    ];
+    for (key, named) in cases {
+        let (_, config) = read_text(
+            "memory_floor",
+            &overlap_config(&format!("[memory]\n{key}\n")),
+        );
+        let error = config.expect_err(key);
+        assert_eq!(error.kind, ErrorKind::InvalidConfig, "{key}: {error}");
+        assert!(error.message.contains(named), "{key}: {error}");
+        assert!(error.message.contains("config.toml"), "{key}: {error}");
+    }
+    let (_, at) = read_text(
+        "memory_at_floor",
+        &overlap_config(
+            "[memory]\nmax_device_mem_per_gpu = 8589934592\nmax_pinned_mem_per_gpu = \"2GiB\"\n",
+        ),
+    );
+    assert_eq!(at.unwrap().memory, MemoryCaps::default());
+}
+
+/// What `[memory]` refuses as a byte size, each `InvalidConfig` naming the
+/// file and the line: no unit, an unknown one, an exponent, a float, below
+/// 1 byte, past 2^63 bytes, no number; and an unknown key, the heap's cap
+/// among them, which is not built.
+#[test]
+fn memory_refusals() {
+    let cases = [
+        ("max_device_mem_per_gpu = \"10\"", "has no unit"),
+        ("max_device_mem_per_gpu = \"10 GiBs\"", "has no unit 'GiBs'"),
+        ("max_device_mem_per_gpu = \"1e10B\"", "has no unit 'e10B'"),
+        ("max_device_mem_per_gpu = 10.5", "expected a byte size"),
+        ("max_device_mem_per_gpu = true", "expected a byte size"),
+        ("max_device_mem_per_gpu = 0", "0 is below 1 byte"),
+        ("max_pinned_mem_per_gpu = -1", "-1 is below 1 byte"),
+        ("max_pinned_mem_per_gpu = \"-5GiB\"", "is below 1 byte"),
+        ("max_pinned_mem_per_gpu = \"0.5B\"", "is below 1 byte"),
+        ("max_pinned_mem_per_gpu = \"9000000TiB\"", "past 2^63 bytes"),
+        (
+            "max_pinned_mem_per_gpu = \"GiB\"",
+            "not a number and a unit",
+        ),
+        ("max_host_mem = \"16GiB\"", "unknown field `max_host_mem`"),
+    ];
+    for (key, named) in cases {
+        let (_, config) = read_text(
+            "memory_refused",
+            &overlap_config(&format!("[memory]\n{key}\n")),
+        );
+        let error = config.expect_err(key);
+        assert_eq!(error.kind, ErrorKind::InvalidConfig, "{key}: {error}");
+        assert!(error.message.contains(named), "{key}: {error}");
+        assert!(error.message.contains("config.toml:7:"), "{key}: {error}");
+    }
+}
+
+/// A plan of one worker's two worker rows, `device` and `pinned` bytes.
+fn rows(device: usize, pinned: usize) -> Planned<'static> {
+    let mut dag = Dag::new();
+    let _ = dag.device_worker_row::<u8>(0, "device row", device);
+    let _ = dag.host_worker_row::<u8>(0, "pinned row", pinned);
+    dag.plan()
+}
+
+/// The node's `MemAvailable` the admission cases give: past any pinned cap
+/// they set.
+const NODE: usize = 1 << 50;
+
+/// A plan with no key is admitted against the default caps: a device block
+/// of 8 GiB less the reserve, and a pinned one of 2 GiB, fit on a card with
+/// a TiB free; one byte more of either is refused, `Allocation`, naming the
+/// worker, the row over the cap alone and the key.
+#[test]
+fn no_key_is_the_default_cap() {
+    let caps = MemoryCaps::default();
+    let tib = |_| Ok(1 << 40);
+    let device = 8 * GIB - DEVICE_RESERVE;
+    admit_plan(&rows(device, 2 * GIB), &caps, tib, NODE).unwrap();
+    let error = admit_plan(&rows(device + 1, 1), &caps, tib, NODE).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Allocation, "{error}");
+    for named in [
+        "gpu0: the device block",
+        "over the cap alone: device row",
+        "[memory] max_device_mem_per_gpu = 8589934592 bytes",
+        "less the reserve",
+    ] {
+        assert!(error.message.contains(named), "{named}: {error}");
+    }
+    let error = admit_plan(&rows(1, 2 * GIB + 1), &caps, tib, NODE).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Allocation, "{error}");
+    for named in [
+        "gpu0: the pinned block",
+        "over the cap alone: pinned row",
+        "[memory] max_pinned_mem_per_gpu = 2147483648 bytes",
+    ] {
+        assert!(error.message.contains(named), "{named}: {error}");
+    }
+}
+
+/// Any cap is bounded by the card: the example's device block is admitted
+/// on a card with the block and the reserve free, and refused with one
+/// byte less, naming the free memory, under the default cap and under a cap
+/// past every card alike.
+#[test]
+fn admission_is_bounded_by_the_cards_free_memory() {
+    let config = read_config(&examples().join("overlap.toml")).unwrap();
+    let planned = plan(&config, |_| Ok(LWORK)).unwrap();
+    let block = planned.device_table(0).total();
+    assert!(block > 0, "the overlap has device rows");
+    for caps in [
+        MemoryCaps::default(),
+        MemoryCaps {
+            max_device_mem_per_gpu: 1 << 62,
+            ..MemoryCaps::default()
+        },
+    ] {
+        admit_plan(&planned, &caps, |_| Ok(block + DEVICE_RESERVE), NODE).unwrap();
+        let error =
+            admit_plan(&planned, &caps, |_| Ok(block + DEVICE_RESERVE - 1), NODE).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Allocation, "{error}");
+        let free = format!(
+            "the card's {} bytes free at planning",
+            block + DEVICE_RESERVE - 1
+        );
+        assert!(error.message.contains(&free), "{error}");
+        assert!(error.message.contains("1 over its cap"), "{error}");
+    }
+}
+
+/// Every table is admitted, and the card's free memory is read once per
+/// worker with a device block, never for a plan without one: the guess
+/// computes on the CPU, and its admission touches no device.
+#[test]
+fn admission_reads_the_card_only_for_a_device_block() {
+    let caps = MemoryCaps::default();
+    let config = read_config(&examples().join("guess.toml")).unwrap();
+    let guess = plan(&config, |_| Ok(LWORK)).unwrap();
+    assert_eq!(
+        guess.device_table(0).total(),
+        0,
+        "the guess has no device rows"
+    );
+    assert!(guess.host_table(0).total() > 0, "the guess has pinned rows");
+    admit_plan(&guess, &caps, |_| panic!("a device read"), NODE).unwrap();
+    let config = read_config(&examples().join("overlap.toml")).unwrap();
+    let overlap = plan(&config, |_| Ok(LWORK)).unwrap();
+    let asked = Cell::new(0);
+    let free = |w| {
+        assert_eq!(w, 0, "the one worker");
+        asked.set(asked.get() + 1);
+        Ok(1 << 40)
+    };
+    admit_plan(&overlap, &caps, free, NODE).unwrap();
+    assert_eq!(asked.get(), 1, "read once");
+}
+
+/// The workers' pinned caps together must fit the node's `MemAvailable`,
+/// as the C++ `check_pinned_node`: one worker's 2 GiB default fits 2 GiB,
+/// and is refused by a byte less, `InvalidConfig`, naming the key and
+/// `MemAvailable`, before any card is read.
+#[test]
+fn pinned_caps_fit_the_node() {
+    let caps = MemoryCaps::default();
+    let planned = rows(1, 1);
+    admit_plan(&planned, &caps, |_| Ok(1 << 40), 2 * GIB).unwrap();
+    let error = admit_plan(&planned, &caps, |_| panic!("a device read"), 2 * GIB - 1).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidConfig, "{error}");
+    for named in [
+        "1 GPU workers, each allowed [memory] max_pinned_mem_per_gpu = 2147483648 bytes",
+        "MemAvailable of 2147483647 bytes",
+    ] {
+        assert!(error.message.contains(named), "{named}: {error}");
+    }
 }
