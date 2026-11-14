@@ -359,7 +359,7 @@ backend by reference, through a wrapper only `run` can make (a `Backend`
 is sealed and need not be `Sync`, and a `Device` is not, so outside a run
 no backend reaches a second thread at all); independent
 (instance, backend) pairs run on threads of their own; and several GPUs
-are one run, a `Device` spanning its stream workers' devices.
+are one run, a `Device` spanning its GPU workers' devices.
 
 Stream capture into a replayed graph is the same split one level down, which
 is a sign the split is real rather than imposed. A loop is therefore not a
@@ -440,6 +440,51 @@ an in-place accumulate, and the workers are streams. One DAG description
 serves every row, which is the point of wanting all of them. The transport
 behind the lower rows is an orchestrator detail, decided later and not here.
 
+**A GPU worker is one card, one thread, one block per kind, and several
+streams, its lanes.** A GPU node is placed on a lane of its worker
+(`fb_core_thread_pool::LaneId`), and the worker's tables and blocks are its
+lanes', so the "streams on one GPU" row costs what it says: the reader
+reads the producer's row in place. How an edge is ordered follows from where
+its two ends landed:
+
+| Edge | Ordering |
+|---|---|
+| Same lane | The stream's order; no event |
+| Different lanes of one worker | An event the producer's lane records and the consumer's waits on, on the device; no host wait |
+| Lane to CPU | A host wait on the producer's event, a sync point |
+
+The worker's one thread enqueues its ready nodes in rank order across all
+its lanes and never waits on the device, so lanes overlap on the card as
+streams do, and the thread count stays one per worker however many lanes it
+has. The C++ `src/integrals/mmd` is the pattern adapted: a stream there
+belongs to a piece of data, each primitive-pair class carrying its own, its
+readers enqueued on it, and one host thread feeds every stream, since an
+enqueue does not block. Here too the code that builds the DAG names the
+lane, as mmd names one per class; deriving lanes from the DAG's shape is
+not built ("Open questions"). A worker's lanes are the ones its tasks name,
+so the count grows as the builder names them and is fixed when the DAG is
+planned, before the backend makes one stream per lane.
+
+**Each lane has its own library handles.** Two lanes run at once on the
+card, and a BLAS or solver handle's state and workspace are one stream's at
+a time, so the `Device` backend makes a BLAS and a dense-solver handle per
+lane, bound to its stream ([`gpu_layer.md`](gpu_layer.md), "Layering"),
+and a declared BLAS workspace is a worker row per lane.
+
+**Reuse across lanes is a handoff, and every one serializes.** The assigner
+packs a worker's table to the fewest bytes against the plan's ranks,
+whatever lane a node is on, and every reuse it makes is a handoff the
+planner adds as an edge ([`memory.md`](memory.md), "Lifetimes"). Between
+two lanes that edge is an event, so a row that takes another lane's bytes
+waits for that lane's last user, and two lanes whose rows share bytes do
+not overlap there. The rule is the one the C++ mmd makes by hand, whose
+classes' sorts share one carve, "which is why the forks chain": bytes win
+over concurrency, always, and the planner adds the event edge uniformly,
+through the handoffs, rather than exploiting only the paths the DAG
+already has. Giving a reuse up for concurrency when the cap leaves room is
+admission's search, and not built ([`memory.md`](memory.md), "Open
+questions").
+
 ### CPU workers
 
 A CPU node is a file write, a host decision between runs of a sub-DAG, or a
@@ -452,8 +497,9 @@ designed.
 
 **A run owns a fixed set of threads.** At the start of a run the orchestrator
 opens one `std::thread::scope` and creates `n_cpu` CPU workers and one thread
-per stream worker inside it; the scope joins them all when the run ends. A
-ready queue of node ids feeds the CPU workers, and a stream worker's thread
+per GPU worker inside it, whatever its lanes; the scope joins them all when
+the run ends. A ready queue of node ids feeds the CPU workers, another per
+GPU worker feeds its thread across all its lanes, and a GPU worker's thread
 has its device made current for the life of the run
 ([`gpu_layer.md`](gpu_layer.md), "Layering"). No node is ever given a thread
 of its own, so the thread count is a property of the plan, fixed at planning,
@@ -471,7 +517,7 @@ queue, never workers, and a loop re-adds its body's nodes to it, as the
 thread-count test below checks across a replay.
 
 **The count is a budget, admitted beside memory.** `n_cpu` defaults to the
-host's `available_parallelism` less the stream workers' threads, floored at
+host's `available_parallelism` less the GPU workers' threads, floored at
 one, and the config overrides it beside the `[memory]` caps. A placement that
 needs more CPU workers than the budget is refused in the same admission pass
 that refuses an arena that does not fit.
@@ -508,7 +554,7 @@ worker, and no crate has it in the DAG-with-placement shape the model wants,
 so it is written under either choice. The usual crates would each add
 something unwanted. Rayon is a work-stealing scheduler, and stealing is
 placement, which is the orchestrator's; its idle workers spin before they
-sleep; and a stream worker is a thread dedicated to one device, which a
+sleep; and a GPU worker is a thread dedicated to one device, which a
 general pool has no notion of. Tokio is for many sockets, and its file I/O is
 a blocking thread pool underneath. The `threadpool` crate's `'static` bound on
 a job forces every edge buffer behind an `Arc` and defeats the scoped borrow.
@@ -519,8 +565,9 @@ asked for stealing on the CPU side a crate could slot in behind the same type.
 no more threads than the plan said. The last is a tier-3 test
 ([`testing.md`](testing.md), "Tiers: where a check lives") that reads the
 `Threads:` line of `/proc/self/status` after a device-free run and compares it
-to the plan's worker total plus the main thread, and reads the same count
-before a loop's first iteration and after its last. It is the one check that
+to the plan's worker total plus the main thread, over GPU workers of several
+lanes each, and reads the same count before a loop's first iteration and
+after its last. It is the one check that
 catches what a lint cannot see: a linked host library opening a pool of its
 own at load, as a host BLAS does. If one is ever linked, its thread count is
 set to one at initialization, and this test is what notices when that slips.
@@ -707,10 +754,12 @@ itself, split it there.
   widths. Is one pass enough, laying the fixed layouts out first and handing
   each adaptive task the remainder in schedule order, as `check_plan`'s
   room line does today, or does the planner iterate?
-- **Reuse across streams.** Offset reuse between buffers on different
-  streams needs a DAG path between their lifetimes. Should the planner add an
-  event edge to create one when the saving is large, or only exploit the
-  paths the DAG already has?
+- **Lanes from the DAG's shape.** The builder names each GPU node's lane
+  today, as the C++ mmd names a stream per class. Two nodes with no path
+  between them could be put on two lanes by the planner instead, but a
+  lane is a stream, a library handle pair and a BLAS workspace row, so the
+  count is a cost, and which nodes are worth splitting is the schedule
+  search's question below.
 - **How loose is too loose.** A bound from the dimensions is the preferred
   answer to a data-dependent size. At what ratio of bound to typical size
   does a sizing node pay for its extra host round trip?

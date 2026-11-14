@@ -1,19 +1,69 @@
 //! A placed DAG: what [`run`](super::run) executes.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::ops::{ControlFlow, Range};
 
 use contracts::debug_requires;
 use fb_core_error_handling::{Result, Status};
 use serde::{Deserialize, Serialize};
 
-/// Where a node runs: the CPU pool, or one stream worker.
+/// Where a node runs: the CPU pool, or one lane of one GPU worker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Placement {
     /// Any of the run's CPU workers.
     Cpu,
-    /// Stream worker `s`: its thread, its device and its stream.
-    Stream(usize),
+    /// A lane: enqueued by its GPU worker's thread, on its device, on the
+    /// lane's stream.
+    Stream(LaneId),
+}
+
+/// One stream of one GPU worker: lane `lane` of worker `worker`
+/// (`docs/programming_model.md`, "Workers are a hierarchy").
+///
+/// A GPU worker is one card, one thread and several streams, its lanes. Its
+/// thread enqueues its ready nodes in rank order across all its lanes and
+/// never waits on the device; two nodes on one lane are ordered by the
+/// stream, and an edge between two lanes is an event one records and the
+/// other waits on, on the device. A worker given as a bare index is its
+/// lane 0, so a plan of one lane per worker names none.
+///
+/// Its text, `gpu<worker>.<lane>`, is the worker a node on it is logged
+/// and timed under (`[name@gpu0.1]`).
+///
+/// ```
+/// use fb_core_thread_pool::{HostOnly, LaneId, Placement, Plan, run};
+///
+/// let lane = |lane| Placement::Stream(LaneId { worker: 0, lane });
+/// let mut plan = Plan::new();
+/// let a = plan.add("a", lane(0), &[], |_| Ok(()));
+/// plan.add("b", lane(1), &[a], |_| Ok(()));
+/// assert_eq!(plan.lanes(), [2]);
+/// let record = run(&mut plan, &mut HostOnly::new(1), 1);
+/// record.result.unwrap();
+/// assert_eq!(record.tasks[1].worker, "gpu0.1");
+/// // b's lane waits for a on the device: the only syncs are the lanes' exits.
+/// assert!(record.syncs.iter().all(|s| s.node.is_none()));
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LaneId {
+    /// The GPU worker: its card, its thread and its blocks.
+    pub worker: usize,
+    /// The lane among the worker's: its stream.
+    pub lane: usize,
+}
+
+impl From<usize> for LaneId {
+    /// Worker `worker`'s lane 0.
+    fn from(worker: usize) -> Self {
+        LaneId { worker, lane: 0 }
+    }
+}
+
+impl fmt::Display for LaneId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "gpu{}.{}", self.worker, self.lane)
+    }
 }
 
 /// A node in a [`Plan`], and its rank: nodes are numbered in the order they
@@ -34,14 +84,14 @@ impl NodeId {
 pub enum Lane<'r, S> {
     /// A CPU worker: compute on the host.
     Cpu,
-    /// Stream worker `index`: enqueue on `stream` and return. The worker's
+    /// A lane of a GPU worker: enqueue on `stream` and return. The worker's
     /// device is current.
     Stream {
-        /// The stream worker's index.
-        index: usize,
+        /// The lane.
+        lane: LaneId,
         /// Its stream; under the `Device` backend, the
         /// [`DeviceStream`](super::DeviceStream) that also carries the
-        /// worker's library handles.
+        /// lane's library handles.
         stream: &'r S,
     },
 }
@@ -258,15 +308,19 @@ impl<'a, S> Plan<'a, S> {
         &self.nodes[node.0].name
     }
 
-    /// The stream workers the plan uses: one past the highest index placed.
-    pub fn n_streams(&self) -> usize {
-        self.nodes
-            .iter()
-            .filter_map(|n| match n.placement {
-                Placement::Stream(s) => Some(s + 1),
-                Placement::Cpu => None,
-            })
-            .max()
-            .unwrap_or(0)
+    /// The lanes the plan uses, per GPU worker: for each worker up to the
+    /// highest placed on, one past the highest lane placed on it, 0 for a
+    /// worker with no node of its own.
+    pub fn lanes(&self) -> Vec<usize> {
+        let mut lanes = Vec::new();
+        for n in &self.nodes {
+            if let Placement::Stream(at) = n.placement {
+                if lanes.len() <= at.worker {
+                    lanes.resize(at.worker + 1, 0);
+                }
+                lanes[at.worker] = lanes[at.worker].max(at.lane + 1);
+            }
+        }
+        lanes
     }
 }

@@ -133,10 +133,21 @@ fn gemm_instance(seed: usize, out: &Arc<Mutex<Vec<f64>>>) -> Instance<'static> {
     dag.plan().instantiate(&[0])
 }
 
-/// The address of the workspace stream worker 0's BLAS handle holds.
-fn bound(backend: &fb_core_thread_pool::Device) -> (usize, usize) {
-    let workspace = backend.stream(0).blas().workspace().expect("a workspace");
+/// The address of the workspace lane `lane` of worker 0's BLAS handle
+/// holds.
+fn bound_on(backend: &fb_core_thread_pool::Device, lane: usize) -> (usize, usize) {
+    let lane = fb_core_thread_pool::LaneId { worker: 0, lane };
+    let workspace = backend
+        .stream(lane)
+        .blas()
+        .workspace()
+        .expect("a workspace");
     (workspace.as_ptr().addr(), workspace.len())
+}
+
+/// The address of the workspace worker 0's lane 0's BLAS handle holds.
+fn bound(backend: &fb_core_thread_pool::Device) -> (usize, usize) {
+    bound_on(backend, 0)
 }
 
 /// Needs a GPU. Each instance's backend hands its handle that instance's
@@ -172,7 +183,7 @@ fn the_backend_binds_each_instances_workspace_row() {
     }
 
     drop(backend_a);
-    let row = a.blas_workspaces[0].expect("a declared workspace");
+    let row = a.blas_workspaces[0][0];
     let held = a.blocks[0].0.hold(row);
     assert_eq!((held.as_ptr().addr(), held.len()), (at_a, len));
     drop(held);
@@ -180,4 +191,35 @@ fn the_backend_binds_each_instances_workspace_row() {
     drop(b);
     assert_eq!(bound(&backend_b), (at_b, len));
     drop(backend_b);
+}
+
+/// Needs a GPU. Two lanes of one worker, a GEMM on each from one CPU fill:
+/// each lane's BLAS handle holds a workspace row of its own, the plan's
+/// row for that lane, and both products are exact.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn each_lane_binds_its_own_workspace_row() {
+    use fb_core_thread_pool::LaneId;
+    let (out_0, out_1) = (Arc::default(), Arc::default());
+    let mut dag = Dag::new();
+    dag.blas_workspace(0);
+    let ab = dag.add_cpu("fill", 0, Fill(0));
+    let (.., c0) = dag.add_gpu("gemm 0", LaneId { worker: 0, lane: 0 }, Gemm(ab));
+    let (.., c1) = dag.add_gpu("gemm 1", LaneId { worker: 0, lane: 1 }, Gemm(ab));
+    dag.add_cpu("collect 0", 0, Collect(c0, Arc::clone(&out_0)));
+    dag.add_cpu("collect 1", 0, Collect(c1, Arc::clone(&out_1)));
+    let mut instance = dag.plan().instantiate(&[0]);
+    let mut backend = instance.backend();
+    let lanes = [bound_on(&backend, 0), bound_on(&backend, 1)];
+    assert_ne!(lanes[0].0, lanes[1].0, "two lanes share a workspace");
+    instance.run(&mut backend, 1).result.unwrap();
+    let want = product(&operand(0), &operand(3));
+    assert_eq!(*out_0.lock().unwrap(), want);
+    assert_eq!(*out_1.lock().unwrap(), want);
+    drop(backend);
+    for (lane, &bound) in lanes.iter().enumerate() {
+        let held = instance.blocks[0].0.hold(instance.blas_workspaces[0][lane]);
+        assert_eq!((held.as_ptr().addr(), held.len()), bound, "lane {lane}");
+        assert_eq!(bound.1, BLAS_WORKSPACE_BYTES);
+    }
 }

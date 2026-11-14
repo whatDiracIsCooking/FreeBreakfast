@@ -71,11 +71,12 @@ waits its edges need and before it runs, closed by the event recorded after
 it returns, which is also the event its consumers wait on, so the closing
 half costs nothing new. It opens a host scope around every node's callable,
 which for a CPU node is its compute and for a GPU node its enqueueing, and
-one around the whole run. Every pair is read after the run, when each stream
-worker has synced its stream on the way out: that is a sync point after
+one around the whole run. Every pair is read after the run, when each GPU
+worker has synced its lanes on the way out: that is a sync point after
 every closing event, if not always the first. It also opens a host scope
 around every sync point: each CPU node's wait on each GPU predecessor, and
-each stream worker's sync as it exits. A loop's body runs its GPU nodes
+each GPU worker's sync of each lane as it exits. An edge between two lanes
+is a wait on the device and no sync point. A loop's body runs its GPU nodes
 on the same events every iteration, so the loop's decision, after the host
 waits that make the whole body complete, reads that iteration's stream
 scopes before it readies the body again: a sync point the loop has anyway,

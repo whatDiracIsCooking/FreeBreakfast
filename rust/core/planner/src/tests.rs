@@ -10,7 +10,7 @@ use proptest::prelude::*;
 use super::*;
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, RowId};
 use fb_core_error_handling::{Error, ErrorKind, Result, Status};
-use fb_core_thread_pool::{HostOnly, Placement};
+use fb_core_thread_pool::{HostOnly, LaneId, Placement};
 use fb_test_support::{golden, panic_message};
 
 /// One row declaration, in the order a [`Declares`] makes them.
@@ -448,11 +448,12 @@ fn mix(pos: usize, i: usize, inputs: &[&[u64]]) -> u64 {
     x
 }
 
-/// A DAG of [`Node`]s, each `(worker, gpu, inputs, len, scratch)`, its
-/// reference computed serially.
+/// A DAG of [`Node`]s, each `(at, gpu, inputs, len, scratch)`, its
+/// reference computed serially: `at` is the node's worker and, for a GPU
+/// node, its lane.
 #[derive(Debug)]
 struct Spec {
-    nodes: Vec<(usize, bool, Vec<usize>, usize, usize)>,
+    nodes: Vec<(LaneId, bool, Vec<usize>, usize, usize)>,
 }
 
 impl Spec {
@@ -471,7 +472,7 @@ impl Spec {
         let expect = Arc::new(self.expect());
         let mut dag = Dag::new();
         let mut outs: Vec<RowId<Heap, u64>> = Vec::new();
-        for (pos, (worker, gpu, inputs, len, scratch)) in self.nodes.iter().enumerate() {
+        for (pos, (at, gpu, inputs, len, scratch)) in self.nodes.iter().enumerate() {
             let inputs = inputs.iter().map(|&u| (outs[u], u)).collect();
             let name = format!("n{pos}");
             macro_rules! node {
@@ -487,9 +488,9 @@ impl Spec {
                 };
             }
             let rows = if *gpu {
-                dag.add_gpu(name, *worker, node!(true))
+                dag.add_gpu(name, *at, node!(true))
             } else {
-                dag.add_cpu(name, *worker, node!(false))
+                dag.add_cpu(name, at.worker, node!(false))
             };
             outs.push(rows.out);
         }
@@ -508,11 +509,11 @@ fn a_dag_through_the_executor() {
     const N: usize = 64;
     let spec = Spec {
         nodes: vec![
-            (0, false, vec![], N, 0),
-            (0, true, vec![0], N, 0),
-            (0, false, vec![0, 1], N, 0),
-            (0, true, vec![2], N, 0),
-            (0, false, vec![3], N, 0),
+            (0.into(), false, vec![], N, 0),
+            (0.into(), true, vec![0], N, 0),
+            (0.into(), false, vec![0, 1], N, 0),
+            (0.into(), true, vec![2], N, 0),
+            (0.into(), false, vec![3], N, 0),
         ],
     };
     let ran = Arc::new(AtomicUsize::new(0));
@@ -525,7 +526,7 @@ fn a_dag_through_the_executor() {
         "node 3's output reuses node 0's bytes, so a handoff orders them"
     );
     assert_eq!(planned.predecessors(3), &[0, 1, 2]);
-    assert_eq!(planned.placement(1), Placement::Stream(0));
+    assert_eq!(planned.placement(1), Placement::Stream(0.into()));
     assert_eq!(planned.placement(2), Placement::Cpu);
     let sizes = [
         planned.device_table(0).total(),
@@ -553,6 +554,7 @@ fn arb_spec() -> impl Strategy<Value = Spec> {
     prop::collection::vec(
         (
             0..2usize,
+            0..3usize,
             any::<bool>(),
             prop::collection::vec(any::<prop::sample::Index>(), 0..4),
             1..64usize,
@@ -561,9 +563,12 @@ fn arb_spec() -> impl Strategy<Value = Spec> {
         1..24,
     )
     .prop_map(|raw| {
-        let mut nodes: Vec<(usize, bool, Vec<usize>, usize, usize)> = Vec::new();
-        for (worker, gpu, picks, len, scratch) in raw {
-            let same: Vec<usize> = (0..nodes.len()).filter(|&u| nodes[u].0 == worker).collect();
+        let mut nodes: Vec<(LaneId, bool, Vec<usize>, usize, usize)> = Vec::new();
+        for (worker, lane, gpu, picks, len, scratch) in raw {
+            let lane = if gpu { lane } else { 0 };
+            let same: Vec<usize> = (0..nodes.len())
+                .filter(|&u| nodes[u].0.worker == worker)
+                .collect();
             let mut inputs: Vec<usize> = if same.is_empty() {
                 Vec::new()
             } else {
@@ -571,7 +576,7 @@ fn arb_spec() -> impl Strategy<Value = Spec> {
             };
             inputs.sort_unstable();
             inputs.dedup();
-            nodes.push((worker, gpu, inputs, len, scratch));
+            nodes.push((LaneId { worker, lane }, gpu, inputs, len, scratch));
         }
         Spec { nodes }
     })
@@ -580,10 +585,11 @@ fn arb_spec() -> impl Strategy<Value = Spec> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
-    /// Any DAG, on two stream workers and three CPU workers, twice: every
-    /// read sees exactly what its producer wrote, every node runs once a
-    /// run, and no view ever finds its bytes held by another. A missing read
-    /// or handoff dependency shows as a wrong value or a borrow panic.
+    /// Any DAG, on two GPU workers of up to three lanes each and three CPU
+    /// workers, twice: every read sees exactly what its producer wrote,
+    /// across lanes as within one, every node runs once a run, and no view
+    /// ever finds its bytes held by another. A missing read or handoff
+    /// dependency shows as a wrong value or a borrow panic.
     #[test]
     fn every_dag_reads_what_was_written(spec in arb_spec()) {
         let ran = Arc::new(AtomicUsize::new(0));
@@ -1043,7 +1049,7 @@ fn a_read_of_another_workers_row_is_refused() {
 fn refusals() {
     let ran = Arc::new(AtomicUsize::new(0));
     let spec = Spec {
-        nodes: vec![(0, false, vec![], 4, 4)],
+        nodes: vec![(0.into(), false, vec![], 4, 4)],
     };
     let (mut dag, outs) = spec.dag(&ran);
     dag.add_cpu("sneaky", 0, Sneaky(outs[0]));
@@ -1059,11 +1065,11 @@ fn refusals() {
 #[test]
 fn two_workers_are_independent() {
     // Worker w's chain starts at position `first`.
-    let chain = |worker, first| -> Vec<(usize, bool, Vec<usize>, usize, usize)> {
+    let chain = |worker: usize, first| -> Vec<(LaneId, bool, Vec<usize>, usize, usize)> {
         vec![
-            (worker, true, vec![], 32, 8),
-            (worker, false, vec![first], 16, 0),
-            (worker, true, vec![first + 1], 32, 0),
+            (worker.into(), true, vec![], 32, 8),
+            (worker.into(), false, vec![first], 16, 0),
+            (worker.into(), true, vec![first + 1], 32, 0),
         ]
     };
     let mut nodes = chain(0, 0);
@@ -1118,7 +1124,7 @@ fn a_blas_workspace_is_a_worker_row_admission_counts() {
     let planned = dag.plan();
     assert_eq!(planned.len(), 1, "declaring a workspace adds no task");
     assert_eq!(planned.n_workers(), 2);
-    let row = planned.blas_workspaces[0].expect("worker 0's workspace");
+    let row = planned.blas_workspaces[0][0];
     let table = planned.device_table(0);
     assert_eq!(table.n_rows(), bare.device_table(0).n_rows() + 1);
     assert_eq!(table.len(row), BLAS_WORKSPACE_BYTES);
@@ -1126,7 +1132,7 @@ fn a_blas_workspace_is_a_worker_row_admission_counts() {
         table.total(),
         bare.device_table(0).total() + BLAS_WORKSPACE_BYTES
     );
-    assert!(planned.blas_workspaces[1].is_some());
+    assert_eq!(planned.blas_workspaces[1].len(), 1);
     assert_eq!(planned.device_table(1).total(), BLAS_WORKSPACE_BYTES);
     let text = planned.to_string();
     assert_eq!(text.matches("blas workspace").count(), 2, "{text}");
@@ -1142,4 +1148,51 @@ fn a_blas_workspace_is_a_worker_row_admission_counts() {
         "{}",
         refused.message
     );
+}
+
+/// Lanes of one worker share its tables: a task on lane 1 reads a row a
+/// task on lane 0 wrote, through the same table, ordered by the read; a
+/// later row on lane 0 takes the bytes of one lane 1 last used, ordered by
+/// the handoff from lane 1. Each lane gets a BLAS workspace row of its own,
+/// lane 0's under its one-lane name, and the plan's text names each lane.
+#[test]
+fn lanes_share_their_workers_tables() {
+    use Decl::*;
+    let n = 24 * 24;
+    let lane = |lane| LaneId { worker: 0, lane };
+    let mut dag = Dag::<Heap, ()>::new();
+    dag.blas_workspace(0);
+    let a = dag.add_gpu("A", lane(0), Declares(vec![Out("a", n)]))[0];
+    let b = dag.add_gpu("B", lane(1), Declares(vec![Read(a), Out("b", n)]))[0];
+    let c = dag.add_gpu("C", lane(0), Declares(vec![Read(b), Out("c", n)]))[0];
+    let d = dag.add_gpu("D", lane(2), Declares(vec![Read(c), Out("d", n)]))[0];
+    let planned = dag.plan();
+    assert_eq!((planned.n_workers(), planned.n_lanes(0)), (1, 3));
+    assert_eq!(planned.placement(1), Placement::Stream(lane(1)));
+    let table = planned.device_table(0);
+    assert_eq!(table.offset(c), table.offset(a), "C takes A's bytes");
+    assert_eq!(table.offset(d), table.offset(b), "D takes B's bytes");
+    assert_eq!(planned.predecessors(1), &[0]);
+    assert_eq!(planned.predecessors(2), &[0, 1], "the handoff from lane 1");
+    assert_eq!(planned.predecessors(3), &[1, 2]);
+
+    let rows = &planned.blas_workspaces[0];
+    assert_eq!(rows.len(), 3, "a workspace per lane");
+    let text = planned.to_string();
+    for name in [
+        "blas workspace\n",
+        "blas workspace lane 1\n",
+        "blas workspace lane 2\n",
+    ] {
+        assert!(text.contains(name), "{name:?} in {text}");
+    }
+    for line in [
+        "0       0  stream0  A",
+        "1       0  stream1  B: after 0",
+        "3       0  stream2  D",
+    ] {
+        assert!(text.contains(line), "{line:?} in {text}");
+    }
+    let total = planned.device_table(0).total();
+    assert!(total >= 3 * BLAS_WORKSPACE_BYTES, "{total}");
 }

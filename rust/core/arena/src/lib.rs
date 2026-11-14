@@ -71,9 +71,12 @@
 //!
 //! # Not yet
 //!
-//! One stream worker per table: lifetimes are positions in the plan's rank
-//! order, and reuse across streams and transport rows wait for placement.
-//! A loop's region holds one body; the max over several inner shapes, the
+//! Transport rows, between two workers' tables, wait for placement. A table
+//! is one GPU worker's, shared by its lanes: lifetimes are positions in the
+//! plan's rank order whatever lane a node is on, and the assigner packs to
+//! the fewest bytes, so a reuse between two lanes is a handoff the planner
+//! adds as an edge, an event on the device that serializes the two
+//! (`docs/memory.md`, "Lifetimes"). A loop's region holds one body; the max over several inner shapes, the
 //! semi-numerical Hessian's, and a loop in a loop's body are not built. Declaring rows from tasks, and turning the table's
 //! [`reads`](Table::reads) and [`handoffs`](Table::handoffs) into a plan's
 //! dependencies, is `fb_core_planner`'s. A block is

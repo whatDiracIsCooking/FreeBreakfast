@@ -6,20 +6,21 @@
 //! and the placement is the planner's, and arrives here already done.
 //!
 //! - [`Plan`]: the nodes, each with its predecessors, its [`Placement`] (the
-//!   CPU pool or one stream worker) and the callable that runs it. Nodes are
+//!   CPU pool or one lane of a GPU worker, a [`LaneId`]) and the callable
+//!   that runs it. Nodes are
 //!   added in topological order, so a node's [`NodeId`] is its rank and a
 //!   plan cannot have a cycle; and its loops ([`Plan::add_loop`]), each a
 //!   run of nodes, its body, replayed on the same workers until a CPU
 //!   decision node after it stops it, at most a bound fixed at planning.
-//! - [`Backend`]: the device side of a run: the stream workers' streams, the
+//! - [`Backend`]: the device side of a run: the GPU workers' lanes, the
 //!   events at the edges that leave one, and the syncs. [`HostOnly`] has no
 //!   device and is what the device-free tests run on; `Device` (the
 //!   `device` feature) is the real one, over `fb_core_wwr::runtime`: each
-//!   stream worker's stream and its library handles ([`DeviceStream`], a
-//!   BLAS and a dense-solver handle), made with the backend before any run
-//!   and reached by a GPU node through its [`Lane`].
+//!   lane's stream and its library handles ([`DeviceStream`], a BLAS and a
+//!   dense-solver handle), made with the backend before any run and reached
+//!   by a GPU node through its [`Lane`].
 //! - [`run`]: open one [`std::thread::scope`] with `n_cpu` CPU workers and
-//!   one thread per stream worker, run every node once (a loop's body and
+//!   one thread per GPU worker, run every node once (a loop's body and
 //!   decision once per iteration), join, and return
 //!   the [`Record`]: the result, a [`TaskTime`] per node that ran and a
 //!   [`SyncPoint`] per host wait, and as `timing.json` its
@@ -33,9 +34,13 @@
 //!    decision returns `Continue`, so once the whole body has completed.
 //! 2. No node starts before each predecessor has finished in the sense its
 //!    edge needs (the table below).
-//! 3. At most `n_cpu` CPU nodes run at once, and each stream worker runs one
-//!    node at a time, its ready nodes in rank order.
-//! 4. The run's threads are `n_cpu` plus one per stream worker, created when
+//! 3. At most `n_cpu` CPU nodes run at once, and each GPU worker runs one
+//!    node at a time, its ready nodes in rank order across all its lanes.
+//!    Running a GPU node is enqueueing it: its lanes' work overlaps on the
+//!    card, and the worker's thread never waits on the device until it
+//!    exits.
+//! 4. The run's threads are `n_cpu` plus one per GPU worker, whatever its
+//!    lanes, created when
 //!    the run opens and joined before [`run`] returns. Nothing else spawns:
 //!    `clippy.toml` disallows the spawning functions everywhere but here.
 //!
@@ -44,15 +49,15 @@
 //! [`run`] takes the plan and the backend by `&mut`, so the borrow checker
 //! holds what the run model needs: neither is in two runs at once. A
 //! `Device` backend's events are its plan's nodes', recorded and waited on
-//! within one run, and its streams and library handles are each one stream
-//! worker's; and a plan's nodes reach what their closures captured, which
+//! within one run, and its streams and library handles are each one lane's;
+//! and a plan's nodes reach what their closures captured, which
 //! for a planner instance is its blocks, whose rows' borrow flags are
 //! released when a node returns while its device work may still be in
 //! flight. Two runs sharing either would race on both. The two kinds of
 //! concurrency the model has keep working: within one run the workers share
 //! the plan and the backend by reference (which is why [`Backend`] is
 //! `Sync`), and independent (plan, backend) pairs run on threads of their
-//! own. Several GPUs are one run: a `Device` spans its stream workers'
+//! own. Several GPUs are one run: a `Device` spans its GPU workers'
 //! devices.
 //!
 //! # When an edge is satisfied
@@ -63,10 +68,13 @@
 //!
 //! | Producer → consumer | Before the consumer runs |
 //! |---|---|
-//! | stream `s` → stream `s` | nothing: the stream's order |
-//! | stream `s` → stream `t ≠ s` | `t` waits on the producer's event; no host wait |
-//! | stream → CPU | the CPU worker waits on the producer's event: a sync point |
+//! | lane `l` → lane `l` | nothing: the stream's order |
+//! | lane `l` → lane `m ≠ l`, of the same worker or another | `m` waits on the producer's event on the device; no host wait |
+//! | lane → CPU | the CPU worker waits on the producer's event: a sync point |
 //! | CPU → anything | nothing: the host work is done when it returns |
+//!
+//! A row read across two lanes of one worker is read in place, the
+//! pointer the producer wrote: the worker's blocks are its lanes'.
 //!
 //! A CPU node that waits on the device holds its CPU worker while it waits.
 //!
@@ -92,9 +100,9 @@
 //! descendant is skipped; siblings already running run on. [`run`] returns the
 //! failure lowest in rank, so the same failure reports the same way at every
 //! worker count, with any others pushed onto its context as `also: ...`. Each
-//! stream worker syncs its stream before it exits, so a run never returns
+//! GPU worker syncs each lane it ran on before it exits, so a run never returns
 //! with work outstanding, and a fault surfacing there is reported against the
-//! stream's last node.
+//! lane's last node.
 //!
 //! **A panic fails the run rather than hanging it.** A worker that panics
 //! mid-node never marks the node finished, and the other workers would wait
@@ -114,11 +122,11 @@
 //!   event on its stream after the waits and before it runs, and the event
 //!   [`Backend::record`] records after it returns, which its consumers wait
 //!   on, closes the scope. No scope syncs: they are read after the run,
-//!   when each stream worker has synced its stream on the way out.
+//!   when each GPU worker has synced its lanes on the way out.
 //! - **A wall-clock scope around every sync point**: a CPU node's
-//!   [`Backend::host_wait`] on each GPU predecessor, and each stream
-//!   worker's [`Backend::sync`] as it exits, each naming the node it
-//!   waited for.
+//!   [`Backend::host_wait`] on each GPU predecessor, and each GPU
+//!   worker's [`Backend::sync`] of each lane as it exits, each naming the
+//!   node it waited for.
 //! - **The run's wall time**, from the workers' start to their join.
 //!
 //! A loop's body nodes and decision have an entry per iteration, each with
@@ -161,7 +169,7 @@
 //!     total.fetch_add(1, Ordering::Relaxed);
 //!     Ok(())
 //! });
-//! let b = plan.add("b", Placement::Stream(0), &[a], |_| {
+//! let b = plan.add("b", Placement::Stream(0.into()), &[a], |_| {
 //!     total.fetch_add(10, Ordering::Relaxed);
 //!     Ok(())
 //! });
@@ -183,5 +191,5 @@ mod tests;
 #[cfg(feature = "device")]
 pub use backend::Device;
 pub use backend::{Backend, DeviceStream, HostOnly};
-pub use plan::{Lane, NodeId, Placement, Plan};
+pub use plan::{Lane, LaneId, NodeId, Placement, Plan};
 pub use run::{ArenaSize, Record, SyncPoint, TaskTime, default_n_cpu, run};

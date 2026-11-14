@@ -1,5 +1,5 @@
-//! A run uses exactly the threads its plan says: `n_cpu` plus one per stream
-//! worker, beside the main thread, and none survive it
+//! A run uses exactly the threads its plan says: `n_cpu` plus one per GPU
+//! worker, whatever its lanes, beside the main thread, and none survive it
 //! (`core::thread_pool`'s fourth promise). The count is the `Threads:` line
 //! of `/proc/self/status`, which also sees a thread a linked library opened
 //! on its own, which no lint can. A loop's replay is on the same threads:
@@ -13,7 +13,7 @@ use std::ops::ControlFlow;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use fb_core_thread_pool::{HostOnly, Placement, Plan, run};
+use fb_core_thread_pool::{HostOnly, LaneId, Placement, Plan, run};
 
 fn threads() -> usize {
     let status = std::fs::read_to_string("/proc/self/status").expect("/proc/self/status");
@@ -57,19 +57,22 @@ const SETTLE: Duration = Duration::from_secs(5);
 
 fn main() {
     assert_eq!(threads(), 1, "the process starts with one thread");
-    for (n_cpu, n_streams) in [(1, 0), (3, 2), (8, 4)] {
+    // Each GPU worker with `n_lanes` lanes, a node on each: one thread per
+    // worker, not per lane.
+    for (n_cpu, n_gpu, n_lanes) in [(1, 0, 1), (3, 2, 3), (8, 4, 2)] {
         let seen = Mutex::new(Vec::new());
         let mut plan = Plan::new();
         let mut last = Vec::new();
-        for lane in 0..n_streams {
-            last.push(
-                plan.add(format!("gpu{lane}"), Placement::Stream(lane), &[], |_| {
+        for worker in 0..n_gpu {
+            for lane in 0..n_lanes {
+                let at = Placement::Stream(LaneId { worker, lane });
+                last.push(plan.add(format!("gpu{worker}.{lane}"), at, &[], |_| {
                     seen.lock().unwrap().push(threads());
                     Ok(())
-                }),
-            );
+                }));
+            }
         }
-        let expected = 1 + n_cpu + n_streams;
+        let expected = 1 + n_cpu + n_gpu;
         // Workers are spawned one after another, so an early node can run
         // before the last exists: wait for the full count, never past it.
         plan.add("cpu", Placement::Cpu, &last, |_| {
@@ -82,19 +85,19 @@ fn main() {
             seen.lock().unwrap().push(now);
             Ok(())
         });
-        run(&mut plan, &mut HostOnly::new(n_streams), n_cpu)
+        run(&mut plan, &mut HostOnly::new(n_gpu), n_cpu)
             .result
             .unwrap();
         drop(plan);
         let seen = seen.into_inner().unwrap();
         assert!(
             seen.iter().all(|&t| t <= expected) && seen.last() == Some(&expected),
-            "n_cpu {n_cpu}, n_streams {n_streams}: saw {seen:?}, expected {expected}"
+            "n_cpu {n_cpu}, {n_gpu} GPU workers of {n_lanes} lanes: saw {seen:?}, expected {expected}"
         );
         assert_eq!(
             settled_threads(1),
             1,
-            "n_cpu {n_cpu}, n_streams {n_streams}: a worker outlived its run \
+            "n_cpu {n_cpu}, {n_gpu} GPU workers of {n_lanes} lanes: a worker outlived its run \
              (still counted {SETTLE:?} after the join)"
         );
     }
@@ -121,13 +124,13 @@ fn all_workers(expected: usize) -> usize {
 /// every body node of every iteration sees the same.
 fn replayed_on_the_runs_threads() {
     const ITERATIONS: usize = 4;
-    let (n_cpu, n_streams) = (2, 1);
-    let expected = 1 + n_cpu + n_streams;
+    let (n_cpu, n_gpu) = (2, 1);
+    let expected = 1 + n_cpu + n_gpu;
     let first = Mutex::new(0);
     let body_seen = Mutex::new(Vec::new());
     let last = Mutex::new(0);
     let mut plan = Plan::new();
-    let gpu = plan.add("gpu", Placement::Stream(0), &[], |_| {
+    let gpu = plan.add("gpu", Placement::Stream(0.into()), &[], |_| {
         let mut first = first.lock().unwrap();
         if *first == 0 {
             *first = all_workers(expected);
@@ -146,7 +149,7 @@ fn replayed_on_the_runs_threads() {
         *last.lock().unwrap() = threads();
         Ok(ControlFlow::Break(()))
     });
-    let record = run(&mut plan, &mut HostOnly::new(n_streams), n_cpu);
+    let record = run(&mut plan, &mut HostOnly::new(n_gpu), n_cpu);
     record.result.unwrap();
     drop(plan);
     let (first, last) = (first.into_inner().unwrap(), last.into_inner().unwrap());

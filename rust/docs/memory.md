@@ -92,13 +92,15 @@ order over launches, so the interval's ends are positions in that order:
 - **On one stream**, the stream's order is total, and a lifetime is a pair
   of positions. Reuse is the C++ `then` / `drop` algebra with the implicit
   frees made explicit.
-- **Across streams**, two positions are ordered only through an event one
-  stream records and the other waits on, or through a chain of edges that
-  implies one. Two buffers on different streams may share bytes only when
-  such a path runs from one's end to the other's start. Whether the planner
-  adds an event edge to create a path is the programming model's open
-  question on reuse across streams
-  ([`programming_model.md`](programming_model.md), "Open questions").
+- **Across streams**, the lanes of one GPU worker
+  ([`programming_model.md`](programming_model.md), "Workers are a
+  hierarchy"), two positions are ordered only through an event one lane
+  records and the other waits on, or through a chain of edges that implies
+  one. Two buffers on different lanes may share bytes only when such a path
+  runs from one's end to the other's start, and the planner makes one
+  wherever the assigner reused bytes: each handoff below is an edge, and
+  between two lanes an edge is that event, so the path is added uniformly,
+  not looked for.
 - **Across a CPU node**, the node's completion is a host event, not a stream
   one. A pinned row read by a file-write node ends when the write returns,
   and the next row to take those bytes is a device-to-pinned copy the
@@ -139,12 +141,18 @@ predecessor. So the table returns its **handoffs** (`Table::handoffs`):
 for every pair of rows that share bytes, each user of the earlier paired
 with the later one's producer. Each handoff points forward in rank and is
 added to the plan as a dependency, which is the rule above, an offset's
-previous owner counts as a predecessor, made uniform. On one stream a
+previous owner counts as a predecessor, made uniform. On one lane a
 handoff between two stream nodes costs nothing, the stream's order already
-holds it; from a CPU node it is the wait the rule asks for. A tier-3
-property test runs random DAGs in random orders consistent with their
-edges and handoffs and checks that no two rows sharing bytes are live at
-once.
+holds it; between two lanes of a worker it is an event on the device, no
+host wait, that serializes the two lanes there; from a CPU node it is the
+wait the rule asks for. The positions are the ranks whatever lane a node is
+on, so the assigner packs to the fewest bytes and pays for every reuse
+across lanes in concurrency: bytes win, always, as in the C++ mmd, whose
+classes' sorts share one carve, "which is why the forks chain". A tier-3
+property test runs random DAGs over one to three lanes, enqueued in random
+orders consistent with their edges and handoffs, each node a random time on
+the device, its lane's stream and its edges' events alone ordering it, and
+checks that no two rows sharing bytes are live at once.
 
 **An alias is free of synchronization.** The ERI step is the case. Issue
 1153 found the DF chain's packing broken because B was allocated while the
@@ -482,7 +490,7 @@ receive their views and nothing else that can allocate.
 | `bytes(width)` is monotone | Bisection against a linear scan over random dims | 3 |
 | Admission refuses what does not fit | A cap one byte under the peak refused naming the rows live at it; a cap under a row refused naming that row, the DF step's B not live at its peak among them; one byte over admitted, as the C++ nested cases pin the room to the byte | 3 |
 | A task reaches only its rows | The view's borrow flags and layout check, always on | 2 |
-| Reusing bytes is ordered | Random DAGs run in random orders consistent with their edges and handoffs, no two rows sharing bytes live at once | 3 |
+| Reusing bytes is ordered | Random DAGs over random lanes run in random orders consistent with their edges and handoffs, each node a random time on its lane, no two rows sharing bytes live at once | 3 |
 | A loop's body lies in its region, apart from every parent row live across the loop | Random bodies laid out, then unrolled over iterations and run in random orders consistent with the reads and handoffs, no two rows sharing bytes live at once | 3 |
 | Replay allocates nothing | The arena's count of this process's blocks (`fb_core_arena::allocations`), read by a device loop's decision every iteration, the same at every one: no other tenant of the card moves it, as one moves the device's free memory (#1573). A library allocating behind the arena at a launch is not in it: the next row's | 4 |
 | Declared equals allocated | Free memory before and after instantiation differs by the block, under the reserve's growth: the device's reading, the one measure of the driver's cost of a block, over a window of one allocation, which a display client allocating inside it can fail (#1589) | 4 |
@@ -498,10 +506,11 @@ against.
 
 - **Bytes against concurrency.** The assigner always packs to the fewest
   bytes, and every byte it reuses is a handoff, an edge the plan did not
-  otherwise have. Two independent nodes whose rows share bytes are then
-  serialized when a larger block would have let them overlap. On one stream
-  that costs nothing; once there are several, admission's search should
-  decide which reuse to give up for concurrency when the cap leaves room.
+  otherwise have. Two independent nodes on two lanes whose rows share bytes
+  are then serialized when a larger block would have let them overlap. That
+  is the rule today ("Lifetimes"): on one lane it costs nothing, and across
+  lanes the planner pays it. The open part is admission's search deciding
+  which reuse to give up for concurrency when the cap leaves room.
 - **Iterating the adaptive pass.** One pass in schedule order is pre-flight's
   model today. A plan whose adaptive tasks are large relative to its fixed
   rows may leave room the pass does not find.

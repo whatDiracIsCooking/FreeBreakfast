@@ -10,14 +10,17 @@
 //! - [`GpuTask`] and [`CpuTask`], a task of each sort: `layout`, which
 //!   declares every row the task holds or reads, and `run`, which computes
 //!   through them. A GPU task declares device and pinned rows and runs on
-//!   its worker's stream, its pinned rows a [`CopyOnly`] only its copies
-//!   take; a CPU task declares host rows alone and runs on the CPU pool.
+//!   a lane of its worker, one of the worker's streams, its pinned rows a
+//!   [`CopyOnly`] only its copies take; a CPU task declares host rows alone
+//!   and runs on the CPU pool.
 //! - [`Dag`]: tasks added in plan order, each on a GPU worker, by
-//!   [`Dag::add_gpu`] or [`Dag::add_cpu`], the sort deciding where it runs.
-//!   Each calls the layout at once and
+//!   [`Dag::add_gpu`] (on a lane the caller names, a [`LaneId`]) or
+//!   [`Dag::add_cpu`], the sort deciding where it runs. A worker's tables
+//!   and blocks are its lanes', so a task reads a row another lane wrote in
+//!   place. Each calls the layout at once and
 //!   returns the task's rows, whose output ids the caller passes to the
 //!   tasks that read them. [`Dag::blas_workspace`] declares a worker's
-//!   BLAS workspace, a worker row no task can name. [`Dag::add_loop`]
+//!   BLAS workspaces, a worker row per lane no task can name. [`Dag::add_loop`]
 //!   closes a loop over the tasks from a position on, with a [`Decision`]
 //!   after them: the body replayed in one run until the decision says
 //!   `Break`, its rows laid out once in a region of each worker's tables,
@@ -37,10 +40,11 @@
 //!   executor's [`Record`](fb_core_thread_pool::Record), every task timed
 //!   by the executor and none by itself. With `device`,
 //!   `Instance::backend` makes the `thread_pool::Device` it runs on and
-//!   hands each worker's BLAS handle its declared workspace, held for as
+//!   hands each lane's BLAS handle its declared workspace, held for as
 //!   long as the backend lives.
 //!
 //! [`CopyOnly`]: fb_core_arena::CopyOnly
+//! [`LaneId`]: fb_core_thread_pool::LaneId
 //! [`Table::reads`]: fb_core_arena::Table::reads
 //! [`Table::handoffs`]: fb_core_arena::Table::handoffs
 //! [`thread_pool::Plan`]: fb_core_thread_pool::Plan
@@ -51,8 +55,10 @@
 //! after its producer has finished in the sense the edge needs (the
 //! executor's "When an edge is satisfied"), and a row's bytes pass to the
 //! next row only after every user of the previous one. So no task reads a
-//! row before it is written, and no two tasks hold the same bytes at once;
-//! the arena's borrow flags would panic if one did.
+//! row before it is written, and no two tasks hold the same bytes at once,
+//! on one lane or several; the arena's borrow flags would panic if one did
+//! on the host. Between two lanes of a worker both orderings are events on
+//! the device, so a plan of several lanes adds no host wait.
 //!
 //! This module has no `unsafe`: the views are what make sharing the blocks
 //! across workers sound.
@@ -105,7 +111,10 @@
 //! # Not yet
 //!
 //! The caller places each task, on a worker and a lane, and the plan order
-//! is the order of the adds: no placement or schedule search. A task
+//! is the order of the adds: no placement or schedule search, and no lanes
+//! derived from the DAG's shape. The assigner packs to the fewest bytes,
+//! so every reuse between two lanes serializes them; nothing gives a reuse
+//! up for concurrency (`docs/memory.md`, "Open questions"). A task
 //! reads only rows of its own worker; an edge between workers needs a
 //! transport row, which placement would add. No partition or reduce: every
 //! edge is one producer's output. No adaptive widths, no sub-DAG with
