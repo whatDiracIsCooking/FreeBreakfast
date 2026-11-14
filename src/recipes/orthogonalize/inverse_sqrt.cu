@@ -25,11 +25,24 @@ struct InverseSqrtFunctor {
   T *const data_;
   const T floor_;
 
+  // The floor test comes first, so a zero or negative eigenvalue never reaches
+  // the sqrt. 1 / sqrt rather than math::rsqrt: the device rsqrt intrinsic is
+  // not correctly rounded, and this runs once per setup.
+  //
+  // Contraction off, under HIP: clang's HIP mode contracts by default
+  // (-ffp-contract=fast-honor-pragmas), and with the contract flag on both
+  // operations the AMDGPU back end folds the double 1 / sqrt(x) into a refined
+  // v_rsq_f64 sequence -- the very rsqrt avoided above -- which lands an ulp
+  // from the two correctly rounded operations on most inputs (gfx1200, #1451).
+  // With it off, the sqrt and the division are each correctly rounded, as
+  // nvcc's are by default, so both backends give the host's T{1} /
+  // std::sqrt(x) bit for bit (test/recipes/inverse_sqrt_gpu.cpp). nvcc does no
+  // such fold and does not know the pragma.
   __device__ void operator()(const int32_t i) const {
+#if defined(__HIP__)
+#pragma clang fp contract(off)
+#endif
     const T value = data_[i];
-    // The floor test comes first, so a zero or negative eigenvalue never
-    // reaches the sqrt. 1 / sqrt rather than math::rsqrt: the device rsqrt
-    // intrinsic is not correctly rounded, and this runs once per setup.
     data_[i] = value <= floor_ ? T{0} : T{1} / math::sqrt(value);
   }
 };
