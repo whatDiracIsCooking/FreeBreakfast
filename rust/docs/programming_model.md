@@ -346,7 +346,9 @@ GPU task's rows are returned while its device work may still be in flight,
 and a `Device` backend's events are one plan's nodes' and its streams and
 library handles one run's workers'. The concurrency the model does have
 keeps working. Within a run the workers share the instance's plan and the
-backend by reference, which is why a `Backend` is `Sync`; independent
+backend by reference, through a wrapper only `run` can make (a `Backend`
+is sealed and need not be `Sync`, and a `Device` is not, so outside a run
+no backend reaches a second thread at all); independent
 (instance, backend) pairs run on threads of their own; and several GPUs
 are one run, a `Device` spanning its stream workers' devices.
 
@@ -528,9 +530,10 @@ list is in two tiers:
 
 The core crates hold the wrappers: `fb-core-wwr` over the `wwr-sys`
 bindings, the arena over the raw allocation and copy bindings, the two
-`libc` calls in `core::log`, and the one `unsafe impl Sync` on
-`core::thread_pool`'s `Device` backend, which rests on a run borrowing the
-backend exclusively ("Plan once, run many"). The binding crates declare a kernel
+`libc` calls in `core::log`, and the one `unsafe impl Sync` in
+`core::thread_pool`, on `run`'s private wrapper of the backend it shares
+with its workers, which rests on a run borrowing the backend exclusively
+and on `Backend` being sealed ("Plan once, run many"). The binding crates declare a kernel
 library's `extern "C"` functions, check its version at load, and wrap its
 launches safely beside the bindings (`fb-integrals-sys` its records tasks
 too, since the class launchers trust records only those tasks write). There

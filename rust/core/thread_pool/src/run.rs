@@ -296,18 +296,19 @@ pub fn run<B: Backend>(plan: &mut Plan<'_, B::Stream>, backend: &mut B, n_cpu: u
         plan.len()
     );
     let shared = Shared::new(plan, n_streams);
+    let backend = &RunBackend(backend);
     let start = Instant::now();
     thread::scope(|scope| {
         let shared = &shared;
         let mut workers = Vec::with_capacity(n_cpu + n_streams);
         for i in 0..n_cpu {
             workers.push(spawn(scope, format!("cpu{i}"), move |name| {
-                cpu_worker(plan, backend, shared, name)
+                cpu_worker(plan, &**backend, shared, name)
             }));
         }
         for lane in 0..n_streams {
             workers.push(spawn(scope, format!("stream{lane}"), move |name| {
-                stream_worker(plan, backend, shared, name, lane)
+                stream_worker(plan, &**backend, shared, name, lane)
             }));
         }
         // Joined here rather than by the scope, so a node's panic is
@@ -362,6 +363,37 @@ pub fn run<B: Backend>(plan: &mut Plan<'_, B::Stream>, backend: &mut B, n_cpu: u
         tasks,
         syncs,
         ..Record::new(result)
+    }
+}
+
+/// The backend as one run's workers share it: [`run`] makes the only one,
+/// from its exclusive borrow, and it lives no longer than the run's scope.
+/// A backend need not be `Sync` (a `Device` is not); this
+/// is where sharing it across threads is argued, once, for one run.
+struct RunBackend<'a, B>(&'a B);
+
+// SAFETY: `Backend` is sealed, so `B` is `HostOnly` (plain data, `Sync`
+// itself) or `Device`. A `RunBackend` exists only inside `run`, made from
+// its `&mut` borrow, so no other run, and no code outside this one, holds
+// the backend meanwhile; its threads are this run's workers, which call
+// each method only from the thread its doc names. For a `Device`, whose
+// stream, event and library handles are raw runtime pointers: the runtime
+// API is thread-safe for every call made here through a shared reference
+// (record, wait, synchronize, elapsed time), on events that are this plan's
+// and no other run's. A library handle is called through only by the nodes
+// of its own stream worker, one node at a time on one thread, and cuBLAS,
+// hipBLAS, cuSOLVER and hipSOLVER allow a handle to be used from any thread
+// one call at a time; a `DeviceStream` is not `Sync`, so a node cannot hand
+// its stream or handles to another thread. Every handle and every `Rc` a
+// `DeviceStream` holds is made before the run and dropped after it, and a
+// BLAS workspace is handed over only through `&mut Device`, which the run's
+// borrow rules out.
+unsafe impl<B: Backend> Sync for RunBackend<'_, B> {}
+
+impl<B> std::ops::Deref for RunBackend<'_, B> {
+    type Target = B;
+    fn deref(&self) -> &B {
+        self.0
     }
 }
 
