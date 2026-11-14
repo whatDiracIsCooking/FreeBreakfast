@@ -1,6 +1,6 @@
 //! `test/sad/sad_host.cpp`, tier 3, one test per case of its serial form,
-//! each named after it (the task form's cases wait for the guess-tasks
-//! issue; their serial halves are here), plus the refusals the C++ leaves
+//! each named after it (the task form's cases are `fb-pipeline-guess`'s;
+//! their serial halves are here), plus the refusals the C++ leaves
 //! untested and a lookup standing in for an SCF that would fail.
 //!
 //! The PySCF reference is read from where the C++ test reads it,

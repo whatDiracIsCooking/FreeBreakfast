@@ -1,0 +1,14 @@
+plan: 4 tasks, GPU workers: 1
+ task  worker  lane    name: after
+    0       0  cpu     atomic scf C
+    1       0  cpu     atomic scf O
+    2       0  cpu     atomic scf H
+    3       0  cpu     sad guess: after 0 1 2
+worker 0 heap table: 4 rows, 15392 bytes
+peak: 14888 bytes at node 3
+    offset      bytes  owner   life     name: users (w writes, r reads)
+         0       1568  edge    0-3      stamp C: 0w 3r
+      1792       1568  edge    1-3      stamp O: 1w 3r
+      3584        200  edge    2-3      stamp H: 2w 3r
+      3840      11552  edge    3-3      D: 3w
+handoffs:
