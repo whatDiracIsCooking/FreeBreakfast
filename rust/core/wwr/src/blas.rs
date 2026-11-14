@@ -172,6 +172,10 @@ impl BlasHandle {
     /// (cuBLAS refuses a pointer not 256-byte aligned), and the handle keeps
     /// its previous workspace; or a failed sync of the stream before a
     /// previous one is released, which keeps that one alive.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a rebind drains the stream before releasing the old workspace; it takes `&mut self`, so it runs at instantiation, outside any run"
+    )]
     pub fn bind_workspace<W>(&mut self, workspace: W) -> Status
     where
         W: DeviceSliceMut<u8> + Send + Sync + 'static,
@@ -212,6 +216,10 @@ impl Drop for BlasHandle {
     /// and then its workspace. A failed sync is logged, as a failed destroy
     /// is, and the workspace leaked rather than released under a call that
     /// may still be running.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a drop drains the stream before its workspace is released, as a destroy does: not a task"
+    )]
     fn drop(&mut self) {
         if self.workspace.is_some() {
             let status = self.handle.owner().sync();
@@ -589,6 +597,10 @@ mod tests {
     /// reads back the owner's stream as the one it enqueues on.
     #[test]
     #[ignore = "tier 4: needs a GPU"]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test reads its result back on the host: the harness waits, not a task"
+    )]
     fn binds_the_owners_stream() {
         let owner = Rc::new(Stream::new(0));
         let blas = BlasHandle::new(owner.clone());
@@ -610,6 +622,10 @@ mod tests {
     /// any order. Handed a second, it owns that one, and still computes.
     #[test]
     #[ignore = "tier 4: needs a GPU"]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test reads its result back on the host: the harness waits, not a task"
+    )]
     fn runs_a_gemm_on_a_workspace_it_was_handed() {
         const N: usize = 16;
         const BYTES: usize = 32 << 20;

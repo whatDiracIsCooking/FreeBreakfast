@@ -99,6 +99,10 @@ fn complex_each_op_matches_the_host() {
 /// so `work` is left as it was.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
 fn a_short_c_panics_before_anything_is_enqueued() {
     let owner = Rc::new(Stream::new(0));
     let blas = BlasHandle::new(owner.clone());

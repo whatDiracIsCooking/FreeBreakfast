@@ -45,6 +45,10 @@ impl sealed::Sealed for Device {
         gpu_log_error_at(unsafe { wwr_sys::wwr_free(ptr.cast()) }, location);
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a block is filled at instantiation, before any run: not a task"
+    )]
     unsafe fn fill(ptr: *mut u8, bytes: usize, location: &'static Location<'static>) -> Status {
         // SAFETY: the caller's allocation of at least `bytes`.
         let status = unsafe { wwr_sys::wwr_memset(ptr.cast(), 0xFF, bytes) };

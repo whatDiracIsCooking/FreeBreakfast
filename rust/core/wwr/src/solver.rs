@@ -145,6 +145,10 @@ mod tests {
     /// reads back the owner's stream as the one it enqueues on.
     #[test]
     #[ignore = "tier 4: needs a GPU"]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test reads its result back on the host: the harness waits, not a task"
+    )]
     fn binds_the_owners_stream() {
         let owner = Rc::new(Stream::new(0));
         let solver = SolverHandle::new(owner.clone());

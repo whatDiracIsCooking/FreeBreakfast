@@ -33,6 +33,10 @@ impl HandleKind for EventKind {
         unsafe { wwr_sys::wwr_event_create_with_flags(raw, DISABLE_TIMING) }
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a destroy waits for its event first, as wwr's does: a drop, not a task"
+    )]
     unsafe fn destroy(raw: wwr_event) -> wwr_status {
         // SAFETY: `raw` is a live event.
         let completed = unsafe { wwr_sys::wwr_event_synchronize(raw) };
@@ -87,6 +91,10 @@ impl Event {
     }
 
     /// [`sync`] on this event.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the wrapper the lint names: the executor's edges and the tests call it"
+    )]
     pub fn sync(&self) -> wwr_status {
         // SAFETY: the borrow keeps the event alive.
         unsafe { sync(self.get()) }
@@ -146,6 +154,10 @@ pub unsafe fn record_with_flags(event: wwr_event, stream: wwr_stream, flags: u32
 ///
 /// # Safety
 /// `event` is a live event.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the wrapper the lint names: the executor's edges and the tests call it"
+)]
 pub unsafe fn sync(event: wwr_event) -> wwr_status {
     // SAFETY: the caller's.
     unsafe { wwr_sys::wwr_event_synchronize(event) }
@@ -160,6 +172,10 @@ mod tests {
     /// Needs a GPU. The default event cannot time; a `0`-flag one can.
     #[test]
     #[ignore = "tier 4: needs a GPU"]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test reads its result back on the host: the harness waits, not a task"
+    )]
     fn timing_is_off_by_default_and_on_with_zero_flags() {
         let s = Stream::new(0);
         let sync_only = Event::new(0);
@@ -179,6 +195,10 @@ mod tests {
     /// runs its work after the other's: the second memset wins.
     #[test]
     #[ignore = "tier 4: needs a GPU"]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test reads its result back on the host: the harness waits, not a task"
+    )]
     fn wait_event_orders_two_streams() {
         let (a, b) = (Stream::new(0), Stream::new(0));
         let done = Event::new(0);

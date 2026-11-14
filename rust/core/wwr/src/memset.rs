@@ -54,6 +54,10 @@ mod tests {
     /// slice is a successful no-op.
     #[test]
     #[ignore = "tier 4: needs a GPU"]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test reads its result back on the host: the harness waits, not a task"
+    )]
     fn zeroes_the_slices_elements_and_nothing_else() {
         let stream = Stream::new(0);
         let mut bytes = DeviceBytes::upload(&[0xFFu8; 20], &stream);

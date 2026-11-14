@@ -98,6 +98,10 @@ fn c_on_a_real_type_is_the_transpose() {
 /// dimensions raised to 1.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
 fn an_empty_product_is_a_no_op() {
     let owner = Rc::new(Stream::new(0));
     let blas = BlasHandle::new(owner.clone());
