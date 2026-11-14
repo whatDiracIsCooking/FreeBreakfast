@@ -608,6 +608,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "fb-pipeline-eri"
+version = "0.1.0"
+dependencies = [
+ "fb-basis",
+ "fb-core-arena",
+ "fb-core-error-handling",
+ "fb-core-planner",
+ "fb-core-thread-pool",
+ "fb-integrals-eri-density-fitting-fit",
+ "fb-integrals-eri-density-fitting-jk",
+ "fb-integrals-eri-density-fitting-metric",
+ "fb-integrals-eri-density-fitting-three-center",
+ "fb-integrals-mmd",
+ "fb-integrals-sys",
+ "fb-io-basis",
+ "fb-io-npy",
+ "fb-io-xyz",
+ "fb-molecule",
+ "fb-test-support",
+]
+
+[[package]]
 name = "fb-pipeline-guess"
 version = "0.1.0"
 dependencies = [

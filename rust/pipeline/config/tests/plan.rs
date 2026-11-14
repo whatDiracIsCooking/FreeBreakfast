@@ -142,3 +142,43 @@ fn guess_refusals() {
         assert!(error.message.contains("config.toml"), "{name}: {error}");
     }
 }
+
+/// What `[eri]` refuses, each `InvalidConfig` naming the key or table: the
+/// C++ default mode, which is not ported; a missing `aux_basis`, which has
+/// no default; an unknown key; and a well-formed table, since no
+/// calculation reads it yet.
+#[test]
+fn eri_refusals() {
+    let cases = [
+        (
+            "eri_integral_direct",
+            format!("{GUESS}[eri]\nmode = \"integral_direct\"\naux_basis = \"cc-pvdz-jkfit\"\n"),
+            "unknown variant `integral_direct`",
+        ),
+        (
+            "eri_no_aux_basis",
+            format!("{GUESS}[eri]\nmode = \"density_fitting\"\n"),
+            "missing field `aux_basis`",
+        ),
+        (
+            "eri_unknown_key",
+            format!(
+                "{GUESS}[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n\
+                 threshold = 1e-8\n"
+            ),
+            "unknown field `threshold`",
+        ),
+        (
+            "eri_read_by_none",
+            format!("{GUESS}[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n"),
+            "[eri] is read by no calculation yet, and calculation = \"guess\"",
+        ),
+    ];
+    for (name, text, named) in cases {
+        let (_, config) = read_text(name, &text);
+        let error = config.expect_err(name);
+        assert_eq!(error.kind, ErrorKind::InvalidConfig, "{name}: {error}");
+        assert!(error.message.contains(named), "{name}: {error}");
+        assert!(error.message.contains("config.toml"), "{name}: {error}");
+    }
+}

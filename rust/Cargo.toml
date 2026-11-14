@@ -48,6 +48,7 @@ members = [
     "integrals/eri/density_fitting/fit",
     "integrals/eri/density_fitting/jk",
     "integrals/eri/density_fitting/three_center",
+    "pipeline/eri",
 ]
 
 [workspace.package]
@@ -100,6 +101,7 @@ fb-integrals-eri-density-fitting-metric = { path = "integrals/eri/density_fittin
 fb-integrals-eri-density-fitting-fit = { path = "integrals/eri/density_fitting/fit" }
 fb-integrals-eri-density-fitting-jk = { path = "integrals/eri/density_fitting/jk" }
 fb-integrals-eri-density-fitting-three-center = { path = "integrals/eri/density_fitting/three_center" }
+fb-pipeline-eri = { path = "pipeline/eri" }
 
 contracts = "0.6.11"
 # core::log: the line's local time, and the OS thread id (std has none).
