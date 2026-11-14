@@ -1,0 +1,23 @@
+plan: 5 tasks, GPU workers: 1
+ task  worker  lane    name: after
+    0       0  stream  metric
+    1       0  stream  three center
+    2       0  stream  cholesky: after 0
+    3       0  cpu     cholesky check: after 2
+    4       0  stream  density fit: after 0 1 2 3
+worker 0 device table: 6 rows, 49156 bytes
+peak: 48548 bytes at node 2
+    offset      bytes  owner   life     name: users (w writes, r reads)
+         0      13448  edge    0-2      M: 0w 2r
+     13568       8200  edge    1-4      (P|mn): 1w 4r
+     22016      13448  edge    2-4      L: 2w 4r
+     35584      13448  task    2-2      L tile: 2w
+     49152          4  task    2-2      L info: 2w
+         0       8200  edge    4-4      B: 4w
+handoffs: 0->4 2->4
+worker 0 pinned table: 2 rows, 260 bytes
+peak: 8 bytes at node 3
+    offset      bytes  owner   life     name: users (w writes, r reads)
+         0          4  edge    2-3      L info: 2w 3r
+       256          4  edge    3-4      L checked: 3w 4r
+handoffs:
