@@ -661,6 +661,7 @@ dependencies = [
  "fb-core-planner",
  "fb-core-thread-pool",
  "fb-core-wwr",
+ "fb-integrals-eri-density-fitting-jk",
  "fb-integrals-mmd",
  "fb-integrals-one-electron-core-hamiltonian",
  "fb-integrals-one-electron-overlap",
@@ -669,10 +670,15 @@ dependencies = [
  "fb-io-xyz",
  "fb-molecule",
  "fb-molecule-nuclei",
+ "fb-pipeline-eri",
+ "fb-pipeline-guess",
  "fb-recipes-blas",
  "fb-recipes-diagonalize",
+ "fb-recipes-diis",
  "fb-recipes-orthogonalize",
+ "fb-recipes-sys",
  "fb-test-support",
+ "log",
  "wwr-sys",
 ]
 

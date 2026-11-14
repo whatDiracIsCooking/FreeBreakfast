@@ -1,6 +1,6 @@
 [package]
 name = "fb-pipeline-scf"
-description = "pipeline/scf: the Roothaan step F C = S C ε through X, and a closed-shell iteration's density, Fock matrix, energy and DIIS residual, as tasks; and the core Hamiltonian's orbitals as a whole run"
+description = "pipeline/scf: the closed-shell DF-RHF loop, one iteration's tasks replayed to convergence, from the Roothaan step, the density, the Fock matrix, the energy and the DIIS residual; and the whole run from an XYZ file"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -16,6 +16,7 @@ fb-core-planner.workspace = true
 fb-core-thread-pool = { workspace = true, features = ["device"] }
 fb-core-wwr.workspace = true
 fb-recipes-blas.workspace = true
+fb-integrals-eri-density-fitting-jk.workspace = true
 fb-integrals-mmd.workspace = true
 fb-integrals-one-electron-core-hamiltonian.workspace = true
 fb-integrals-one-electron-overlap.workspace = true
@@ -23,8 +24,13 @@ fb-io-basis.workspace = true
 fb-io-xyz.workspace = true
 fb-molecule.workspace = true
 fb-molecule-nuclei.workspace = true
+fb-pipeline-eri.workspace = true
+fb-pipeline-guess.workspace = true
 fb-recipes-diagonalize.workspace = true
+fb-recipes-diis.workspace = true
 fb-recipes-orthogonalize.workspace = true
+fb-recipes-sys.workspace = true
+log.workspace = true
 # BLAS for the ops the iteration's geams, gemms and gemvs take.
 wwr-sys = { workspace = true, features = ["blas"] }
 

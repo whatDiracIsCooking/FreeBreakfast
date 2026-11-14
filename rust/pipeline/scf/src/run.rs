@@ -1,5 +1,5 @@
-//! A whole run: an XYZ file and a basis name to the core Hamiltonian's
-//! orbitals on the host.
+//! A whole run: an XYZ file, a basis and a fitting set to the converged
+//! DF-RHF energy, orbitals and density on the host.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -12,44 +12,74 @@ use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_integrals_one_electron_overlap::add_overlap;
 use fb_molecule_nuclei::add_nuclei;
+use fb_pipeline_eri::add_df_eri;
+use fb_pipeline_guess::{add_guess_upload, add_sad_guess};
 use fb_recipes_orthogonalize::{ORTHOGONALIZE_EIGENVALUE_FLOOR, add_orthogonalize};
 
-use super::tasks::add_solve_fock;
+use super::scf::{ScfStep, add_scf};
 
-/// The orbitals of the core Hamiltonian, `H C = S C ε`, of one molecule in
-/// one basis, planned once: the nuclei's upload ([`add_nuclei`]), the
-/// records ([`add_records`]), S ([`add_overlap`]) and H
-/// ([`add_core_hamiltonian`]) sharing that one build of the records and one
-/// staging of the spherical transform, `X = S^(-1/2)` ([`add_orthogonalize`], at
-/// the default floor), the step ([`add_solve_fock`]) with H for F, and two
-/// tasks that bring ε and C to the host, `download` (stream: both copied
-/// into pinned rows) and `collect` (CPU: the pinned rows copied out).
-/// [`Run::planned`] is the plan, its arena sizes among it, with no device;
-/// [`Run::run`] lays the arena out on a device and runs it on one stream.
+/// What a converged run brings back: the C++ `ScfOutput`'s closed-shell
+/// fields.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScfOutput {
+    /// The total energy, electronic plus nuclear repulsion, in hartree:
+    /// that of the density the last Fock matrix was built from.
+    pub energy: f64,
+    /// The residual's norm `‖Xᵀ (F D S - S D F) X‖_F` at that build.
+    pub residual: f64,
+    /// The Fock builds, the loop's iterations.
+    pub iterations: usize,
+    /// The `n` orbital energies, ascending.
+    pub epsilon: Vec<f64>,
+    /// The orbitals, `n²` doubles column-major, column `j` the orbital of
+    /// `epsilon[j]`.
+    pub c: Vec<f64>,
+    /// `D = 2 C_occ C_occᵀ`, `n²` doubles column-major.
+    pub d: Vec<f64>,
+}
+
+/// The DF-RHF of one molecule in one basis over one fitting set, from the
+/// SAD guess, planned once: the nuclei ([`add_nuclei`]), the records
+/// ([`add_records`]), S ([`add_overlap`]) and H ([`add_core_hamiltonian`])
+/// over one build of the records and one staging of the spherical
+/// transform, `X = S^(-1/2)` ([`add_orthogonalize`], at the default floor),
+/// the fitted integrals ([`add_df_eri`]), the SAD guess and its upload
+/// ([`add_sad_guess`], [`add_guess_upload`]), the loop ([`add_scf`]), and
+/// two tasks that bring the products to the host, `download` (stream: ε,
+/// C and D copied into pinned rows) and `collect` (CPU: the pinned rows
+/// copied out). [`Run::planned`] is the plan, its arena sizes among it,
+/// with no device; [`Run::run`] lays the arena out on a device and runs it
+/// on one stream.
 pub struct Run {
     planned: Planned<'static>,
     n_ao: usize,
-    out: Arc<Mutex<(Vec<f64>, Vec<f64>)>>,
+    out: Arc<Mutex<Option<ScfOutput>>>,
 }
 
 impl Run {
-    /// Plan the core Hamiltonian's orbitals of the molecule in the XYZ file
-    /// `xyz` (Angstrom) in the basis `basis`, a compiled-in name or a BSE
-    /// JSON path ([`fb_io_basis::resolve_basis`]), its primitives
-    /// normalized and placed on the atoms as the BasisSet step does.
-    /// `lwork` maps the number of spherical AOs `n` to syevd's work at `n`
-    /// on the device the plan will run on,
-    /// [`syevd_lwork`](fb_recipes_diagonalize::syevd_lwork) on a solver
-    /// handle there; X and the step both diagonalize at `n`, so it is asked
-    /// once. Touches no device unless `lwork` does.
+    /// Plan the DF-RHF of the neutral singlet in the XYZ file `xyz`
+    /// (Angstrom) in the basis `basis`, a compiled-in name or a BSE JSON
+    /// path ([`fb_io_basis::resolve_basis`]), over the compiled-in fitting
+    /// set `aux_basis`, with the options `step`. `lwork` maps the number of
+    /// spherical AOs `n` to syevd's work at `n` on the device the plan will
+    /// run on, [`syevd_lwork`](fb_recipes_diagonalize::syevd_lwork) on a
+    /// solver handle there; every eigensolve is at `n`, so it is asked once.
+    /// Touches no device unless `lwork` does.
     ///
     /// # Errors
     /// The readers' refusals: an XYZ file that cannot be read or parsed, a
     /// basis that is neither a carried name nor a readable document, an
-    /// element the basis lacks; `lwork`'s error; and the kernel libraries'
-    /// load checks ([`add_records`], [`add_orthogonalize`]).
-    pub fn new(xyz: &Path, basis: &str, lwork: impl FnOnce(usize) -> Result<usize>) -> Result<Run> {
-        // Charge and multiplicity enter neither S nor H.
+    /// element the basis or the fitting set lacks; `lwork`'s error; and the
+    /// planning errors of [`add_records`], [`add_orthogonalize`],
+    /// [`add_df_eri`], [`add_sad_guess`] and [`add_scf`], an odd electron
+    /// count and an option out of range among them.
+    pub fn new(
+        xyz: &Path,
+        basis: &str,
+        aux_basis: &str,
+        step: &ScfStep,
+        lwork: impl FnOnce(usize) -> Result<usize>,
+    ) -> Result<Run> {
         let molecule = fb_io_xyz::read_xyz(xyz, 0, 1)?;
         let basis = fb_io_basis::resolve_basis(basis)?
             .primitive_normalized()
@@ -72,13 +102,33 @@ impl Run {
             s,
             ORTHOGONALIZE_EIGENVALUE_FLOOR,
         )?;
-        let (eps, c) = add_solve_fock(&mut dag, 0, n_ao, lwork, h, x);
-        let pinned = dag.add("download", 0, Download { eps, c, n: n_ao });
-        let out = Arc::new(Mutex::new((Vec::new(), Vec::new())));
+        let eri = add_df_eri(&mut dag, 0, &molecule, &basis, &classes, aux_basis)?;
+        let guess = add_sad_guess(&mut dag, 0, &basis, molecule.atoms())?;
+        let guess = add_guess_upload(&mut dag, 0, &basis, guess);
+        let (scalars, [eps, c, d]) = add_scf(
+            &mut dag,
+            0,
+            step,
+            &molecule,
+            n_ao,
+            lwork,
+            &eri,
+            [h, s, x],
+            guess,
+        )?;
+        let pinned = dag.add(
+            "download",
+            0,
+            Download {
+                rows: [(eps, n_ao), (c, n_ao * n_ao), (d, n_ao * n_ao)],
+            },
+        );
+        let out = Arc::new(Mutex::new(None));
         dag.add(
             "collect",
             0,
             Collect {
+                scalars,
                 pinned,
                 out: Arc::clone(&out),
             },
@@ -95,59 +145,54 @@ impl Run {
         &self.planned
     }
 
-    /// The number of spherical AOs: ε has `n_ao` entries and C is
-    /// `n_ao` × `n_ao`.
+    /// The number of spherical AOs: ε has `n_ao` entries, C and D
+    /// `n_ao²`.
     pub fn n_ao(&self) -> usize {
         self.n_ao
     }
 
     /// Lay the arena out on `device` and run the plan once, on one stream.
     /// Returns the run's [`Record`], its result and every task's times, and
-    /// `(ε, C)`: the `n_ao` orbital energies ascending and the orbitals,
-    /// `n_ao²` doubles column-major, column `j` the orbital of `ε[j]`; both
-    /// empty unless the result is `Ok`.
-    pub fn run(self, device: i32) -> (Record, (Vec<f64>, Vec<f64>)) {
+    /// the products, `None` unless the result is `Ok`; their iteration
+    /// count is the record's for the loop.
+    pub fn run(self, device: i32) -> (Record, Option<ScfOutput>) {
         let mut instance = self.planned.instantiate(&[device]);
         let mut backend = instance.backend();
         let record = instance.run(&mut backend, 1);
-        let out = if record.result.is_ok() {
-            std::mem::take(&mut *self.out.lock().unwrap_or_else(|e| e.into_inner()))
-        } else {
-            (Vec::new(), Vec::new())
-        };
+        let mut out = None;
+        if record.result.is_ok() {
+            out = self.out.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(o) = &mut out {
+                // One loop in the plan.
+                o.iterations = record.iterations.values().copied().sum();
+            }
+        }
         (record, out)
     }
 }
 
-/// GPU: ε, `n` doubles, and C, `n²`, copied into pinned rows on the stream.
+/// GPU: ε, C and D, each with its length, copied into pinned rows.
 struct Download {
-    eps: RowId<Device, f64>,
-    c: RowId<Device, f64>,
-    n: usize,
-}
-
-#[derive(Clone, Copy)]
-struct HostRows {
-    eps: RowId<Pinned, f64>,
-    c: RowId<Pinned, f64>,
+    rows: [(RowId<Device, f64>, usize); 3],
 }
 
 impl Task for Download {
-    type Rows = HostRows;
+    type Rows = [RowId<Pinned, f64>; 3];
     const GPU: bool = true;
 
-    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> HostRows {
-        device.read(self.eps);
-        device.read(self.c);
-        HostRows {
-            eps: host.output("epsilon", self.n),
-            c: host.output("C", self.n * self.n),
+    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+        let names = ["epsilon", "C", "D"];
+        let mut pinned = [None; 3];
+        for (slot, (&(row, len), name)) in pinned.iter_mut().zip(self.rows.iter().zip(names)) {
+            device.read(row);
+            *slot = Some(host.output(name, len));
         }
+        pinned.map(|p| p.expect("each row declared"))
     }
 
     fn run(
         &self,
-        pinned: &HostRows,
+        pinned: &Self::Rows,
         device: &Bufs<'_, Device>,
         host: &Bufs<'_, Pinned>,
         lane: Lane<'_, DeviceStream>,
@@ -155,18 +200,19 @@ impl Task for Download {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        for (src, dst) in [(self.eps, pinned.eps), (self.c, pinned.c)] {
+        for (&(src, _), &dst) in self.rows.iter().zip(pinned) {
             memcpy_d2p(host, dst, device.get(src), stream)?;
         }
         Ok(())
     }
 }
 
-/// CPU: the pinned copies of ε and C read out, after the executor waited
-/// for the download.
+/// CPU: the last iteration's `[E, ‖e‖]` and the pinned copies read out,
+/// after the executor waited for the download.
 struct Collect {
-    pinned: HostRows,
-    out: Arc<Mutex<(Vec<f64>, Vec<f64>)>>,
+    scalars: RowId<Pinned, f64>,
+    pinned: [RowId<Pinned, f64>; 3],
+    out: Arc<Mutex<Option<ScfOutput>>>,
 }
 
 impl Task for Collect {
@@ -174,8 +220,10 @@ impl Task for Collect {
     const GPU: bool = false;
 
     fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) {
-        host.read(self.pinned.eps);
-        host.read(self.pinned.c);
+        host.read(self.scalars);
+        for &row in &self.pinned {
+            host.read(row);
+        }
     }
 
     fn run(
@@ -185,10 +233,17 @@ impl Task for Collect {
         host: &Bufs<'_, Pinned>,
         _: Lane<'_, DeviceStream>,
     ) -> Status {
-        *self.out.lock().unwrap_or_else(|e| e.into_inner()) = (
-            memcpy_p2h(host, self.pinned.eps),
-            memcpy_p2h(host, self.pinned.c),
-        );
+        let scalars = host.get(self.scalars);
+        let [epsilon, c, d] = self.pinned.map(|row| memcpy_p2h(host, row));
+        *self.out.lock().unwrap_or_else(|e| e.into_inner()) = Some(ScfOutput {
+            energy: scalars[0],
+            residual: scalars[1],
+            // Filled from the record by Run::run.
+            iterations: 0,
+            epsilon,
+            c,
+            d,
+        });
         Ok(())
     }
 }
