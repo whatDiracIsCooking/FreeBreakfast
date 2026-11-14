@@ -1,20 +1,26 @@
 /// @file
 /// @brief `free-breakfast-mmd-records`: the primitive-pair records of
 ///        H2O/cc-pVDZ and CO/cc-pVTZ, as `primitive_pair_classes` forms them,
-///        copied back and written as raw little-endian files: the reference
-///        `rust/integrals/mmd`'s tier-4 test compares its records against.
+///        and of H2O/cc-pVDZ against H2O/STO-3G at a displaced geometry, as
+///        `mixed_primitive_pair_classes` forms them, copied back and written
+///        as raw little-endian files: the reference `rust/integrals/mmd`'s
+///        tier-4 test compares its records against.
 ///
 /// Each molecule's basis is the BasisSet step's: the compiled-in set through
 /// @c resolve_basis, its primitives normalized (@c primitive_normalized) and
 /// placed on the atoms. The geometries, in bohr, are those of
 /// `test/gtest/data/coulomb/{h2o_ccpvdz,co_ccpvtz}.json`, the molecules
 /// `mmd_gpu.cpp` checks the bounds of, copied here as literals, and copied
-/// again into the Rust test, so the two trees form the same records.
+/// again into the Rust test, so the two trees form the same records. The
+/// mixed case's `cols` are water in STO-3G with every atom moved, the
+/// literals of `two_bases()` in `rust/integrals/mmd/tests/common/mod.rs`, so
+/// the two bases differ in set and in geometry.
 ///
 /// `<out>/<case>.bin` is, all little-endian, with no padding:
 ///
 /// - the 8 bytes `fbmmd v1`, then the class count as a `uint32`;
-/// - per class, in `primitive_pair_classes`' (ascending) order: `la`, `lb`
+/// - per class, in `primitive_pair_classes`' (or
+///   `mixed_primitive_pair_classes`') ascending order: `la`, `lb`
 ///   and `n_rec` as `int32`; then 16 fields of `n_rec` doubles each, `zeta`,
 ///   `p_x`, `p_y`, `p_z`, `pa_x`, `pa_y`, `pa_z`, `pb_x`, `pb_y`, `pb_z`,
 ///   `s`, `ea`, `eb`, `bound`, `bound_ab`, `bound_ba`; then 4 fields of
@@ -50,6 +56,14 @@ struct Case {
   std::vector<fb::Atom> atoms;
 };
 
+// Two bases' records: the file stem, then the rows' and the cols' molecules
+// (each Case's stem unused).
+struct MixedCase {
+  std::string_view stem;
+  Case rows;
+  Case cols;
+};
+
 std::vector<Case> cases() {
   using V = fb::Vec<double, 3>;
   return {
@@ -61,6 +75,19 @@ std::vector<Case> cases() {
       {.stem = "co_ccpvtz",
        .basis = "cc-pvtz",
        .atoms = {{V{0.13, -0.21, 0.17}, fb::Element::C}, {V{0.77, 0.86, 1.86}, fb::Element::O}}},
+  };
+}
+
+std::vector<MixedCase> mixed_cases() {
+  using V = fb::Vec<double, 3>;
+  return {
+      {.stem = "h2o_ccpvdz_sto3g_mixed",
+       .rows = cases()[0],
+       .cols = {.stem = "",
+                .basis = "sto-3g",
+                .atoms = {{V{0.11, -0.07, 0.05}, fb::Element::O},
+                          {V{1.52, 0.18, -0.98}, fb::Element::H},
+                          {V{-1.31, 0.42, -1.19}, fb::Element::H}}}},
   };
 }
 
@@ -82,15 +109,23 @@ fb::Status copy_back(const fb::StreamBuffers::device<T> &field, const std::size_
                                             wwr::wwrMemcpyDeviceToHost, stream));
 }
 
-fb::Status write_case(const std::filesystem::path &out_dir, const Case &c) {
-  fb::DeviceResources res{0, fb::MemoryFootprint{.device = {.workspace = std::size_t{64} << 20},
-                                                 .pinned = {.workspace = std::size_t{4} << 20}}};
+// The resources every case forms its records with.
+fb::DeviceResources resources() {
+  return fb::DeviceResources{0, fb::MemoryFootprint{.device = {.workspace = std::size_t{64} << 20},
+                                                    .pinned = {.workspace = std::size_t{4} << 20}}};
+}
+
+// c's basis: the compiled-in set, its primitives normalized, placed on c's
+// atoms.
+fb::Result<fb::BasisSet> placed(fb::DeviceResources &res, const Case &c) {
   const fb::Molecule molecule(res, c.atoms);
   const fb::BasisStamp stamp = FBF_TRY(fb::resolve_basis(c.basis));
-  const fb::BasisSet basis = FBF_TRY(fb::place(stamp.primitive_normalized(), molecule));
-  const std::vector<fb::PrimitivePairClass> classes =
-      FBF_TRY(fb::primitive_pair_classes(res, basis));
+  return fb::place(stamp.primitive_normalized(), molecule);
+}
 
+// classes copied back and written to <out_dir>/<stem>.bin.
+fb::Status write_classes(const std::filesystem::path &out_dir, const std::string_view stem,
+                         const std::vector<fb::PrimitivePairClass> &classes) {
   std::vector<char> out;
   put(out, std::span<const char>{"fbmmd v1", 8});
   const auto n_classes = static_cast<std::uint32_t>(classes.size());
@@ -124,7 +159,7 @@ fb::Status write_case(const std::filesystem::path &out_dir, const Case &c) {
     }
   }
 
-  const std::filesystem::path path = out_dir / std::format("{}.bin", c.stem);
+  const std::filesystem::path path = out_dir / std::format("{}.bin", stem);
   std::ofstream file(path, std::ios::binary);
   file.write(out.data(), static_cast<std::streamsize>(out.size()));
   if (!file) {
@@ -135,6 +170,19 @@ fb::Status write_case(const std::filesystem::path &out_dir, const Case &c) {
   return {};
 }
 
+fb::Status write_case(const std::filesystem::path &out_dir, const Case &c) {
+  fb::DeviceResources res = resources();
+  const fb::BasisSet basis = FBF_TRY(placed(res, c));
+  return write_classes(out_dir, c.stem, FBF_TRY(fb::primitive_pair_classes(res, basis)));
+}
+
+fb::Status write_mixed_case(const std::filesystem::path &out_dir, const MixedCase &c) {
+  fb::DeviceResources res = resources();
+  const fb::BasisSet rows = FBF_TRY(placed(res, c.rows));
+  const fb::BasisSet cols = FBF_TRY(placed(res, c.cols));
+  return write_classes(out_dir, c.stem, FBF_TRY(fb::mixed_primitive_pair_classes(res, rows, cols)));
+}
+
 fb::Status run(std::span<char *const> args) {
   if (args.size() != 2) {
     return fb::err_config("usage: {} <out dir>",
@@ -143,6 +191,9 @@ fb::Status run(std::span<char *const> args) {
   const std::filesystem::path out_dir{args[1]};
   for (const Case &c : cases()) {
     FBF_TRY(write_case(out_dir, c));
+  }
+  for (const MixedCase &c : mixed_cases()) {
+    FBF_TRY(write_mixed_case(out_dir, c));
   }
   return {};
 }

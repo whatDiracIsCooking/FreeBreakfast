@@ -72,8 +72,13 @@ pub fn cases() -> [(&'static str, BasisSet); 2] {
 
 /// The two bases a two-basis plan pairs: water in cc-pVDZ, the first
 /// case's, as the bra basis, and water in STO-3G with every atom moved
-/// (bohr) as the ket basis, so the two differ in set and in geometry.
-#[allow(dead_code, reason = "only the plan binary pairs two bases yet")]
+/// (bohr) as the ket basis, so the two differ in set and in geometry. The
+/// same literals `tools/mmd_records/main.cpp` dumps the C++ tree's mixed
+/// records from.
+#[allow(
+    dead_code,
+    reason = "the plan and records binaries pair two bases; mixed.rs pairs one with itself"
+)]
 pub fn two_bases() -> (BasisSet, BasisSet) {
     let [(_, rows), _] = cases();
     let cols = placed(
