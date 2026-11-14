@@ -73,8 +73,9 @@ pub fn overlap_class(
     let s = s.as_mut_ptr();
     // SAFETY: the view's arrays are the class's n_rec-long rows of
     // Fields::OVERLAP, every field the overlap kernels read (a test scans
-    // them), the rest null; the records task wrote them before this task's
-    // stream work (ClassRows's argument), so every offset they hold opens a
+    // them), the rest null; the class's records task wrote them before
+    // this task's stream work, on its lane or ordered by an event on the
+    // device (ClassRows's argument), so every offset they hold opens a
     // block inside n_cart;
     // `s` is n_cart² doubles, checked above, with no other user until the
     // enqueued work finishes (DeviceSliceMut's promise); the view is a host

@@ -10,7 +10,7 @@
 //! - **`three-center tables`**, on the CPU: each class's records regrouped
 //!   by shell pair, the pairs in their first record's order and the
 //!   records' descending-ζ order kept within each, since an `eri3` thread
-//!   walks its pair's records as one run and the records task interleaves
+//!   walks its pair's records as one run and a class's records task interleaves
 //!   the pairs of a class; then the aux records, formed at planning,
 //!   behind them in one pinned row; and the cells, one per (shell pair,
 //!   aux shell), per class `(la, lb, lP)`, the pair outer and the aux
@@ -28,7 +28,7 @@
 //! regroup checks it against the pair counts, and every index a cell holds
 //! is one this module wrote: a pair's record range from the regroup, its
 //! offsets each inside the orbital basis's `n_cart` (checked again here,
-//! though the records task wrote them from checked tables), the aux
+//! though the records tasks wrote them from checked tables), the aux
 //! shell's range and offset from the [`AuxTable`].
 
 use std::sync::Arc;

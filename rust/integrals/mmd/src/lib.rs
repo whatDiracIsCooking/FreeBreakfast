@@ -10,37 +10,43 @@
 //! shell's primitives, centre, first Cartesian AO and rank) and every
 //! class's shell pairs with their record prefixes, a
 //! [`RecordTables`](fb_integrals_sys::RecordTables), and hands it to
-//! [`fb_integrals_sys::add_record_tasks`], which adds two tasks to a
-//! [`Dag`]:
+//! [`fb_integrals_sys::add_record_tasks`], which adds to a [`Dag`]:
 //!
 //! - **`mmd tables`**, on the CPU: the tables written into pinned rows.
 //!   A basis of N primitives has O(N²) records but only O(shells²) shell
 //!   pairs, so that is all the host forms.
-//! - **`mmd records`**, on the worker's stream: the tables copied into
-//!   device rows, then each class `(la, lb)`, `la <= lb`, in ascending
-//!   order: its order (`fb_mmd_order`), its records (`fb_mmd_records`,
-//!   already in descending ζ), its bound (`fb_mmd_bound`) and its two
-//!   dressed bounds (`fb_ordered_pair_bound`, as stored and swapped). The
-//!   record fields are its outputs,
-//!   [`ClassRows`], one per class, a type only
-//!   those tasks make, so the class launchers can trust the AO offsets it
-//!   holds on the device.
+//! - **`upload <table>`**, one per table, on the worker's lane 0: the
+//!   tables copied into device rows ([`Dag::upload`]).
+//! - **`mmd records (la,lb)`**, one per class `(la, lb)`, `la <= lb`, in
+//!   ascending order, the `c`-th on the worker's lane `c`: its order
+//!   (`fb_mmd_order`), its records (`fb_mmd_records`, already in
+//!   descending ζ), its bound (`fb_mmd_bound`) and its two dressed bounds
+//!   (`fb_ordered_pair_bound`, as stored and swapped). The record fields
+//!   are its outputs, the class's [`ClassRows`], a type only those tasks
+//!   make, so the class launchers can trust the AO offsets it holds on the
+//!   device. A reader on another lane, as every reader on lane 0 is but
+//!   the first class's, waits for the class by an event on the device, no
+//!   host wait.
 //!
 //! Every size is fixed at planning from the basis: a class's `n_rec` is
 //! the sum of its shell pairs' primitive products, nothing is screened, and
-//! the sort's workspace is `fb_mmd_order_workspace_bytes` of the largest
-//! class.
+//! its sort's key, permutation and workspace
+//! (`fb_mmd_order_workspace_bytes`) are its own task's scratch, sized to
+//! the class. The assigner packs that scratch to the fewest bytes, so the
+//! classes share it and the handoffs chain them, one after another, as the
+//! C++ forks do; giving that reuse up for concurrency is admission's
+//! search, not built (`docs/memory.md`, "Open questions").
 //!
 //! | C++ (`src/integrals/mmd`) | Here |
 //! |---|---|
-//! | `primitive_pair_classes(res, basis)` | [`add_records`]`(dag, worker, basis)`: two tasks, run whenever the plan runs |
-//! | `PrimitivePairClass`, a device buffer per field on its own stream | [`ClassRows`]: a device output row per field, on the worker's one stream |
+//! | `primitive_pair_classes(res, basis)` | [`add_records`]`(dag, worker, basis)`: the tasks above, run whenever the plan runs |
+//! | `PrimitivePairClass`, a device buffer per field on its own stream | [`ClassRows`]: a device output row per field, written on the class's own lane |
 //! | `basis_sweep`, `shell_table`, `pair_table`, `shell_ranks` | the host tables, formed here and checked by [`RecordTables::new`](fb_integrals_sys::RecordTables::new) |
-//! | `upload`'s carve of `res`'s pinned workspace, and the device buffers for the call | the tables' pinned rows (outputs of `mmd tables`) and device rows (scratch of `mmd records`) |
-//! | `form_classes`' carve of `res`'s device workspace, two keys and two permutations | one key, one permutation and `fb_mmd_order`'s workspace, scratch of `mmd records`, sized to the largest class |
-//! | each class forked from the one before, so the sorts share the carve | every class on the worker's one stream |
+//! | `upload`'s carve of `res`'s pinned workspace, and the device buffers for the call | the tables' pinned rows (outputs of `mmd tables`) and device rows (outputs of the uploads, read by every class) |
+//! | `form_classes`' carve of `res`'s device workspace, two keys and two permutations | one key, one permutation and `fb_mmd_order`'s workspace, scratch of each class's task, sized to the class |
+//! | each class forked from the one before, so the sorts share the carve | each class on its own lane, the sorts' scratch sharing bytes, so the handoffs chain them |
 //! | `primitive_pair_classes_footprint` | the plan's tables ([`Planned`](fb_core_planner::Planned)): the footprint is the layout |
-//! | `mixed_primitive_pair_classes(res, rows, cols)`, `mixed_sweep` | [`add_mixed_records`]`(dag, worker, rows, cols)`: the same two tasks over both bases' table, returning [`MixedClassRows`], which no one-basis launcher takes |
+//! | `mixed_primitive_pair_classes(res, rows, cols)`, `mixed_sweep` | [`add_mixed_records`]`(dag, worker, rows, cols)`: the same tasks over both bases' table, returning [`MixedClassRows`], which no one-basis launcher takes |
 //! | `mixed_primitive_pair_classes_footprint` | the plan's tables, as for one basis |
 //!
 //! [`BasisSet`]: fb_basis::BasisSet
@@ -57,9 +63,10 @@ use fb_integrals_sys::{ClassRows, MixedClassRows, add_mixed_record_tasks, add_re
 
 /// Add the records of `basis` to `dag` on GPU worker `worker`: the sweep
 /// formed on the host and handed to [`add_record_tasks`], a CPU task,
-/// `mmd tables`, and a stream task, `mmd records`. Returns each class's
-/// rows, ascending in `(la, lb)`; a basis with no shells adds nothing and
-/// returns none.
+/// `mmd tables`, an upload of each table on the worker's lane 0, and a
+/// stream task per class, `mmd records (la,lb)`, the `c`-th on the
+/// worker's lane `c`. Returns each class's rows, ascending in `(la, lb)`;
+/// a basis with no shells adds nothing and returns none.
 ///
 /// Every size is the basis's, fixed here at planning: a class's `n_rec` is
 /// the sum of its shell pairs' primitive products. Aborts past `i32::MAX`
@@ -96,7 +103,7 @@ pub fn add_records(
 
 /// Add the records between two bases, `rows` and `cols`, to `dag` on GPU
 /// worker `worker`, as [`add_records`] adds one basis's: the sweep formed
-/// on the host, then `mmd tables` and `mmd records` over both bases'
+/// on the host, then the same tasks on the same lanes over both bases'
 /// shells. Returns each class's rows, ascending in `(la, lb)`; either
 /// basis with no shells adds nothing and returns none.
 ///
