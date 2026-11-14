@@ -11,7 +11,7 @@ use std::time::Duration;
 use fb_core_arena::{Bufs, DEVICE_ALIGNMENT, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane};
+use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane, Placement};
 use fb_core_wwr::common::ScopedDeviceIndex;
 use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
@@ -167,6 +167,10 @@ impl Task for Check {
 /// row that takes the first's bytes, and a CPU task compares. Nothing but
 /// the derived dependencies orders the reuse. The plan runs twice with the
 /// card's free memory unchanged between: a run allocates nothing.
+///
+/// The record carries the plan's device and pinned block sizes, the
+/// tables' own, and a host wait for every CPU task's GPU predecessor: the
+/// check waits on the download's event.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn a_round_trip_through_the_planner() {
@@ -183,10 +187,41 @@ fn a_round_trip_through_the_planner() {
         "down reuses up's bytes, which only the handoffs order"
     );
     assert_eq!(planned.predecessors(2), &[0, 1]);
+    let sizes = [
+        (0, "device", planned.device_table(0).total()),
+        (0, "pinned", planned.host_table(0).total()),
+    ];
+    // Every (CPU task, GPU predecessor) pair: each is a host wait.
+    let waits: Vec<(usize, usize)> = (0..planned.len())
+        .filter(|&pos| planned.placement(pos) == Placement::Cpu)
+        .flat_map(|pos| {
+            let gpu = planned
+                .predecessors(pos)
+                .iter()
+                .filter(|&&u| planned.placement(u) != Placement::Cpu);
+            gpu.map(move |&u| (pos, u)).collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(waits, [(3, 2)]);
 
     let instance = planned.instantiate(&[0]);
     let backend = thread_pool::Device::new(&[0], instance.plan());
-    instance.run(&backend, 1).result.unwrap();
+    let record = instance.run(&backend, 1);
+    record.result.unwrap();
+    let arena: Vec<_> = record
+        .arena
+        .iter()
+        .map(|a| (a.worker, a.kind.as_str(), a.bytes))
+        .collect();
+    assert_eq!(arena, sizes);
+    for (pos, u) in waits {
+        let sync = record
+            .syncs
+            .iter()
+            .find(|s| s.node.map(|n| n.index()) == Some(pos) && s.waited_for.index() == u)
+            .unwrap_or_else(|| panic!("no host wait of task {pos} on task {u}"));
+        assert!(sync.host >= Duration::ZERO, "{sync:?}");
+    }
     let between = free_bytes();
     instance.run(&backend, 1).result.unwrap();
     assert_eq!(free_bytes(), between, "a run allocated device memory");

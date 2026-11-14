@@ -24,6 +24,8 @@ fb-core-error-handling.workspace = true
 fb-core-log.workspace = true
 fb-core-wwr = { workspace = true, optional = true }
 log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 wwr-sys = { workspace = true, optional = true }
 
 # Counts the process's threads, so no libtest harness threads beside it.

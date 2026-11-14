@@ -339,6 +339,98 @@ fn a_failed_run_still_returns_its_times() {
     assert!(record.tasks.iter().all(|t| t.host >= ms));
 }
 
+/// A fixed DAG's record as `timing.json`: it parses back to an equal
+/// record, with one entry per task and its dimensions, a sync point for
+/// each CPU node's wait on each GPU predecessor and for each stream
+/// worker's exit, each naming the node waited for, and the profile this
+/// test was built in.
+#[test]
+fn a_record_reads_back_from_its_json() {
+    let mut plan = Plan::new();
+    let a = plan.add("a", Placement::Cpu, &[], |_: Lane<'_, ()>| Ok(()));
+    let b = plan.add("b", Placement::Stream(0), &[a], |_| Ok(()));
+    let c = plan.add("c", Placement::Stream(1), &[a], |_| Ok(()));
+    let d = plan.add("d", Placement::Cpu, &[b, c], |_| Ok(()));
+    plan.set_dims(b, &[("n", 24), ("m", 3)]);
+    plan.set_dims(d, &[("n", 24)]);
+    let record = run(&plan, &HostOnly::new(2), 1);
+    assert_eq!(record.result, Ok(()));
+
+    let json = record.to_json();
+    let back: Record = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, record);
+
+    let tasks: Vec<_> = back
+        .tasks
+        .iter()
+        .map(|t| {
+            let dims: Vec<_> = t.dims.iter().map(|(k, &v)| (k.as_str(), v)).collect();
+            (t.node, t.name.as_str(), dims)
+        })
+        .collect();
+    assert_eq!(
+        tasks,
+        [
+            (a, "a", vec![]),
+            (b, "b", vec![("m", 3), ("n", 24)]),
+            (c, "c", vec![]),
+            (d, "d", vec![("n", 24)]),
+        ]
+    );
+    let syncs: Vec<_> = back
+        .syncs
+        .iter()
+        .map(|s| (s.node, s.worker.as_str(), s.waited_for))
+        .collect();
+    assert_eq!(
+        syncs,
+        [
+            (Some(d), "cpu0", b),
+            (Some(d), "cpu0", c),
+            (None, "stream0", b),
+            (None, "stream1", c),
+        ]
+    );
+    let expected = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    assert_eq!(back.profile, expected);
+    assert!(back.arena.is_empty());
+
+    // The schema the type's doc states: times in integer nanoseconds,
+    // nodes as their ranks, no error.
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(value["error"].is_null());
+    assert!(value["wall_ns"].is_u64());
+    assert_eq!(value["tasks"][1]["node"], 1);
+    assert!(value["tasks"][1]["host_ns"].is_u64());
+    assert!(value["tasks"][1]["device_ns"].is_null());
+    assert_eq!(value["syncs"][0]["node"], 3);
+    assert_eq!(value["syncs"][0]["waited_for"], 1);
+    assert!(value["syncs"][2]["node"].is_null());
+}
+
+/// A failed run's record reads back with its error's kind, message and
+/// context, and everything else equal; the origin is not in the file.
+#[test]
+fn a_failed_record_reads_back_without_its_origin() {
+    let mut plan = Plan::new();
+    let a = plan.add("a", Placement::Stream(0), &[], |_: Lane<'_, ()>| Ok(()));
+    plan.add("b", Placement::Cpu, &[a], |_| Err(Error::numerical("nan")));
+    let mut record = run(&plan, &HostOnly::new(1), 1);
+    let mut back: Record = serde_json::from_str(&record.to_json()).unwrap();
+    let (got, want) = (back.result.unwrap_err(), record.result.unwrap_err());
+    assert_eq!(
+        (got.kind, &got.message, &got.context),
+        (want.kind, &want.message, &want.context)
+    );
+    assert_eq!(want.context, ["b@cpu0"]);
+    (back.result, record.result) = (Ok(()), Ok(()));
+    assert_eq!(back, record);
+}
+
 #[test]
 fn default_n_cpu_leaves_the_stream_threads_and_keeps_one() {
     assert!(default_n_cpu(0) >= 1);

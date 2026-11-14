@@ -39,6 +39,14 @@ pub trait Task<H: HostKind = Pinned, S = DeviceStream>: Send + Sync {
     /// host, and each earlier output it reads. Called once, at planning.
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, H>) -> Self::Rows;
 
+    /// Its dimensions by name, such as `[("n_ao", 24)]`: what its entry in
+    /// the timing record carries beside its name, and the nightly keys its
+    /// times by ([`TaskTime::dims`](fb_core_thread_pool::TaskTime::dims)).
+    /// Called once, at planning; none by default.
+    fn dims(&self) -> Vec<(&'static str, usize)> {
+        Vec::new()
+    }
+
     /// Compute, through the rows `layout` returned. Called once per run.
     ///
     /// # Errors

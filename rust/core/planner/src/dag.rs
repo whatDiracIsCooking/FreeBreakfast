@@ -23,9 +23,11 @@ where
     Box::new(f)
 }
 
-/// A node as declared: its name, its worker, where it runs, and its run.
+/// A node as declared: its name, its worker, where it runs, its
+/// dimensions, and its run.
 pub(super) struct Declared<'a, H: HostKind, S> {
     pub(super) name: String,
+    pub(super) dims: Vec<(&'static str, usize)>,
     pub(super) worker: usize,
     pub(super) placement: Placement,
     pub(super) run: Run<'a, H, S>,
@@ -92,6 +94,7 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         let kept = rows.clone();
         self.nodes.push(Declared {
             name,
+            dims: task.dims(),
             worker,
             placement: if T::GPU {
                 Placement::Stream(worker)

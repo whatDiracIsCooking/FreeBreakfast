@@ -2,7 +2,7 @@
 #![allow(clippy::disallowed_methods)]
 
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BTreeMap, BinaryHeap};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -12,6 +12,7 @@ use super::plan::{Lane, NodeId, Placement, Plan};
 use fb_core_error_handling::{Error, Status};
 use fb_core_log::TaskScope;
 use log::debug;
+use serde::{Deserialize, Serialize};
 
 /// The default CPU worker count beside `n_streams` stream workers: the
 /// host's available parallelism less the stream workers' threads, and at
@@ -25,7 +26,7 @@ pub fn default_n_cpu(n_streams: usize) -> usize {
 }
 
 /// One node's times in a [`Record`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskTime {
     /// The node.
     pub node: NodeId,
@@ -34,39 +35,215 @@ pub struct TaskTime {
     /// The worker that ran it: `cpu<i>` or `stream<s>`, as its log lines
     /// and errors name it.
     pub worker: String,
+    /// Its dimensions by name, as [`Plan::set_dims`] gave them; empty when
+    /// none were.
+    pub dims: BTreeMap<String, usize>,
     /// Wall time of its callable alone, not the waits before it: a CPU
     /// node's compute, a GPU node's enqueueing.
+    #[serde(rename = "host_ns", with = "nanos")]
     pub host: Duration,
     /// A GPU node's stream scope, the device time between the events
     /// recorded on its stream before it ran and after it returned. `None`
     /// for a CPU node, under a backend with no device clock
     /// ([`HostOnly`](super::HostOnly)), and for a GPU node that failed or
     /// whose scope could not be read.
+    #[serde(rename = "device_ns", with = "nanos_opt")]
     pub device: Option<Duration>,
+}
+
+/// A sync point of a run, and its host scope: a worker blocked on the
+/// device until a GPU node's work completed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncPoint {
+    /// The CPU node that waited before it ran, or `None` for a stream
+    /// worker's sync as it exits.
+    pub node: Option<NodeId>,
+    /// The worker that waited: `cpu<i>` or `stream<s>`.
+    pub worker: String,
+    /// What it waited for: the GPU predecessor whose event the CPU node
+    /// waited on, or the last node the exiting stream worker ran.
+    pub waited_for: NodeId,
+    /// Wall time of the wait.
+    #[serde(rename = "host_ns", with = "nanos")]
+    pub host: Duration,
+}
+
+/// One block of the plan a [`Record`] timed: a worker's arena of one kind.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArenaSize {
+    /// The GPU worker it belongs to.
+    pub worker: usize,
+    /// Its kind's name: `device`, `pinned`, or `heap` in the tests.
+    pub kind: String,
+    /// Its size in bytes.
+    pub bytes: usize,
 }
 
 /// What a [`run`] returns: its result and its timing record
 /// (`docs/diagnostics.md`, "The timing record").
-#[derive(Debug)]
+///
+/// # `timing.json`
+///
+/// [`Record::to_json`] is the record as the `timing.json` text, one JSON
+/// object; deserializing that text gives the record back. Times are integer
+/// nanoseconds, in fields named `*_ns`; nodes are their ranks.
+///
+/// ```text
+/// {
+///   "error": null | {"kind": "Numerical", "message": "...", "context": ["name@worker", ...]},
+///   "profile": "debug" | "release",
+///   "wall_ns": 1234,
+///   "tasks": [{"node": 0, "name": "S", "worker": "stream0", "dims": {"n": 24},
+///              "host_ns": 10, "device_ns": 20 | null}, ...],
+///   "syncs": [{"node": 3 | null, "worker": "cpu0", "waited_for": 2, "host_ns": 5}, ...],
+///   "arena": [{"worker": 0, "kind": "device", "bytes": 4608}, ...]
+/// }
+/// ```
+///
+/// An error keeps its kind (the name of its
+/// [`ErrorKind`](fb_core_error_handling::ErrorKind) variant), its message
+/// and its context. Its origin, a source location in the binary that wrote
+/// the file, is not written, and reads back as this module's.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Record {
     /// The run's outcome: the failure lowest in rank, with `name@worker`
     /// and any other failures (`also: ...`) on its context.
+    #[serde(rename = "error", with = "status")]
     pub result: Status,
+    /// The profile that built the executor, `debug` or `release`
+    /// (`cfg!(debug_assertions)`): a debug build's times are not compared
+    /// with a release build's.
+    pub profile: String,
+    /// Wall time from the workers' start to their join, every stream
+    /// synced: what the device times of one stream sum to at most.
+    #[serde(rename = "wall_ns", with = "nanos")]
+    pub wall: Duration,
     /// One entry per node that ran, in rank order, failed nodes included;
     /// a skipped node has none.
     pub tasks: Vec<TaskTime>,
-    /// Wall time from the workers' start to their join, every stream
-    /// synced: what the device times of one stream sum to at most.
-    pub wall: Duration,
+    /// Every sync point of the run: each CPU node's wait on each GPU
+    /// predecessor, by the node's rank and then the predecessor's, then
+    /// each stream worker's sync as it exits, by the node it waited for. A
+    /// stream worker that ran nothing waited for nothing, and has none.
+    pub syncs: Vec<SyncPoint>,
+    /// The plan's blocks, per worker and kind. Empty from [`run`], which
+    /// sees no arena; the planner's `Instance::run` fills it.
+    pub arena: Vec<ArenaSize>,
 }
 
 impl Record {
-    fn refused(error: Error) -> Self {
+    fn new(result: Status) -> Self {
         Record {
-            result: Err(error),
-            tasks: Vec::new(),
+            result,
+            profile: profile().to_string(),
             wall: Duration::ZERO,
+            tasks: Vec::new(),
+            syncs: Vec::new(),
+            arena: Vec::new(),
         }
+    }
+
+    /// The record as the `timing.json` text: the schema above, indented.
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).expect("a record is plain data")
+    }
+}
+
+/// The profile [`Record::profile`] names.
+fn profile() -> &'static str {
+    if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    }
+}
+
+/// A [`Duration`] as integer nanoseconds, which fit a `u64` for 584 years.
+mod nanos {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::Duration;
+
+    pub(super) fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u64(d.as_nanos() as u64)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
+        u64::deserialize(d).map(Duration::from_nanos)
+    }
+}
+
+/// An `Option<Duration>` as integer nanoseconds or `null`.
+mod nanos_opt {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::Duration;
+
+    pub(super) fn serialize<S: Serializer>(d: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
+        match d {
+            Some(d) => s.serialize_some(&(d.as_nanos() as u64)),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<Duration>, D::Error> {
+        Option::<u64>::deserialize(d).map(|n| n.map(Duration::from_nanos))
+    }
+}
+
+/// A [`Status`] as `null` or the error's kind, message and context.
+mod status {
+    use std::panic::Location;
+
+    use fb_core_error_handling::{Error, ErrorKind, Status};
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    /// Every kind, to read one back by name.
+    const KINDS: [ErrorKind; 8] = [
+        ErrorKind::Allocation,
+        ErrorKind::Io,
+        ErrorKind::GpuRuntime,
+        ErrorKind::InvalidConfig,
+        ErrorKind::Divergence,
+        ErrorKind::MaxIterationsExceeded,
+        ErrorKind::Unsupported,
+        ErrorKind::Numerical,
+    ];
+
+    #[derive(Serialize, Deserialize)]
+    struct Failed {
+        kind: String,
+        message: String,
+        context: Vec<String>,
+    }
+
+    pub(super) fn serialize<S: Serializer>(status: &Status, s: S) -> Result<S::Ok, S::Error> {
+        status
+            .as_ref()
+            .err()
+            .map(|e| Failed {
+                kind: format!("{:?}", e.kind),
+                message: e.message.clone(),
+                context: e.context.clone(),
+            })
+            .serialize(s)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Status, D::Error> {
+        let Some(failed) = Option::<Failed>::deserialize(d)? else {
+            return Ok(Ok(()));
+        };
+        let kind = KINDS
+            .into_iter()
+            .find(|k| format!("{k:?}") == failed.kind)
+            .ok_or_else(|| D::Error::custom(format!("unknown error kind {}", failed.kind)))?;
+        Ok(Err(Error {
+            kind,
+            message: failed.message,
+            origin: Location::caller(),
+            context: failed.context,
+        }))
     }
 }
 
@@ -89,20 +266,18 @@ impl Record {
 pub fn run<B: Backend>(plan: &Plan<'_, B::Stream>, backend: &B, n_cpu: usize) -> Record {
     let n_streams = backend.n_streams();
     if plan.n_streams() > n_streams {
-        return Record::refused(Error::config(format!(
+        return Record::new(Err(Error::config(format!(
             "the plan places a node on stream worker {} of {n_streams}",
             plan.n_streams() - 1
-        )));
+        ))));
     }
     if n_cpu == 0 && plan.nodes.iter().any(|n| n.placement == Placement::Cpu) {
-        return Record::refused(Error::config("the plan has CPU nodes and no CPU workers"));
+        return Record::new(Err(Error::config(
+            "the plan has CPU nodes and no CPU workers",
+        )));
     }
     if plan.is_empty() {
-        return Record {
-            result: Ok(()),
-            tasks: Vec::new(),
-            wall: Duration::ZERO,
-        };
+        return Record::new(Ok(()));
     }
     debug!(
         "run: {} nodes on {n_cpu} CPU and {n_streams} stream workers",
@@ -134,6 +309,7 @@ pub fn run<B: Backend>(plan: &Plan<'_, B::Stream>, backend: &B, n_cpu: usize) ->
     let State {
         mut failures,
         mut tasks,
+        mut syncs,
         scoped,
         ..
     } = shared
@@ -168,10 +344,12 @@ pub fn run<B: Backend>(plan: &Plan<'_, B::Stream>, backend: &B, n_cpu: usize) ->
             Err(failures.fold(first, |e, other| e.with_context(format!("also: {other}"))))
         }
     };
+    syncs.sort_by_key(|s| (s.node.is_none(), s.node, s.waited_for));
     Record {
-        result,
-        tasks,
         wall,
+        tasks,
+        syncs,
+        ..Record::new(result)
     }
 }
 
@@ -211,6 +389,8 @@ struct State {
     failures: Vec<(usize, Error)>,
     /// Each node that ran, in the order they finished.
     tasks: Vec<TaskTime>,
+    /// Each sync point, in the order they ended.
+    syncs: Vec<SyncPoint>,
     /// The GPU nodes whose stream scope closed: those that succeeded.
     scoped: Vec<usize>,
     /// A worker panicked: everyone stops.
@@ -234,6 +414,7 @@ impl Shared {
             remaining: n,
             failures: Vec::new(),
             tasks: Vec::with_capacity(n),
+            syncs: Vec::new(),
             scoped: Vec::new(),
             aborted: false,
         };
@@ -290,10 +471,12 @@ impl Shared {
         }
     }
 
-    /// Node `id` finished with `result` after running for `time`: record
-    /// it, and ready its successors or skip its descendants.
-    fn finish<S>(&self, plan: &Plan<'_, S>, id: usize, (result, time): (Status, TaskTime)) {
+    /// Node `id` finished with `result` after running for `time`, having
+    /// waited at `syncs`: record them, and ready its successors or skip its
+    /// descendants.
+    fn finish<S>(&self, plan: &Plan<'_, S>, id: usize, (result, time, syncs): Ran) {
         let mut state = self.lock();
+        state.syncs.extend(syncs);
         state.mark[id] = Mark::Done;
         state.remaining -= 1;
         if result.is_ok() && matches!(plan.nodes[id].placement, Placement::Stream(_)) {
@@ -389,7 +572,18 @@ fn stream_worker<B: Backend>(
     }
     // The end of the run is a sync point: nothing is left enqueued, and a
     // fault surfacing here is the stream's, reported against its last node.
-    if let Err(error) = backend.sync(lane) {
+    let start = Instant::now();
+    let synced = backend.sync(lane);
+    let host = start.elapsed();
+    if let Some(id) = last {
+        shared.lock().syncs.push(SyncPoint {
+            node: None,
+            worker: name.to_string(),
+            waited_for: NodeId(id),
+            host,
+        });
+    }
+    if let Err(error) = synced {
         let rank = last.unwrap_or(usize::MAX);
         let error = match last {
             Some(id) => error.with_context(format!("sync after {}@{name}", plan.nodes[id].name)),
@@ -399,27 +593,43 @@ fn stream_worker<B: Backend>(
     }
 }
 
+/// What [`execute`] hands [`Shared::finish`]: the node's result, its entry,
+/// and the sync points it waited at.
+type Ran = (Status, TaskTime, Vec<SyncPoint>);
+
 /// Wait for the node's GPU predecessors as its edges need, and run it inside
-/// its scopes: wall time around the callable, and for a GPU node the stream
-/// scope, whose closing event is the one its consumers wait on.
+/// its scopes: wall time around each host wait and around the callable, and
+/// for a GPU node the stream scope, whose closing event is the one its
+/// consumers wait on.
 fn execute<B: Backend>(
     plan: &Plan<'_, B::Stream>,
     backend: &B,
     id: usize,
     worker: &str,
     lane: Option<usize>,
-) -> (Status, TaskTime) {
+) -> Ran {
     let node = &plan.nodes[id];
     let _task = TaskScope::enter(&node.name, worker);
     debug!("start");
     let mut host = Duration::ZERO;
+    let mut syncs = Vec::new();
     let result = (|| {
         for &p in &node.preds {
             let Placement::Stream(from) = plan.nodes[p].placement else {
                 continue;
             };
             match lane {
-                None => backend.host_wait(NodeId(p))?,
+                None => {
+                    let start = Instant::now();
+                    let waited = backend.host_wait(NodeId(p));
+                    syncs.push(SyncPoint {
+                        node: Some(NodeId(id)),
+                        worker: worker.to_string(),
+                        waited_for: NodeId(p),
+                        host: start.elapsed(),
+                    });
+                    waited?;
+                }
                 Some(to) if to != from => backend.wait(to, NodeId(p))?,
                 Some(_) => {}
             }
@@ -452,11 +662,13 @@ fn execute<B: Backend>(
         node: NodeId(id),
         name: node.name.clone(),
         worker: worker.to_string(),
+        dims: node.dims.clone(),
         host,
         device: None,
     };
     (
         result.map_err(|e| e.with_context(format!("{}@{worker}", node.name))),
         time,
+        syncs,
     )
 }

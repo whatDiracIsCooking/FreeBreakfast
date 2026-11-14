@@ -4,8 +4,10 @@
 use std::sync::Arc;
 
 use super::dag::Planned;
-use fb_core_arena::{Block, Device, HostKind, Pinned};
-use fb_core_thread_pool::{self as thread_pool, Backend, DeviceStream, NodeId, Plan, Record};
+use fb_core_arena::{Block, Device, HostKind, Kind, Pinned};
+use fb_core_thread_pool::{
+    self as thread_pool, ArenaSize, Backend, DeviceStream, NodeId, Plan, Record,
+};
 
 /// A planned DAG made real: each worker's two blocks, allocated once, and
 /// the [`thread_pool::Plan`] whose nodes hand each task its rows of them.
@@ -49,10 +51,12 @@ impl<'a, H: HostKind, S: 'a> Planned<'a, H, S> {
             let preds: Vec<NodeId> = deps.iter().map(|&u| ids[u]).collect();
             let worker = Arc::clone(&blocks[node.worker]);
             let run = node.run;
-            ids.push(plan.add(node.name, node.placement, &preds, move |lane| {
+            let id = plan.add(node.name, node.placement, &preds, move |lane| {
                 let (device, host) = &*worker;
                 run(&device.partition(pos), &host.partition(pos), lane)
-            }));
+            });
+            plan.set_dims(id, &node.dims);
+            ids.push(id);
         }
         Instance { plan, blocks }
     }
@@ -76,13 +80,32 @@ impl<'a, H: HostKind, S> Instance<'a, H, S> {
 
     /// Run every task once on `n_cpu` CPU workers and `backend`'s stream
     /// workers: [`thread_pool::run`], whose [`Record`] times each task under
-    /// the name it was added with, and whose nodes are numbered as the
-    /// tasks' positions.
+    /// the name it was added with and the dimensions its
+    /// [`Task::dims`](super::Task::dims) gave, and whose nodes are numbered
+    /// as the tasks' positions. The record's
+    /// [`arena`](Record::arena) is the blocks: per worker, its device block
+    /// and then its host block, each [`Table::total`] bytes.
+    ///
+    /// [`Table::total`]: fb_core_arena::Table::total
     ///
     /// # Errors
     /// In [`Record::result`], as [`thread_pool::run`]: the failure lowest
     /// in rank, with `name@worker` on its context.
     pub fn run<B: Backend<Stream = S>>(&self, backend: &B, n_cpu: usize) -> Record {
-        thread_pool::run(&self.plan, backend, n_cpu)
+        let mut record = thread_pool::run(&self.plan, backend, n_cpu);
+        for (worker, blocks) in self.blocks.iter().enumerate() {
+            let (device, host) = &**blocks;
+            record.arena.push(ArenaSize {
+                worker,
+                kind: Device::NAME.to_string(),
+                bytes: device.table().total(),
+            });
+            record.arena.push(ArenaSize {
+                worker,
+                kind: H::NAME.to_string(),
+                bytes: host.table().total(),
+            });
+        }
+        record
     }
 }

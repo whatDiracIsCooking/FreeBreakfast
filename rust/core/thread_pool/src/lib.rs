@@ -15,7 +15,9 @@
 //!   one, over [`fb_core_wwr::runtime`].
 //! - [`run`]: open one [`std::thread::scope`] with `n_cpu` CPU workers and
 //!   one thread per stream worker, run every node once, join, and return
-//!   the [`Record`]: the result and a [`TaskTime`] per node that ran.
+//!   the [`Record`]: the result, a [`TaskTime`] per node that ran and a
+//!   [`SyncPoint`] per host wait, and as `timing.json` its
+//!   [`Record::to_json`].
 //!
 //! # What a run promises
 //!
@@ -74,7 +76,15 @@
 //!   [`Backend::record`] records after it returns, which its consumers wait
 //!   on, closes the scope. No scope syncs: they are read after the run,
 //!   when each stream worker has synced its stream on the way out.
+//! - **A wall-clock scope around every sync point**: a CPU node's
+//!   [`Backend::host_wait`] on each GPU predecessor, and each stream
+//!   worker's [`Backend::sync`] as it exits, each naming the node it
+//!   waited for.
 //! - **The run's wall time**, from the workers' start to their join.
+//!
+//! The record also carries each node's dimensions ([`Plan::set_dims`]) and
+//! the profile that built the executor; the plan's arena sizes
+//! ([`ArenaSize`]) are the planner's to add.
 //!
 //! A failed run still returns its nodes' times: a failed node has an entry
 //! (with no device time), a skipped one has none. A stream scope that
@@ -93,8 +103,8 @@
 //! Replaying a sub-DAG on the run's workers (an SCF iteration) is not here.
 //! The run ends when no node remains, not when a list is exhausted, so a
 //! decision node can later enqueue the next iteration's nodes without a
-//! second scope. Host scopes around each sync point, `scope!` inside a node,
-//! and the sync-after-every-task switch are `diagnostics.md`'s and not here.
+//! second scope. `scope!` inside a node and the sync-after-every-task switch
+//! are `diagnostics.md`'s and not here.
 //!
 //! ```
 //! use std::sync::atomic::{AtomicU32, Ordering};
@@ -129,4 +139,4 @@ mod tests;
 pub use backend::Device;
 pub use backend::{Backend, DeviceStream, HostOnly};
 pub use plan::{Lane, NodeId, Placement, Plan};
-pub use run::{Record, TaskTime, default_n_cpu, run};
+pub use run::{ArenaSize, Record, SyncPoint, TaskTime, default_n_cpu, run};
