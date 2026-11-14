@@ -294,11 +294,20 @@ thread pool's `DeviceStream` is an uninhabited placeholder with no
 crates' own device tests need beyond `device`; a dependent asks for
 `device` alone, and the workspace's dependency entries for the arena and
 the thread pool turn their defaults off, so nothing turns them on by
-accident. Only `fb-core-wwr`, `fb-core-diagnostics`, `fb-recipes-sys`, `fb-recipes-blas`,
-`fb-integrals-sys`, `fb-integrals-mmd`,
-`fb-integrals-one-electron-overlap`, `fb-recipes-matrix-ao`,
-`fb-molecule-nuclei`, `fb-pipeline-config`, `fb-recipes-diagonalize`,
-`fb-recipes-orthogonalize`, `fb-pipeline-scf`, `fb-recipes-symmetrize`, `fb-recipes-cholesky`, `fb-integrals-eri-density-fitting-fit`, `fb-integrals-eri-density-fitting-jk` and `fb-pipeline-eri` always link; the records' layout asks
+accident. Only `fb-core-wwr`, `fb-core-diagnostics`, `fb-recipes-sys`,
+`fb-recipes-blas`, `fb-recipes-matrix-ao`, `fb-recipes-diagonalize`,
+`fb-recipes-orthogonalize`, `fb-recipes-symmetrize`, `fb-recipes-cholesky`,
+`fb-recipes-diis`, `fb-integrals-sys`, `fb-integrals-mmd`,
+`fb-integrals-one-electron-overlap`, `fb-integrals-one-electron-kinetic`,
+`fb-integrals-one-electron-potential-en`,
+`fb-integrals-one-electron-core-hamiltonian`,
+`fb-integrals-eri-density-fitting-metric`,
+`fb-integrals-eri-density-fitting-three-center`,
+`fb-integrals-eri-density-fitting-fit`,
+`fb-integrals-eri-density-fitting-jk`, `fb-molecule-nuclei`,
+`fb-pipeline-config`, `fb-pipeline-guess`, `fb-pipeline-scf` and
+`fb-pipeline-eri` always link (`fb-doc-check`'s `doc_lists.rs` holds these
+three lists to the package graph); the records' layout asks
 the kernel library for the sort's workspace at planning, so even the
 overlap's and the transform's device-free tests (the host tables, the plan
 goldens) need the library built. `fb-molecule-nuclei` links wwr alone,

@@ -20,7 +20,11 @@
 //! test that trips a contract is debug-only; and `tests/code_rules.rs`,
 //! which checks that only the boundary logs an error, that no Rust source
 //! names a warp width or a launch shape, and that an `Allocation` error is
-//! made only at admission. A crate of its own
+//! made only at admission; and `tests/doc_lists.rs`, which holds the docs'
+//! lists of what the tree holds to the tree: the kernel libraries' ABI
+//! versions and functions in `docs/gpu_layer.md`, the slow cases in
+//! `docs/testing.md`, and which members link the library in `README.md`.
+//! A crate of its own
 //! so that it builds and runs without the wwr library. The checks are its tests; the
 //! library holds only what more than one of them reads.
 

@@ -31,7 +31,7 @@ only through a row. Four owners, and the owner is what decides the lifetime:
 
 | Owner | Row | Lifetime | Example |
 |---|---|---|---|
-| A task | Its scratch, from `layout(dims)` | The task: its first launch to its last | The SCF's DIIS history, a kernel's `*_workspace_bytes`, a solver's `lwork` and its `info` flag |
+| A task | Its scratch, from `layout(dims)` | The task: its first launch to its last | A kernel's `*_workspace_bytes`, a solver's `lwork` and its `info` flag, DIIS's coefficients for one push |
 | An edge | Its producer's output, from the producer's `layout(dims)` | The edge: the producer's first write to the last consumer's last read | S, H_core, the converged C, B and L |
 | A worker | A buffer the worker holds for every task it runs | The plan | A BLAS handle's workspace |
 | The orchestrator | A buffer placement created | The edge it carries | A broadcast's copy on the consumer's card, a reduce's partials on the join's card |
@@ -288,7 +288,8 @@ runs once per iteration and the decision's `Break` once.
 
 **A carried row is the parent's.** The density, the occupied factor and
 DIIS's history pass from one iteration to the next. Such a row is produced
-before the loop (the guess, a zero fill), read in the body, and written by
+before the loop (the guess, a zero fill, `add_diis`'s `diis history` task),
+read in the body, and written by
 its last user there, so each iteration reads what the one before wrote, or
 the producer's value in the first. The table orders every other user
 against that writer: the body's readers before it, a node after the loop
