@@ -45,7 +45,7 @@ impl Run {
             .place(&molecule)?;
         let n_ao = basis.nao_sphe() as usize;
         let mut dag = Dag::new();
-        let s = add_overlap(&mut dag, 0, &basis)?;
+        let s = add_overlap(&mut dag, 0, &basis, &mut None)?;
         let pinned = dag.add(
             "download",
             0,

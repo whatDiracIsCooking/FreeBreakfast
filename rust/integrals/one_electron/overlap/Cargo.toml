@@ -19,9 +19,8 @@ fb-integrals-mmd.workspace = true
 fb-integrals-sys.workspace = true
 fb-io-basis.workspace = true
 fb-io-xyz.workspace = true
-log.workspace = true
-# BLAS for the spherical transform's two GEMMs, beside the runtime.
-wwr-sys = { workspace = true, features = ["blas"] }
+fb-recipes-matrix-ao.workspace = true
+wwr-sys.workspace = true
 
 [dev-dependencies]
 fb-test-support.workspace = true

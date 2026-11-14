@@ -11,11 +11,10 @@
 //! - **`overlap`**, on the worker's stream: the Cartesian matrix zeroed,
 //!   then one `fb_overlap_class` launch per class, each reading its class's
 //!   records as an edge ([`ClassRows::read`](fb_integrals_mmd::ClassRows::read)).
-//! - **`harmonics`**, on the CPU: U, the Cartesian-to-spherical transform
-//!   ([`fb_basis::spherical_transform_matrix`]), written into a pinned row.
-//! - **`spherical transform`**, on the worker's stream: U copied into device
-//!   scratch, then `S = Uᵀ S_cart U` as two GEMMs through `wwr-sys`'s BLAS,
-//!   the intermediate `S_cart U` scratch too.
+//! - then the spherical transform, `S = Uᵀ S_cart U`
+//!   ([`fb_recipes_matrix_ao::add_cartesian_to_spherical`]): `harmonics` on
+//!   the CPU (U into a pinned row, unless an earlier matrix of the plan
+//!   staged it) and `spherical transform` on the worker's stream.
 //!
 //! [`Run`] is the whole run: the basis read and placed, those tasks plus a
 //! download and a collect, the plan, and one run on a device returning S
@@ -29,9 +28,7 @@
 //! | C++ | Here |
 //! |---|---|
 //! | `overlap(res, classes, s.cartesian())` | the `overlap` task |
-//! | `upload_spherical_transform_matrix` (nothing for an identity U) | the `harmonics` task's pinned row and the transform's device scratch, always |
-//! | `MatrixAOPair::cartesian_to_spherical` (`gemmwich`; a copy for an identity U) | the `spherical transform` task's two GEMMs, always |
-//! | `res.blas()`, the `DeviceResources`' handle | the transform's own handle, made at its first run |
+//! | `upload_spherical_transform_matrix`, `MatrixAOPair::cartesian_to_spherical` | [`fb_recipes_matrix_ao::add_cartesian_to_spherical`], U's slot passed in by the caller |
 //! | `OverlapStep::run`, `write_overlap_npy` | [`Run`], S returned to the caller |
 
 mod run;
