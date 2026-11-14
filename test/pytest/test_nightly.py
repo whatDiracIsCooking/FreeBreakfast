@@ -122,6 +122,10 @@ def repo(tmp_path: Path) -> Path:
     _git(r, "config", "user.email", "t@example.com")
     _git(r, "config", "user.name", "t")
     _git(r, "config", "commit.gpgsign", "false")
+    # No detached auto-maintenance: its .git/objects/maintenance.lock comes and
+    # goes under a copytree of this repository (#1443).
+    _git(r, "config", "maintenance.auto", "false")
+    _git(r, "config", "gc.auto", "0")
     (r / ".gitignore").write_text("build/\n.claude/worktrees/\n")
     (r / "src.txt").write_text("one\n")
     _git(r, "add", ".")
