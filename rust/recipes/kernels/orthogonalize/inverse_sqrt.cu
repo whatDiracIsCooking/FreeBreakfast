@@ -37,7 +37,19 @@ namespace {
 // correctly rounded, and this runs once per setup. sqrt is the C library's
 // global name, which both vendors declare __host__ __device__ and resolve to
 // their correctly rounded device sqrt (primitives.h has the same rule).
+//
+// Contraction off, under HIP: clang's HIP mode contracts by default
+// (-ffp-contract=fast-honor-pragmas), and with the contract flag on both
+// operations the AMDGPU back end folds 1 / sqrt(x) into a refined v_rsq_f64
+// sequence, which is not the two correctly rounded operations and lands an ulp
+// from them on most inputs (gfx1200, clang 23). With it off, the sqrt and the
+// division are each correctly rounded, as nvcc's are by default, so both
+// backends give the host's 1.0 / x.sqrt() bit for bit. nvcc does no such fold
+// and does not know the pragma.
 __global__ void inverse_sqrt_kernel(double *const data, const uint32_t count, const double floor) {
+#if defined(__HIP__)
+#pragma clang fp contract(off)
+#endif
   const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= count) {
     return;
