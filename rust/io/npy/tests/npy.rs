@@ -201,7 +201,12 @@ fn write_then_read_round_trips_on_disk() {
         shape: vec![3, 2],
         data: vec![1.5, -2.5, 3.25, 0.0, 1e300, -1e-300],
     };
-    write_npy(&dir.join("a.npy"), &array).unwrap();
+    write_npy(&dir.join("a.npy"), &array.shape, &array.data).unwrap();
+    assert_eq!(
+        std::fs::read(dir.join("a.npy")).unwrap(),
+        npy_to_bytes(&array).unwrap(),
+        "the streamed file is the bytes npy_to_bytes forms"
+    );
     let back = read_npy(&dir.join("a.npy")).unwrap();
     assert_eq!(back.shape, array.shape);
     assert_eq!(back.data, array.data);
@@ -215,7 +220,7 @@ fn write_of_mismatched_array_leaves_no_file() {
         shape: vec![3],
         data: vec![1.0],
     };
-    assert!(write_npy(&dir.join("bad.npy"), &bad).is_err());
+    assert!(write_npy(&dir.join("bad.npy"), &bad.shape, &bad.data).is_err());
     assert!(!dir.join("bad.npy").exists());
 }
 
@@ -424,14 +429,7 @@ fn read_of_missing_file_is_io_error() {
 fn read_npy_shape_reads_the_header_alone() {
     let dir = scratch("read_npy_shape_reads_the_header_alone");
     let written = dir.join("a.npy");
-    write_npy(
-        &written,
-        &NpyArray {
-            shape: vec![3, 2],
-            data: vec![0.0; 6],
-        },
-    )
-    .unwrap();
+    write_npy(&written, &[3, 2], &[0.0; 6]).unwrap();
     assert_eq!(read_npy_shape(&written).unwrap(), [3, 2]);
 
     let dict = "{'descr': '<f8', 'fortran_order': True, 'shape': (4, 5), }";

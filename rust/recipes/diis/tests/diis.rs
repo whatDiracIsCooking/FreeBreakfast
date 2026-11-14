@@ -32,7 +32,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fb_core_arena::{
-    Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p, memcpy_h2p, memcpy_p2d,
+    Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p, memcpy_h2p,
+    memcpy_p2d,
 };
 use fb_core_error_handling::{Result, Status};
 use fb_core_planner::{CpuTask, Dag, Decision, GpuTask};
@@ -169,12 +170,12 @@ struct Feed {
 impl CpuTask for Feed {
     type Rows = (RowId<Pinned, f64>, RowId<Pinned, f64>);
 
-    fn layout(&self, h: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, h: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         let len = self.pairs[0].0.len();
         (h.output("F host", len), h.output("e host", len))
     }
 
-    fn run(&self, &(f, e): &Self::Rows, h: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, &(f, e): &Self::Rows, h: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         let pair = &self.pairs[self.next.fetch_add(1, Ordering::Relaxed)];
         memcpy_h2p(h, f, &pair.0);
         memcpy_h2p(h, e, &pair.1);
@@ -255,12 +256,18 @@ struct Record {
 impl Decision for Record {
     type Rows = ();
 
-    fn layout(&self, h: &mut Layout<'_, Pinned>) {
+    fn layout(&self, h: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
         h.read(self.out);
         h.read(self.singular);
     }
 
-    fn decide(&self, _: &(), h: &Bufs<'_, Pinned>, iteration: usize) -> Result<ControlFlow<()>> {
+    fn decide(
+        &self,
+        _: &(),
+        h: &Bufs<'_, Pinned>,
+        _: &Bufs<'_, Heap>,
+        iteration: usize,
+    ) -> Result<ControlFlow<()>> {
         let seen = (h.get(self.out).to_vec(), h.get(self.singular)[0]);
         self.seen.lock().unwrap().push(seen);
         match self.after {
@@ -462,7 +469,7 @@ struct Start;
 impl CpuTask for Start {
     type Rows = [RowId<Pinned, f64>; 3];
 
-    fn layout(&self, h: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, h: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         [
             h.output("A host", N * N),
             h.output("A - I host", N * N),
@@ -470,7 +477,12 @@ impl CpuTask for Start {
         ]
     }
 
-    fn run(&self, &[a, a_minus_i, b]: &Self::Rows, h: &Bufs<'_, Pinned>) -> Status {
+    fn run(
+        &self,
+        &[a, a_minus_i, b]: &Self::Rows,
+        h: &Bufs<'_, Pinned>,
+        _: &Bufs<'_, Heap>,
+    ) -> Status {
         let (_, column_major) = fixture("linear_a.npy");
         let shifted: Vec<f64> = column_major
             .iter()
@@ -597,11 +609,17 @@ struct Converged {
 impl Decision for Converged {
     type Rows = ();
 
-    fn layout(&self, h: &mut Layout<'_, Pinned>) {
+    fn layout(&self, h: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
         h.read(self.e);
     }
 
-    fn decide(&self, _: &(), h: &Bufs<'_, Pinned>, _: usize) -> Result<ControlFlow<()>> {
+    fn decide(
+        &self,
+        _: &(),
+        h: &Bufs<'_, Pinned>,
+        _: &Bufs<'_, Heap>,
+        _: usize,
+    ) -> Result<ControlFlow<()>> {
         let e = h.get(self.e);
         let norm = dot(e, e).sqrt();
         self.norms.lock().unwrap().push(norm);

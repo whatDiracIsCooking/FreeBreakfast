@@ -37,7 +37,7 @@
 //! order, the serial form's, and `sad guess`, their descendant, is skipped.
 //!
 //! The two guess functions are generic over the host kind and the stream, so
-//! the device-free tests run them on `Heap` rows and `HostOnly` workers;
+//! the device-free tests run them on `PinnedStandIn` rows and `HostOnly` workers;
 //! [`add_guess_upload`] is the production kinds' alone.
 //!
 //! | C++ (`free_breakfast`) | Here |
@@ -55,7 +55,7 @@ use std::path::{Path, PathBuf};
 
 use fb_atom::{Atom, Element};
 use fb_basis::{BasisSet, Shell};
-use fb_core_arena::{Bufs, Device, HostKind, Layout, Pinned, RowId, memcpy_h2p};
+use fb_core_arena::{Bufs, Device, Heap, Layout, Pinned, RowId, StagingKind, memcpy_h2p};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{CpuTask, Dag};
 use fb_io_sad::{builtin_sad_density, carries_sad_stamp};
@@ -75,7 +75,7 @@ use fb_sad::{AtomicDensityStamp, SadStampLookup, distinct_stamps, stamp_density}
 /// over as many atoms as `atoms` holds ([`distinct_stamps`]). At run time,
 /// the first failing stamp's error ([`fb_sad::sad_density`]'s, for that
 /// atom).
-pub fn add_sad_guess<'a, H: HostKind, S: 'a>(
+pub fn add_sad_guess<'a, H: StagingKind, S: 'a>(
     dag: &mut Dag<'a, H, S>,
     worker: usize,
     basis: &BasisSet,
@@ -144,7 +144,7 @@ pub fn add_sad_guess<'a, H: HostKind, S: 'a>(
 /// `nao_sphe × nao_sphe`. At run time, the same for the file as it is then,
 /// and `Io` for a payload its header disagrees with
 /// ([`fb_io_npy::read_npy`]).
-pub fn add_loaded_guess<'a, H: HostKind, S: 'a>(
+pub fn add_loaded_guess<'a, H: StagingKind, S: 'a>(
     dag: &mut Dag<'a, H, S>,
     worker: usize,
     basis: &BasisSet,
@@ -198,14 +198,14 @@ struct Stamp {
     len: usize,
 }
 
-impl<H: HostKind> CpuTask<H> for Stamp {
+impl<H: StagingKind> CpuTask<H> for Stamp {
     type Rows = RowId<H, f64>;
 
-    fn layout(&self, host: &mut Layout<'_, H>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, H>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         host.output(&self.row, self.len)
     }
 
-    fn run(&self, row: &Self::Rows, host: &Bufs<'_, H>) -> Status {
+    fn run(&self, row: &Self::Rows, host: &Bufs<'_, H>, _: &Bufs<'_, Heap>) -> Status {
         let stamp = AtomicDensityStamp {
             z: self.z,
             shells: &self.shells,
@@ -220,7 +220,7 @@ impl<H: HostKind> CpuTask<H> for Stamp {
 }
 
 /// One stamp's row, its order and the first AO of each atom that wears it.
-struct Site<H: HostKind> {
+struct Site<H: StagingKind> {
     row: RowId<H, f64>,
     block: usize,
     offsets: Vec<usize>,
@@ -228,22 +228,22 @@ struct Site<H: HostKind> {
 
 /// CPU: D zeroed, then every stamp's block on its atoms' diagonal blocks,
 /// in stamp order, as the serial form places them.
-struct Assemble<H: HostKind> {
+struct Assemble<H: StagingKind> {
     stamps: Vec<Site<H>>,
     n: usize,
 }
 
-impl<H: HostKind> CpuTask<H> for Assemble<H> {
+impl<H: StagingKind> CpuTask<H> for Assemble<H> {
     type Rows = RowId<H, f64>;
 
-    fn layout(&self, host: &mut Layout<'_, H>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, H>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         for site in &self.stamps {
             host.read(site.row);
         }
         host.output("D", self.n * self.n)
     }
 
-    fn run(&self, d: &Self::Rows, host: &Bufs<'_, H>) -> Status {
+    fn run(&self, d: &Self::Rows, host: &Bufs<'_, H>, _: &Bufs<'_, Heap>) -> Status {
         let (n, d) = (self.n, host.take_mut(*d));
         d.fill(0.0);
         for site in &self.stamps {
@@ -265,14 +265,14 @@ struct Load {
     n: usize,
 }
 
-impl<H: HostKind> CpuTask<H> for Load {
+impl<H: StagingKind> CpuTask<H> for Load {
     type Rows = RowId<H, f64>;
 
-    fn layout(&self, host: &mut Layout<'_, H>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, H>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         host.output("D", self.n * self.n)
     }
 
-    fn run(&self, d: &Self::Rows, host: &Bufs<'_, H>) -> Status {
+    fn run(&self, d: &Self::Rows, host: &Bufs<'_, H>, _: &Bufs<'_, Heap>) -> Status {
         // Checked at planning, and again for the file as it is now.
         let array = fb_io_npy::read_npy(&self.from)?;
         check_shape(&self.from, &array.shape, self.n)?;

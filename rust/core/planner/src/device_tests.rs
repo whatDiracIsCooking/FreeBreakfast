@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
 use fb_core_error_handling::Status;
 use fb_core_thread_pool::{Backend, DeviceStream};
 use fb_core_wwr::blas::gemm;
@@ -41,11 +41,11 @@ struct Fill(usize);
 impl CpuTask for Fill {
     type Rows = (RowId<Pinned, f64>, RowId<Pinned, f64>);
 
-    fn layout(&self, h: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, h: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         (h.output("A", N * N), h.output("B", N * N))
     }
 
-    fn run(&self, &(a, b): &Self::Rows, h: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, &(a, b): &Self::Rows, h: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         h.take_mut(a).copy_from_slice(&operand(self.0));
         h.take_mut(b).copy_from_slice(&operand(self.0 + 3));
         Ok(())
@@ -112,11 +112,11 @@ struct Collect(RowId<Pinned, f64>, Arc<Mutex<Vec<f64>>>);
 impl CpuTask for Collect {
     type Rows = ();
 
-    fn layout(&self, h: &mut Layout<'_, Pinned>) {
+    fn layout(&self, h: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
         h.read(self.0);
     }
 
-    fn run(&self, _: &(), h: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, _: &(), h: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         *self.1.lock().unwrap() = h.get(self.0).to_vec();
         Ok(())
     }

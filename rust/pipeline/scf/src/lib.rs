@@ -72,7 +72,7 @@
 //! | `guess_exchange`: `syevd(D)`, `C̃ = V (Λ/2)^(1/2)` over the eigenvalues above 1e-12 of the largest, `df_exchange` over `n_alpha` columns at a time, summed | `syevd` on the guess, `download guess w host` and `guess check` (the floor, 1e-12 of the largest eigenvalue, read on the CPU), `guess factor` (that floor applied on the device by `fb_recipes_sys::inverse_sqrt`), the largest `nocc` columns the carried factor, the other `n - nocc` one K before the loop that `guess exchange` adds to the first iteration's and then zeroes |
 //! | a loaded guess that is not PSD: its negative part left out, with a warning | left out, and the same warning from `guess check`, a CPU node reading the eigenvalues `download guess w host` copies to a pinned row |
 //! | the guess rescaled by `N / Σ Z` for an ion | not ported: it moves only the first iterate, and [`Run`] plans a neutral molecule |
-//! | `previous = 0.0`, the loop's local | the pinned row `last build`, which the decision carries, with the last build's `‖e‖` and the iteration count beside E (`docs/memory.md`, "Nested plans") |
+//! | `previous = 0.0`, the loop's local | the heap row `last build`, which the decision carries, with the last build's `‖e‖` and the iteration count beside E (`docs/memory.md`, "Nested plans") |
 //! | `ScfStep`'s keys read from the config's `[scf]` table | [`ScfStep`] itself, deserialized by `fb-pipeline-config` |
 //! | converged: `full && iteration > 1 && \|dE\| < energy_tolerance && norm < commutator_tolerance` | the decision's test, from its second iteration (index 1) on |
 //! | on convergence, `solve_fock` on F as built, not on the extrapolation | the same after the loop, `published density` its D; the last body iteration's extrapolated step is computed and left |

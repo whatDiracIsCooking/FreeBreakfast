@@ -61,7 +61,7 @@ impl sealed::Sealed for Device {
 
     #[allow(
         clippy::disallowed_methods,
-        reason = "a failed block allocation names the free memory (docs/memory.md, \"The two kinds\"); nothing is sized from it"
+        reason = "a failed block allocation names the free memory (docs/memory.md, \"The three kinds\"); nothing is sized from it"
     )]
     fn free_memory() -> String {
         let (mut free, mut total) = (0, 0);

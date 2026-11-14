@@ -85,8 +85,8 @@ const ERROR_LOGS: &[(&str, usize, &str)] = &[
 const ALLOCATIONS: &[(&str, usize, &str)] = &[
     (
         "core/arena/src/admit.rs",
-        1,
-        "admission refusing a plan, the one place the error is a value (docs/diagnostics.md, \"Allocation is a planning-time error\")",
+        2,
+        "admission refusing a plan, a table over its cap or a node's host blocks over its memory, the one place the error is a value (docs/diagnostics.md, \"Allocation is a planning-time error\")",
     ),
     (
         "core/error_handling/src/lib.rs",
@@ -660,7 +660,7 @@ fn allocations_outside_admission_fail() {
     let files = vec![
         (
             "core/arena/src/admit.rs".to_owned(),
-            "Err(Error::allocation(m))".to_owned(),
+            "Err(Error::allocation(m))\nErr(Error::allocation(n))".to_owned(),
         ),
         (
             "core/error_handling/src/lib.rs".to_owned(),

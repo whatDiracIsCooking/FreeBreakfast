@@ -1,4 +1,4 @@
-//! The guess as tasks of a plan, device-free (tier 3): `Heap` rows and
+//! The guess as tasks of a plan, device-free (tier 3): `PinnedStandIn` rows and
 //! `HostOnly` workers, one run each. The cases of
 //! `test/gtest/pipeline_guess_gpu.cpp`, and the task form's of
 //! `test/sad/sad_host.cpp` (whose serial halves are `fb-sad`'s), each named
@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use fb_atom::{Atom, Element};
 use fb_basis::{BasisSet, Primitive, Shell};
-use fb_core_arena::{Bufs, Heap, Layout, RowId};
+use fb_core_arena::{Bufs, Heap, Layout, PinnedStandIn, RowId};
 use fb_core_error_handling::{ErrorKind, Status};
 use fb_core_planner::{CpuTask, Dag};
 use fb_core_thread_pool::{HostOnly, Record};
@@ -63,18 +63,18 @@ fn placed(spec: &str, atoms: &[Atom]) -> BasisSet {
 
 /// CPU: a row read out after the run.
 struct Collect {
-    row: RowId<Heap, f64>,
+    row: RowId<PinnedStandIn, f64>,
     out: Arc<Mutex<Vec<f64>>>,
 }
 
-impl CpuTask<Heap> for Collect {
+impl CpuTask<PinnedStandIn> for Collect {
     type Rows = ();
 
-    fn layout(&self, host: &mut Layout<'_, Heap>) {
+    fn layout(&self, host: &mut Layout<'_, PinnedStandIn>, _: &mut Layout<'_, Heap>) {
         host.read(self.row);
     }
 
-    fn run(&self, _: &(), host: &Bufs<'_, Heap>) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, PinnedStandIn>, _: &Bufs<'_, Heap>) -> Status {
         *self.out.lock().unwrap() = host.get(self.row).to_vec();
         Ok(())
     }
@@ -82,7 +82,11 @@ impl CpuTask<Heap> for Collect {
 
 /// `dag` with a `collect` of `d` added, run once on `n_cpu` CPU workers:
 /// the record, and D if the run succeeded.
-fn run(mut dag: Dag<'static, Heap, ()>, d: RowId<Heap, f64>, n_cpu: usize) -> (Record, Vec<f64>) {
+fn run(
+    mut dag: Dag<'static, PinnedStandIn, ()>,
+    d: RowId<PinnedStandIn, f64>,
+    n_cpu: usize,
+) -> (Record, Vec<f64>) {
     let out = Arc::new(Mutex::new(Vec::new()));
     dag.add_cpu(
         "collect",
@@ -177,7 +181,7 @@ fn plan_goldens() {
         ("by_name", "cc-pvdz".to_owned(), "baked stamp"),
         ("by_path", ccpvdz_path(), "atomic scf"),
     ] {
-        let mut dag: Dag<'static, Heap, ()> = Dag::new();
+        let mut dag: Dag<'static, PinnedStandIn, ()> = Dag::new();
         add_sad_guess(&mut dag, 0, &placed(&spec, &atoms), &atoms).unwrap();
         let planned = dag.plan();
         // The table's text ends an empty handoffs line in a space, which the
@@ -265,7 +269,7 @@ fn task_reports_the_first_failing_atoms_error() {
 fn a_basis_placed_over_other_atoms_is_invalid_config() {
     let atoms = formaldehyde();
     let basis = placed("cc-pvdz", &atoms[..3]);
-    let mut dag: Dag<'static, Heap, ()> = Dag::new();
+    let mut dag: Dag<'static, PinnedStandIn, ()> = Dag::new();
     let error = add_sad_guess(&mut dag, 0, &basis, &atoms).unwrap_err();
     assert_eq!(error.kind, ErrorKind::InvalidConfig);
     assert!(dag.plan().is_empty());
@@ -303,7 +307,7 @@ fn a_loaded_guess_is_the_saved_density_bitwise() {
         shape: vec![n, n],
         data: d.clone(),
     };
-    write_npy(&saved, &square).unwrap();
+    write_npy(&saved, &square.shape, &square.data).unwrap();
     let (record, loaded) = load(&basis, &saved);
     record.result.unwrap();
     assert_eq!(bits(&loaded), bits(&d));
@@ -313,13 +317,13 @@ fn a_loaded_guess_is_the_saved_density_bitwise() {
         shape: vec![n, n - 1],
         data: d[..n * (n - 1)].to_vec(),
     };
-    write_npy(&wrong, &narrow).unwrap();
+    write_npy(&wrong, &narrow.shape, &narrow.data).unwrap();
     let missing = dir.join("missing.npy");
     for (path, kind) in [
         (&wrong, ErrorKind::InvalidConfig),
         (&missing, ErrorKind::Io),
     ] {
-        let mut dag: Dag<'static, Heap, ()> = Dag::new();
+        let mut dag: Dag<'static, PinnedStandIn, ()> = Dag::new();
         let error = add_loaded_guess(&mut dag, 0, &basis, path.clone()).unwrap_err();
         assert_eq!(error.kind, kind, "{}", error.message);
         assert!(
@@ -333,10 +337,10 @@ fn a_loaded_guess_is_the_saved_density_bitwise() {
     // Planned over the square file, which is then replaced: the node checks
     // the file it reads.
     let replaced = dir.join("replaced.npy");
-    write_npy(&replaced, &square).unwrap();
+    write_npy(&replaced, &square.shape, &square.data).unwrap();
     let mut dag = Dag::new();
     let d = add_loaded_guess(&mut dag, 0, &basis, replaced.clone()).unwrap();
-    write_npy(&replaced, &narrow).unwrap();
+    write_npy(&replaced, &narrow.shape, &narrow.data).unwrap();
     let error = run(dag, d, 1).0.result.unwrap_err();
     assert_eq!(error.kind, ErrorKind::InvalidConfig, "{}", error.message);
     std::fs::remove_dir_all(&dir).unwrap();

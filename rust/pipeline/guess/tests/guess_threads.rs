@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use fb_atom::{Atom, Element};
-use fb_core_arena::{Bufs, Heap, Layout, RowId};
+use fb_core_arena::{Bufs, Heap, Layout, PinnedStandIn, RowId};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag};
 use fb_core_thread_pool::HostOnly;
@@ -35,19 +35,19 @@ fn threads() -> usize {
 /// CPU, after D: the thread count, once it reaches `expected` (workers are
 /// spawned one after another) or five seconds pass.
 struct Probe {
-    d: RowId<Heap, f64>,
+    d: RowId<PinnedStandIn, f64>,
     expected: usize,
     seen: Arc<Mutex<Option<usize>>>,
 }
 
-impl CpuTask<Heap> for Probe {
+impl CpuTask<PinnedStandIn> for Probe {
     type Rows = ();
 
-    fn layout(&self, host: &mut Layout<'_, Heap>) {
+    fn layout(&self, host: &mut Layout<'_, PinnedStandIn>, _: &mut Layout<'_, Heap>) {
         host.read(self.d);
     }
 
-    fn run(&self, _: &(), _: &Bufs<'_, Heap>) -> Status {
+    fn run(&self, _: &(), _: &Bufs<'_, PinnedStandIn>, _: &Bufs<'_, Heap>) -> Status {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut now = threads();
         while now < self.expected && Instant::now() < deadline {
@@ -92,7 +92,7 @@ fn main() {
     for n_cpu in [1, 4] {
         let (n_streams, seen) = (0, Arc::new(Mutex::new(None)));
         let expected = 1 + n_cpu + n_streams;
-        let mut dag: Dag<'static, Heap, ()> = Dag::new();
+        let mut dag: Dag<'static, PinnedStandIn, ()> = Dag::new();
         let d = add_sad_guess(&mut dag, 0, &basis, &atoms).unwrap();
         dag.add_cpu(
             "probe",

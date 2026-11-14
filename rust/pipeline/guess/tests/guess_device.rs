@@ -12,7 +12,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Heap, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag};
 use fb_integrals_mmd::add_records;
@@ -47,13 +47,13 @@ struct Collect {
 impl CpuTask for Collect {
     type Rows = ();
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
         for &row in &self.rows {
             host.read(row);
         }
     }
 
-    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         *self.out.lock().unwrap() = self.rows.iter().map(|&r| host.get(r).to_vec()).collect();
         Ok(())
     }

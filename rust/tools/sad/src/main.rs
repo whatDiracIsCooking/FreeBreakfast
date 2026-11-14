@@ -59,7 +59,7 @@ use fb_core_error_handling::{Error, ErrorKind, Result, Status};
 use fb_core_thread_pool::{self as thread_pool, HostOnly, Placement, Plan, default_n_cpu};
 use fb_core_types::Double3;
 use fb_io_basis::resolve_basis;
-use fb_io_npy::{NpyArray, write_npy};
+use fb_io_npy::write_npy;
 use fb_sad::sad_density;
 
 const ORIGIN: Double3 = Double3 {
@@ -237,11 +237,7 @@ fn run(args: &[String]) -> Status {
         std::fs::create_dir_all(&dir)
             .map_err(|e| Error::io(format!("cannot create {}: {e}", dir.display())))?;
         let n = job.shells.nao_sphe() as usize;
-        let array = NpyArray {
-            shape: vec![n, n],
-            data: density.clone(),
-        };
-        write_npy(&dir.join(format!("{z:03}.npy")), &array)?;
+        write_npy(&dir.join(format!("{z:03}.npy")), &[n, n], density)?;
         println!("{:>8} Z={z:<3} {n:>3} AOs  {seconds:8.3} s", job.basis);
     }
     Ok(())

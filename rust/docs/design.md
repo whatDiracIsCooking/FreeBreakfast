@@ -83,8 +83,10 @@ check lives", "What runs when").
 - **Device**, carved from the worker's block, scratch or output.
 - **Pinned host**, owned by the GPU worker whose copies it stages, in the
   layout with its lifetime extended to the last copy or write that reads it.
-- **Pageable host**, `Vec`, not modelled and not admitted. Anything large
-  goes pinned instead, where it is counted.
+- **Heap**, the plan's, held by CPU nodes alone: large flat host data no
+  copy engine meets, laid out and admitted like the rest.
+- **Pageable host**, `Vec`, for structured planning input alone (the
+  config, the basis, the planner's tables), not modelled and not admitted.
 
 A kernel's share is its `*_workspace_bytes(dims)` query and a solver's its
 `lwork` query, called at planning ([`gpu_layer.md`](gpu_layer.md), "Scratch:

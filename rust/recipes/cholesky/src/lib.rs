@@ -67,7 +67,7 @@
 
 use contracts::debug_requires;
 use fb_core_arena::{
-    Bufs, CopyOnly, Device, HostKind, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p,
+    Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, StagingKind, memcpy_d2d, memcpy_d2p,
 };
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{CpuTask, Dag, GpuTask};
@@ -254,22 +254,22 @@ impl GpuTask for Factor {
 /// CPU: the flag read from its pinned row, after the executor waited for
 /// the copy, and the `checked` row written when it is zero. Generic over
 /// the host kind and stream, so the tier-3 test hands it a flag from a
-/// fixture on `Heap` rows and `HostOnly` workers.
-struct Check<H: HostKind> {
+/// fixture on `PinnedStandIn` rows and `HostOnly` workers.
+struct Check<H: StagingKind> {
     info: RowId<H, i32>,
     /// The factor's row name, `checked`'s prefix.
     name: String,
 }
 
-impl<H: HostKind> CpuTask<H> for Check<H> {
+impl<H: StagingKind> CpuTask<H> for Check<H> {
     type Rows = RowId<H, i32>;
 
-    fn layout(&self, host: &mut Layout<'_, H>) -> RowId<H, i32> {
+    fn layout(&self, host: &mut Layout<'_, H>, _: &mut Layout<'_, Heap>) -> RowId<H, i32> {
         host.read(self.info);
         host.output(&format!("{} checked", self.name), 1)
     }
 
-    fn run(&self, checked: &RowId<H, i32>, host: &Bufs<'_, H>) -> Status {
+    fn run(&self, checked: &RowId<H, i32>, host: &Bufs<'_, H>, _: &Bufs<'_, Heap>) -> Status {
         // The kernel writes only first + k + 1, so the flag is 0 or a
         // positive 1-based minor.
         match host.get(self.info)[0] {
@@ -287,7 +287,7 @@ impl<H: HostKind> CpuTask<H> for Check<H> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fb_core_arena::Heap;
+    use fb_core_arena::PinnedStandIn;
     use fb_core_error_handling::ErrorKind;
     use fb_core_thread_pool::HostOnly;
     use std::sync::{Arc, Mutex};
@@ -295,14 +295,23 @@ mod tests {
     /// CPU: a fixture's flag written into a host row.
     struct Flag(i32);
 
-    impl CpuTask<Heap> for Flag {
-        type Rows = RowId<Heap, i32>;
+    impl CpuTask<PinnedStandIn> for Flag {
+        type Rows = RowId<PinnedStandIn, i32>;
 
-        fn layout(&self, host: &mut Layout<'_, Heap>) -> Self::Rows {
+        fn layout(
+            &self,
+            host: &mut Layout<'_, PinnedStandIn>,
+            _: &mut Layout<'_, Heap>,
+        ) -> Self::Rows {
             host.output("info", 1)
         }
 
-        fn run(&self, info: &Self::Rows, host: &Bufs<'_, Heap>) -> Status {
+        fn run(
+            &self,
+            info: &Self::Rows,
+            host: &Bufs<'_, PinnedStandIn>,
+            _: &Bufs<'_, Heap>,
+        ) -> Status {
             host.take_mut(*info)[0] = self.0;
             Ok(())
         }
@@ -310,28 +319,28 @@ mod tests {
 
     /// CPU: `checked` read out, if it runs at all.
     struct Reader {
-        checked: RowId<Heap, i32>,
+        checked: RowId<PinnedStandIn, i32>,
         seen: Arc<Mutex<Option<i32>>>,
     }
 
-    impl CpuTask<Heap> for Reader {
+    impl CpuTask<PinnedStandIn> for Reader {
         type Rows = ();
 
-        fn layout(&self, host: &mut Layout<'_, Heap>) {
+        fn layout(&self, host: &mut Layout<'_, PinnedStandIn>, _: &mut Layout<'_, Heap>) {
             host.read(self.checked);
         }
 
-        fn run(&self, _: &(), host: &Bufs<'_, Heap>) -> Status {
+        fn run(&self, _: &(), host: &Bufs<'_, PinnedStandIn>, _: &Bufs<'_, Heap>) -> Status {
             *self.seen.lock().unwrap() = Some(host.get(self.checked)[0]);
             Ok(())
         }
     }
 
     /// The check of the flag `info`, with a reader of `checked` after it,
-    /// run once on `Heap` rows and no device: the run's status, and what
+    /// run once on `PinnedStandIn` rows and no device: the run's status, and what
     /// the reader saw if it ran.
     fn check(info: i32) -> (Status, Option<i32>) {
-        let mut dag: Dag<'static, Heap, ()> = Dag::new();
+        let mut dag: Dag<'static, PinnedStandIn, ()> = Dag::new();
         let row = dag.add_cpu("flag", 0, Flag(info));
         let checked = dag.add_cpu(
             "cholesky check",

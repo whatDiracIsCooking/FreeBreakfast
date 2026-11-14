@@ -13,7 +13,8 @@ default = ["device"]
 # Device and Pinned blocks through wwr-sys. Without it the crate links no
 # library: tables, rows, admission and Heap blocks are all it can allocate.
 device = ["dep:fb-core-wwr", "dep:wwr-sys"]
-# Heap, the device-free host kind, for a dependent's tests.
+# PinnedStandIn, the device-free tests' stand-in for Pinned, for a
+# dependent's tests.
 test-support = []
 
 [dependencies]

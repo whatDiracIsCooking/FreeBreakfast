@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Layout, Pinned, RowId, memcpy_p2h};
+use fb_core_arena::{Bufs, Heap, Layout, Pinned, RowId, memcpy_p2h};
 use fb_core_error_handling::{Result, Status};
 use fb_core_planner::{CpuTask, Dag, Planned};
 use fb_core_thread_pool::Record;
@@ -176,12 +176,12 @@ struct Collect {
 impl CpuTask for Collect {
     type Rows = ();
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
         host.read(self.pinned.eps);
         host.read(self.pinned.c);
     }
 
-    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         *self.out.lock().unwrap_or_else(|e| e.into_inner()) = (
             memcpy_p2h(host, self.pinned.eps),
             memcpy_p2h(host, self.pinned.c),

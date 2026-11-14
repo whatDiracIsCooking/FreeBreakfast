@@ -27,7 +27,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
 use fb_core_error_handling::{ErrorKind, Status};
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
@@ -45,11 +45,11 @@ struct Stage(Vec<f64>);
 impl CpuTask for Stage {
     type Rows = RowId<Pinned, f64>;
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         host.output("A", self.0.len())
     }
 
-    fn run(&self, a: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, a: &Self::Rows, host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         host.take_mut(*a).copy_from_slice(&self.0);
         Ok(())
     }
@@ -117,11 +117,11 @@ struct Collect {
 impl CpuTask for Collect {
     type Rows = ();
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
         host.read(self.l);
     }
 
-    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         *self.out.lock().unwrap() = Some(host.get(self.l).to_vec());
         Ok(())
     }

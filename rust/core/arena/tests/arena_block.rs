@@ -10,8 +10,8 @@ use std::process::Command;
 use std::sync::Mutex;
 
 use fb_core_arena::{
-    Block, CopyOnly, Device, Pinned, TableBuilder, allocations, memcpy_d2d, memcpy_d2p, memcpy_h2p,
-    memcpy_p2d, memcpy_p2h,
+    Block, CopyOnly, Device, Heap, Pinned, TableBuilder, allocations, memcpy_d2d, memcpy_d2p,
+    memcpy_h2p, memcpy_p2d, memcpy_p2h,
 };
 use fb_core_wwr::common::ScopedDeviceIndex;
 use fb_core_wwr::runtime::Stream;
@@ -116,9 +116,10 @@ fn every_block_is_counted_once() {
     assert_eq!(allocations(), start + 2);
 }
 
-/// The fill reaches every byte before anyone writes: a pinned f64 row is
-/// all NaN in every profile, and a device row reads back all `0xFF` in a
-/// debug build. The check that a row read before it is written fails.
+/// The fill reaches every byte before anyone writes: a pinned f64 row and
+/// a heap one are all NaN in every profile, and a device row reads back
+/// all `0xFF` in a debug build. The check that a row read before it is
+/// written fails.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 #[allow(
@@ -132,6 +133,10 @@ fn blocks_are_filled() {
     let pr = p.output::<f64>(0, "P", n);
     let pinned = Block::new(0, p.build());
     assert!(pinned.partition(0, 0).get(pr).iter().all(|x| x.is_nan()));
+    let mut heap = TableBuilder::<Heap>::new();
+    let hr = heap.output::<f64>(0, "H", n);
+    let heap = Block::new(0, heap.build());
+    assert!(heap.partition(0, 0).get(hr).iter().all(|x| x.is_nan()));
 
     if !cfg!(debug_assertions) {
         return;

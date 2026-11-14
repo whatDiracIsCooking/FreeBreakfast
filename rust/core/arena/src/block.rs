@@ -37,7 +37,7 @@ pub fn allocations() -> u64 {
 
 /// One contiguous allocation of kind `K` on one GPU worker, sized to its
 /// table's total, made in [`Block::new`] and freed when it drops
-/// (`docs/memory.md`, "The two kinds").
+/// (`docs/memory.md`, "The three kinds").
 ///
 /// Not an allocator: a node reaches its rows through
 /// [`Block::partition`], and nothing allocates or frees between the two

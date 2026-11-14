@@ -4,7 +4,7 @@
 
 use std::ops::ControlFlow;
 
-use fb_core_arena::{Bufs, CopyOnly, Device, HostKind, Layout, Pinned};
+use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, StagingKind};
 use fb_core_error_handling::{Result, Status};
 use fb_core_thread_pool::DeviceStream;
 
@@ -24,8 +24,10 @@ use fb_core_thread_pool::DeviceStream;
 ///
 /// `H` is the host kind its pinned rows live in and `S` the stream it
 /// enqueues on. The defaults are the production ones, so a real task is
-/// `impl GpuTask for Fock`; the device-free tests use the heap kind and
-/// [`HostOnly`](fb_core_thread_pool::HostOnly)'s `()` stream.
+/// `impl GpuTask for Fock`; the device-free tests use the pinned stand-in
+/// (`fb_core_arena::PinnedStandIn`) and
+/// [`HostOnly`](fb_core_thread_pool::HostOnly)'s `()` stream. A GPU task
+/// holds no heap row: no copy engine reads one.
 ///
 /// A task allocates nothing, since it is handed no allocator; a row it did
 /// not declare panics when asked for ([`Bufs`]). It enqueues on its stream
@@ -52,7 +54,7 @@ use fb_core_thread_pool::DeviceStream;
 ///     }
 /// }
 /// ```
-pub trait GpuTask<H: HostKind = Pinned, S = DeviceStream>: Send + Sync {
+pub trait GpuTask<H: StagingKind = Pinned, S = DeviceStream>: Send + Sync {
     /// The rows it uses, as `layout` returned them: a struct of `RowId`s,
     /// usually `#[derive(Clone, Copy)]`. [`Dag::add_gpu`](super::Dag::add_gpu)
     /// hands a copy back to the caller, and passes one to every `run`.
@@ -101,19 +103,22 @@ pub trait GpuTask<H: HostKind = Pinned, S = DeviceStream>: Send + Sync {
 }
 
 /// A CPU task: a unit of work run on the CPU pool, over host rows alone
-/// (`docs/programming_model.md`, "A task declares"). Its rows are pinned
-/// rows of the GPU worker it is added on, whose copies they stage; the
-/// executor starts it only after the events of the stream nodes it runs
-/// after, so it reads and writes them as slices.
+/// (`docs/programming_model.md`, "A task declares"), of two kinds. Its
+/// pinned rows are the GPU worker's it is added on, whose copies they
+/// stage; its heap rows are the plan's, large flat host data no copy
+/// engine meets (`docs/memory.md`, "The three kinds"). The executor
+/// starts it only after the events of the stream nodes it runs after, so
+/// it reads and writes both as slices.
 ///
-/// As for a [`GpuTask`], `&self` is its dimensions; `P` is the host kind,
-/// pinned in production and the heap kind in the device-free tests.
+/// As for a [`GpuTask`], `&self` is its dimensions; `P` is the staging
+/// kind, pinned in production and the stand-in in the device-free tests.
+/// The heap kind is the same in both: a heap block needs no device.
 ///
 /// A CPU task holds no device row: its layout is handed no device table,
 /// so one that would declare or read a device row does not build.
 ///
 /// ```compile_fail,E0053
-/// use fb_core_arena::{Bufs, Device, Layout, Pinned};
+/// use fb_core_arena::{Bufs, Device, Heap, Layout, Pinned};
 /// use fb_core_error_handling::Status;
 /// use fb_core_planner::CpuTask;
 ///
@@ -121,21 +126,22 @@ pub trait GpuTask<H: HostKind = Pinned, S = DeviceStream>: Send + Sync {
 ///
 /// impl CpuTask for HoldsADeviceRow {
 ///     type Rows = ();
-///     fn layout(&self, _: &mut Layout<'_, Device>) {}
-///     fn run(&self, _: &(), _: &Bufs<'_, Pinned>) -> Status {
+///     fn layout(&self, _: &mut Layout<'_, Device>, _: &mut Layout<'_, Heap>) {}
+///     fn run(&self, _: &(), _: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
 ///         Ok(())
 ///     }
 /// }
 /// ```
-pub trait CpuTask<P: HostKind = Pinned>: Send + Sync {
+pub trait CpuTask<P: StagingKind = Pinned>: Send + Sync {
     /// The rows it uses, as `layout` returned them;
     /// [`Dag::add_cpu`](super::Dag::add_cpu) hands a copy back to the
     /// caller, and passes one to every `run`.
     type Rows: Clone + Send + Sync;
 
-    /// Declare every host row: its scratch and outputs, and each earlier
-    /// output it reads. Called once, at planning.
-    fn layout(&self, pinned: &mut Layout<'_, P>) -> Self::Rows;
+    /// Declare every host row, pinned and on the heap: its scratch and
+    /// outputs, and each earlier output it reads. Called once, at
+    /// planning.
+    fn layout(&self, pinned: &mut Layout<'_, P>, heap: &mut Layout<'_, Heap>) -> Self::Rows;
 
     /// Its dimensions by name, as [`GpuTask::dims`]; none by default.
     fn dims(&self) -> Vec<(&'static str, usize)> {
@@ -143,31 +149,32 @@ pub trait CpuTask<P: HostKind = Pinned>: Send + Sync {
     }
 
     /// Compute, through the rows `layout` returned. Called once per run,
-    /// and in a loop once per iteration, whose index its view gives
+    /// and in a loop once per iteration, whose index its views give
     /// ([`Bufs::iteration`]).
     ///
     /// # Errors
     /// Whatever the work fails with; the orchestrator adds `name@cpu` and
     /// skips every descendant.
-    fn run(&self, rows: &Self::Rows, pinned: &Bufs<'_, P>) -> Status;
+    fn run(&self, rows: &Self::Rows, pinned: &Bufs<'_, P>, heap: &Bufs<'_, Heap>) -> Status;
 }
 
 /// A loop's decision (`docs/programming_model.md`, "Plan once, run
 /// many"): the CPU node [`Dag::add_loop`](super::Dag::add_loop) adds after
 /// the loop's body, run once per iteration when the whole body has
 /// finished and its GPU work has completed, whose answer replays the body
-/// or ends the loop. Like a [`CpuTask`], it declares its rows, here host rows
-/// alone, and reaches only them: what the body copied to the host for it
-/// (an energy, a residual's norm) as reads, and what it keeps from one
-/// iteration to the next (the last energy) as a row the loop carries
-/// ([`Layout::write`]), since nothing outside its rows survives a run.
+/// or ends the loop. Like a [`CpuTask`], it declares its rows, host rows
+/// alone, pinned and on the heap, and reaches only them: what the body
+/// copied to the host for it (an energy, a residual's norm) as pinned
+/// reads, and what it keeps from one iteration to the next (the last
+/// energy) as a row the loop carries ([`Layout::write`]), on the heap, since
+/// nothing outside its rows survives a run and no copy engine meets it.
 ///
 /// It is a CPU node, so its layout is handed no device table: a decision
 /// that would read a device row does not build.
 ///
 /// ```compile_fail,E0053
 /// use std::ops::ControlFlow;
-/// use fb_core_arena::{Bufs, Device, Layout, Pinned};
+/// use fb_core_arena::{Bufs, Device, Heap, Layout, Pinned};
 /// use fb_core_error_handling::Result;
 /// use fb_core_planner::Decision;
 ///
@@ -175,19 +182,26 @@ pub trait CpuTask<P: HostKind = Pinned>: Send + Sync {
 ///
 /// impl Decision for ReadsTheDevice {
 ///     type Rows = ();
-///     fn layout(&self, _: &mut Layout<'_, Device>) {}
-///     fn decide(&self, _: &(), _: &Bufs<'_, Pinned>, _: usize) -> Result<ControlFlow<()>> {
+///     fn layout(&self, _: &mut Layout<'_, Device>, _: &mut Layout<'_, Heap>) {}
+///     fn decide(
+///         &self,
+///         _: &(),
+///         _: &Bufs<'_, Pinned>,
+///         _: &Bufs<'_, Heap>,
+///         _: usize,
+///     ) -> Result<ControlFlow<()>> {
 ///         Ok(ControlFlow::Break(()))
 ///     }
 /// }
 /// ```
-pub trait Decision<H: HostKind = Pinned>: Send + Sync {
+pub trait Decision<H: StagingKind = Pinned>: Send + Sync {
     /// The rows it uses, as `layout` returned them; a copy goes back to
     /// the caller of [`Dag::add_loop`](super::Dag::add_loop).
     type Rows: Clone + Send + Sync;
 
-    /// Declare every host row it holds or reads. Called once, at planning.
-    fn layout(&self, host: &mut Layout<'_, H>) -> Self::Rows;
+    /// Declare every host row it holds or reads, pinned and on the heap.
+    /// Called once, at planning.
+    fn layout(&self, host: &mut Layout<'_, H>, heap: &mut Layout<'_, Heap>) -> Self::Rows;
 
     /// Whether to run the body again (`Continue`) or end the loop
     /// (`Break`), after iteration `iteration`, from 0. Called once per
@@ -203,6 +217,7 @@ pub trait Decision<H: HostKind = Pinned>: Send + Sync {
         &self,
         rows: &Self::Rows,
         host: &Bufs<'_, H>,
+        heap: &Bufs<'_, Heap>,
         iteration: usize,
     ) -> Result<ControlFlow<()>>;
 }

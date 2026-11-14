@@ -35,7 +35,7 @@
 
 #![forbid(unsafe_code)]
 
-use fb_core_arena::{Bufs, Device, HostKind, Layout, RowId};
+use fb_core_arena::{Bufs, Device, Heap, Layout, RowId, StagingKind};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag};
 use fb_molecule::{Molecule, nuclear_charge};
@@ -91,20 +91,20 @@ pub fn add_nuclei(dag: &mut Dag<'_>, worker: usize, molecule: &Molecule) -> Nucl
 
 /// CPU: the charges and the positions written into two rows of the host
 /// kind `H`, its outputs. Pinned in a plan; any host kind and stream, so the
-/// tests run it on heap rows and `HostOnly` workers.
+/// tests run it on `PinnedStandIn` rows and `HostOnly` workers.
 struct Stage {
     molecule: Molecule,
 }
 
-impl<H: HostKind> CpuTask<H> for Stage {
+impl<H: StagingKind> CpuTask<H> for Stage {
     type Rows = (RowId<H, f64>, RowId<H, f64>);
 
-    fn layout(&self, host: &mut Layout<'_, H>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, H>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         let n = self.molecule.atoms().len();
         (host.output("nuclei z", n), host.output("nuclei c", 3 * n))
     }
 
-    fn run(&self, rows: &Self::Rows, host: &Bufs<'_, H>) -> Status {
+    fn run(&self, rows: &Self::Rows, host: &Bufs<'_, H>, _: &Bufs<'_, Heap>) -> Status {
         let z = host.take_mut(rows.0);
         let c = host.take_mut(rows.1);
         for (a, atom) in self.molecule.atoms().iter().enumerate() {

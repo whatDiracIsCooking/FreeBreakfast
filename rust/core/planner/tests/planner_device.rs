@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fb_core_arena::{
-    Bufs, CopyOnly, DEVICE_ALIGNMENT, Device, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p,
+    Bufs, CopyOnly, DEVICE_ALIGNMENT, Device, Heap, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p,
     memcpy_p2d,
 };
 use fb_core_error_handling::{Result, Status};
@@ -62,11 +62,11 @@ struct Fill;
 impl CpuTask for Fill {
     type Rows = RowId<Pinned, f64>;
 
-    fn layout(&self, h: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, h: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         h.output("up", N)
     }
 
-    fn run(&self, up: &Self::Rows, h: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, up: &Self::Rows, h: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         let up = h.take_mut(*up);
         assert_eq!(up.as_ptr().addr() % DEVICE_ALIGNMENT, 0);
         up.iter_mut().enumerate().for_each(|(i, e)| *e = value(i));
@@ -129,11 +129,11 @@ struct Check(RowId<Pinned, f64>);
 impl CpuTask for Check {
     type Rows = ();
 
-    fn layout(&self, h: &mut Layout<'_, Pinned>) {
+    fn layout(&self, h: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
         h.read(self.0);
     }
 
-    fn run(&self, _: &(), h: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, _: &(), h: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         let got = h.get(self.0);
         assert!(got.iter().enumerate().all(|(i, &e)| e == value(i)));
         Ok(())
@@ -147,7 +147,7 @@ impl CpuTask for Check {
 /// arena's count of this process's blocks the same across the second run:
 /// a run allocates nothing.
 ///
-/// The record carries the plan's device and pinned block sizes, the
+/// The record carries the plan's device, pinned and heap block sizes, the
 /// tables' own, and a host wait for every CPU task's GPU predecessor: the
 /// check waits on the download's event.
 #[test]
@@ -169,6 +169,7 @@ fn a_round_trip_through_the_planner() {
     let sizes = [
         (0, "device", planned.device_table(0).total()),
         (0, "pinned", planned.host_table(0).total()),
+        (0, "heap", planned.heap_table().total()),
     ];
     // Every (CPU task, GPU predecessor) pair: each is a host wait.
     let waits: Vec<(usize, usize)> = (0..planned.len())
@@ -506,7 +507,7 @@ struct Start;
 impl CpuTask for Start {
     type Rows = HostStart;
 
-    fn layout(&self, h: &mut Layout<'_, Pinned>) -> HostStart {
+    fn layout(&self, h: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> HostStart {
         HostStart {
             a: h.output("A", M * M),
             b: h.output("b", M),
@@ -515,7 +516,7 @@ impl CpuTask for Start {
         }
     }
 
-    fn run(&self, r: &HostStart, h: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, r: &HostStart, h: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         h.take_mut(r.a).copy_from_slice(&contraction());
         h.take_mut(r.b).copy_from_slice(&offset());
         h.take_mut(r.x0).fill(0.0);
@@ -648,12 +649,18 @@ const STEP: f64 = 1e-13;
 impl Decision for Moved {
     type Rows = ();
 
-    fn layout(&self, h: &mut Layout<'_, Pinned>) {
+    fn layout(&self, h: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
         h.read(self.y);
         h.write(self.prev);
     }
 
-    fn decide(&self, _: &(), h: &Bufs<'_, Pinned>, _: usize) -> Result<ControlFlow<()>> {
+    fn decide(
+        &self,
+        _: &(),
+        h: &Bufs<'_, Pinned>,
+        _: &Bufs<'_, Heap>,
+        _: usize,
+    ) -> Result<ControlFlow<()>> {
         self.samples
             .lock()
             .unwrap()
@@ -702,11 +709,11 @@ struct Keep(RowId<Pinned, f64>, Arc<Mutex<Vec<f64>>>);
 impl CpuTask for Keep {
     type Rows = ();
 
-    fn layout(&self, h: &mut Layout<'_, Pinned>) {
+    fn layout(&self, h: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
         h.read(self.0);
     }
 
-    fn run(&self, _: &(), h: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, _: &(), h: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         *self.1.lock().unwrap() = h.get(self.0).to_vec();
         Ok(())
     }
@@ -808,12 +815,12 @@ struct Tensor;
 impl CpuTask for Tensor {
     type Rows = (Vec<RowId<Pinned, f64>>, RowId<Pinned, f64>);
 
-    fn layout(&self, h: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, h: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         let batches = (0..TRIPS).map(|_| h.output("batch", BATCH)).collect();
         (batches, h.output("one", 1))
     }
 
-    fn run(&self, (batches, one): &Self::Rows, h: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, (batches, one): &Self::Rows, h: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         for (k, &row) in batches.iter().enumerate() {
             let row = h.take_mut(row);
             row.iter_mut()

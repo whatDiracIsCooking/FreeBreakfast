@@ -186,11 +186,11 @@ impl<K: HostKind> Bufs<'_, K> {
 /// }
 /// ```
 ///
-/// With the `test-support` feature, a view of the heap kind, the
+/// With the `test-support` feature, a view of `PinnedStandIn`, the
 /// device-free tests' stand-in for pinned memory, hands back its [`Bufs`]
 /// (`CopyOnly::bufs`): their stream is `HostOnly`'s, which runs a node at
 /// once, so a host access there stands in for a copy that has finished.
-// Read only by the copies, which are `device`'s, and by the heap view.
+// Read only by the copies, which are `device`'s, and by the stand-in's view.
 #[cfg_attr(
     not(any(feature = "device", test, feature = "test-support")),
     allow(dead_code, reason = "no copy takes it without a device")
@@ -204,10 +204,10 @@ impl<'b, K: HostKind> From<Bufs<'b, K>> for CopyOnly<'b, K> {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-impl<'b> CopyOnly<'b, super::kind::Heap> {
-    /// The heap view itself, whose rows a device-free test's stream node
-    /// reads and writes as a finished copy would.
-    pub fn bufs(&self) -> &Bufs<'b, super::kind::Heap> {
+impl<'b> CopyOnly<'b, super::kind::PinnedStandIn> {
+    /// The stand-in's view itself, whose rows a device-free test's stream
+    /// node reads and writes as a finished copy would.
+    pub fn bufs(&self) -> &Bufs<'b, super::kind::PinnedStandIn> {
         &self.0
     }
 }

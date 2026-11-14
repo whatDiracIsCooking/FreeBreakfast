@@ -30,7 +30,7 @@
 
 use std::sync::Arc;
 
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_h2p};
+use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_h2p};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::{DeviceStream, LaneId};
@@ -768,11 +768,11 @@ struct Stage {
 impl CpuTask for Stage {
     type Rows = TableRows<Pinned>;
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         TableRows::declare(host, &self.tables)
     }
 
-    fn run(&self, rows: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, rows: &Self::Rows, host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         let s = &self.tables.shells;
         memcpy_h2p(host, rows.prim_begin, &s.prim_begin);
         memcpy_h2p(host, rows.exponent, &s.exponent);

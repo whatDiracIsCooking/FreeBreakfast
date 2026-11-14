@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p};
+use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask, Planned};
 use fb_core_thread_pool::DeviceStream;
@@ -111,11 +111,11 @@ struct Collect {
 impl CpuTask for Collect {
     type Rows = ();
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
         host.read(self.pinned);
     }
 
-    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         *self.out.lock().unwrap_or_else(|e| e.into_inner()) = host.get(self.pinned).to_vec();
         Ok(())
     }

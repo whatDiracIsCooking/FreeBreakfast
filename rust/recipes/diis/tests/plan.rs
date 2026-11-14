@@ -11,7 +11,7 @@
 
 use std::ops::ControlFlow;
 
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId};
 use fb_core_error_handling::{Result, Status};
 use fb_core_planner::{Dag, Decision, GpuTask};
 use fb_core_thread_pool::DeviceStream;
@@ -49,11 +49,17 @@ struct Reads(RowId<Pinned, i32>);
 impl Decision for Reads {
     type Rows = ();
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
         host.read(self.0);
     }
 
-    fn decide(&self, _: &(), _: &Bufs<'_, Pinned>, _: usize) -> Result<ControlFlow<()>> {
+    fn decide(
+        &self,
+        _: &(),
+        _: &Bufs<'_, Pinned>,
+        _: &Bufs<'_, Heap>,
+        _: usize,
+    ) -> Result<ControlFlow<()>> {
         unreachable!("the plan is never run")
     }
 }

@@ -367,14 +367,7 @@ fn a_guess_with_a_negative_eigenvalue_is_warned_of() {
         "fb-pipeline-scf-negative-guess-{}.npy",
         std::process::id()
     ));
-    fb_io_npy::write_npy(
-        &path,
-        &fb_io_npy::NpyArray {
-            shape: vec![n, n],
-            data: d,
-        },
-    )
-    .unwrap();
+    fb_io_npy::write_npy(&path, &[n, n], &d).unwrap();
 
     let lwork = syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n).unwrap();
     let mut dag = Dag::new();

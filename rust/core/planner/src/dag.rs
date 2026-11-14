@@ -9,7 +9,7 @@ use super::BLAS_WORKSPACE_BYTES;
 use super::task::{CpuTask, Decision, GpuTask};
 use contracts::debug_requires;
 use fb_core_arena::{
-    Bufs, CopyOnly, Device, Element, HostKind, Pinned, RowId, Table, TableBuilder,
+    Bufs, CopyOnly, Device, Element, Heap, Pinned, RowId, StagingKind, Table, TableBuilder,
 };
 use fb_core_error_handling::{Result, Status};
 use fb_core_thread_pool::{DeviceStream, LaneId, Placement};
@@ -21,17 +21,18 @@ pub(super) type GpuRun<'a, H, S> =
 
 /// A CPU task's `run` with its rows bound: what the executor's CPU node
 /// calls.
-pub(super) type CpuRun<'a, H> = Box<dyn Fn(&Bufs<'_, H>) -> Status + Send + Sync + 'a>;
+pub(super) type CpuRun<'a, H> =
+    Box<dyn Fn(&Bufs<'_, H>, &Bufs<'_, Heap>) -> Status + Send + Sync + 'a>;
 
 /// A decision's `decide` with its rows bound: what the executor's
 /// decision node calls with the iteration's index.
 pub(super) type Decide<'a, H> =
-    Box<dyn Fn(&Bufs<'_, H>, usize) -> Result<ControlFlow<()>> + Send + Sync + 'a>;
+    Box<dyn Fn(&Bufs<'_, H>, &Bufs<'_, Heap>, usize) -> Result<ControlFlow<()>> + Send + Sync + 'a>;
 
 /// Bind the closure's signature where it is written: a closure passed
 /// straight to `Box::new` does not take its higher-ranked signature from
 /// the box's type.
-fn erase_gpu<'a, H: HostKind, S, F>(f: F) -> GpuRun<'a, H, S>
+fn erase_gpu<'a, H: StagingKind, S, F>(f: F) -> GpuRun<'a, H, S>
 where
     F: Fn(&Bufs<'_, Device>, &CopyOnly<'_, H>, &S) -> Status + Send + Sync + 'a,
 {
@@ -39,17 +40,17 @@ where
 }
 
 /// As [`erase_gpu`], for a CPU task.
-fn erase_cpu<'a, H: HostKind, F>(f: F) -> CpuRun<'a, H>
+fn erase_cpu<'a, H: StagingKind, F>(f: F) -> CpuRun<'a, H>
 where
-    F: Fn(&Bufs<'_, H>) -> Status + Send + Sync + 'a,
+    F: Fn(&Bufs<'_, H>, &Bufs<'_, Heap>) -> Status + Send + Sync + 'a,
 {
     Box::new(f)
 }
 
 /// As [`erase_gpu`], for a decision.
-fn erase_decide<'a, H: HostKind, F>(f: F) -> Decide<'a, H>
+fn erase_decide<'a, H: StagingKind, F>(f: F) -> Decide<'a, H>
 where
-    F: Fn(&Bufs<'_, H>, usize) -> Result<ControlFlow<()>> + Send + Sync + 'a,
+    F: Fn(&Bufs<'_, H>, &Bufs<'_, Heap>, usize) -> Result<ControlFlow<()>> + Send + Sync + 'a,
 {
     Box::new(f)
 }
@@ -57,7 +58,7 @@ where
 /// What a node runs: a task of either sort, or a loop's decision. The
 /// sort is where it runs: a GPU task on its lane's stream, the rest on
 /// the CPU pool.
-pub(super) enum Work<'a, H: HostKind, S> {
+pub(super) enum Work<'a, H: StagingKind, S> {
     Gpu(GpuRun<'a, H, S>),
     Cpu(CpuRun<'a, H>),
     /// The decision of the loop over the tasks from `body` to the one
@@ -70,7 +71,7 @@ pub(super) enum Work<'a, H: HostKind, S> {
 }
 
 /// A node as declared: its name, its worker, its dimensions, and its work.
-pub(super) struct Declared<'a, H: HostKind, S> {
+pub(super) struct Declared<'a, H: StagingKind, S> {
     pub(super) name: String,
     pub(super) dims: Vec<(&'static str, usize)>,
     /// The worker whose tables hold its rows, and for a GPU task the lane
@@ -79,7 +80,7 @@ pub(super) struct Declared<'a, H: HostKind, S> {
     pub(super) work: Work<'a, H, S>,
 }
 
-impl<H: HostKind, S> Declared<'_, H, S> {
+impl<H: StagingKind, S> Declared<'_, H, S> {
     /// Where it runs, which its work's sort decides.
     pub(super) fn placement(&self) -> Placement {
         match self.work {
@@ -109,8 +110,22 @@ struct Worker<H> {
 /// ([`Dag::add_loop`]) is a run of them replayed between host decisions; a
 /// counted loop ([`Dag::add_counted`]) one run a trip count fixed here,
 /// with no decision.
-pub struct Dag<'a, H: HostKind = Pinned, S = DeviceStream> {
+///
+/// Its tables are each GPU worker's device and pinned ones, which its
+/// lanes share, and the plan's one heap table, whose rows only CPU nodes
+/// hold (`docs/memory.md`, "The three kinds"). `H` is the staging kind of
+/// the workers' host tables, never the heap's own, so a heap row cannot
+/// be asked of a worker's table:
+///
+/// ```compile_fail,E0277
+/// use fb_core_arena::Heap;
+/// use fb_core_planner::Dag;
+///
+/// let dag: Dag<'_, Heap, ()> = Dag::new();
+/// ```
+pub struct Dag<'a, H: StagingKind = Pinned, S = DeviceStream> {
     workers: Vec<Worker<H>>,
+    heap: TableBuilder<Heap>,
     nodes: Vec<Declared<'a, H, S>>,
     /// Each loop, in plan order.
     loops: Vec<Loop>,
@@ -126,17 +141,18 @@ pub(super) struct Loop {
     pub(super) counted: Option<(usize, usize)>,
 }
 
-impl<H: HostKind, S> Default for Dag<'_, H, S> {
+impl<H: StagingKind, S> Default for Dag<'_, H, S> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<'a, H: HostKind, S> Dag<'a, H, S> {
+impl<'a, H: StagingKind, S> Dag<'a, H, S> {
     /// An empty DAG.
     pub fn new() -> Self {
         Dag {
             workers: Vec::new(),
+            heap: TableBuilder::new(),
             nodes: Vec::new(),
             loops: Vec::new(),
         }
@@ -197,12 +213,13 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         rows
     }
 
-    /// Add a CPU task, to run on the CPU pool with its host rows in GPU
+    /// Add a CPU task, to run on the CPU pool with its pinned rows in GPU
     /// worker `worker`'s block (a pinned row belongs to the GPU worker whose
-    /// copies it stages), call its layout, and return its rows.
+    /// copies it stages) and its heap rows in the plan's, call its layout,
+    /// and return its rows.
     ///
     /// The layout's declarations are held to the worker's host table's
-    /// contracts, as in [`Dag::add_gpu`].
+    /// and the heap table's contracts, as in [`Dag::add_gpu`].
     ///
     /// # Panics
     /// As [`Dag::add_gpu`], for a row of another worker's table.
@@ -212,13 +229,17 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         T::Rows: 'a,
     {
         let pos = self.nodes.len();
-        let rows = task.layout(&mut self.worker(worker).host.node(pos));
+        self.worker(worker);
+        let rows = task.layout(
+            &mut self.workers[worker].host.node(pos),
+            &mut self.heap.node(pos),
+        );
         let kept = rows.clone();
         self.nodes.push(Declared {
             name: name.into(),
             dims: task.dims(),
             at: worker.into(),
-            work: Work::Cpu(erase_cpu(move |h| task.run(&kept, h))),
+            work: Work::Cpu(erase_cpu(move |h, heap| task.run(&kept, h, heap))),
         });
         rows
     }
@@ -226,7 +247,7 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
     /// Close a loop: the tasks from position `body` to the last one added
     /// are its body, replayed in the same run, on the same workers, until
     /// `decision`, a CPU node added after them on GPU worker `worker`'s
-    /// host table, says `Break`, at most `max_iterations` times
+    /// host table and the plan's heap table, says `Break`, at most `max_iterations` times
     /// (`docs/programming_model.md`, "Plan once, run many";
     /// `fb_core_thread_pool::Plan::add_loop`, which runs it). Calls the
     /// decision's layout, and returns its rows.
@@ -240,7 +261,8 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
     /// the parent's, live for the whole loop. A row the loop carries from
     /// one iteration to the next, a density or a DIIS history, is produced
     /// before the loop, read in the body, and written by its last user
-    /// there ([`Layout::write`](fb_core_arena::Layout::write)).
+    /// there ([`Layout::write`](fb_core_arena::Layout::write)); the heap
+    /// table's region and carried rows work the same way.
     ///
     /// A task after the loop that reads a row the body wrote runs after the
     /// decision's `Break`, never after a single iteration.
@@ -266,7 +288,11 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         D::Rows: 'a,
     {
         let pos = self.nodes.len();
-        let rows = decision.layout(&mut self.worker(worker).host.node(pos));
+        self.worker(worker);
+        let rows = decision.layout(
+            &mut self.workers[worker].host.node(pos),
+            &mut self.heap.node(pos),
+        );
         let kept = rows.clone();
         self.nodes.push(Declared {
             name: name.into(),
@@ -275,7 +301,9 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
             work: Work::Decide {
                 body,
                 max_iterations,
-                decide: erase_decide(move |h, iteration| decision.decide(&kept, h, iteration)),
+                decide: erase_decide(move |h, heap, iteration| {
+                    decision.decide(&kept, h, heap, iteration)
+                }),
             },
         });
         self.loops.push(Loop {
@@ -378,7 +406,8 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         self.worker(worker).host.worker(name, len)
     }
 
-    /// Lay every worker's two tables out, each loop's body in its region,
+    /// Lay every worker's two tables and the heap table out, each loop's
+    /// body in its region,
     /// and derive each task's dependencies: the producer of every row it
     /// reads, the writer a loop's carried row is ordered against, and
     /// every handoff into it; a loop's decision also runs after every task
@@ -410,6 +439,14 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
             .collect();
         let lanes = self.workers.iter().map(|w| w.lanes).collect();
         let loops = &self.loops;
+        let mut heap = self.heap;
+        for l in loops {
+            match l.counted {
+                Some((_, depth)) => heap.add_counted(l.first..=l.last, depth),
+                None => heap.add_loop(l.first..=l.last),
+            }
+        }
+        let heap = heap.build();
         let tables: Vec<(Table<Device>, Table<H>)> = self
             .workers
             .into_iter()
@@ -433,24 +470,26 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         for l in loops.iter().filter(|l| l.counted.is_none()) {
             deps[l.last].extend(l.first..l.last);
         }
+        let mut pairs = vec![heap.reads(), heap.handoffs()];
         for (device, host) in &tables {
-            let pairs = [
+            pairs.extend([
                 device.reads(),
                 device.handoffs(),
                 host.reads(),
                 host.handoffs(),
-            ];
-            for (u, v) in pairs.into_iter().flatten() {
-                // INVARIANT: the tables number nodes by rank, a row's
-                // producer is added before its readers, and a handoff
-                // points forward in rank (the arena's property test), so
-                // no caller can make this fail.
-                debug_assert!(u < v, "a dependency {u} -> {v} against rank");
-                deps[v].insert(u);
-            }
+            ]);
+        }
+        for (u, v) in pairs.into_iter().flatten() {
+            // INVARIANT: the tables number nodes by rank, a row's producer
+            // is added before its readers, and a handoff points forward in
+            // rank (the arena's property test), so no caller can make this
+            // fail.
+            debug_assert!(u < v, "a dependency {u} -> {v} against rank");
+            deps[v].insert(u);
         }
         Planned {
             tables,
+            heap,
             lanes,
             libraries,
             blas_workspaces,
@@ -482,11 +521,14 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
 /// Its text ([`fmt::Display`]) is the plan's golden: each task's worker,
 /// lane and dependencies, each loop's span and bound on its decision's
 /// line and each counted loop's span, trips and depth on its body's last,
-/// then every non-empty table, a loop's region and body in it. A GPU
+/// then every non-empty table, a loop's region and body in it: each
+/// worker's, then the heap's. A GPU
 /// task's lane reads `stream` on a worker of one lane and `stream<l>` on a
 /// worker of several; any other task's, `cpu`.
-pub struct Planned<'a, H: HostKind = Pinned, S = DeviceStream> {
+pub struct Planned<'a, H: StagingKind = Pinned, S = DeviceStream> {
     pub(super) tables: Vec<(Table<Device>, Table<H>)>,
+    /// The plan's heap table, one for every worker.
+    pub(super) heap: Table<Heap>,
     /// Per worker, its lane count: one past the highest a GPU task named.
     pub(super) lanes: Vec<usize>,
     /// Per worker, per lane, whether the lane has library handles: lane 0
@@ -500,7 +542,7 @@ pub struct Planned<'a, H: HostKind = Pinned, S = DeviceStream> {
     pub(super) loops: Vec<Loop>,
 }
 
-impl<H: HostKind, S> Planned<'_, H, S> {
+impl<H: StagingKind, S> Planned<'_, H, S> {
     /// The number of tasks.
     pub fn len(&self) -> usize {
         self.nodes.len()
@@ -532,6 +574,11 @@ impl<H: HostKind, S> Planned<'_, H, S> {
         &self.tables[worker].1
     }
 
+    /// The plan's heap table: the rows its CPU nodes hold on the heap.
+    pub fn heap_table(&self) -> &Table<Heap> {
+        &self.heap
+    }
+
     /// The tasks `pos` runs after, by position, ascending.
     pub fn predecessors(&self, pos: usize) -> &[usize] {
         &self.deps[pos]
@@ -543,7 +590,7 @@ impl<H: HostKind, S> Planned<'_, H, S> {
     }
 }
 
-impl<H: HostKind, S> fmt::Display for Planned<'_, H, S> {
+impl<H: StagingKind, S> fmt::Display for Planned<'_, H, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
@@ -600,6 +647,9 @@ impl<H: HostKind, S> fmt::Display for Planned<'_, H, S> {
             if host.n_rows() > 0 {
                 write!(f, "worker {w} {host}")?;
             }
+        }
+        if self.heap.n_rows() > 0 {
+            write!(f, "plan {}", self.heap)?;
         }
         Ok(())
     }

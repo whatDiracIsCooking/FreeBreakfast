@@ -148,16 +148,17 @@ impl<T: Element> GpuTask for Download<T> {
 mod tests {
     use super::*;
     use crate::CpuTask;
+    use fb_core_arena::Heap;
 
     /// CPU: a pinned output of `len` doubles.
     struct Stage(usize);
 
     impl CpuTask for Stage {
         type Rows = RowId<Pinned, f64>;
-        fn layout(&self, h: &mut Layout<'_, Pinned>) -> Self::Rows {
+        fn layout(&self, h: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
             h.output("x", self.0)
         }
-        fn run(&self, _: &Self::Rows, _: &Bufs<'_, Pinned>) -> Status {
+        fn run(&self, _: &Self::Rows, _: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
             Ok(())
         }
     }
@@ -167,10 +168,10 @@ mod tests {
 
     impl CpuTask for Read {
         type Rows = ();
-        fn layout(&self, h: &mut Layout<'_, Pinned>) {
+        fn layout(&self, h: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
             h.read(self.0);
         }
-        fn run(&self, _: &(), _: &Bufs<'_, Pinned>) -> Status {
+        fn run(&self, _: &(), _: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
             Ok(())
         }
     }
