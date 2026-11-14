@@ -607,6 +607,359 @@ proptest! {
     }
 }
 
+/// Row `k` of a random loop's parent, as its producer writes it.
+fn parent_value(k: usize, len: usize) -> Vec<u64> {
+    (0..len).map(|i| mix(0, i, &[&[k as u64 + 1]])).collect()
+}
+
+/// A carried row's next value: its writer at `pos` mixes the value the
+/// iteration before left with what it reads.
+fn carried_value(pos: usize, old: &[u64], inputs: &[&[u64]]) -> Vec<u64> {
+    let mut all = vec![old];
+    all.extend_from_slice(inputs);
+    (0..old.len()).map(|i| mix(pos + 1000, i, &all)).collect()
+}
+
+/// The parent's rows of a random loop, made before it.
+struct Parent(Vec<usize>);
+
+impl Task<Heap, ()> for Parent {
+    type Rows = Vec<RowId<Heap, u64>>;
+    const GPU: bool = false;
+
+    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) -> Self::Rows {
+        self.0.iter().map(|&len| h.output("parent", len)).collect()
+    }
+
+    fn run(
+        &self,
+        rows: &Self::Rows,
+        _: &Bufs<'_, Device>,
+        h: &Bufs<'_, Heap>,
+        _: Lane<'_, ()>,
+    ) -> Status {
+        for (k, &row) in rows.iter().enumerate() {
+            h.take_mut(row).copy_from_slice(&parent_value(k, self.0[k]));
+        }
+        Ok(())
+    }
+}
+
+/// A node of a random loop's body: reads its rows, writes the row it
+/// carries from them and the value the iteration before left, writes its
+/// scratch with junk and its output from what it read.
+struct BodyNode<const GPU: bool> {
+    pos: usize,
+    reads: Vec<RowId<Heap, u64>>,
+    carries: Option<RowId<Heap, u64>>,
+    len: usize,
+    scratch: usize,
+}
+
+impl<const GPU: bool> Task<Heap, ()> for BodyNode<GPU> {
+    type Rows = NodeRows;
+    const GPU: bool = GPU;
+
+    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) -> NodeRows {
+        for &row in &self.reads {
+            h.read(row);
+        }
+        if let Some(row) = self.carries {
+            h.write(row);
+        }
+        NodeRows {
+            scratch: h.scratch("scratch", self.scratch),
+            out: h.output("out", self.len),
+        }
+    }
+
+    fn run(
+        &self,
+        rows: &NodeRows,
+        _: &Bufs<'_, Device>,
+        h: &Bufs<'_, Heap>,
+        _: Lane<'_, ()>,
+    ) -> Status {
+        let ins: Vec<&[u64]> = self.reads.iter().map(|&r| h.get(r)).collect();
+        if let Some(row) = self.carries {
+            let carried = h.take_mut(row);
+            let next = carried_value(self.pos, carried, &ins);
+            carried.copy_from_slice(&next);
+        }
+        h.take_mut(rows.scratch).fill(u64::MAX - self.pos as u64);
+        let out = h.take_mut(rows.out);
+        for (i, x) in out.iter_mut().enumerate() {
+            *x = mix(self.pos, i, &ins);
+        }
+        Ok(())
+    }
+}
+
+/// A random loop's decision: writes the row it carries, if any, and stops
+/// after `iterations`.
+struct Count {
+    pos: usize,
+    carries: Option<RowId<Heap, u64>>,
+    iterations: usize,
+}
+
+impl Decision<Heap> for Count {
+    type Rows = ();
+
+    fn layout(&self, h: &mut Layout<'_, Heap>) {
+        if let Some(row) = self.carries {
+            h.write(row);
+        }
+    }
+
+    fn decide(&self, _: &(), h: &Bufs<'_, Heap>, iteration: usize) -> Result<ControlFlow<()>> {
+        if let Some(row) = self.carries {
+            let carried = h.take_mut(row);
+            let next = carried_value(self.pos, carried, &[]);
+            carried.copy_from_slice(&next);
+        }
+        Ok(if iteration + 1 < self.iterations {
+            ControlFlow::Continue(())
+        } else {
+            ControlFlow::Break(())
+        })
+    }
+}
+
+/// Rows' values by the model's index, as the node after a random loop
+/// leaves them.
+type Collected = Arc<std::sync::Mutex<Vec<(usize, Vec<u64>)>>>;
+
+/// After a random loop: copies out the rows it reads, by the model's
+/// index.
+struct Collect(Vec<(usize, RowId<Heap, u64>)>, Collected);
+
+impl Task<Heap, ()> for Collect {
+    type Rows = ();
+    const GPU: bool = false;
+
+    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) {
+        for &(_, row) in &self.0 {
+            h.read(row);
+        }
+    }
+
+    fn run(&self, _: &(), _: &Bufs<'_, Device>, h: &Bufs<'_, Heap>, _: Lane<'_, ()>) -> Status {
+        *self.1.lock().unwrap() = self
+            .0
+            .iter()
+            .map(|&(k, r)| (k, h.get(r).to_vec()))
+            .collect();
+        Ok(())
+    }
+}
+
+/// One body node of a [`LoopSpec`]: where it runs, the rows it reads by
+/// the model's index (the parent's first, then the body's outputs), the
+/// parent row it carries, its output's and scratch's lengths, and whether
+/// its output is read after the loop.
+#[derive(Clone, Debug)]
+struct BodySpec {
+    gpu: bool,
+    reads: Vec<usize>,
+    carries: Option<usize>,
+    len: usize,
+    scratch: usize,
+    after: bool,
+}
+
+/// A loop between a node that makes the parent's rows and one that reads
+/// some of them, and some of the body's outputs, after it: the body's
+/// shape, the rows it and its decision carry, and its iteration count.
+#[derive(Debug)]
+struct LoopSpec {
+    parent: Vec<usize>,
+    body: Vec<BodySpec>,
+    decision_carries: Option<usize>,
+    /// Which parent rows the node after the loop reads.
+    after: Vec<bool>,
+    iterations: usize,
+    max_iterations: usize,
+}
+
+impl LoopSpec {
+    /// The rows the node after the loop reads, by the model's index.
+    fn collected(&self) -> Vec<usize> {
+        let p = self.parent.len();
+        (0..p)
+            .filter(|&k| self.after[k])
+            .chain(
+                (0..self.body.len())
+                    .filter(|&j| self.body[j].after)
+                    .map(|j| p + j),
+            )
+            .collect()
+    }
+
+    /// The model: the loop run serially, its rows' values after it.
+    fn expect(&self) -> Vec<(usize, Vec<u64>)> {
+        let p = self.parent.len();
+        let mut rows: Vec<Vec<u64>> = (0..p).map(|k| parent_value(k, self.parent[k])).collect();
+        rows.extend(self.body.iter().map(|b| vec![0; b.len]));
+        let decision = self.body.len() + 1;
+        for _ in 0..self.iterations {
+            for (j, b) in self.body.iter().enumerate() {
+                let ins: Vec<Vec<u64>> = b.reads.iter().map(|&k| rows[k].clone()).collect();
+                let ins: Vec<&[u64]> = ins.iter().map(Vec::as_slice).collect();
+                if let Some(c) = b.carries {
+                    rows[c] = carried_value(j + 1, &rows[c], &ins);
+                }
+                rows[p + j] = (0..b.len).map(|i| mix(j + 1, i, &ins)).collect();
+            }
+            if let Some(c) = self.decision_carries {
+                rows[c] = carried_value(decision, &rows[c], &[]);
+            }
+        }
+        self.collected()
+            .into_iter()
+            .map(|k| (k, rows[k].clone()))
+            .collect()
+    }
+
+    /// The DAG, and where the node after the loop leaves what it read.
+    fn dag(&self) -> (Dag<'static, Heap, ()>, Collected) {
+        let mut dag = Dag::new();
+        let mut rows = dag.add("parent", 0, Parent(self.parent.clone()));
+        let body = dag.len();
+        for (j, b) in self.body.iter().enumerate() {
+            let pos = dag.len();
+            let reads = b.reads.iter().map(|&k| rows[k]).collect();
+            let carries = b.carries.map(|c| rows[c]);
+            macro_rules! node {
+                ($gpu:literal) => {
+                    BodyNode::<$gpu> {
+                        pos,
+                        reads,
+                        carries,
+                        len: b.len,
+                        scratch: b.scratch,
+                    }
+                };
+            }
+            let name = format!("b{j}");
+            let made = if b.gpu {
+                dag.add(name, 0, node!(true))
+            } else {
+                dag.add(name, 0, node!(false))
+            };
+            rows.push(made.out);
+        }
+        let decision = Count {
+            pos: dag.len(),
+            carries: self.decision_carries.map(|c| rows[c]),
+            iterations: self.iterations,
+        };
+        dag.add_loop("count", 0, body, self.max_iterations, decision);
+        let out = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let collected = self.collected().into_iter().map(|k| (k, rows[k])).collect();
+        dag.add("collect", 0, Collect(collected, Arc::clone(&out)));
+        (dag, out)
+    }
+}
+
+/// A random loop: up to four parent rows, up to five body nodes each
+/// reading up to three earlier rows and carrying at most one parent row,
+/// the decision perhaps carrying one more, and one to five iterations.
+/// Lengths are small, so most rows pad to one alignment and any dead one's
+/// bytes fit the next.
+fn arb_loop() -> impl Strategy<Value = LoopSpec> {
+    let node = (
+        any::<bool>(),
+        prop::collection::vec(any::<prop::sample::Index>(), 0..4),
+        prop::option::of(any::<prop::sample::Index>()),
+        1..9usize,
+        0..9usize,
+        any::<bool>(),
+    );
+    (
+        prop::collection::vec((1..9usize, any::<bool>()), 1..5),
+        prop::collection::vec(node, 1..6),
+        prop::option::of(any::<prop::sample::Index>()),
+        1..6usize,
+        0..3usize,
+    )
+        .prop_map(|(parent, raw, decision, iterations, slack)| {
+            let p = parent.len();
+            // Each parent row's writer, by body index; the decision's is
+            // the body's length.
+            let mut writer: Vec<Option<usize>> = vec![None; p];
+            let mut body = Vec::new();
+            for (j, (gpu, picks, carry, len, scratch, after)) in raw.into_iter().enumerate() {
+                let carries = carry.map(|c| c.index(p)).filter(|&c| writer[c].is_none());
+                if let Some(c) = carries {
+                    writer[c] = Some(j);
+                }
+                // A carried row is read only before its writer, which is
+                // its last user in the loop.
+                let readable: Vec<usize> = (0..p)
+                    .filter(|&k| writer[k].is_none())
+                    .chain(p..p + j)
+                    .collect();
+                let mut reads: Vec<usize> = if readable.is_empty() {
+                    Vec::new()
+                } else {
+                    picks.iter().map(|i| *i.get(&readable)).collect()
+                };
+                reads.sort_unstable();
+                reads.dedup();
+                body.push(BodySpec {
+                    gpu,
+                    reads,
+                    carries,
+                    len,
+                    scratch,
+                    after,
+                });
+            }
+            let decision_carries = decision
+                .map(|c| c.index(p))
+                .filter(|&c| writer[c].is_none());
+            LoopSpec {
+                after: parent.iter().map(|&(_, a)| a).collect(),
+                parent: parent.into_iter().map(|(len, _)| len).collect(),
+                body,
+                decision_carries,
+                iterations,
+                max_iterations: iterations + slack,
+            }
+        })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// Any loop, through the planner and the executor, twice over the same
+    /// blocks: the rows it carries and its outputs, read after it, are the
+    /// serial model's after its iteration count, and its decision ran that
+    /// many times. A row the layout lets another take the bytes of while
+    /// the loop still needs it, a carried row or one the body reads every
+    /// iteration, shows as a wrong value; a missing dependency, as a wrong
+    /// value or a borrow panic.
+    #[test]
+    fn every_loop_carries_what_the_model_does(spec in arb_loop()) {
+        let (dag, out) = spec.dag();
+        let decision = spec.body.len() + 1;
+        let mut instance = dag.plan().instantiate(&[0]);
+        let expect = spec.expect();
+        for _ in 0..2 {
+            let record = instance.run(&mut HostOnly::new(1), 3);
+            prop_assert_eq!(record.result, Ok(()));
+            let iterations: Vec<_> = record
+                .iterations
+                .iter()
+                .map(|(&node, &n)| (node.index(), n))
+                .collect();
+            prop_assert_eq!(iterations, vec![(decision, spec.iterations)]);
+            prop_assert_eq!(&*out.lock().unwrap(), &expect);
+        }
+    }
+}
+
 /// Writes nothing, and fails.
 struct Fails;
 
@@ -680,9 +1033,21 @@ impl Task<Heap, ()> for Sneaky {
     }
 }
 
-/// What the planner refuses: a CPU task with a device row, and a read of
-/// another worker's row, at `add`; and a row a task did not declare, when
-/// it asks for it.
+/// A read of another worker's row is refused at `add`, by the table's
+/// contract.
+#[test]
+#[cfg(debug_assertions)] // the contract is compiled out of release
+fn a_read_of_another_workers_row_is_refused() {
+    let m = panic_message(|| {
+        let mut dag = Dag::<Heap, ()>::new();
+        let s = dag.add("s", 0, Declares::<true>(vec![Decl::Out("S", 1)]))[0];
+        dag.add("x", 1, Declares::<true>(vec![Decl::Read(s)]));
+    });
+    assert!(m.contains("a row of this table"), "{m}");
+}
+
+/// What the planner refuses in every build: a CPU task with a device row,
+/// at `add`; and a row a task did not declare, when it asks for it.
 #[test]
 fn refusals() {
     let m = panic_message(|| {
@@ -690,13 +1055,6 @@ fn refusals() {
         dag.add("cpu", 0, Declares::<false>(vec![Decl::Out("D", 1)]));
     });
     assert!(m.contains("cpu: a CPU task holds no device row"), "{m}");
-
-    let m = panic_message(|| {
-        let mut dag = Dag::<Heap, ()>::new();
-        let s = dag.add("s", 0, Declares::<true>(vec![Decl::Out("S", 1)]))[0];
-        dag.add("x", 1, Declares::<true>(vec![Decl::Read(s)]));
-    });
-    assert!(m.contains("a row of another table"), "{m}");
 
     let ran = Arc::new(AtomicUsize::new(0));
     let spec = Spec {

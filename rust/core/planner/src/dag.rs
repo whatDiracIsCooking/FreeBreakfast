@@ -115,12 +115,15 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
     /// CPU pool, with its host rows in that worker's block (a pinned row
     /// belongs to the GPU worker whose copies it stages).
     ///
+    /// The layout's declarations are held to the worker's table's
+    /// contracts ([`TableBuilder::read`], [`TableBuilder::write`]).
+    ///
     /// # Panics
-    /// If a CPU task declares or reads a device row, or the layout reads a
-    /// row of another worker's table ("a row of another table": an edge
-    /// between two workers needs a transport row, which placement does not
-    /// make yet), or a read the table refuses
-    /// ([`TableBuilder::read`]).
+    /// If a CPU task declares or reads a device row. And if the layout
+    /// reads a row of another worker's table (an edge between two workers
+    /// needs a transport row, which placement does not make yet): here, by
+    /// the table's contract, in a debug build; in every build, when the
+    /// task's run asks for the row, by the view's checks ([`Bufs`]).
     pub fn add<T>(&mut self, name: impl Into<String>, worker: usize, task: T) -> T::Rows
     where
         T: Task<H, S> + 'a,
@@ -174,9 +177,8 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
     /// A task after the loop that reads a row the body wrote runs after the
     /// decision's `Break`, never after a single iteration.
     ///
-    /// # Panics
-    /// If the decision's layout reads a row of another worker's table, or
-    /// one the table refuses, as [`Dag::add`].
+    /// The decision's layout is held to the table's contracts, as a
+    /// task's is in [`Dag::add`].
     #[debug_requires(body < self.nodes.len(), "the body has a task")]
     #[debug_requires(
         self.loops.last().is_none_or(|&(_, decision)| decision < body),
