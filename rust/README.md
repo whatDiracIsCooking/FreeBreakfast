@@ -68,6 +68,7 @@ tree, not inputs to its build.
 | `fb_io_npy` | `src/io/npy` | `NpyArray` (a shape and its float64 elements, column-major) and `element_count`; `parse_npy` / `read_npy`, versions 1.0 to 3.0, `'<f8'` only, a C-order payload reordered, every refusal of a document (a bad magic, version, length or header field, another dtype, a payload the shape disagrees with, a file that cannot be read) an `Io` error and an overflowing shape `InvalidConfig`; `npy_header`, `npy_to_bytes` and `write_npy`, version 1.0 with `np.save`'s canonical header, byte for byte the C++ writer's (the `data/sad/STO-3G/` stamps written back are their files) |
 | `fb_recipes_matrix_ao` | `src/recipes/matrix_ao`'s `upload_spherical_transform_matrix` and `MatrixAOPair::cartesian_to_spherical` | `add_cartesian_to_spherical`: the spherical form `Uᵀ M_cart U` of a Cartesian AO matrix row as tasks of a `Dag`, `harmonics` on the CPU (U into a pinned row), added by the first call over a basis and shared through the caller's slot by every later one, and `spherical transform` on the stream (U copied into scratch, two `wwr_blas_dgemm`s, the intermediate scratch too). Every one-electron matrix calls it; `spherical_to_cartesian` is not ported yet |
 | `fb_io_sad` | `src/io/sad` | `builtin_sad_density`, `fb-sad`'s `SadStampLookup`: every `data/sad/<basis>/<Z>.npy` compiled in with `include_bytes!` (the table written by `build.rs`), found by the directory name compared exactly with `BasisSet::name` and the atomic number, parsed by `fb-io-npy`; bytes that are not a square matrix abort. A directory naming no `data/basis` set fails a unit test, a stem that is not a three-digit Z the build |
+| `fb_integrals_one_electron_kinetic` | `src/integrals/one_electron/kinetic`'s `kinetic` and its bridge's `kinetic_class` | `kinetic_classes`, the safe layer over `fb_kinetic_class`: every class's launch on one stream into a Cartesian matrix the caller zeroed, the launcher's requirements (`la <= lb <= FB_KINETIC_MAX_MOMENTUM`, records present, `n_cart²` within `i32` and the matrix that long) as `debug_requires`, callable by a task that launches several families into one matrix. `add_kinetic`: T of a `BasisSet` as tasks after the records, `kinetic` on the stream (the Cartesian matrix zeroed, then `kinetic_classes`, reading `ClassRows` as an edge), then `fb_recipes_matrix_ao`'s spherical transform, U's slot passed in. The plan text for each of the overlap's fixtures is the committed golden `integrals/one_electron/kinetic/tests/golden/plan_*.txt` |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -92,7 +93,8 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `recipes/matrix_ao` on `basis`,
 `planner`, `arena`, `thread_pool`, `wwr` and `error_handling`, with
 `integrals/one_electron/overlap` on it too; `io/sad` on `io/npy` and
-`error_handling`.
+`error_handling`; and `integrals/one_electron/kinetic` on `integrals/mmd`,
+`recipes/matrix_ao` and what they stand on.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -317,6 +319,14 @@ The references are committed in `integrals/one_electron/overlap/tests/data/`
 with the script that writes them; that directory's README has the
 conventions it pins (the same JSON digits, CODATA 2018 bohr, `D S D` for the
 unrenormalized contractions).
+
+The kinetic energy on a card is
+`integrals/one_electron/kinetic/tests/kinetic.rs`: the overlap's three
+fixtures, run once and compared with PySCF's T at `max |T - T_ref| <=
+1e-12 * max |T_ref|`, the overlap's bar by the same analysis. Its
+references are committed in `integrals/one_electron/kinetic/tests/data/`
+with the script that writes them, the overlap's with `int1e_kin`, and the
+same conventions.
 
 `doc_check/tests/section_citations.rs` checks that every section the
 README, `docs/` and every member's Rust sources cite by name is a heading of
@@ -692,3 +702,15 @@ unchanged without `FB_BLESS`, and its tier-4 test passes at its bar,
 `1e-12 * max |S_ref|`. Clippy (`-D warnings`, the two crates with their
 tests too), rustdoc (`-D warnings`) and `cargo fmt --check` are clean. Not
 run on the gfx1200.
+
+2026-11-14, `integrals/one_electron/kinetic` (T as tasks, and the safe
+layer over `fb_kinetic_class`), on the RTX 3080 (CUDA), holding the card,
+linking the libraries the `default` preset built: `devtools/test.py pr
+--only cargo --all` passes, tier 3 190 tests, none in the new crate, tier
+4 97 (was 95), the 2 new its plan goldens and its PySCF comparison. Against
+PySCF's T, `max |T - T_ref|` is `7.1e-15` (H2O/STO-3G), `1.8e-14`
+(H2O/cc-pVDZ) and `5.3e-14` (CO/cc-pVTZ), the bar `1e-12 * max |T_ref|`
+about `2.9e-11` for each. The script, run on the overlap's CO fixture,
+rewrites the overlap's committed S byte for byte. Clippy (`-D warnings`,
+the new crate with its tests too), rustdoc (`-D warnings`) and `cargo fmt
+--check` are clean. Not run on the gfx1200.
