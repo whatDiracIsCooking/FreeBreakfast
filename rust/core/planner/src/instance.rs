@@ -40,7 +40,10 @@ impl<'a, H: HostKind, S: 'a> Planned<'a, H, S> {
     /// Allocate each worker's blocks, worker `w`'s on device `devices[w]`,
     /// and build the executor's plan: a node per task in rank order, after
     /// its [`predecessors`](Planned::predecessors), and for each loop its
-    /// decision, closing it over its body ([`Plan::add_loop`]). A table of
+    /// decision, closing it over its body ([`Plan::add_loop`]), or for a
+    /// counted loop its close after its body's last ([`Plan::add_counted`]).
+    /// Each node hands its task views for the iteration it runs in, so a
+    /// counted loop's iteration reaches its own copy of the body's rows. A table of
     /// zero bytes allocates nothing, so a DAG with no device rows touches
     /// no device. A loop's body is replayed on these blocks: nothing is
     /// allocated per iteration.
@@ -61,6 +64,7 @@ impl<'a, H: HostKind, S: 'a> Planned<'a, H, S> {
         }
         let mut plan = Plan::new();
         let mut ids: Vec<NodeId> = Vec::with_capacity(self.nodes.len());
+        let loops = self.loops;
         for (pos, (node, deps)) in self.nodes.into_iter().zip(self.deps).enumerate() {
             let preds: Vec<NodeId> = deps.iter().map(|&u| ids[u]).collect();
             let (device, host) = &blocks[node.at.worker];
@@ -68,25 +72,36 @@ impl<'a, H: HostKind, S: 'a> Planned<'a, H, S> {
             let placement = node.placement();
             let id = match node.work {
                 Work::Gpu(run) => plan.add(node.name, placement, &preds, move |lane| {
-                    let Lane::Stream { stream, .. } = lane else {
+                    let Lane::Stream {
+                        stream, iteration, ..
+                    } = lane
+                    else {
                         unreachable!("a GPU task is placed on a stream")
                     };
-                    let pinned = CopyOnly::from(host.partition(pos));
-                    run(&device.partition(pos), &pinned, stream)
+                    let pinned = CopyOnly::from(host.partition(pos, iteration));
+                    run(&device.partition(pos, iteration), &pinned, stream)
                 }),
-                Work::Cpu(run) => plan.add(node.name, placement, &preds, move |_| {
-                    run(&host.partition(pos))
+                Work::Cpu(run) => plan.add(node.name, placement, &preds, move |lane| {
+                    let Lane::Cpu { iteration } = lane else {
+                        unreachable!("a CPU task is placed on the CPU pool")
+                    };
+                    run(&host.partition(pos, iteration))
                 }),
                 Work::Decide {
                     body,
                     max_iterations,
                     decide,
                 } => plan.add_loop(node.name, ids[body], &preds, max_iterations, move |i| {
-                    decide(&host.partition(pos), i)
+                    decide(&host.partition(pos, i), i)
                 }),
             };
             plan.set_dims(id, &node.dims);
             ids.push(id);
+            for l in loops.iter().filter(|l| l.last == pos) {
+                if let Some((trips, depth)) = l.counted {
+                    plan.add_counted(ids[l.first], trips, depth);
+                }
+            }
         }
         Instance {
             plan,

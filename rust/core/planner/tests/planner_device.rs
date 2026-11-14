@@ -789,3 +789,275 @@ fn a_device_loop_to_its_fixed_point() {
         grew.map_or(0, |i| i + 1)
     );
 }
+
+/// The elements of one batch of the tensor [`batches_reduce_bitwise`]
+/// streams, and its batch count: 8 MiB a batch, 64 MiB in all.
+const BATCH: usize = 1 << 20;
+const TRIPS: usize = 8;
+
+/// Element `i` of batch `k`: distinct in every batch and in most bits, so
+/// a batch added twice, or one taken from another batch's copy, changes
+/// the sum's bits.
+fn batch_value(k: usize, i: usize) -> f64 {
+    ((k * BATCH + i) as f64 * 0.37).sin() * 1e3 + 1.0 / (k + 1) as f64
+}
+
+/// CPU: the tensor, cut into its batches, a pinned row each, and a one.
+struct Tensor;
+
+impl CpuTask for Tensor {
+    type Rows = (Vec<RowId<Pinned, f64>>, RowId<Pinned, f64>);
+
+    fn layout(&self, h: &mut Layout<'_, Pinned>) -> Self::Rows {
+        let batches = (0..TRIPS).map(|_| h.output("batch", BATCH)).collect();
+        (batches, h.output("one", 1))
+    }
+
+    fn run(&self, (batches, one): &Self::Rows, h: &Bufs<'_, Pinned>) -> Status {
+        for (k, &row) in batches.iter().enumerate() {
+            let row = h.take_mut(row);
+            row.iter_mut()
+                .enumerate()
+                .for_each(|(i, x)| *x = batch_value(k, i));
+        }
+        h.take_mut(*one)[0] = 1.0;
+        Ok(())
+    }
+}
+
+/// The device rows a reduce starts from: the accumulator and the one.
+#[derive(Clone, Copy)]
+struct Sum {
+    acc: RowId<Device, f64>,
+    one: RowId<Device, f64>,
+}
+
+/// GPU, before the loop: the accumulator zeroed and the one uploaded.
+struct Zero(RowId<Pinned, f64>);
+
+impl GpuTask for Zero {
+    type Rows = Sum;
+
+    fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Sum {
+        h.read(self.0);
+        Sum {
+            acc: d.output("acc", BATCH),
+            one: d.output("one", 1),
+        }
+    }
+
+    fn run(
+        &self,
+        r: &Sum,
+        d: &Bufs<'_, Device>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
+    ) -> Status {
+        memset::zero(&mut d.take_mut(r.acc), stream)?;
+        memcpy_p2d(&mut d.take_mut(r.one), h, self.0, stream)
+    }
+}
+
+/// GPU, the copy lane: this iteration's batch uploaded into this
+/// iteration's copy of `staged`.
+struct StageBatch(Vec<RowId<Pinned, f64>>);
+
+impl GpuTask for StageBatch {
+    type Rows = RowId<Device, f64>;
+
+    fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
+        for &batch in &self.0 {
+            h.read(batch);
+        }
+        d.output("staged", BATCH)
+    }
+
+    fn run(
+        &self,
+        staged: &Self::Rows,
+        d: &Bufs<'_, Device>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
+    ) -> Status {
+        let batch = self.0[d.iteration()];
+        memcpy_p2d(&mut d.take_mut(*staged), h, batch, stream)
+    }
+}
+
+/// GPU, the compute lane: a delay, then the staged batch added into the
+/// accumulator, `acc <- 1 staged 1 + 1 acc`, a gemm of inner dimension 1:
+/// each element's one product is exact, so each element is `acc + staged`
+/// rounded once, the host's sum in the batches' order.
+struct Reduce {
+    delay: RowId<Device, f64>,
+    staged: RowId<Device, f64>,
+    sum: Sum,
+}
+
+impl GpuTask for Reduce {
+    type Rows = ();
+
+    fn layout(&self, d: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) {
+        d.read(self.staged);
+        d.read(self.sum.one);
+        d.write(self.sum.acc);
+    }
+
+    fn run(
+        &self,
+        _: &(),
+        d: &Bufs<'_, Device>,
+        _: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
+    ) -> Status {
+        delay(self.delay, d, stream)?;
+        let m = BATCH as i32;
+        gemm(
+            stream.blas(),
+            OP_N,
+            OP_N,
+            m,
+            1,
+            1,
+            1.0,
+            &d.get(self.staged),
+            m,
+            &d.get(self.sum.one),
+            1,
+            1.0,
+            &mut d.take_mut(self.sum.acc),
+            m,
+        )
+    }
+}
+
+/// GPU, after the loop: the accumulator copied down.
+struct DownSum(RowId<Device, f64>);
+
+impl GpuTask for DownSum {
+    type Rows = RowId<Pinned, f64>;
+
+    fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
+        d.read(self.0);
+        h.output("sum", BATCH)
+    }
+
+    fn run(
+        &self,
+        sum: &Self::Rows,
+        d: &Bufs<'_, Device>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
+    ) -> Status {
+        memcpy_d2p(h, *sum, d.get(self.0), stream)
+    }
+}
+
+/// A tensor cut into batches, uploaded and reduced in a counted loop on
+/// two lanes of one worker, bitwise against the one-pass ordered reduce
+/// of the whole tensor on the host (`docs/programming_model.md`, "Plan once,
+/// run many"). Each iteration's upload, on lane 1, stages its batch in its
+/// copy of the body's one row, `staged`; the reduce, on lane 0, adds it
+/// into the accumulator after a delay. Two copies (depth 2), eight trips.
+///
+/// The bar is exact, by analysis: each element's sum is the batches added
+/// in order, each addition rounded once, on the card as on the host.
+/// The delay keeps the reduce lane behind the copy lane, so the ring is
+/// load-bearing: without it an upload two iterations on overwrites a batch
+/// its reduce has not yet read, and every element's bits change (the ring
+/// dropped from the executor, this case fails on all of them). The read's
+/// wait between the lanes is `two_lanes_share_a_row_with_no_host_wait`'s.
+/// The loop adds no host wait: the record's sync points are the
+/// check's on the download, after the loop, and each lane's exit. Each
+/// body task has an entry per trip with its device time. The plan runs
+/// twice, the arena's count of this process's blocks the same across the
+/// second run: a counted loop allocates nothing.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn batches_reduce_bitwise() {
+    let _turn = TURN.lock().unwrap_or_else(|p| p.into_inner());
+    let lane = |lane| LaneId { worker: 0, lane };
+    let got = Arc::new(Mutex::new(Vec::new()));
+    let mut dag = Dag::new();
+    dag.blas_workspace(0);
+    let wait = dag.device_worker_row(0, "delay", 2 * DELAY);
+    let (batches, one) = dag.add_cpu("tensor", 0, Tensor);
+    let sum = dag.add_gpu("zero", lane(0), Zero(one));
+    let body = dag.len();
+    let staged = dag.add_gpu("stage", lane(1), StageBatch(batches));
+    dag.add_gpu(
+        "reduce",
+        lane(0),
+        Reduce {
+            delay: wait,
+            staged,
+            sum,
+        },
+    );
+    dag.add_counted(body, TRIPS, 2);
+    let down = dag.add_gpu("download", lane(0), DownSum(sum.acc));
+    dag.add_cpu("check", 0, Keep(down, Arc::clone(&got)));
+    let planned = dag.plan();
+    let text = planned.to_string();
+    assert!(
+        text.contains("reduce: after 1 2; closes counted loop 2-3, 8 trips, depth 2"),
+        "{text}"
+    );
+    assert!(text.contains("2 copies 8388608 bytes apart"), "{text}");
+
+    let mut expect = vec![0.0f64; BATCH];
+    for k in 0..TRIPS {
+        for (i, e) in expect.iter_mut().enumerate() {
+            *e += batch_value(k, i);
+        }
+    }
+    let mut instance = planned.instantiate(&[0]);
+    let mut backend = instance.backend();
+    for run in 0..2 {
+        let blocks = fb_core_arena::allocations();
+        let record = instance.run(&mut backend, 1);
+        record.result.as_ref().unwrap();
+        assert_eq!(fb_core_arena::allocations(), blocks, "run {run} allocated");
+        let sum = std::mem::take(&mut *got.lock().unwrap());
+        assert_eq!(sum.len(), BATCH);
+        let wrong = (0..BATCH)
+            .filter(|&i| sum[i].to_bits() != expect[i].to_bits())
+            .count();
+        assert_eq!(
+            wrong, 0,
+            "run {run}: {wrong} elements differ from the ordered reduce"
+        );
+
+        for name in ["stage", "reduce"] {
+            let trips: Vec<_> = record
+                .tasks
+                .iter()
+                .filter(|t| t.name == name)
+                .map(|t| (t.iteration, t.device.is_some()))
+                .collect();
+            let each: Vec<_> = (0..TRIPS).map(|k| (Some(k), true)).collect();
+            assert_eq!(trips, each, "run {run}: {name}");
+        }
+        let syncs: Vec<_> = record
+            .syncs
+            .iter()
+            .map(|s| {
+                (
+                    s.node.map(NodeId::index),
+                    s.worker.as_str(),
+                    s.waited_for.index(),
+                )
+            })
+            .collect();
+        // Ranks: the download 4, the check 5, the last upload 2.
+        assert_eq!(
+            syncs,
+            [
+                (Some(5), "cpu0", 4),
+                (None, "gpu0.1", 2),
+                (None, "gpu0.0", 4)
+            ],
+            "run {run}: no host wait in the loop"
+        );
+    }
+}

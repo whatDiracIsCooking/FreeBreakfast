@@ -25,10 +25,17 @@
 //!   after them: the body replayed in one run until the decision says
 //!   `Break`, its rows laid out once in a region of each worker's tables,
 //!   the rows it carries between iterations and its outputs the parent's
-//!   (`docs/memory.md`, "Nested plans"). With `device`, `Dag::upload` and
-//!   `Dag::download` add a copy node, a pinned row to a new device row or
-//!   back, named after the new row: a copy that is a node's whole work is
-//!   never a hand-written task (`docs/memory.md`, "The table").
+//!   (`docs/memory.md`, "Nested plans"). [`Dag::add_counted`] closes a
+//!   counted loop: the body run a trip count fixed at planning, no
+//!   decision and no host wait between iterations, its rows held once per
+//!   iteration in flight, each body task reading its iteration from its
+//!   views ([`Bufs::iteration`]) to pick its batch. With `device`,
+//!   `Dag::upload` and `Dag::download` add a copy node, a pinned row to a
+//!   new device row or back, named after the new row: a copy that is a
+//!   node's whole work is never a hand-written task (`docs/memory.md`,
+//!   "The table").
+//!
+//! [`Bufs::iteration`]: fb_core_arena::Bufs::iteration
 //! - [`Planned`] ([`Dag::plan`]): each worker's device and host tables laid
 //!   out, and each task's dependencies derived, all pure. A task runs after
 //!   the producer of every row it reads ([`Table::reads`]) and after every
@@ -121,7 +128,7 @@
 //! reads only rows of its own worker; an edge between workers needs a
 //! transport row, which placement would add. No partition or reduce: every
 //! edge is one producer's output. No adaptive widths, no sub-DAG with
-//! dimensions of its own, and no loop in a loop's body. Every
+//! dimensions of its own, and no loop in a loop's body (#1613). Every
 //! dependency is a row: an ordering with no buffer behind it has no way to
 //! be declared until a task needs one.
 

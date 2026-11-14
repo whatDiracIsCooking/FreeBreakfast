@@ -96,6 +96,16 @@ impl<K, T> fmt::Debug for RowId<K, T> {
 
 static NEXT_TABLE: AtomicU64 = AtomicU64::new(0);
 
+/// A loop as declared to a [`TableBuilder`].
+struct LoopDecl {
+    positions: RangeInclusive<usize>,
+    /// How many copies of the body's table the region holds: 1 for a
+    /// decision loop, the depth for a counted one.
+    copies: usize,
+    /// Whether its last position is a decision, after every body node.
+    decides: bool,
+}
+
 /// Declares a table's rows, node by node, and then lays them out.
 ///
 /// A node is named by its position, its rank in the plan the table serves:
@@ -120,8 +130,10 @@ static NEXT_TABLE: AtomicU64 = AtomicU64::new(0);
 pub struct TableBuilder<K> {
     id: u64,
     rows: Vec<RowInfo>,
-    /// Each loop's positions, in plan order ([`TableBuilder::add_loop`]).
-    loops: Vec<RangeInclusive<usize>>,
+    /// Each loop, in plan order: its positions, its copies of the body,
+    /// and whether it ends at a decision ([`TableBuilder::add_loop`],
+    /// [`TableBuilder::add_counted`]).
+    loops: Vec<LoopDecl>,
     marker: PhantomData<fn() -> K>,
 }
 
@@ -226,11 +238,44 @@ impl<K: Kind> TableBuilder<K> {
     /// takes its bytes.
     #[debug_requires(positions.start() <= positions.end(), "a loop has a position")]
     #[debug_requires(
-        self.loops.last().is_none_or(|l| l.end() < positions.start()),
+        self.loops.last().is_none_or(|l| l.positions.end() < positions.start()),
         "loops are added in plan order, and none holds another"
     )]
     pub fn add_loop(&mut self, positions: RangeInclusive<usize>) {
-        self.loops.push(positions);
+        self.loops.push(LoopDecl {
+            positions,
+            copies: 1,
+            decides: true,
+        });
+    }
+
+    /// A counted loop of the plan over `positions`, its body's nodes, run
+    /// a trip count fixed at planning with up to `depth` iterations in
+    /// flight at once and no decision (`docs/memory.md`, "Nested plans").
+    /// Its region is `depth` copies of the body's table, the body laid out
+    /// once and repeated at a stride, and iteration `k` runs in copy
+    /// `k mod depth` ([`Block::partition`](super::Block::partition)): the
+    /// plan must start iteration `k` only after iteration `k - depth`, so
+    /// that no two iterations hold one copy at once, and run each body
+    /// node after itself in the iteration before.
+    ///
+    /// A row the body writes that is not the body's own, an accumulator
+    /// carried across iterations ([`TableBuilder::write`]) or an output
+    /// read after the loop, is used by one body node alone, since two
+    /// iterations in flight would otherwise reach its one copy in no
+    /// order; [`TableBuilder::build`] holds that.
+    #[debug_requires(positions.start() <= positions.end(), "a loop has a position")]
+    #[debug_requires(depth > 0, "a counted loop has a copy")]
+    #[debug_requires(
+        self.loops.last().is_none_or(|l| l.positions.end() < positions.start()),
+        "loops are added in plan order, and none holds another"
+    )]
+    pub fn add_counted(&mut self, positions: RangeInclusive<usize>, depth: usize) {
+        self.loops.push(LoopDecl {
+            positions,
+            copies: depth,
+            decides: false,
+        });
     }
 
     /// Node `pos`'s rows: the same declarations with the position bound,
@@ -244,8 +289,17 @@ impl<K: Kind> TableBuilder<K> {
     }
 
     /// Lay the rows out: each loop's body rows in a table of their own, at
-    /// offsets inside the loop's region, and the rest, the regions among
-    /// them, with [`assign`].
+    /// offsets inside the loop's region (a counted loop's region that
+    /// table's copies), and the rest, the regions among them, with
+    /// [`assign`].
+    #[debug_requires(
+        self.loops.iter().filter(|l| !l.decides).all(|l| self.rows.iter().all(|r| {
+            let inside = r.users.iter().filter(|(p, _)| l.positions.contains(p)).count();
+            let writes = r.users.iter().any(|&(p, a)| a == Access::Write && l.positions.contains(&p));
+            inside == r.users.len() || !writes || inside == 1
+        })),
+        "a row a counted loop writes and does not own has one user in its body"
+    )]
     #[debug_requires(
         self.carried().all(|(_, _, l)| l.is_some()),
         "a row is written again only inside a loop"
@@ -270,7 +324,7 @@ impl<K: Kind> TableBuilder<K> {
                 Owner::Task | Owner::Edge => self
                     .loops
                     .iter()
-                    .position(|l| r.users.iter().all(|(p, _)| l.contains(p))),
+                    .position(|l| r.users.iter().all(|(p, _)| l.positions.contains(p))),
             })
             .collect();
         let lives: Vec<Life> = self
@@ -285,7 +339,7 @@ impl<K: Kind> TableBuilder<K> {
                     },
                     None,
                 ) => {
-                    for l in &self.loops {
+                    for l in self.loops.iter().map(|l| &l.positions) {
                         if first <= *l.end() && *l.start() <= last {
                             first = first.min(*l.start());
                             last = last.max(*l.end());
@@ -301,7 +355,8 @@ impl<K: Kind> TableBuilder<K> {
             align: DEVICE_ALIGNMENT,
             life: lives[i],
         };
-        // Each body laid out alone, from offset 0 of its region.
+        // Each body laid out alone, from offset 0 of its region, and a
+        // counted loop's repeated at a stride, the body's total aligned.
         let mut offsets = vec![0; self.rows.len()];
         let mut regions = Vec::with_capacity(self.loops.len());
         for (index, l) in self.loops.iter().enumerate() {
@@ -312,11 +367,15 @@ impl<K: Kind> TableBuilder<K> {
             for (&i, &o) in members.iter().zip(&local.offsets) {
                 offsets[i] = o;
             }
+            let stride = local.total.next_multiple_of(DEVICE_ALIGNMENT);
             regions.push(Region {
-                name: format!("loop {}-{}", l.start(), l.end()),
-                positions: l.clone(),
+                name: format!("loop {}-{}", l.positions.start(), l.positions.end()),
+                positions: l.positions.clone(),
                 offset: 0,
-                bytes: local.total,
+                bytes: (l.copies - 1) * stride + local.total,
+                copies: l.copies,
+                stride,
+                decides: l.decides,
             });
         }
         // The rest, each region a row live for its loop's span.
@@ -364,7 +423,14 @@ impl<K: Kind> TableBuilder<K> {
                 .iter()
                 .skip(1)
                 .filter(|&&(_, a)| a == Access::Write)
-                .map(move |&(w, _)| (r, w, self.loops.iter().find(|l| l.contains(&w))))
+                .map(move |&(w, _)| {
+                    let l = self
+                        .loops
+                        .iter()
+                        .map(|l| &l.positions)
+                        .find(|l| l.contains(&w));
+                    (r, w, l)
+                })
         })
     }
 
@@ -471,14 +537,22 @@ pub struct Table<K> {
 }
 
 /// A loop's region: the bytes the table holds for the loop's whole span,
-/// in which its body's rows are laid out.
+/// in which its body's rows are laid out, once or, for a counted loop,
+/// once per copy.
 pub(super) struct Region {
     /// `loop first-last`, as admission names it.
     pub(super) name: String,
     pub(super) positions: RangeInclusive<usize>,
     pub(super) offset: usize,
-    /// The body's own total: its peak, laid out.
+    /// Every copy of the body: `copies - 1` strides and the body's own
+    /// total, its peak laid out.
     pub(super) bytes: usize,
+    /// The copies of the body's table: 1 but for a counted loop.
+    pub(super) copies: usize,
+    /// The bytes from one copy to the next: the body's total, aligned.
+    pub(super) stride: usize,
+    /// Whether the loop ends at a decision.
+    pub(super) decides: bool,
 }
 
 /// The instant a table's live rows are largest: [`Table::peak`].
@@ -525,6 +599,15 @@ impl<K: Kind> Table<K> {
         row.index
     }
 
+    /// Row `i`'s copies and the stride between them: a counted loop's body
+    /// row has its region's, any other row one.
+    pub(super) fn copies(&self, i: usize) -> (usize, usize) {
+        match self.body[i] {
+            Some(g) => (self.regions[g].copies, self.regions[g].stride),
+            None => (1, 0),
+        }
+    }
+
     /// The orderings that reusing bytes needs: `(u, v)` for every user `u`
     /// of a row whose bytes a later row takes, `v` being that later row's
     /// producer. Sorted, without repeats.
@@ -539,20 +622,37 @@ impl<K: Kind> Table<K> {
     /// the table trades concurrency for bytes, always.
     ///
     /// Two rows of one loop's body share bytes within an iteration, and the
-    /// pair orders them there; the next iteration starts after the loop's
-    /// decision, which is after every body node, so nothing crosses the
-    /// iteration edge. A pair from a body node to a node after the loop is
-    /// returned from the loop's decision instead, which a node after a
-    /// loop may follow and a body node, replayed, may not.
+    /// pair orders them there. Across the iteration edge: a decision
+    /// loop's next iteration starts after its decision, which is after
+    /// every body node; a counted loop's iteration `k` takes copy `k mod
+    /// depth` after iteration `k - depth` has finished with it, which the
+    /// plan orders. A pair from a body node to a node after a decision
+    /// loop is returned from the loop's decision instead, which a node
+    /// after a loop may follow and a body node, replayed, may not; after
+    /// a counted loop, as it is, from the body node's last iteration.
+    /// A row outside a counted loop's body is held against every copy of
+    /// it.
     pub fn handoffs(&self) -> Vec<(usize, usize)> {
         let mut pairs = BTreeSet::new();
+        // A row's bytes, every copy of it from the first to the last.
+        let extent = |i: usize| {
+            let (copies, stride) = self.copies(i);
+            (copies - 1) * stride + self.rows[i].bytes
+        };
         for (i, a) in self.rows.iter().enumerate() {
             for (j, b) in self.rows.iter().enumerate().skip(i + 1) {
                 if a.bytes == 0 || b.bytes == 0 {
                     continue;
                 }
+                // Two rows of one body share bytes copy for copy; any
+                // other pair, over every copy of each.
+                let (ea, eb) = if self.body[i].is_some() && self.body[i] == self.body[j] {
+                    (a.bytes, b.bytes)
+                } else {
+                    (extent(i), extent(j))
+                };
                 let (oa, ob) = (self.offsets[i], self.offsets[j]);
-                if oa >= ob + b.bytes || ob >= oa + a.bytes {
+                if oa >= ob + eb || ob >= oa + ea {
                     continue;
                 }
                 let (Life::Span { last: la, .. }, Life::Span { first: fb, .. }) =
@@ -569,10 +669,10 @@ impl<K: Kind> Table<K> {
     }
 
     /// The pair `(u, v)` as a plan may hold it: from the decision of the
-    /// loop `u` is in when `v` is after that loop, else as it is.
+    /// decision loop `u` is in when `v` is after that loop, else as it is.
     fn after_loop(&self, u: usize, v: usize) -> (usize, usize) {
         match self.regions.iter().find(|g| g.positions.contains(&u)) {
-            Some(g) if v > *g.positions.end() => (*g.positions.end(), v),
+            Some(g) if g.decides && v > *g.positions.end() => (*g.positions.end(), v),
             _ => (u, v),
         }
     }
@@ -711,11 +811,11 @@ impl<K: Kind> fmt::Display for Table<K> {
             self.fmt_row(f, i)?;
         }
         for (index, g) in self.regions.iter().enumerate() {
-            writeln!(
-                f,
-                "{}: region of {} bytes at {}, its body's rows:",
-                g.name, g.bytes, g.offset
-            )?;
+            write!(f, "{}: region of {} bytes at {}", g.name, g.bytes, g.offset)?;
+            if !g.decides {
+                write!(f, ", {} copies {} bytes apart", g.copies, g.stride)?;
+            }
+            writeln!(f, ", its body's rows:")?;
             for i in in_body(Some(index)) {
                 self.fmt_row(f, i)?;
             }

@@ -104,12 +104,24 @@ struct Worker<H> {
 /// A task's position is the number added before it ([`Dag::len`]), so the
 /// order of [`Dag::add_gpu`] and [`Dag::add_cpu`] is the plan's rank order, which is a topological
 /// order: a task can only read what an earlier one produced. A loop
-/// ([`Dag::add_loop`]) is a run of them replayed between host decisions.
+/// ([`Dag::add_loop`]) is a run of them replayed between host decisions; a
+/// counted loop ([`Dag::add_counted`]) one run a trip count fixed here,
+/// with no decision.
 pub struct Dag<'a, H: HostKind = Pinned, S = DeviceStream> {
     workers: Vec<Worker<H>>,
     nodes: Vec<Declared<'a, H, S>>,
-    /// Each loop's positions, its body's first to its decision.
-    loops: Vec<(usize, usize)>,
+    /// Each loop, in plan order.
+    loops: Vec<Loop>,
+}
+
+/// A loop of a [`Dag`]: its positions, from its body's first to its
+/// decision or, for a counted loop, its body's last; and for a counted
+/// loop its trip count and depth.
+#[derive(Clone, Copy)]
+pub(super) struct Loop {
+    pub(super) first: usize,
+    pub(super) last: usize,
+    pub(super) counted: Option<(usize, usize)>,
 }
 
 impl<H: HostKind, S> Default for Dag<'_, H, S> {
@@ -231,7 +243,7 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
     /// task's is in [`Dag::add_cpu`].
     #[debug_requires(body < self.nodes.len(), "the body has a task")]
     #[debug_requires(
-        self.loops.last().is_none_or(|&(_, decision)| decision < body),
+        self.loops.last().is_none_or(|l| l.last < body),
         "a body holds no loop"
     )]
     #[debug_requires(max_iterations > 0, "the bound admits an iteration")]
@@ -260,8 +272,54 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
                 decide: erase_decide(move |h, iteration| decision.decide(&kept, h, iteration)),
             },
         });
-        self.loops.push((body, pos));
+        self.loops.push(Loop {
+            first: body,
+            last: pos,
+            counted: None,
+        });
         rows
+    }
+
+    /// Close a counted loop: the tasks from position `body` to the last
+    /// one added are its body, run `trips` times in the same run with no
+    /// decision and no host wait between iterations, up to `depth` of them
+    /// in flight at once (`docs/programming_model.md`, "Plan once, run
+    /// many"; `fb_core_thread_pool::Plan::add_counted`, which runs it). A
+    /// body task reads its iteration's index from its views
+    /// ([`Bufs::iteration`]), by which it picks its batch.
+    ///
+    /// The body's own rows are laid out once as a table of their own and
+    /// held `depth` times in a region of each worker's tables, iteration
+    /// `k` in copy `k mod depth`, and iteration `k` starts only after
+    /// iteration `k - depth` (`docs/memory.md`, "Nested plans"): for
+    /// batched work, an upload on a copy lane and its GEMMs on a compute
+    /// lane, two copies let the next batch's upload run under this one's
+    /// GEMMs. A row the body accumulates into across iterations, K summed
+    /// over batches, is the parent's, produced before the loop and written
+    /// by its one user in the body ([`Layout::write`]); an output read
+    /// after the loop is its last iteration's, from its one user in the
+    /// body ([`TableBuilder::add_counted`]).
+    ///
+    /// [`Layout::write`]: fb_core_arena::Layout::write
+    /// [`TableBuilder::add_counted`]: fb_core_arena::TableBuilder::add_counted
+    ///
+    /// A task after the loop that reads a row the body wrote runs after
+    /// the writer's last iteration. The body's GPU tasks add no sync
+    /// point: between lanes every edge, within an iteration and across
+    /// the ring, is a wait on the device.
+    #[debug_requires(body < self.nodes.len(), "the body has a task")]
+    #[debug_requires(
+        self.loops.last().is_none_or(|l| l.last < body),
+        "a body holds no loop"
+    )]
+    #[debug_requires(trips > 0, "the loop has an iteration")]
+    #[debug_requires(0 < depth && depth <= trips, "the depth is from 1 to the trip count")]
+    pub fn add_counted(&mut self, body: usize, trips: usize, depth: usize) {
+        self.loops.push(Loop {
+            first: body,
+            last: self.nodes.len() - 1,
+            counted: Some((trips, depth)),
+        });
     }
 
     /// A device row `worker` holds for the whole plan (a BLAS handle's
@@ -339,16 +397,24 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
             .workers
             .into_iter()
             .map(|mut w| {
-                for &(body, decision) in loops {
-                    w.device.add_loop(body..=decision);
-                    w.host.add_loop(body..=decision);
+                for l in loops {
+                    match l.counted {
+                        Some((_, depth)) => {
+                            w.device.add_counted(l.first..=l.last, depth);
+                            w.host.add_counted(l.first..=l.last, depth);
+                        }
+                        None => {
+                            w.device.add_loop(l.first..=l.last);
+                            w.host.add_loop(l.first..=l.last);
+                        }
+                    }
                 }
                 (w.device.build(), w.host.build())
             })
             .collect();
         let mut deps = vec![BTreeSet::new(); self.nodes.len()];
-        for &(body, decision) in loops {
-            deps[decision].extend(body..decision);
+        for l in loops.iter().filter(|l| l.counted.is_none()) {
+            deps[l.last].extend(l.first..l.last);
         }
         for (device, host) in &tables {
             let pairs = [
@@ -372,6 +438,7 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
             blas_workspaces,
             nodes: self.nodes,
             deps: deps.into_iter().map(|d| d.into_iter().collect()).collect(),
+            loops: self.loops,
         }
     }
 
@@ -395,7 +462,8 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
 ///
 /// Its text ([`fmt::Display`]) is the plan's golden: each task's worker,
 /// lane and dependencies, each loop's span and bound on its decision's
-/// line, then every non-empty table, a loop's region and body in it. A GPU
+/// line and each counted loop's span, trips and depth on its body's last,
+/// then every non-empty table, a loop's region and body in it. A GPU
 /// task's lane reads `stream` on a worker of one lane and `stream<l>` on a
 /// worker of several; any other task's, `cpu`.
 pub struct Planned<'a, H: HostKind = Pinned, S = DeviceStream> {
@@ -406,6 +474,7 @@ pub struct Planned<'a, H: HostKind = Pinned, S = DeviceStream> {
     pub(super) blas_workspaces: Vec<Vec<RowId<Device, u8>>>,
     pub(super) nodes: Vec<Declared<'a, H, S>>,
     pub(super) deps: Vec<Vec<usize>>,
+    pub(super) loops: Vec<Loop>,
 }
 
 impl<H: HostKind, S> Planned<'_, H, S> {
@@ -489,6 +558,15 @@ impl<H: HostKind, S> fmt::Display for Planned<'_, H, S> {
                     f,
                     "; decides loop {body}-{pos}, at most {max_iterations} iterations"
                 )?;
+            }
+            for l in self.loops.iter().filter(|l| l.last == pos) {
+                if let Some((trips, depth)) = l.counted {
+                    write!(
+                        f,
+                        "; closes counted loop {}-{pos}, {trips} trips, depth {depth}",
+                        l.first
+                    )?;
+                }
             }
             writeln!(f)?;
         }

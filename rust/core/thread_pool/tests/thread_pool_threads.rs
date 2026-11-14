@@ -3,7 +3,8 @@
 //! (`core::thread_pool`'s fourth promise). The count is the `Threads:` line
 //! of `/proc/self/status`, which also sees a thread a linked library opened
 //! on its own, which no lint can. A loop's replay is on the same threads:
-//! the count before its first iteration is the count after its last.
+//! the count before its first iteration is the count after its last, for
+//! a decision loop and a counted one.
 //!
 //! `harness = false`: libtest runs cases on threads of its own, which would
 //! be counted. So this is a plain `main`, and the process holds only what it
@@ -102,6 +103,7 @@ fn main() {
         );
     }
     replayed_on_the_runs_threads();
+    counted_on_the_runs_threads();
     println!("thread_pool_threads: ok");
 }
 
@@ -168,4 +170,48 @@ fn replayed_on_the_runs_threads() {
         "a loop's body saw {body_seen:?}, expected {expected} each time"
     );
     assert_eq!(settled_threads(1), 1, "a loop's worker outlived its run");
+}
+
+/// A counted loop of six trips at depth 2, its body a stream node on each
+/// of two lanes and a CPU node: every body node of every trip, once every
+/// worker exists, sees the run's own count, and the node after the loop
+/// the same.
+fn counted_on_the_runs_threads() {
+    const TRIPS: usize = 6;
+    let (n_cpu, n_gpu) = (2, 1);
+    let expected = 1 + n_cpu + n_gpu;
+    let seen = Mutex::new(Vec::new());
+    let mut plan = Plan::new();
+    let lane = |lane| Placement::Stream(LaneId { worker: 0, lane });
+    let stage = plan.add("stage", lane(1), &[], |_| {
+        seen.lock().unwrap().push(all_workers(expected));
+        Ok(())
+    });
+    let add = plan.add("add", lane(0), &[stage], |_| {
+        seen.lock().unwrap().push(threads());
+        Ok(())
+    });
+    let host = plan.add("host", Placement::Cpu, &[add], |_| {
+        seen.lock().unwrap().push(threads());
+        Ok(())
+    });
+    plan.add_counted(stage, TRIPS, 2);
+    plan.add("after", Placement::Cpu, &[host], |_| {
+        seen.lock().unwrap().push(threads());
+        Ok(())
+    });
+    run(&mut plan, &mut HostOnly::new(n_gpu), n_cpu)
+        .result
+        .unwrap();
+    drop(plan);
+    let seen = seen.into_inner().unwrap();
+    assert!(
+        seen.len() == 3 * TRIPS + 1 && seen.iter().all(|&t| t == expected),
+        "a counted loop saw {seen:?}, expected {expected} each time"
+    );
+    assert_eq!(
+        settled_threads(1),
+        1,
+        "a counted loop's worker outlived its run"
+    );
 }

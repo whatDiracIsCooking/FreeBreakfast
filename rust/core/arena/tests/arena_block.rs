@@ -131,7 +131,7 @@ fn blocks_are_filled() {
     let mut p = TableBuilder::<Pinned>::new();
     let pr = p.output::<f64>(0, "P", n);
     let pinned = Block::new(0, p.build());
-    assert!(pinned.partition(0).get(pr).iter().all(|x| x.is_nan()));
+    assert!(pinned.partition(0, 0).get(pr).iter().all(|x| x.is_nan()));
 
     if !cfg!(debug_assertions) {
         return;
@@ -139,17 +139,23 @@ fn blocks_are_filled() {
     let mut d = TableBuilder::<Device>::new();
     let dr = d.output::<u64>(0, "D", n);
     let device = Block::new(0, d.build());
-    let v = device.partition(0);
+    let v = device.partition(0, 0);
     // A pinned row to read it into, zeroed first, since its own fill is the
     // same bytes: only the copy can put `u64::MAX` back.
     let mut h = TableBuilder::<Pinned>::new();
     let hr = h.output::<u64>(0, "H", n);
     let host = Block::new(0, h.build());
-    memcpy_h2p(&host.partition(0), hr, &vec![0; n]);
+    memcpy_h2p(&host.partition(0, 0), hr, &vec![0; n]);
     let stream = Stream::new(0);
-    memcpy_d2p(&CopyOnly::from(host.partition(0)), hr, v.get(dr), &stream).unwrap();
+    memcpy_d2p(
+        &CopyOnly::from(host.partition(0, 0)),
+        hr,
+        v.get(dr),
+        &stream,
+    )
+    .unwrap();
     ok(stream.sync());
-    let got = memcpy_p2h(&host.partition(0), hr);
+    let got = memcpy_p2h(&host.partition(0, 0), hr);
     assert!(got.iter().all(|&x| x == u64::MAX));
 }
 
@@ -228,9 +234,12 @@ fn copies_round_trip_through_every_kind() {
     let device = Block::new(0, d.build());
     let stream = Stream::new(0);
 
-    memcpy_h2p(&pinned.partition(0), input, &data);
+    memcpy_h2p(&pinned.partition(0, 0), input, &data);
     {
-        let (h, dv) = (CopyOnly::from(pinned.partition(1)), device.partition(1));
+        let (h, dv) = (
+            CopyOnly::from(pinned.partition(1, 0)),
+            device.partition(1, 0),
+        );
         let (mut a, b) = (dv.take_mut(first), dv.take_mut(second));
         memcpy_p2d(&mut a, &h, input, &stream).unwrap();
         memcpy_d2d(&b, &a, &stream).unwrap();
@@ -242,7 +251,7 @@ fn copies_round_trip_through_every_kind() {
         });
         assert!(m.contains("the rows' lengths differ"), "{m}");
     }
-    assert_eq!(memcpy_p2h(&pinned.partition(2), output), data);
+    assert_eq!(memcpy_p2h(&pinned.partition(2, 0), output), data);
 }
 
 /// Needs a GPU. A held worker row is the row's bytes and length, keeps its
@@ -269,13 +278,13 @@ fn a_held_worker_row_is_alone_and_keeps_its_block() {
     assert!(panic_message(|| drop(block.hold(ws))).contains("ws is already held"));
     assert!(
         panic_message(|| {
-            block.partition(0).take_mut(ws);
+            block.partition(0, 0).take_mut(ws);
         })
         .contains("ws is held by another node's view")
     );
     let at = held.as_ptr().addr();
     drop(held);
-    assert_eq!(block.partition(0).take_mut(ws).as_ptr().addr(), at);
+    assert_eq!(block.partition(0, 0).take_mut(ws).as_ptr().addr(), at);
 
     let held = block.hold(ws);
     let weak = Arc::downgrade(&block);

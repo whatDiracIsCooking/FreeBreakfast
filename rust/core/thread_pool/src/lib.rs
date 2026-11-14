@@ -9,9 +9,11 @@
 //!   CPU pool or one lane of a GPU worker, a [`LaneId`]) and the callable
 //!   that runs it. Nodes are
 //!   added in topological order, so a node's [`NodeId`] is its rank and a
-//!   plan cannot have a cycle; and its loops ([`Plan::add_loop`]), each a
-//!   run of nodes, its body, replayed on the same workers until a CPU
-//!   decision node after it stops it, at most a bound fixed at planning.
+//!   plan cannot have a cycle; and its loops, each a run of nodes, its
+//!   body, replayed on the same workers: until a CPU decision node after
+//!   it stops it, at most a bound fixed at planning ([`Plan::add_loop`]),
+//!   or a trip count fixed at planning with up to a depth of iterations in
+//!   flight and no decision ([`Plan::add_counted`]).
 //! - [`Backend`]: the device side of a run: the GPU workers' lanes, the
 //!   events at the edges that leave one, and the syncs. [`HostOnly`] has no
 //!   device and is what the device-free tests run on; `Device` (the
@@ -21,7 +23,8 @@
 //!   by a GPU node through its [`Lane`].
 //! - [`run`]: open one [`std::thread::scope`] with `n_cpu` CPU workers and
 //!   one thread per GPU worker, run every node once (a loop's body and
-//!   decision once per iteration), join, and return
+//!   decision once per iteration, a counted loop's body once per trip),
+//!   join, and return
 //!   the [`Record`]: the result, a [`TaskTime`] per node that ran and a
 //!   [`SyncPoint`] per host wait, and as `timing.json` its
 //!   [`Record::to_json`].
@@ -31,7 +34,9 @@
 //! 1. Every node runs exactly once, unless one of its ancestors failed, in
 //!    which case it never runs. A loop's body nodes and decision run once
 //!    per iteration, and the next iteration's start only after the
-//!    decision returns `Continue`, so once the whole body has completed.
+//!    decision returns `Continue`, so once the whole body has completed. A
+//!    counted loop's body nodes run once per trip, trip `k` after trip
+//!    `k - depth`.
 //! 2. No node starts before each predecessor has finished in the sense its
 //!    edge needs (the table below).
 //! 3. At most `n_cpu` CPU nodes run at once, and each GPU worker runs one
@@ -93,6 +98,16 @@
 //! decision that would start iteration `max_iterations` fails the run
 //! with [`MaxIterationsExceeded`](fb_core_error_handling::ErrorKind::MaxIterationsExceeded).
 //!
+//! A counted loop ([`Plan::add_counted`]) has no decision: its body runs a
+//! trip count fixed at planning, each trip a run of instances of the body's
+//! nodes with edges of its own, the body's within the trip, each node's
+//! from itself in the trip before, and the ring, from the trip `depth`
+//! back. The run schedules instances, a node in one trip, in rank order
+//! with the body unrolled trip by trip, so a GPU worker enqueues the trips
+//! back to back and nothing waits on the host between them. Each node is
+//! handed its trip ([`Lane`]), and a GPU node has events per trip, so its
+//! consumers wait on its own trip's.
+//!
 //! # Failure
 //!
 //! A node's `Err` gets `name@worker` pushed onto its
@@ -131,11 +146,13 @@
 //!
 //! A loop's body nodes and decision have an entry per iteration, each with
 //! its iteration's index ([`TaskTime::iteration`]), and the record carries
-//! each loop's iteration count ([`Record::iterations`]). A body's stream
-//! scopes are reused every iteration, so its decision reads them, after
-//! the host waits that make the body complete and before it replays: a
-//! sync point the loop has anyway, so still no scope adds one. A scope that
-//! cannot be read there fails the decision.
+//! each decision loop's iteration count ([`Record::iterations`]). A body's
+//! stream scopes are reused every iteration, so its decision reads them,
+//! after the host waits that make the body complete and before it
+//! replays: a sync point the loop has anyway, so still no scope adds one.
+//! A scope that cannot be read there fails the decision. A counted loop's
+//! body node has an event pair per trip, each read after the run like any
+//! other node's, and an entry per trip.
 //!
 //! The record also carries each node's dimensions ([`Plan::set_dims`]) and
 //! the profile that built the executor; the plan's arena sizes
@@ -155,8 +172,8 @@
 //!
 //! # Not yet
 //!
-//! A loop inside a loop's body, and a node after a loop reading a body node
-//! directly: both are refused by contract. `scope!` inside a node and the
+//! A loop inside a loop's body (#1613), and a node after a decision loop
+//! reading a body node directly: both are refused by contract. `scope!` inside a node and the
 //! sync-after-every-task switch are `diagnostics.md`'s and not here.
 //!
 //! ```

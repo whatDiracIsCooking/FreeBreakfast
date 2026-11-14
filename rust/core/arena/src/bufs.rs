@@ -11,7 +11,7 @@ use super::kind::{Device, Element, HostKind, Kind};
 use super::table::Owner;
 use super::table::{Access, RowId};
 
-/// Node `pos`'s view of a [`Block`]: [`Block::partition`].
+/// Node `pos`'s view of a [`Block`] in one iteration: [`Block::partition`].
 ///
 /// Asking for a row the node's layout did not name panics, as does asking
 /// for one another live view holds in a conflicting mode: a writer is
@@ -30,6 +30,7 @@ use super::table::{Access, RowId};
 pub struct Bufs<'b, K: Kind> {
     pub(super) block: &'b Block<K>,
     pub(super) pos: usize,
+    pub(super) iteration: usize,
     /// Each row this view has borrowed, and whether as its writer.
     pub(super) held: RefCell<Vec<(usize, bool)>>,
 }
@@ -38,6 +39,24 @@ impl<K: Kind> Bufs<'_, K> {
     /// The node this view is for.
     pub fn position(&self) -> usize {
         self.pos
+    }
+
+    /// The iteration of the loop the node is in that this view is for,
+    /// from 0, and 0 outside every loop: how a counted loop's body task
+    /// picks its batch.
+    pub fn iteration(&self) -> usize {
+        self.iteration
+    }
+
+    /// The copy of row `index` this view reaches: its iteration's, for a
+    /// counted loop's body row, else the one.
+    fn copy(&self, index: usize) -> usize {
+        self.iteration % self.block.table.copies(index).0
+    }
+
+    /// Row `index`'s first byte, in this view's copy of it.
+    fn ptr(&self, index: usize) -> *mut u8 {
+        self.block.row_ptr(index, self.copy(index))
     }
 
     /// Borrow `row` for this view, as its writer when `write`, and return
@@ -66,7 +85,7 @@ impl<K: Kind> Bufs<'_, K> {
             );
             return (index, info.len);
         }
-        let flag = &self.block.borrows[index];
+        let flag = &self.block.borrows[self.block.flags[index] + self.copy(index)];
         let taken = if write {
             flag.compare_exchange(0, -1, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok()
@@ -93,14 +112,14 @@ impl<K: Kind> Bufs<'_, K> {
     #[cfg(feature = "device")]
     pub(super) fn acquire_ptr<T: Element>(&self, row: RowId<K, T>, write: bool) -> (*mut T, usize) {
         let (index, len) = self.acquire(row, write);
-        (self.block.row_ptr(index).cast::<T>(), len)
+        (self.ptr(index).cast::<T>(), len)
     }
 }
 
 impl<K: Kind> Drop for Bufs<'_, K> {
     fn drop(&mut self) {
-        for &(index, write) in self.held.get_mut().iter() {
-            let flag = &self.block.borrows[index];
+        for &(index, write) in self.held.borrow().iter() {
+            let flag = &self.block.borrows[self.block.flags[index] + self.copy(index)];
             if write {
                 flag.store(0, Ordering::Release);
             } else {
@@ -121,7 +140,7 @@ impl<K: HostKind> Bufs<'_, K> {
         if len == 0 {
             return &[];
         }
-        let data = self.block.row_ptr(index).cast::<T>();
+        let data = self.ptr(index).cast::<T>();
         // SAFETY: the row is `len` elements of `T` inside the live block,
         // aligned to DEVICE_ALIGNMENT, which `T`'s alignment divides
         // (`Element`); every byte was filled at allocation, and every bit
@@ -143,7 +162,7 @@ impl<K: HostKind> Bufs<'_, K> {
         if len == 0 {
             return &mut [];
         }
-        let data = self.block.row_ptr(index).cast::<T>();
+        let data = self.ptr(index).cast::<T>();
         // SAFETY: as in `get`, and the borrow is exclusive: no other view
         // holds this row, and this one cannot ask for it again.
         unsafe { std::slice::from_raw_parts_mut(data, len) }
@@ -201,7 +220,7 @@ impl Bufs<'_, Device> {
     pub fn get<T: Element>(&self, row: RowId<Device, T>) -> DeviceRef<'_, T> {
         let (index, len) = self.acquire(row, false);
         DeviceRef {
-            ptr: self.block.row_ptr(index).cast::<T>().cast_const(),
+            ptr: self.ptr(index).cast::<T>().cast_const(),
             len,
             marker: PhantomData,
         }
@@ -216,7 +235,7 @@ impl Bufs<'_, Device> {
     pub fn take_mut<T: Element>(&self, row: RowId<Device, T>) -> DeviceMut<'_, T> {
         let (index, len) = self.acquire(row, true);
         DeviceMut {
-            ptr: self.block.row_ptr(index).cast::<T>(),
+            ptr: self.ptr(index).cast::<T>(),
             len,
             marker: PhantomData,
         }
@@ -373,7 +392,7 @@ impl Block<Device> {
             "{} is not a worker row, so it cannot be held",
             info.name
         );
-        let taken = self.borrows[index]
+        let taken = self.borrows[self.flags[index]]
             .compare_exchange(0, -1, Ordering::Acquire, Ordering::Relaxed)
             .is_ok();
         assert!(taken, "{} is already held", info.name);
@@ -397,7 +416,7 @@ impl<T> HeldRow<T> {
 #[cfg(feature = "device")]
 impl<T> Drop for HeldRow<T> {
     fn drop(&mut self) {
-        self.block.borrows[self.index].store(0, Ordering::Release);
+        self.block.borrows[self.block.flags[self.index]].store(0, Ordering::Release);
     }
 }
 
@@ -413,7 +432,7 @@ impl<T> Drop for HeldRow<T> {
 #[cfg(feature = "device")]
 unsafe impl<T> fb_core_wwr::device_slice::DeviceSlice<T> for HeldRow<T> {
     fn as_ptr(&self) -> *const T {
-        self.block.row_ptr(self.index).cast::<T>().cast_const()
+        self.block.row_ptr(self.index, 0).cast::<T>().cast_const()
     }
 
     fn len(&self) -> usize {
@@ -425,6 +444,6 @@ unsafe impl<T> fb_core_wwr::device_slice::DeviceSlice<T> for HeldRow<T> {
 #[cfg(feature = "device")]
 unsafe impl<T> fb_core_wwr::device_slice::DeviceSliceMut<T> for HeldRow<T> {
     fn as_mut_ptr(&mut self) -> *mut T {
-        self.block.row_ptr(self.index).cast::<T>()
+        self.block.row_ptr(self.index, 0).cast::<T>()
     }
 }

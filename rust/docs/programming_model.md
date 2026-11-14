@@ -381,7 +381,9 @@ handed the iteration's index. The iteration count has a bound, fixed at
 planning beside the dimensions: a decision that would start one iteration
 past it fails the run with `MaxIterationsExceeded`, and a failed body node
 ends the loop and skips what follows it, as any failure skips its
-descendants. A loop in a loop's body is not built.
+descendants. A loop in a loop's body is not built: a counted loop inside a
+decision loop, which J and K over a streamed tensor need every SCF
+iteration, is #1613.
 
 **The planner closes a loop the same way.** `fb_core_planner::Dag::add_loop`
 takes the position of the body's first task, its bound and a `Decision`: a
@@ -391,6 +393,50 @@ table laid out once, in a region of each worker's tables the parent holds
 while the loop runs, and the rows it carries between iterations are the
 parent's ([`memory.md`](memory.md), "Nested plans"), so a replay is
 admitted with the plan and allocates nothing.
+
+**A counted loop has a trip count and a depth, and no decision.** Beside
+the decision loop, whose next iteration waits on a host answer, a loop
+over the batches of a streamed tensor knows how many iterations it has at
+planning, and a host decision per batch would sync the host once a batch
+and keep a batch's upload from overlapping the GEMMs of the one before.
+`Plan::add_counted` and `Dag::add_counted` close the body over a trip
+count `N` and a depth `R`, both fixed at planning beside the dimensions:
+
+- **Ordering.** Iteration `k` waits on iteration `k - R` alone: each body
+  node with no predecessor in the body runs after each one with no
+  successor there, `R` iterations back. That is the one edge across
+  iterations, the ring. Each body node also runs after itself in the
+  iteration before, which on a lane is the stream's order anyway and on
+  the CPU pool keeps a row the body accumulates into in order. Within an
+  iteration the body's edges hold as in any plan.
+- **No host wait.** Every edge is satisfied as any edge is, so between
+  lanes it is a wait on the device and the GPU worker's thread enqueues
+  every iteration back to back; the run's record holds no sync point for
+  a GPU body node. A CPU body node waits on the host for what it reads,
+  off the device's path.
+- **The iteration index.** A body node is handed its iteration's index,
+  `k` from 0, by which it picks its batch: the executor's `Lane`, and a
+  task's views (`Bufs::iteration`).
+- **Memory.** The body's rows are `R` copies of its table, iteration `k`
+  in copy `k mod R`, and a row it accumulates into across iterations is
+  the parent's ([`memory.md`](memory.md), "Nested plans").
+- **Events.** Each GPU body node has an event pair per iteration, so each
+  iteration's stream scope is its own, read after the run, and no wait in
+  the run finds its event recorded again by a later iteration.
+
+For batched density fitting the body is an upload on a copy lane and the
+GEMMs on a compute lane, with `R = 2`: the next batch's upload runs under
+this one's GEMMs, ordered against the GEMMs two batches back by the ring.
+A node after a counted loop may follow a body node directly, and runs
+after its last iteration.
+
+**A wait on an event binds to its recording at the time the wait is
+enqueued**, on both backends: record an event, enqueue a wait for it on
+another stream, record it again, and the wait is released by the first
+recording. The host enqueues ahead of the device, so a design that waits
+on an event while later recordings of it are being enqueued rests on
+this; the counted loop does not today, since each iteration has events of
+its own, and a ring of `R` events per node, which would, is open to it.
 
 **DAGs nest.** A node may be a sub-DAG with dimensions of its own. The
 pipeline is a DAG of steps; a step is a DAG of tasks; the RHF step's body is a

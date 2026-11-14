@@ -55,26 +55,31 @@ pub trait Backend: sealed::Sealed {
     fn bind(&self, worker: usize) -> Self::Binding;
     /// `lane`'s stream.
     fn stream(&self, lane: LaneId) -> &Self::Stream;
-    /// On `lane`'s worker, just before GPU node `node` runs on it: open its
-    /// stream scope.
-    fn begin(&self, lane: LaneId, node: NodeId) -> Status;
-    /// On `lane`'s worker, after GPU node `node` returned: mark the point
-    /// its consumers wait for, which also closes its stream scope.
-    fn record(&self, lane: LaneId, node: NodeId) -> Status;
-    /// On `lane`'s worker, before a node on `lane` that consumes `node`,
-    /// which ran on another lane: make `lane` wait for it on the device,
-    /// with no host wait.
-    fn wait(&self, lane: LaneId, node: NodeId) -> Status;
-    /// On a CPU worker, before a node that consumes GPU node `node`: wait
-    /// for it on the host.
-    fn host_wait(&self, node: NodeId) -> Status;
+    /// On `lane`'s worker, just before GPU node `node` runs on it in trip
+    /// `trip`: open its stream scope. A node's trip is its iteration of
+    /// the counted loop it is in, each with events of its own, and 0
+    /// outside one: a decision loop's iterations reuse one pair, read by
+    /// the decision before the next ([`thread_pool`](super), "Timing").
+    fn begin(&self, lane: LaneId, node: NodeId, trip: usize) -> Status;
+    /// On `lane`'s worker, after GPU node `node` returned in trip `trip`:
+    /// mark the point its consumers wait for, which also closes its stream
+    /// scope.
+    fn record(&self, lane: LaneId, node: NodeId, trip: usize) -> Status;
+    /// On `lane`'s worker, before a node on `lane` that consumes `node`'s
+    /// trip `trip`, which ran on another lane: make `lane` wait for it on
+    /// the device, with no host wait.
+    fn wait(&self, lane: LaneId, node: NodeId, trip: usize) -> Status;
+    /// On a CPU worker, before a node that consumes GPU node `node`'s trip
+    /// `trip`: wait for it on the host.
+    fn host_wait(&self, node: NodeId, trip: usize) -> Status;
     /// On `lane`'s worker, as it exits: wait for all the lane's work.
     fn sync(&self, lane: LaneId) -> Status;
     /// After the run, every stream synced: the device time of GPU node
-    /// `node`'s stream scope, which [`begin`](Backend::begin) and
-    /// [`record`](Backend::record) both succeeded on in this run; `None`
-    /// for a backend with no device clock.
-    fn elapsed(&self, node: NodeId) -> Result<Option<Duration>>;
+    /// `node`'s stream scope in trip `trip`, which
+    /// [`begin`](Backend::begin) and [`record`](Backend::record) both
+    /// succeeded on in this run; `None` for a backend with no device
+    /// clock.
+    fn elapsed(&self, node: NodeId, trip: usize) -> Result<Option<Duration>>;
 }
 
 /// Nothing outside this module can name it, so nothing outside the crate
@@ -117,22 +122,22 @@ impl Backend for HostOnly {
     fn stream(&self, _: LaneId) -> &() {
         &()
     }
-    fn begin(&self, _: LaneId, _: NodeId) -> Status {
+    fn begin(&self, _: LaneId, _: NodeId, _: usize) -> Status {
         Ok(())
     }
-    fn record(&self, _: LaneId, _: NodeId) -> Status {
+    fn record(&self, _: LaneId, _: NodeId, _: usize) -> Status {
         Ok(())
     }
-    fn wait(&self, _: LaneId, _: NodeId) -> Status {
+    fn wait(&self, _: LaneId, _: NodeId, _: usize) -> Status {
         Ok(())
     }
-    fn host_wait(&self, _: NodeId) -> Status {
+    fn host_wait(&self, _: NodeId, _: usize) -> Status {
         Ok(())
     }
     fn sync(&self, _: LaneId) -> Status {
         Ok(())
     }
-    fn elapsed(&self, _: NodeId) -> Result<Option<Duration>> {
+    fn elapsed(&self, _: NodeId, _: usize) -> Result<Option<Duration>> {
         Ok(None)
     }
 }
@@ -205,9 +210,12 @@ pub enum DeviceStream {}
 #[cfg(feature = "device")]
 /// GPU workers, each on its own device with one non-blocking stream per
 /// lane and the lane's library handles bound to it ([`DeviceStream`]), and
-/// two timing events per GPU node: its stream scope, recorded before it
-/// runs and after it returns. The second is also what its consumers wait
-/// on.
+/// two timing events per GPU node and trip: its stream scope, recorded
+/// before it runs and after it returns. The second is also what its
+/// consumers wait on. A node outside every counted loop has one trip; one
+/// in a counted loop a pair per iteration, so each iteration's scope is
+/// read after the run and no wait ever finds its event recorded again by
+/// a later iteration of the same run.
 ///
 /// Built once per plan and reused every run, one run at a time
 /// ([`run`](super::run) borrows it exclusively): the streams, handles and
@@ -226,15 +234,16 @@ pub struct Device {
     devices: Vec<i32>,
     /// Per worker, its lanes' streams.
     streams: Vec<Vec<DeviceStream>>,
-    /// Indexed by node, each GPU node's (start, end); `None` for a CPU node.
-    events: Vec<Option<(Event, Event)>>,
+    /// Indexed by node and then trip, each GPU node's (start, end); empty
+    /// for a CPU node.
+    events: Vec<Vec<(Event, Event)>>,
 }
 
 #[cfg(feature = "device")]
 impl Device {
     /// GPU worker `w` on device `devices[w]`, with as many lanes as `plan`
     /// places nodes on ([`Plan::lanes`]), at least one, and an event pair
-    /// for every GPU node of `plan`.
+    /// for every GPU node of `plan` and trip of the counted loop it is in.
     #[debug_requires(
         plan.lanes().len() <= devices.len(),
         "a device for every GPU worker of the plan"
@@ -255,11 +264,16 @@ impl Device {
             .iter()
             .map(|n| match n.placement {
                 // Timing-capable: `DISABLE_TIMING` left off.
-                Placement::Stream(at) => Some((
-                    Event::with_flags(devices[at.worker], event::BLOCKING_SYNC),
-                    Event::with_flags(devices[at.worker], event::BLOCKING_SYNC),
-                )),
-                Placement::Cpu => None,
+                Placement::Stream(at) => {
+                    let pair = || {
+                        (
+                            Event::with_flags(devices[at.worker], event::BLOCKING_SYNC),
+                            Event::with_flags(devices[at.worker], event::BLOCKING_SYNC),
+                        )
+                    };
+                    (0..plan.trips(n)).map(|_| pair()).collect()
+                }
+                Placement::Cpu => Vec::new(),
             })
             .collect();
         Device {
@@ -289,10 +303,10 @@ impl Device {
             .bind_workspace(workspace)
     }
 
-    fn events(&self, node: NodeId) -> &(Event, Event) {
+    fn events(&self, node: NodeId, trip: usize) -> &(Event, Event) {
         self.events[node.index()]
-            .as_ref()
-            .expect("an event is recorded only for a GPU node")
+            .get(trip)
+            .expect("an event is recorded only for a GPU node, in a trip it has")
     }
 }
 
@@ -315,21 +329,21 @@ impl Backend for Device {
     fn stream(&self, lane: LaneId) -> &DeviceStream {
         &self.streams[lane.worker][lane.lane]
     }
-    fn begin(&self, lane: LaneId, node: NodeId) -> Status {
-        gpu_status(self.events(node).0.record(self.stream(lane)))
+    fn begin(&self, lane: LaneId, node: NodeId, trip: usize) -> Status {
+        gpu_status(self.events(node, trip).0.record(self.stream(lane)))
     }
-    fn record(&self, lane: LaneId, node: NodeId) -> Status {
-        gpu_status(self.events(node).1.record(self.stream(lane)))
+    fn record(&self, lane: LaneId, node: NodeId, trip: usize) -> Status {
+        gpu_status(self.events(node, trip).1.record(self.stream(lane)))
     }
-    fn wait(&self, lane: LaneId, node: NodeId) -> Status {
-        gpu_status(self.stream(lane).wait_event(&self.events(node).1, 0))
+    fn wait(&self, lane: LaneId, node: NodeId, trip: usize) -> Status {
+        gpu_status(self.stream(lane).wait_event(&self.events(node, trip).1, 0))
     }
     #[allow(
         clippy::disallowed_methods,
         reason = "the executor's edge from a stream node to a CPU node (docs/programming_model.md, \"An edge declares\")"
     )]
-    fn host_wait(&self, node: NodeId) -> Status {
-        gpu_status(self.events(node).1.sync())
+    fn host_wait(&self, node: NodeId, trip: usize) -> Status {
+        gpu_status(self.events(node, trip).1.sync())
     }
     #[allow(
         clippy::disallowed_methods,
@@ -338,8 +352,8 @@ impl Backend for Device {
     fn sync(&self, lane: LaneId) -> Status {
         gpu_status(self.stream(lane).sync())
     }
-    fn elapsed(&self, node: NodeId) -> Result<Option<Duration>> {
-        let (start, end) = self.events(node);
+    fn elapsed(&self, node: NodeId, trip: usize) -> Result<Option<Duration>> {
+        let (start, end) = self.events(node, trip);
         let ms = end
             .elapsed_since(start)
             .map_err(|s| gpu_status(s).expect_err("a failed status"))?;

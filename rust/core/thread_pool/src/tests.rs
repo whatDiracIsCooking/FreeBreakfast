@@ -98,7 +98,7 @@ fn run_shape(shape: &Shape, n_cpu: usize, fail: &[usize]) -> (Observed, Status) 
                 &deps,
                 move |lane: Lane<'_, ()>| {
                     let (running, peak) = match lane {
-                        Lane::Cpu => (&obs.cpu_running, &obs.cpu_peak),
+                        Lane::Cpu { .. } => (&obs.cpu_running, &obs.cpu_peak),
                         Lane::Stream { lane, .. } => {
                             (&obs.gpu_running[lane.worker], &obs.gpu_peak[lane.worker])
                         }
@@ -706,6 +706,199 @@ fn a_node_after_a_loop_cannot_read_its_body() {
     plan.add("after", Placement::Cpu, &[body], |_| Ok(()));
 }
 
+/// A counted loop's run, as one random case observed it: each node's
+/// (trip, start, end) ticks.
+type Ticks = Vec<Vec<(usize, usize, usize)>>;
+
+/// A random counted loop: a node before it, a body of random shape over
+/// the CPU pool and up to three lanes of one GPU worker, and a node after
+/// it following a random body node, `tail`, with a random trip count and
+/// depth. Returns the shape, the trip count, the depth, `tail`, what ran by
+/// node (the node before first and the node after last), and the record.
+#[allow(clippy::type_complexity)]
+fn run_counted(rng: &mut Rng, n_cpu: usize) -> (Shape, usize, usize, usize, Ticks, Record) {
+    let shape = Shape {
+        n_gpu: 1,
+        ..random_shape(rng)
+    };
+    let shape = Shape {
+        placements: shape
+            .placements
+            .iter()
+            .map(|&p| match p {
+                Placement::Stream(at) => on(0, at.lane),
+                Placement::Cpu => Placement::Cpu,
+            })
+            .collect(),
+        ..shape
+    };
+    let trips = 1 + rng.below(6);
+    let depth = 1 + rng.below(trips);
+    let tail = rng.below(shape.placements.len());
+    let clock = AtomicUsize::new(0);
+    let ticks: Mutex<Ticks> = Mutex::new(vec![Vec::new(); shape.placements.len() + 2]);
+    let record = {
+        let (clock, ticks) = (&clock, &ticks);
+        let tick = move |node: usize, trip: usize| {
+            let start = clock.fetch_add(1, Ordering::SeqCst);
+            std::thread::yield_now();
+            let end = clock.fetch_add(1, Ordering::SeqCst);
+            ticks.lock().unwrap()[node].push((trip, start, end));
+        };
+        let mut plan = Plan::new();
+        let before = plan.add("before", Placement::Cpu, &[], move |_: Lane<'_, ()>| {
+            tick(0, 0);
+            Ok(())
+        });
+        let mut ids = Vec::new();
+        for (j, (&placement, preds)) in shape.placements.iter().zip(&shape.preds).enumerate() {
+            let mut deps: Vec<NodeId> = preds.iter().map(|&p| ids[p]).collect();
+            if deps.is_empty() {
+                deps.push(before);
+            }
+            ids.push(plan.add(format!("b{j}"), placement, &deps, move |lane| {
+                let trip = match lane {
+                    Lane::Cpu { iteration } | Lane::Stream { iteration, .. } => iteration,
+                };
+                tick(j + 1, trip);
+                Ok(())
+            }));
+        }
+        plan.add_counted(ids[0], trips, depth);
+        let after = shape.placements.len() + 1;
+        plan.add("after", Placement::Cpu, &[ids[tail]], move |_| {
+            tick(after, 0);
+            Ok(())
+        });
+        run(&mut plan, &mut HostOnly::new(1), n_cpu)
+    };
+    (
+        shape,
+        trips,
+        depth,
+        tail,
+        ticks.into_inner().unwrap(),
+        record,
+    )
+}
+
+/// Tier 3, random counted loops: every body node runs once per trip, handed
+/// its trip; within a trip after its predecessors, and after itself in the
+/// trip before; every node of trip `k` after every node of trip
+/// `k - depth`, the ring; the node before the loop once, before it, and
+/// the node after it once, after its predecessor's last trip, and so after
+/// that node's every trip. Each body node has an entry per trip, with its
+/// trip as its iteration, and the record counts no decision loop.
+#[test]
+fn a_counted_loop_runs_each_trip_after_the_trip_depth_before() {
+    for seed in 1..=200u64 {
+        let mut rng = Rng(seed);
+        let n_cpu = 1 + rng.below(3);
+        let (shape, trips, depth, tail, ticks, record) = run_counted(&mut rng, n_cpu);
+        let ctx = format!("seed {seed}, {trips} trips, depth {depth}");
+        record.result.as_ref().unwrap();
+        assert!(record.iterations.is_empty(), "{ctx}");
+        let n = shape.placements.len();
+        // Per body node, per trip, its (start, end).
+        let mut at = vec![vec![(0, 0); trips]; n];
+        for j in 0..n {
+            let mut seen: Vec<usize> = ticks[j + 1].iter().map(|&(k, _, _)| k).collect();
+            seen.sort_unstable();
+            assert_eq!(seen, (0..trips).collect::<Vec<_>>(), "{ctx}: b{j}");
+            for &(k, s, e) in &ticks[j + 1] {
+                at[j][k] = (s, e);
+            }
+            let entries: Vec<_> = record
+                .tasks
+                .iter()
+                .filter(|t| t.name == format!("b{j}"))
+                .map(|t| t.iteration)
+                .collect();
+            assert_eq!(entries, (0..trips).map(Some).collect::<Vec<_>>(), "{ctx}");
+        }
+        let (before, after) = (ticks[0][0], ticks[n + 1][0]);
+        assert_eq!((ticks[0].len(), ticks[n + 1].len()), (1, 1), "{ctx}");
+        for j in 0..n {
+            for k in 0..trips {
+                let start = at[j][k].0;
+                assert!(before.2 < start, "{ctx}: b{j}@{k} before the node before");
+                for &p in &shape.preds[j] {
+                    assert!(at[p][k].1 < start, "{ctx}: b{j}@{k} before b{p}@{k}");
+                }
+                if k >= 1 {
+                    assert!(at[j][k - 1].1 < start, "{ctx}: b{j}@{k} before itself");
+                }
+                if k >= depth {
+                    for (i, runs) in at.iter().enumerate() {
+                        assert!(
+                            runs[k - depth].1 < start,
+                            "{ctx}: b{j}@{k} before b{i}@{}",
+                            k - depth
+                        );
+                    }
+                }
+            }
+        }
+        for (k, &(_, end)) in at[tail].iter().enumerate() {
+            assert!(end < after.1, "{ctx}: the node after before b{tail}@{k}");
+        }
+    }
+}
+/// Tier 3: a counted loop whose body is two lanes of one worker, a stage
+/// on lane 1 and an add on lane 0 reading it, then a node after the loop on
+/// lane 0: the record's sync points are the lanes' exits alone, so the loop
+/// added no host wait for its GPU nodes, and each body node has an entry
+/// per trip.
+#[test]
+fn a_counted_loop_adds_no_host_wait_for_its_gpu_nodes() {
+    let mut plan: Plan<'_, ()> = Plan::new();
+    let stage = plan.add("stage", on(0, 1), &[], |_| Ok(()));
+    let add = plan.add("add", on(0, 0), &[stage], |_| Ok(()));
+    plan.add_counted(stage, 6, 2);
+    plan.add("after", on(0, 0), &[add], |_| Ok(()));
+    let record = run(&mut plan, &mut HostOnly::new(1), 1);
+    record.result.as_ref().unwrap();
+    assert!(
+        record.syncs.iter().all(|s| s.node.is_none()),
+        "{:?}",
+        record.syncs
+    );
+    assert_eq!(record.syncs.len(), 2, "one exit per lane");
+    for name in ["stage", "add"] {
+        assert_eq!(
+            iterations_of(&record, name),
+            (0..6).map(Some).collect::<Vec<_>>()
+        );
+    }
+    assert_eq!(iterations_of(&record, "after"), [None]);
+}
+
+/// Tier 3: a counted body node failing in trip 2 fails the run with its
+/// name, and skips its descendants: its own later trips, the other body
+/// node's trips that follow it, and the node after the loop.
+#[test]
+fn a_failed_trip_skips_the_later_trips_and_what_follows() {
+    let mut plan: Plan<'_, ()> = Plan::new();
+    let stage = plan.add("stage", on(0, 1), &[], |lane| {
+        let Lane::Stream { iteration, .. } = lane else {
+            unreachable!()
+        };
+        if iteration == 2 {
+            return Err(Error::numerical("injected"));
+        }
+        Ok(())
+    });
+    let add = plan.add("add", Placement::Cpu, &[stage], |_| Ok(()));
+    plan.add_counted(stage, 6, 2);
+    plan.add("after", Placement::Cpu, &[add], |_| Ok(()));
+    let record = run(&mut plan, &mut HostOnly::new(1), 2);
+    let error = record.result.as_ref().unwrap_err();
+    assert_eq!(error.context, ["stage@gpu0.1"]);
+    assert_eq!(iterations_of(&record, "stage"), [Some(0), Some(1), Some(2)]);
+    assert_eq!(iterations_of(&record, "add"), [Some(0), Some(1)]);
+    assert!(iterations_of(&record, "after").is_empty());
+}
+
 #[test]
 fn default_n_cpu_leaves_the_gpu_threads_and_keeps_one() {
     assert!(default_n_cpu(0) >= 1);
@@ -826,7 +1019,7 @@ fn device_library_handles_are_the_workers_made_before_the_run() {
     let mut plan: Plan<'_, DeviceStream> = Plan::new();
     for s in 0..2 {
         plan.add(format!("blas{s}"), on(0, s), &[], |lane| {
-            let Lane::Stream { lane, stream } = lane else {
+            let Lane::Stream { lane, stream, .. } = lane else {
                 unreachable!()
             };
             let blas = stream.blas();
@@ -951,4 +1144,152 @@ fn device_loop_reads_each_iterations_stream_scope() {
         .filter(|s| s.node.is_some() && s.waited_for == copies)
         .count();
     assert_eq!(waits, ITERATIONS, "{:?}", record.syncs);
+}
+
+/// Device 0: a wait on an event binds to the recording the event holds
+/// when the wait is enqueued, not to one recorded after it and before the
+/// device reaches the wait (`docs/programming_model.md`, "Plan once, run
+/// many"): record `e` on stream `a` after a long chain of copies, enqueue
+/// on stream `b` a wait for `e` and an event `f` after it, then record `e`
+/// again on `a` after a second, longer chain. Bound at its enqueue, the
+/// wait is released by the first recording, and `f` lands near the second
+/// chain's start; bound when the device reaches it, by the second, and
+/// `f` lands after that chain's end.
+///
+/// The bar, by analysis: `f` minus the second chain's start is the first
+/// recording's lead over that start (the two are back to back on `a`, so
+/// about zero) under the first reading, and at least the chain's length
+/// under the second; half the chain's length lies between them by
+/// milliseconds, against an event pair's resolution of about a
+/// microsecond. The case discriminates only if every enqueue finished
+/// before the device reached the first recording, so the host's enqueue
+/// time is held under the first chain's device time first.
+#[cfg(feature = "device-tests")]
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its events back on the host: the harness waits, not a task"
+)]
+fn a_wait_binds_to_the_recording_enqueued_before_it() {
+    use fb_core_wwr::handle::DeviceHandleStream;
+    use fb_core_wwr::runtime::tests::{DeviceBytes, ok};
+    use fb_core_wwr::runtime::{Event, Stream};
+    use wwr_sys::wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_DEVICE;
+
+    const N: usize = 32 << 20;
+    const HOPS: usize = 64;
+    let (a, b) = (Stream::new(0), Stream::new(0));
+    let x = DeviceBytes::upload(&vec![3u8; N], &a);
+    let y = DeviceBytes::new(N);
+    let chain = |hops: usize| {
+        for hop in 0..hops {
+            let (to, from) = if hop % 2 == 0 { (&y, &x) } else { (&x, &y) };
+            // SAFETY: both device ranges are N bytes and outlive the case.
+            ok(unsafe {
+                wwr_sys::wwr_memcpy_async(to.0, from.0, N, WWR_MEMCPY_DEVICE_TO_DEVICE, a.stream())
+            });
+        }
+    };
+    // Timing-capable events, all of them.
+    let [first_start, e, f, second_start] = [(); 4].map(|_| Event::with_flags(0, 0));
+    let host = std::time::Instant::now();
+    ok(first_start.record(&a));
+    chain(HOPS);
+    ok(e.record(&a));
+    ok(b.wait_event(&e, 0));
+    ok(f.record(&b));
+    ok(second_start.record(&a));
+    chain(2 * HOPS);
+    ok(e.record(&a));
+    let host = host.elapsed();
+    ok(a.sync());
+    ok(b.sync());
+
+    let ms = |end: &Event, start: &Event| end.elapsed_since(start).expect("both recorded");
+    let first = ms(&second_start, &first_start);
+    let second = ms(&e, &second_start);
+    let lead = ms(&f, &second_start);
+    println!(
+        "enqueues {host:?}; first chain {first} ms; released {lead} ms into a {second} ms chain"
+    );
+    assert!(
+        host.as_secs_f32() * 1e3 < first,
+        "the enqueues took {host:?}, the first chain {first} ms on the device: the case cannot tell"
+    );
+    assert!(
+        lead < second / 2.0,
+        "the wait was released {lead} ms into a {second} ms chain recorded after it was enqueued"
+    );
+}
+
+/// Device 0, one run: a counted loop of three trips at depth 2 whose body
+/// is one stream node, trip `k` enqueueing `k + 1` times one chain of
+/// copies: each trip's stream scope is its own, read after the run, so
+/// the device times rise strictly; and the loop adds no sync point, the
+/// lane's exit the record's only one.
+#[cfg(feature = "device-tests")]
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn device_counted_loop_times_each_trip() {
+    use fb_core_wwr::handle::DeviceHandleStream;
+    use fb_core_wwr::runtime::Stream;
+    use fb_core_wwr::runtime::tests::{DeviceBytes, ok};
+    use wwr_sys::wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_DEVICE;
+
+    const N: usize = 32 << 20;
+    const HOPS: usize = 16;
+    const TRIPS: usize = 3;
+    let setup = Stream::new(0);
+    let a = DeviceBytes::upload(&vec![7u8; N], &setup);
+    let b = DeviceBytes::new(N);
+
+    let mut plan: Plan<'_, DeviceStream> = Plan::new();
+    let copies = plan.add("copies", on(0, 0), &[], |lane| {
+        let Lane::Stream {
+            stream, iteration, ..
+        } = lane
+        else {
+            unreachable!()
+        };
+        for hop in 0..(iteration + 1) * HOPS {
+            let (to, from) = if hop % 2 == 0 { (&b, &a) } else { (&a, &b) };
+            // SAFETY: both device ranges are N bytes and outlive the run.
+            ok(unsafe {
+                wwr_sys::wwr_memcpy_async(
+                    to.0,
+                    from.0,
+                    N,
+                    WWR_MEMCPY_DEVICE_TO_DEVICE,
+                    stream.stream(),
+                )
+            });
+        }
+        Ok(())
+    });
+    plan.add_counted(copies, TRIPS, 2);
+    let mut device = Device::new(&[0], &plan);
+    let record = run(&mut plan, &mut device, 1);
+    record.result.as_ref().unwrap();
+
+    let scopes: Vec<_> = record
+        .tasks
+        .iter()
+        .map(|t| (t.iteration, t.device))
+        .collect();
+    assert_eq!(scopes.len(), TRIPS, "{scopes:?}");
+    for (k, &(iteration, device)) in scopes.iter().enumerate() {
+        assert_eq!(iteration, Some(k));
+        assert!(device.is_some(), "trip {k}'s scope was not read");
+    }
+    assert!(
+        scopes.windows(2).all(|w| w[0].1 < w[1].1),
+        "each trip's scope is its own: {scopes:?}"
+    );
+    let syncs: Vec<_> = record
+        .syncs
+        .iter()
+        .map(|s| (s.node, s.waited_for))
+        .collect();
+    assert_eq!(syncs, [(None, copies)]);
 }
