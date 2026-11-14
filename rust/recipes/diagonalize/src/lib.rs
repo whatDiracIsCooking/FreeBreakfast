@@ -37,14 +37,13 @@
 //! | `n <= 0`: an empty success | refused at planning: `n` is at least 1 |
 
 use contracts::debug_requires;
-use fb_core_arena::{Bufs, Device, HostKind, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Device, HostKind, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::gpu_status;
-use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::solver::SolverHandle;
-use wwr_sys::{wwr_memcpy_kind, wwr_solver_eig_mode, wwr_solver_fill_mode};
+use wwr_sys::{wwr_solver_eig_mode, wwr_solver_fill_mode};
 
 /// syevd's eigenvector mode and triangle, shared by the query and the call
 /// so the two cannot disagree.
@@ -190,18 +189,8 @@ impl Task for Syevd {
         let Lane::Stream { stream: worker, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let stream = worker.stream();
-        let (a, u) = (device.get(self.a), device.take_mut(rows.u));
-        // SAFETY: two device rows of n² doubles, on the task's stream.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memcpy_async(
-                u.as_mut_ptr().cast(),
-                a.as_ptr().cast(),
-                u.len() * size_of::<f64>(),
-                wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_DEVICE,
-                stream,
-            )
-        })?;
+        let u = device.take_mut(rows.u);
+        memcpy_d2d(&u, device.get(self.a), worker)?;
         let w = device.take_mut(rows.w);
         let work = device.take_mut(rows.work);
         let flag = device.take_mut(rows.flag);
@@ -226,18 +215,7 @@ impl Task for Syevd {
             )
         })
         .map_err(|e| Error::gpu(format!("syevd (n = {n}): {}", e.message)))?;
-        let info = host.take_mut(rows.info);
-        // SAFETY: one integer each side, on the task's stream; a stream task
-        // hands the pinned row to the copy and no more.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memcpy_async(
-                info.as_mut_ptr().cast(),
-                flag.as_ptr().cast(),
-                size_of::<i32>(),
-                wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
-                stream,
-            )
-        })
+        memcpy_d2p(host, rows.info, &flag, worker)
     }
 }
 

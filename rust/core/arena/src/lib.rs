@@ -22,6 +22,10 @@
 //!   [`Bufs`] that gives it its own rows and no others, as `&[T]` /
 //!   `&mut [T]` on the host and [`DeviceRef`] / [`DeviceMut`] pointers on
 //!   the device.
+//! - [`memcpy_h2p`], [`memcpy_p2h`] and, with `device`, `memcpy_p2d`,
+//!   `memcpy_d2p` and `memcpy_d2d` move a node's data between the host and
+//!   its rows, with no `unsafe` at the call (the `memcpy` module has why
+//!   each is sound).
 //!
 //! Everything but the block is pure and needs no device. The kind of
 //! memory, [`Device`] or [`Pinned`], is in every type, so a row of one kind
@@ -75,6 +79,7 @@ mod assign;
 mod block;
 mod bufs;
 mod kind;
+mod memcpy;
 mod table;
 #[cfg(test)]
 mod tests;
@@ -86,6 +91,9 @@ pub use bufs::{Bufs, DeviceMut, DeviceRef};
 #[cfg(any(test, feature = "test-support"))]
 pub use kind::Heap;
 pub use kind::{Device, Element, HostKind, Kind, Pinned};
+#[cfg(feature = "device")]
+pub use memcpy::{memcpy_d2d, memcpy_d2p, memcpy_p2d};
+pub use memcpy::{memcpy_h2p, memcpy_p2h};
 pub use table::{Access, Layout, Peak, RowId, Table, TableBuilder};
 
 /// The alignment of every row's offset, in bytes, and the least the block

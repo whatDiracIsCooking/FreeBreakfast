@@ -32,14 +32,13 @@
 //! | `device_stream()`, the stream the nuclei were uploaded on | nothing: a reader runs after the upload by its edge |
 //! | `molecule_footprint(natoms)` | the plan's tables ([`Planned`](fb_core_planner::Planned)): the footprint is the layout |
 
-use fb_core_arena::{Bufs, Device, HostKind, Layout, Pinned, RowId};
+#![forbid(unsafe_code)]
+
+use fb_core_arena::{Bufs, Device, HostKind, Layout, Pinned, RowId, memcpy_p2d};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::gpu_status;
-use fb_core_wwr::handle::DeviceHandleStream;
 use fb_molecule::{Molecule, nuclear_charge};
-use wwr_sys::wwr_memcpy_kind;
 
 #[cfg(test)]
 mod tests;
@@ -159,21 +158,7 @@ impl Task for Upload {
             unreachable!("a GPU task runs on a stream")
         };
         for (dst, src) in [(rows.z, self.staged.0), (rows.c, self.staged.1)] {
-            let (dst, src) = (device.take_mut(dst), host.get(src));
-            debug_assert_eq!(dst.len(), src.len());
-            // SAFETY: two rows of `src.len()` doubles, on the task's stream.
-            // The pinned row is not rewritten before the copy completes: its
-            // bytes' next owner is ordered after this task's event by a
-            // handoff.
-            gpu_status(unsafe {
-                wwr_sys::wwr_memcpy_async(
-                    dst.as_mut_ptr().cast(),
-                    src.as_ptr().cast(),
-                    size_of_val(src),
-                    wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
-                    stream.stream(),
-                )
-            })?;
+            memcpy_p2d(&device.take_mut(dst), host, src, stream)?;
         }
         Ok(())
     }

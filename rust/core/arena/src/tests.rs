@@ -432,3 +432,18 @@ fn an_empty_block_allocates_nothing() {
     assert!(block.base.is_null());
     assert!(block.partition(0).take_mut(e).is_empty());
 }
+
+/// The host copies move a node's data in and out of its rows, and refuse a
+/// source of another length.
+#[test]
+fn host_copies_round_trip_and_check_lengths() {
+    let mut b = TableBuilder::<Heap>::new();
+    let a = b.output::<f64>(0, "A", 3);
+    b.read(1, a);
+    let block = Block::new(0, b.build());
+    memcpy_h2p(&block.partition(0), a, &[1.0, 2.0, 3.0]);
+    assert_eq!(memcpy_p2h(&block.partition(1), a), vec![1.0, 2.0, 3.0]);
+
+    let m = panic_message(|| memcpy_h2p(&block.partition(0), a, &[1.0]));
+    assert!(m.contains("memcpy_h2p: the lengths differ"), "{m}");
+}

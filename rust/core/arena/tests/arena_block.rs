@@ -150,3 +150,48 @@ fn an_allocation_the_card_cannot_hold_aborts() {
         assert!(stdout.contains(&needle), "{needle:?} not in {stdout}");
     }
 }
+
+/// A value goes up and comes back through every copy: in from a `Vec`
+/// (h2p), up on a stream (p2d), across the card (d2d), down (d2p) and out
+/// (p2h), each node's rows its own. And a stream copy whose rows' lengths
+/// differ is refused before anything is enqueued.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn copies_round_trip_through_every_kind() {
+    use fb_core_arena::{memcpy_d2d, memcpy_d2p, memcpy_h2p, memcpy_p2d, memcpy_p2h};
+    use fb_core_wwr::runtime::Stream;
+
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let n = 4097;
+    let data: Vec<f64> = (0..n).map(|i| i as f64 * 0.5 - 7.0).collect();
+
+    // Node 0 stages the input, node 1 moves it, node 2 reads the result.
+    let mut p = TableBuilder::<Pinned>::new();
+    let input = p.output::<f64>(0, "in", n);
+    p.read(1, input);
+    let output = p.output::<f64>(1, "out", n);
+    p.read(2, output);
+    let short = p.output::<f64>(1, "short", n - 1);
+    let mut d = TableBuilder::<Device>::new();
+    let first = d.output::<f64>(1, "first", n);
+    let second = d.output::<f64>(1, "second", n);
+    let pinned = Block::new(0, p.build());
+    let device = Block::new(0, d.build());
+    let stream = Stream::new(0);
+
+    memcpy_h2p(&pinned.partition(0), input, &data);
+    {
+        let (h, dv) = (pinned.partition(1), device.partition(1));
+        let (a, b) = (dv.take_mut(first), dv.take_mut(second));
+        memcpy_p2d(&a, &h, input, &stream).unwrap();
+        memcpy_d2d(&b, &a, &stream).unwrap();
+        memcpy_d2p(&h, output, &b, &stream).unwrap();
+        ok(stream.sync());
+
+        let m = fb_test_support::panic_message(|| {
+            let _ = memcpy_d2p(&h, short, &b, &stream);
+        });
+        assert!(m.contains("the rows' lengths differ"), "{m}");
+    }
+    assert_eq!(memcpy_p2h(&pinned.partition(2), output), data);
+}

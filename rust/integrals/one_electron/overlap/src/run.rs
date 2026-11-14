@@ -3,14 +3,11 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2h};
 use fb_core_error_handling::{Result, Status};
 use fb_core_planner::{Dag, Planned, Task};
 use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane, Record};
-use fb_core_wwr::gpu_status;
-use fb_core_wwr::handle::DeviceHandleStream;
 use fb_recipes_matrix_ao::add_blas_workspace;
-use wwr_sys::wwr_memcpy_kind;
 
 use fb_integrals_mmd::add_records;
 
@@ -127,18 +124,7 @@ impl Task for Download {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let (src, dst) = (device.get(self.s), host.take_mut(*pinned));
-        // SAFETY: two rows of the same length, on the task's stream; a
-        // stream task hands the pinned row to the copy and no more.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memcpy_async(
-                dst.as_mut_ptr().cast(),
-                src.as_ptr().cast(),
-                size_of_val(dst),
-                wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
-                stream.stream(),
-            )
-        })
+        memcpy_d2p(host, *pinned, device.get(self.s), stream)
     }
 }
 
@@ -164,7 +150,7 @@ impl Task for Collect {
         host: &Bufs<'_, Pinned>,
         _: Lane<'_, DeviceStream>,
     ) -> Status {
-        *self.out.lock().unwrap_or_else(|e| e.into_inner()) = host.get(self.pinned).to_vec();
+        *self.out.lock().unwrap_or_else(|e| e.into_inner()) = memcpy_p2h(host, self.pinned);
         Ok(())
     }
 }

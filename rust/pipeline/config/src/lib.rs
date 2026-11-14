@@ -49,6 +49,8 @@
 //! | `-i <input_dir>` | nothing: paths are relative to the config file |
 //! | `main`, `print_products` | `src/main.rs`: the error logged once, the exit code, `timing.json` |
 
+#![forbid(unsafe_code)]
+
 mod write;
 
 use std::path::{Path, PathBuf};
