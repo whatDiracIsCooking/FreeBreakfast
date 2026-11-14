@@ -3,6 +3,7 @@
 
     devtools/rust-bindings.py           # rewrite every bindings file
     devtools/rust-bindings.py --check   # exit 1, with a diff, if any is stale
+    devtools/rust-bindings.py --root D  # the same over D/rust, not this tree's
 
 A kernel library's one C header is rust/<module>/kernels/fb_<module>.h, and
 its bindings are rust/<module>/sys/src/bindings.rs, committed
@@ -18,6 +19,15 @@ name it defines, so the names stay in each -sys crate's API
 (rust/docs/gpu_layer.md, "From bridge to C ABI"). In that home, a typedef in
 PROMOTED is a Rust newtype rather than an alias, and the header's constants
 of it are values of the newtype.
+
+THE ABI VERSION IS HELD. A module header defines FB_<MODULE>_ABI_VERSION,
+bumped with any change to a declaration it reaches (rust/docs/gpu_layer.md,
+"What the port changes"). Its bindings record, beside the version, a digest
+of those declarations: its own, its inlined includes' and its shared
+headers', each as parsed, every comment and the version's own #define left
+out. A header whose declarations no longer match the recorded digest while
+its version has not gone up is refused, in both modes, and nothing is
+written: the tier-3 test fails, and no regeneration gets past it.
 
 WHY NOT BINDGEN. The design names bindgen, but the devcontainer ships neither
 bindgen nor libclang's Python bindings, and adding either is a new toolchain
@@ -47,6 +57,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -102,8 +113,31 @@ FUNCTION = re.compile(rf"({IDENT}(?:\s*\*)?)\s*\b({IDENT})\s*\(([^)]*)\)\s*;", r
 PARAM = re.compile(rf"(const\s+)?({IDENT})\s*(\*?)\s*({IDENT})")
 
 
+ABI_VERSION = re.compile(r"FB_[A-Z0-9_]+_ABI_VERSION")
+STAMP = re.compile(
+    r"^// (FB_[A-Z0-9_]+_ABI_VERSION) (\d+) covers the declarations "
+    r"with digest ([0-9a-f]{16})\b",
+    re.M,
+)
+
+
 class HeaderError(Exception):
     pass
+
+
+def set_root(root: Path) -> None:
+    """Reads and writes the tree under `root` instead of this one: for the
+    tier-3 test, which edits a copy."""
+    global REPO, RUST, DEVICE_HEADERS, SHARED
+    REPO = root.resolve()
+    RUST = REPO / "rust"
+    DEVICE_HEADERS = RUST / "device_headers"
+    SHARED = {
+        DEVICE_HEADERS / "fb_launch.h": (
+            "fb_kernel_abi",
+            RUST / "kernel_abi" / "src" / "bindings.rs",
+        ),
+    }
 
 
 class Module:
@@ -124,6 +158,11 @@ class Module:
         self.names: list[str] = []
         # Per shared home's crate, the names re-exported from it.
         self.imports: dict[str, list[str]] = {}
+        # Every declaration read, as parsed, in order, comments left out:
+        # what the ABI version covers.
+        self.decls: list[str] = []
+        # The header's FB_<MODULE>_ABI_VERSION: its name and value.
+        self.abi: tuple[str, int] | None = None
 
     def rust_type(self, name: str, pointer: bool, const: bool, where: str) -> str:
         if name in SCALARS:
@@ -160,13 +199,14 @@ def read_header(path: Path, module: Module) -> None:
     doc: list[str] = []
     pending = ""
     pending_line = 0
-    # The struct being read: its name, doc and fields so far.
-    struct: tuple[str, list[str], list[str]] | None = None
+    # The struct being read: its name, doc, fields so far and their
+    # declarations as parsed.
+    struct: tuple[str, list[str], list[str], list[str]] | None = None
     for number, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
         where = f"{where_file}:{number}"
         if struct and line and not line.startswith("//"):
-            name, struct_doc, fields = struct
+            name, struct_doc, fields, decls = struct
             m = STRUCT_CLOSE.fullmatch(line)
             if m:
                 if m.group(1) != name:
@@ -180,6 +220,7 @@ def read_header(path: Path, module: Module) -> None:
                 )
                 module.structs.add(name)
                 module.names.append(name)
+                module.decls.append(f"struct {name} {{ {' '.join(decls)} }}")
                 struct = None
                 continue
             f = FIELD.fullmatch(line)
@@ -188,6 +229,7 @@ def read_header(path: Path, module: Module) -> None:
             const, ctype, star, fname = f.groups()
             rtype = module.rust_type(ctype, bool(star), bool(const), where)
             fields += doc_lines(doc, "    ") + [f"    pub {fname}: {rtype},"]
+            decls.append(f"{const or ''}{ctype}{star} {fname};")
             doc = []
             continue
         if pending:
@@ -222,6 +264,12 @@ def read_header(path: Path, module: Module) -> None:
                 f"pub const {name}: {rtype} = {value};"
             ]
             module.names.append(name)
+            if ABI_VERSION.fullmatch(name) and module.home is None:
+                if module.abi:
+                    raise HeaderError(f"{where}: a second ABI version, {name}")
+                module.abi = (name, int(value))
+            else:
+                module.decls.append(f"#define {name} (({ctype}){value})")
             doc = []
             continue
         if line.startswith("#") or line in ('extern "C" {', "}"):
@@ -230,7 +278,7 @@ def read_header(path: Path, module: Module) -> None:
             m = STRUCT_OPEN.fullmatch(line)
             if not m:
                 raise HeaderError(f"{where}: a struct opens as typedef struct name {{")
-            struct, doc = (m.group(1), doc, []), []
+            struct, doc = (m.group(1), doc, [], []), []
             continue
         if line.startswith("typedef"):
             m = TYPEDEF.fullmatch(line)
@@ -246,6 +294,7 @@ def read_header(path: Path, module: Module) -> None:
                 f"pub type {name} = {PROMOTED.get(name, SCALARS[target])};"
             ]
             module.names.append(name)
+            module.decls.append(f"typedef {target} {name};")
             doc = []
             continue
         pending, pending_line = line, number
@@ -273,6 +322,7 @@ def include(path: Path, module: Module, where: str) -> None:
     module.aliases.update(shared.aliases)
     module.structs |= shared.structs
     module.imports.setdefault(SHARED[path][0], []).extend(shared.names)
+    module.decls += shared.decls
 
 
 def add_function(decl: str, module: Module, doc: list[str], where: str) -> None:
@@ -297,9 +347,40 @@ def add_function(decl: str, module: Module, doc: list[str], where: str) -> None:
         f"    pub fn {name}({', '.join(args)}){returns};"
     ]
     module.names.append(name)
+    module.decls.append(" ".join(decl.split()))
 
 
-def render(header: Path) -> str:
+class Abi:
+    """A module header's ABI version and the digest of the declarations it
+    covers."""
+
+    def __init__(self, name: str, version: int, digest: str) -> None:
+        self.name, self.version, self.digest = name, version, digest
+
+    def stamp(self) -> list[str]:
+        return [
+            f"// {self.name} {self.version} covers the declarations with digest "
+            f"{self.digest};",
+            "// devtools/rust-bindings.py refuses a change to them without a bump.",
+        ]
+
+    def refusal(self, header: Path, old: str) -> str | None:
+        """Why the bindings in `old` cannot be replaced: the declarations
+        moved from the digest recorded there while the version did not go
+        up. None when they can, or when `old` records nothing yet."""
+        m = STAMP.search(old)
+        if not m or m.group(1) != self.name or m.group(3) == self.digest:
+            return None
+        if self.version > int(m.group(2)):
+            return None
+        return (
+            f"{header.relative_to(REPO)}: its declarations changed since "
+            f"{self.name} {m.group(2)}, but it is still {self.version}: bump it "
+            '(rust/docs/gpu_layer.md, "What the port changes")'
+        )
+
+
+def render(header: Path) -> tuple[str, Abi | None]:
     home = header.resolve() if header.resolve() in SHARED else None
     module = Module(header.parent, home)
     read_header(header, module)
@@ -308,12 +389,19 @@ def render(header: Path) -> str:
             f"{header}: a shared header declares types and constants only"
         )
     rel = header.relative_to(REPO)
+    abi = None
+    if not home:
+        want = f"FB_{header.stem.removeprefix('fb_').upper()}_ABI_VERSION"
+        if not module.abi or module.abi[0] != want:
+            raise HeaderError(f"{rel}: defines no {want}")
+        digest = hashlib.sha256("\n".join(module.decls).encode()).hexdigest()[:16]
+        abi = Abi(want, module.abi[1], digest)
     lines = [
         f"// GENERATED by devtools/rust-bindings.py from {rel} -- do not edit.",
         "// Regenerate with `devtools/rust-bindings.py`; rust/device_check's",
         "// tier-3 test fails while this file and the header disagree.",
-        "",
     ]
+    lines += (abi.stamp() if abi else []) + [""]
     lines += [f"pub use {EXTERNAL[name]};" for name in sorted(module.externals)]
     for crate, names in module.imports.items():
         lines += [f"pub use {crate}::{{"] + [f"    {n}," for n in names] + ["};"]
@@ -322,7 +410,7 @@ def render(header: Path) -> str:
     lines += module.items
     if module.functions:
         lines += ["", 'unsafe extern "C" {'] + module.functions + ["}"]
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n", abi
 
 
 def modules() -> list[tuple[Path, Path]]:
@@ -340,19 +428,33 @@ def modules() -> list[tuple[Path, Path]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--check", action="store_true", help="diff instead of writing")
-    check = parser.parse_args().check
+    parser.add_argument("--root", type=Path, help="the tree to read, not this one")
+    args = parser.parse_args()
+    check = args.check
+    if args.root:
+        set_root(args.root)
     pairs = modules()
     if len(pairs) == len(SHARED):
         print("rust-bindings: no rust/*/kernels/fb_*.h found", file=sys.stderr)
         return 2
-    stale = 0
+    rendered = []
+    refused = []
     for header, out in pairs:
         try:
-            text = render(header)
+            text, abi = render(header)
         except HeaderError as e:
             print(f"rust-bindings: {e}", file=sys.stderr)
             return 2
         old = out.read_text() if out.is_file() else ""
+        if abi and (why := abi.refusal(header, old)):
+            refused.append(why)
+        rendered.append((header, out, text, old))
+    for why in refused:
+        print(f"rust-bindings: {why}", file=sys.stderr)
+    if refused:
+        return 2
+    stale = 0
+    for header, out, text, old in rendered:
         rel = out.relative_to(REPO)
         if old == text:
             print(f"rust-bindings: {rel} is current")

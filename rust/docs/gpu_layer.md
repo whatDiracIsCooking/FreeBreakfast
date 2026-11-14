@@ -126,8 +126,14 @@ merge sort;
 `FB_INTEGRALS_ABI_VERSION` is 3, bumped as the kinetic and
 nuclear-attraction wrappers with `fb_nuclei_view`, then density fitting's
 metric and three-center launchers, joined the overlap; `fb-doc-check`'s
-`doc_lists.rs` holds these numbers to the headers), and the second
-`FB_BACKEND_CUDA` or `FB_BACKEND_HIP`
+`doc_lists.rs` holds these numbers to the headers). The bump is held:
+`devtools/rust-bindings.py` records in each module's bindings, beside the
+version, a digest of the declarations the header reaches (its own, its
+inlined includes' and `fb_launch.h`'s, comments and the version's own
+`#define` left out), and refuses, checking or writing, a header whose
+declarations have moved from it while the version has not gone up; so
+`fb-device-check`'s `bindings.rs` fails, and nothing regenerates past it.
+The second entry returns `FB_BACKEND_CUDA` or `FB_BACKEND_HIP`
 (`fb_launch.h`), chosen by the compiler's own `__CUDACC__` or `__HIP__`
 rather than a definition the build passes. The `-sys` crate's
 `check_library()` checks the version against the constant in its committed
