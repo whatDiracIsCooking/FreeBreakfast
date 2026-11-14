@@ -24,6 +24,35 @@ fn threads() -> usize {
         .expect("a thread count")
 }
 
+/// The thread count once the kernel has caught up with the joins, waiting
+/// up to [`SETTLE`] for it to fall to `want`; the last count seen if it
+/// never does.
+///
+/// `run` has joined every worker before it returns, but a join returns at
+/// the exiting thread's `CLONE_CHILD_CLEARTID` futex wake, which the kernel
+/// does as it releases the thread's memory, before `release_task` takes it
+/// out of the thread group. Until then it is still in `Threads:`, and in
+/// `/proc/self/task` too, so neither is synchronous with the join. A busy
+/// core can preempt the exiting thread in between: with three CPU hogs on
+/// the one core, a bare `spawn` and `join` read one thread too many in 135
+/// of 200 tries, for up to 10 ms (#1491). A worker that was never joined
+/// keeps the count up for the whole wait and still fails.
+fn settled_threads(want: usize) -> usize {
+    let deadline = Instant::now() + SETTLE;
+    let mut now = threads();
+    while now != want && Instant::now() < deadline {
+        std::thread::yield_now();
+        now = threads();
+    }
+    now
+}
+
+/// How long [`settled_threads`] waits: the lag is the rest of one thread's
+/// exit, a scheduler slice or a few on a loaded core (10 ms measured), so
+/// five seconds is hundreds of times that, and short enough that a worker
+/// that really survives fails the test promptly.
+const SETTLE: Duration = Duration::from_secs(5);
+
 fn main() {
     assert_eq!(threads(), 1, "the process starts with one thread");
     for (n_cpu, n_streams) in [(1, 0), (3, 2), (8, 4)] {
@@ -60,7 +89,12 @@ fn main() {
             seen.iter().all(|&t| t <= expected) && seen.last() == Some(&expected),
             "n_cpu {n_cpu}, n_streams {n_streams}: saw {seen:?}, expected {expected}"
         );
-        assert_eq!(threads(), 1, "a worker outlived its run");
+        assert_eq!(
+            settled_threads(1),
+            1,
+            "n_cpu {n_cpu}, n_streams {n_streams}: a worker outlived its run \
+             (still counted {SETTLE:?} after the join)"
+        );
     }
     println!("thread_pool_threads: ok");
 }
