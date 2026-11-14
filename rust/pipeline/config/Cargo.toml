@@ -23,10 +23,13 @@ fb-integrals-one-electron-overlap.workspace = true
 fb-io-basis.workspace = true
 fb-io-npy.workspace = true
 fb-io-xyz.workspace = true
+fb-pipeline-guess.workspace = true
 serde.workspace = true
 toml.workspace = true
 wwr-sys.workspace = true
 
 [dev-dependencies]
+fb-io-sad.workspace = true
+fb-sad.workspace = true
 fb-test-support.workspace = true
 serde_json.workspace = true

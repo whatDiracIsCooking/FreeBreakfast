@@ -1,6 +1,6 @@
 //! Write nodes: a device matrix copied into a pinned row on the stream,
-//! then written to disk by a CPU node that feeds nothing
-//! (`docs/design.md`, "What it writes").
+//! then written to disk by a CPU node that feeds nothing, or a pinned row
+//! written by that node alone (`docs/design.md`, "What it writes").
 
 use std::path::PathBuf;
 
@@ -49,7 +49,36 @@ pub fn add_write_npy(
             n,
         },
     );
-    dag.add(format!("write {file}"), worker, Write { pinned, n, path });
+    add_write_host_npy(dag, worker, pinned, n, path);
+}
+
+/// Add the writing of the host matrix `m`, `n × n` doubles column-major,
+/// to the `.npy` file `path` to `dag` on GPU worker `worker`: the write
+/// node of [`add_write_npy`] alone, `write <file>` on the CPU, for a
+/// product that is already a pinned row. It feeds nothing, and the
+/// directory must exist when the plan runs.
+///
+/// # Errors
+/// None at planning. At run time [`fb_io_npy::write_npy`]'s `Io` error
+/// naming a file that cannot be written.
+///
+/// # Panics
+/// If `m` is a row of another worker's table ([`Dag::add`]).
+pub fn add_write_host_npy(
+    dag: &mut Dag<'_>,
+    worker: usize,
+    m: RowId<Pinned, f64>,
+    n: usize,
+    path: PathBuf,
+) {
+    let file = path
+        .file_name()
+        .map_or_else(|| path.display().to_string(), |f| f.display().to_string());
+    dag.add(
+        format!("write {file}"),
+        worker,
+        Write { pinned: m, n, path },
+    );
 }
 
 /// GPU: the matrix, `n²` doubles, copied into a pinned row on the stream.

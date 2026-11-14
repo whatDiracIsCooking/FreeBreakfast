@@ -74,7 +74,7 @@ tree, not inputs to its build.
 | `fb_molecule_nuclei` | `src/molecule`, its device half (`Molecule`'s `upload`, `view`, `NucleiView`, `molecule_footprint`) | `add_nuclei`: a `Molecule`'s nuclei as two tasks of a `Dag`, `nuclei` on the CPU (each nucleus's charge and position, in atom order, into two pinned rows, `n` and `3 n` doubles) and `nuclei upload` on the stream (both copied into device rows), and `NucleiRows`, `n_nuc` and those two device rows, which a reader declares with `NucleiRows::read` and hands its launch wrapper as an `fb_nuclei_view` of their pointers. A crate beside `fb_molecule`, so that one links nothing. Every size is the molecule's, at planning; the plan text for H2O and CO is the committed golden `molecule/nuclei/tests/golden/plan_*.txt` |
 | `fb_integrals_one_electron_potential_en` | `src/integrals/one_electron/potential_en`'s `nuclear_attraction` / `add_nuclear_attraction` and its bridge's `potential_en_class` | `potential_en_classes`, the safe layer over `fb_potential_en_class`: every class's launch on one stream into a Cartesian matrix the caller zeroed, the wrapper's `fb_nuclei_view` formed from `fb_molecule_nuclei`'s `NucleiRows`, the launcher's requirements as `debug_requires`, callable by a task that launches several families into one matrix (after `kinetic_classes`, for T + V). `add_nuclear_attraction`: V of a `BasisSet` over the nuclei's rows as tasks after the records, `potential en` on the stream (the Cartesian matrix zeroed, then `potential_en_classes`, reading `ClassRows` and `NucleiRows` as edges), then `fb_recipes_matrix_ao`'s spherical transform, U's slot passed in; nuclei with no nucleus refused at planning as `InvalidConfig`, adding nothing. The plan text for each of the overlap's fixtures is the committed golden `integrals/one_electron/potential_en/tests/golden/plan_*.txt` |
 | `fb_integrals_one_electron_core_hamiltonian` | `src/integrals/one_electron/core_hamiltonian`'s `core_hamiltonian` | `add_core_hamiltonian`: H = T + V of a `BasisSet` over `fb_molecule_nuclei`'s `NucleiRows` as tasks after the records, one build task, `core hamiltonian`, on the stream (the Cartesian matrix zeroed, then `kinetic_classes` and `potential_en_classes` on top, reading `ClassRows` and `NucleiRows` as edges, with no T or V row of its own), then `fb_recipes_matrix_ao`'s spherical transform, U's slot passed in; nuclei with no nucleus refused at planning as `InvalidConfig`, adding nothing. The plan text for each of the overlap's fixtures is the committed golden `integrals/one_electron/core_hamiltonian/tests/golden/plan_*.txt` |
-| `fb_pipeline_config`, and the `free-breakfast` binary | `src/pipeline/config`, `src/main.cpp` | The binary: `Config`, a serde type read from TOML by `read_config` (`calculation`, `output`, `[molecule] xyz`, `[basis_set] basis`; each field's doc comment its default and unit; an unknown key refused `InvalidConfig` as `<file>:<line>: unknown field ...`; the geometry and a basis path joined to the config's directory), `plan`, the calculation's tasks as one `Planned` (the overlap alone so far), and `add_write_npy`, the write nodes: `download <file>` on the stream into a pinned row and `write <file>` on the CPU, a float64 `.npy` in Fortran order, feeding nothing. `free-breakfast <config.toml>` (`src/main.rs`) plans, makes the output directory, runs on device 0 and writes `timing.json` (`Record::to_json`) beside the products; its `main` is the one place an error is logged, exiting with `ErrorKind::exit_code`. `rust/examples/` holds one config per calculation, `overlap.toml` today, run through the binary by `tests/examples.rs`; the example's plan text is the committed golden `pipeline/config/tests/golden/plan_overlap.txt` |
+| `fb_pipeline_config`, and the `free-breakfast` binary | `src/pipeline/config`, `src/main.cpp` | The binary: `Config`, a serde type read from TOML by `read_config` (`calculation`, `output`, `[molecule] xyz`, `[basis_set] basis`, `[guess] type` or `from`; each field's doc comment its default and unit; an unknown key refused `InvalidConfig` as `<file>:<line>: unknown field ...`; the geometry, a basis path and a guess's `from` joined to the config's directory; a `[guess]` beside another calculation, or with both keys, refused), `plan`, the calculation's tasks as one `Planned` (`"overlap"`, S written as `overlap.npy`; `"guess"`, `fb_pipeline_guess`'s SAD or loaded D written as `d.npy`), and the write nodes: `add_write_npy`, `download <file>` on the stream into a pinned row and `write <file>` on the CPU, a float64 `.npy` in Fortran order, feeding nothing, and `add_write_host_npy`, the write node alone for a product already a pinned row. `free-breakfast <config.toml>` (`src/main.rs`) plans, makes the output directory, runs on device 0 and writes `timing.json` (`Record::to_json`) beside the products; its `main` is the one place an error is logged, exiting with `ErrorKind::exit_code`. `rust/examples/` holds one config per calculation, `overlap.toml` and `guess.toml`, run through the binary by `tests/examples.rs`; each example's plan text is the committed golden `pipeline/config/tests/golden/plan_*.txt` |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -424,6 +424,21 @@ device header, done; #1377, the doctor's compiler-drift scan over
 `rust/build-*`, done; #1393, three doc leftovers after the fork, done; and
 #1400, the load check run by the safe layers at planning, its comparison in
 tier 3, done.
+
+Milestone 33, the core Hamiltonian's orbitals and the SAD guess from a
+config, in waves:
+
+| Wave | Issues |
+|---|---|
+| 0 | #1402 one conversion from `fb_launch_status`, done; #1403 library handles per device; #1404 `cargo doc` without the library; #1405 the kinetic and nuclear-attraction forks, done; #1406 the shared spherical transform, done; #1407 the nuclei upload task, done; #1408 the timing record's JSON, done; #1417 io/npy, done; #1418 sad, done |
+| 1 | #1409 the kinetic energy, done; #1410 the nuclear attraction, done; #1411 the symmetric eigensolver; #1412 the binary, done; #1419 io/sad, done; #1420 the SAD stamp generator |
+| 2 | #1413 the core Hamiltonian, done; #1414 the symmetric orthogonalizer; #1421 the SAD guess as tasks, done |
+| 3 | #1415 the core-Hamiltonian orbitals; #1422 the SAD guess from a config, through the binary, done |
+
+What follows is the DF-RHF energy from that guess: the auxiliary sets
+(#1384), the density-fitting kernels, the Cholesky factor, DIIS, and the
+SCF's sub-DAG, replayed each iteration, over the guess and the orbitals
+step.
 
 Then the port, bottom-up from `core`, one module per crate, its device code
 forked with it ([`gpu_layer.md`](docs/gpu_layer.md), "What the port
@@ -822,3 +837,19 @@ geometry file and an unknown basis name each exit with their kind's code
 is a golden; and the config's paths. Clippy (`-D warnings`, the new crate
 with its tests), rustdoc (`-D warnings`) and `cargo fmt --check` are clean.
 Not run on the RTX 3080.
+
+2026-11-14, the SAD guess from a config (`calculation = "guess"`, `[guess]
+type` or `from`, and `add_write_host_npy`'s `write d.npy`), on the gfx1200
+(HIP), holding the card, linking the libraries the `hip` preset built:
+`devtools/test.py pr --only cargo --all` passes, tier 3 197 tests; tier 4
+125, none skipped, `fb-pipeline-config`'s 10 among them, 3 new:
+`rust/examples/guess.toml` through the binary exits 0 and its `d.npy`
+equals `fb-sad`'s serial SAD density of water in cc-pVDZ bitwise (0 of
+576 elements differ), its `timing.json` one entry per task, the two baked
+stamps, `sad guess` and `write d.npy` among them; a second run loading
+that file with `[guess] from` writes the same bytes; the example's plan
+text is the golden `pipeline/config/tests/golden/plan_guess.txt`; and
+`[guess]` read and refused (an unknown kind, `type` beside `from`, an
+unknown key, the table beside `"overlap"`, each `InvalidConfig`). Clippy
+(`-D warnings`, the crate with its tests), rustdoc (`-D warnings`) and
+`cargo fmt --check` are clean. Not run on the RTX 3080.
