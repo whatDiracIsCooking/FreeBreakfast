@@ -33,7 +33,9 @@
 //! tensor with B. A task writes only its own rows, so L and B are output
 //! rows of their own, each filled by a device copy first; the metric's and
 //! the tensor's rows end at their last read, and the assigner gives their
-//! bytes to whatever starts after.
+//! bytes to whatever starts after. The extra row costs no peak: the
+//! three-center task before the fit holds more (`docs/memory.md`,
+//! "Lifetimes", which has the bytes measured).
 //!
 //! | C++ | Here |
 //! |---|---|
