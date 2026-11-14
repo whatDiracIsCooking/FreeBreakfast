@@ -368,10 +368,10 @@ are `integrals/sys/tests/density_fitting.rs`: one (s|s) aux pair and one
 wrappers' refusals. The FelizJueves units in
 `integrals/kernels/` are emitted, not written: after bumping
 `deps/FelizJueves`, emit the tools' whole trees into a scratch directory
-and copy the eight directories this library carries, byte for byte what
-the defaults write under `src/integrals/`. `tools/emit/df_kernels.py` takes
-no `--out-root` yet, so its two are copied from the tree its default
-writes, `src/integrals/eri/density_fitting/`:
+and copy the six directories this library carries from there, byte for
+byte what the defaults write under `src/integrals/`.
+`tools/emit/df_kernels.py` writes nothing else, so its two are emitted
+straight into `integrals/kernels/`:
 
 ```bash
 # from the repository root, tmp=$(mktemp -d)
@@ -383,9 +383,7 @@ cp "$tmp"/one_electron/overlap/kernels/* rust/integrals/kernels/one_electron/ove
 cp "$tmp"/one_electron/kinetic/kernels/* rust/integrals/kernels/one_electron/kinetic/kernels/
 cp "$tmp"/one_electron/potential_en/kernels/* rust/integrals/kernels/one_electron/potential_en/kernels/
 cp "$tmp"/shared/* rust/integrals/kernels/shared/
-OMP_NUM_THREADS=8 tools/emit/df_kernels.py
-cp src/integrals/eri/density_fitting/metric/kernels/*.{cu,h} rust/integrals/kernels/eri/density_fitting/metric/kernels/
-cp src/integrals/eri/density_fitting/three_center/kernels/*.{cu,h} rust/integrals/kernels/eri/density_fitting/three_center/kernels/
+OMP_NUM_THREADS=8 tools/emit/df_kernels.py --out-root rust/integrals/kernels
 ```
 
 The records on a card are `integrals/mmd/tests/records.rs`: H2O/cc-pVDZ
