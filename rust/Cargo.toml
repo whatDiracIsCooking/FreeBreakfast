@@ -19,6 +19,7 @@ members = [
     "basis",
     "kernel_abi",
     "recipes/sys",
+    "recipes/blas",
     "integrals/sys",
     "integrals/mmd",
     "integrals/one_electron/overlap",
@@ -66,6 +67,7 @@ fb-molecule = { path = "molecule" }
 fb-basis = { path = "basis" }
 fb-kernel-abi = { path = "kernel_abi" }
 fb-recipes-sys = { path = "recipes/sys" }
+fb-recipes-blas = { path = "recipes/blas" }
 fb-io-xyz = { path = "io/xyz" }
 fb-io-basis = { path = "io/basis" }
 fb-integrals-sys = { path = "integrals/sys" }

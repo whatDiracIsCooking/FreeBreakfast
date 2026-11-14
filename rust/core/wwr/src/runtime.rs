@@ -141,6 +141,27 @@ pub mod tests {
         }
     }
 
+    // SAFETY: a live `wwr_malloc` allocation of `self.1` bytes on the
+    // device current when it was made, 256-byte aligned, so as many whole
+    // `T`s as fit; freed only on drop. A test using it on a handle of that
+    // device, and writing it only through one `&mut`, keeps the rest.
+    unsafe impl<T> crate::device_slice::DeviceSlice<T> for DeviceBytes {
+        fn as_ptr(&self) -> *const T {
+            self.0.cast_const().cast()
+        }
+
+        fn len(&self) -> usize {
+            self.1 / size_of::<T>()
+        }
+    }
+
+    // SAFETY: as above; `&mut self` makes the caller its only user.
+    unsafe impl<T> crate::device_slice::DeviceSliceMut<T> for DeviceBytes {
+        fn as_mut_ptr(&mut self) -> *mut T {
+            self.0.cast()
+        }
+    }
+
     #[cfg(test)]
     #[test]
     fn first_failure_prefers_the_sync() {

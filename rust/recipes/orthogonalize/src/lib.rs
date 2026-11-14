@@ -13,7 +13,8 @@
 //!   [`fb_inverse_sqrt`] (an eigenvalue at or below the floor becomes 0,
 //!   which drops its mode), then `M = U diag(Λ^(-1/2))` by a BLAS `dgmm`
 //!   into scratch M and `X = M Uᵀ` by a `gemm` into the output row X, both
-//!   through `wwr-sys` on the worker's handle.
+//!   on the worker's handle: the dgmm through `wwr-sys`, the gemm through
+//!   [`fb_recipes_blas::gemm`].
 //!
 //! **Conditioning.** As in the C++: the floor test comes before the square
 //! root, so X is free of NaN and Inf for a zero or negative eigenvalue, and
@@ -44,9 +45,10 @@ use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::common::wwr_status_from_code;
 use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::{gpu_status, gpu_status_at};
+use fb_recipes_blas::{N, T, gemm};
 use fb_recipes_diagonalize::add_diagonalize;
 use fb_recipes_sys::fb_inverse_sqrt;
-use wwr_sys::{wwr_blas_operation, wwr_blas_side_mode};
+use wwr_sys::wwr_blas_side_mode;
 
 /// The default eigenvalue floor, the C++ `kOrthogonalizeEigenvalueFloor`: an
 /// eigenvalue at or below it contributes 0 to X rather than `λ^(-1/2)`.
@@ -170,8 +172,8 @@ impl Task for InverseRoot {
         })?;
 
         // The worker's handle, bound to `stream` when the backend was made.
-        let handle = worker.blas().get();
-        let (u, m, x) = (
+        let handle = worker.blas();
+        let (u, m, mut x) = (
             device.get(self.u),
             device.take_mut(rows.m),
             device.take_mut(rows.x),
@@ -181,7 +183,7 @@ impl Task for InverseRoot {
         // dgmm enqueues on `stream`.
         gpu_status(unsafe {
             wwr_sys::wwr_blas_ddgmm(
-                handle,
+                handle.get(),
                 wwr_blas_side_mode::WWR_BLAS_SIDE_RIGHT,
                 n,
                 n,
@@ -193,28 +195,7 @@ impl Task for InverseRoot {
                 n,
             )
         })?;
-        let (one, zero) = (1.0_f64, 0.0_f64);
         // X = M Uᵀ, symmetric by construction.
-        // SAFETY: every matrix is an n × n device row with ld n; the scalars
-        // are host memory, the handle's default pointer mode; the gemm
-        // enqueues on `stream`.
-        gpu_status(unsafe {
-            wwr_sys::wwr_blas_dgemm(
-                handle,
-                wwr_blas_operation::WWR_BLAS_OP_N,
-                wwr_blas_operation::WWR_BLAS_OP_T,
-                n,
-                n,
-                n,
-                &one,
-                m.as_ptr(),
-                n,
-                u.as_ptr(),
-                n,
-                &zero,
-                x.as_mut_ptr(),
-                n,
-            )
-        })
+        gemm::<N, T, f64>(handle, n, n, n, 1.0, &m, &u, 0.0, &mut x)
     }
 }

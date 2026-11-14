@@ -1,0 +1,18 @@
+[package]
+name = "fb-recipes-blas"
+description = "recipes/blas: BLAS conveniences over fb_core_wwr's checked calls, packed operands and ops fixed at compile time"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-core-error-handling.workspace = true
+fb-core-wwr.workspace = true
+# BLAS for the operation enum, beside the runtime.
+wwr-sys = { workspace = true, features = ["blas"] }
+
+[dev-dependencies]
+fb-core-wwr = { workspace = true, features = ["test-support"] }

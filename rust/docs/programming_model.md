@@ -520,6 +520,17 @@ a rule and names the blocks that lack one, and
 comment justifies exactly one thing. Miri covers what a lint cannot
 ([`testing.md`](testing.md), "Sanitizers").
 
+A library call reaches the crates above `core` through a safe wrapper, not
+`wwr-sys`: `fb_core_wwr::blas::gemm` takes its matrices as `DeviceSlice`s
+(device memory with its length, which the arena's rows implement) and
+checks each extent against them in every build, and `fb-recipes-blas`, its
+packed shorthand, forbids `unsafe` itself, as the arena's `memcpy_*` do for
+the copies. That is the shape for the rest. `fb-pipeline-scf` has nothing
+left to call raw and forbids `unsafe`; the recipe crates still call
+`wwr-sys` or a kernel library directly (`dgmm`, `syevd`, the BLAS
+workspace, their kernels), so they do not yet, and each call moves behind
+a checked wrapper of its own.
+
 ```toml
 [workspace.lints.clippy]            # every member: [lints] workspace = true
 disallowed_methods = "deny"

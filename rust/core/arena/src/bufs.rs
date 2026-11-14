@@ -250,3 +250,41 @@ impl<T> DeviceMut<'_, T> {
         self.len == 0
     }
 }
+
+// SAFETY: the row is `len` elements of `T` inside a live device block on
+// its worker's device, aligned for `T` (`Element`), and the block outlives
+// every task's device work. The view's shared borrow excludes every writer
+// while it lives, and a later writer's work is ordered after this task's by
+// the executor: the same stream, or an event on the task's stream.
+#[cfg(feature = "device")]
+unsafe impl<T> fb_core_wwr::device_slice::DeviceSlice<T> for DeviceRef<'_, T> {
+    fn as_ptr(&self) -> *const T {
+        self.ptr
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+// SAFETY: as for `DeviceRef`, with the view's borrow exclusive: no other
+// view reads or writes the row while it lives, and later work on it is
+// ordered after this task's.
+#[cfg(feature = "device")]
+unsafe impl<T> fb_core_wwr::device_slice::DeviceSlice<T> for DeviceMut<'_, T> {
+    fn as_ptr(&self) -> *const T {
+        self.ptr.cast_const()
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+// SAFETY: as above.
+#[cfg(feature = "device")]
+unsafe impl<T> fb_core_wwr::device_slice::DeviceSliceMut<T> for DeviceMut<'_, T> {
+    fn as_mut_ptr(&mut self) -> *mut T {
+        self.ptr
+    }
+}

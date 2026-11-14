@@ -6,9 +6,8 @@ use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::gpu_status;
+use fb_recipes_blas::{N, T, gemm};
 use fb_recipes_diagonalize::add_diagonalize;
-use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N, WWR_BLAS_OP_T};
 
 /// Add the solution of `F C = S C ε` through `x = S^(-1/2)` to `dag` on GPU
 /// worker `worker`, and return `(ε, C)`: an output row of the `n` orbital
@@ -50,43 +49,6 @@ pub fn add_solve_fock(
     let (c_prime, eps) = add_diagonalize(dag, worker, "F'", n, lwork, f_prime);
     let c = dag.add("back transform", worker, BackTransform { x, c_prime, n });
     (eps, c)
-}
-
-/// `c = op_a(a) b` for `n` × `n` column-major device matrices, on the
-/// worker's BLAS handle.
-///
-/// # Safety
-/// `a`, `b` and `c` are device rows of `n²` doubles, `c` apart from both,
-/// and `handle` is bound to the task's stream.
-unsafe fn gemm(
-    handle: wwr_sys::wwr_blas_handle,
-    op_a: wwr_sys::wwr_blas_operation,
-    n: i32,
-    a: *const f64,
-    b: *const f64,
-    c: *mut f64,
-) -> Status {
-    let (one, zero) = (1.0_f64, 0.0_f64);
-    // SAFETY: the caller's; the scalars are host memory, the handle's
-    // default pointer mode.
-    gpu_status(unsafe {
-        wwr_sys::wwr_blas_dgemm(
-            handle,
-            op_a,
-            WWR_BLAS_OP_N,
-            n,
-            n,
-            n,
-            &one,
-            a,
-            n,
-            b,
-            n,
-            &zero,
-            c,
-            n,
-        )
-    })
 }
 
 /// GPU: `F X` into scratch, then `F' = Xᵀ (F X)`.
@@ -134,31 +96,14 @@ impl Task for FockTransform {
             unreachable!("a GPU task runs on a stream")
         };
         // The worker's handle, bound to its stream when the backend was made.
-        let handle = worker.blas().get();
+        let handle = worker.blas();
         // add_solve_fock checked that n² fits an i32, so n does too.
         let n = self.n as i32;
         let (f, x) = (device.get(self.f), device.get(self.x));
-        let (fx, f_prime) = (device.take_mut(rows.fx), device.take_mut(rows.f_prime));
-        // SAFETY: four n × n device rows, the outputs this task's own; the
-        // second gemm follows the first on the handle's stream.
-        unsafe {
-            gemm(
-                handle,
-                WWR_BLAS_OP_N,
-                n,
-                f.as_ptr(),
-                x.as_ptr(),
-                fx.as_mut_ptr(),
-            )?;
-            gemm(
-                handle,
-                WWR_BLAS_OP_T,
-                n,
-                x.as_ptr(),
-                fx.as_ptr(),
-                f_prime.as_mut_ptr(),
-            )
-        }
+        let (mut fx, mut f_prime) = (device.take_mut(rows.fx), device.take_mut(rows.f_prime));
+        // The second gemm follows the first on the handle's stream.
+        gemm::<N, N, f64>(handle, n, n, n, 1.0, &f, &x, 0.0, &mut fx)?;
+        gemm::<T, N, f64>(handle, n, n, n, 1.0, &x, &fx, 0.0, &mut f_prime)
     }
 }
 
@@ -193,22 +138,12 @@ impl Task for BackTransform {
         let Lane::Stream { stream: worker, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let (x, c_prime, c) = (
+        let (x, c_prime, mut c) = (
             device.get(self.x),
             device.get(self.c_prime),
             device.take_mut(*c),
         );
-        // SAFETY: three n × n device rows, C this task's own; the handle is
-        // the worker's, bound to its stream.
-        unsafe {
-            gemm(
-                worker.blas().get(),
-                WWR_BLAS_OP_N,
-                self.n as i32,
-                x.as_ptr(),
-                c_prime.as_ptr(),
-                c.as_mut_ptr(),
-            )
-        }
+        let n = self.n as i32;
+        gemm::<N, N, f64>(worker.blas(), n, n, n, 1.0, &x, &c_prime, 0.0, &mut c)
     }
 }
