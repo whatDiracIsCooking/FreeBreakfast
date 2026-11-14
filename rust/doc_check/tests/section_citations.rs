@@ -296,8 +296,10 @@ fn normalize(p: &Path) -> PathBuf {
     out
 }
 
-/// The workspace's documents and Rust sources: its own files, and every
-/// member's `build.rs`, `src/` and `tests/`.
+/// The workspace's documents and Rust sources: its own files, every
+/// member's `build.rs`, `src/` and `tests/`, and the agent definition
+/// written from the documents (`.claude/agents/rust-rebuild.md` at the
+/// repository root, which cites them as a file under `rust/` does).
 fn workspace_sources(root: &Path) -> Vec<(PathBuf, String)> {
     fn walk(p: &Path, out: &mut Vec<PathBuf>) {
         if p.is_dir() {
@@ -314,9 +316,12 @@ fn workspace_sources(root: &Path) -> Vec<(PathBuf, String)> {
         }
     }
     let mut paths = Vec::new();
-    for top in ["README.md", "capi_dir.rs", "docs"] {
+    for top in ["README.md", "CLAUDE.md", "capi_dir.rs", "docs"] {
         walk(&root.join(top), &mut paths);
     }
+    let agent = root.join("../.claude/agents/rust-rebuild.md");
+    assert!(agent.is_file(), "the agent definition is gone: {agent:?}");
+    paths.push(agent);
     for member in members(root) {
         for top in ["build.rs", "src", "tests"] {
             walk(&member.join(top), &mut paths);
