@@ -63,9 +63,7 @@
 //! allocated on the thread that makes it, not its worker's: a block lives
 //! for the plan, and the run's threads only for one run. Adaptive
 //! widths, the measured reserve and the node-wide pinned sum are
-//! admission's and are not here. Library handles do not take their
-//! workspace from a worker row yet: WarpWraps' C ABI has no
-//! `wwr_blas_set_workspace`.
+//! admission's and are not here.
 
 #![deny(
     clippy::undocumented_unsafe_blocks,

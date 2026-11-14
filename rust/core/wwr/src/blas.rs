@@ -12,23 +12,24 @@
 //! the owner so the stream outlives it. Its constructor aborts on failure,
 //! as every wrapper's in [`runtime`](crate::runtime) does.
 //!
-//! **No workspace yet.** cuBLAS and hipBLAS allocate a workspace per handle
+//! **The workspace.** cuBLAS and hipBLAS allocate a workspace per handle
 //! unless handed one, and the tree's design hands each handle a worker row
-//! of the arena (`docs/gpu_layer.md`, "Layering"); WarpWraps' C ABI has no
-//! `wwr_blas_set_workspace` to hand it through, so the handle allocates its
-//! own when it is made.
-
+//! of the arena (`docs/gpu_layer.md`, "Layering"):
+//! [`BlasHandle::set_workspace`] hands it through, [`WORKSPACE_BYTES`] long.
+//!
+use std::ffi::c_void;
 use std::ops::Deref;
 use std::rc::Rc;
 
 use wwr_sys::{wwr_blas_handle, wwr_blas_status, wwr_stream};
 
 use crate::common::ErrorCode;
+use crate::gpu_status;
 use crate::handle::{
     DeviceHandle, DeviceHandleStream, HandleKind, StreamBoundHandle, StreamBoundKind,
 };
 use crate::runtime::Stream;
-use fb_core_error_handling::check_or_abort;
+use fb_core_error_handling::{Status, check_or_abort};
 
 /// `wwrblasStatus_t`, as the C ABI hands it back. The name is the
 /// enumerator's; wwr's would be the vendor's (`CUBLAS_STATUS_ALLOC_FAILED`),
@@ -68,6 +69,12 @@ impl ErrorCode for wwr_blas_status {
         }
     }
 }
+
+/// The bytes of device memory each BLAS handle is handed as its workspace:
+/// 32 MiB, cuBLAS's own default on sm_90, the largest it allocates for
+/// itself on any architecture (4 MiB below sm_90). Too little makes cuBLAS
+/// pick slower kernels rather than fail.
+pub const WORKSPACE_BYTES: usize = 32 << 20;
 
 /// A BLAS handle's create, destroy and stream bind.
 pub struct BlasKind;
@@ -109,6 +116,23 @@ impl BlasHandle {
     pub fn new(owner: Rc<Stream>) -> Self {
         BlasHandle(check_or_abort(StreamBoundHandle::try_new(owner)))
     }
+
+    /// Hand the handle `bytes` of device memory at `workspace` as its
+    /// workspace, in place of the one it allocates for itself:
+    /// `wwrblasSetWorkspace`. Every later call through the handle uses it.
+    ///
+    /// # Errors
+    /// The library's refusal, as a `GpuRuntime` error naming the status:
+    /// cuBLAS refuses a pointer not 256-byte aligned.
+    ///
+    /// # Safety
+    /// `workspace` is `bytes` of device memory on the handle's device,
+    /// 256-byte aligned, and stays allocated, and written by nothing else,
+    /// for as long as any call through the handle may still run.
+    pub unsafe fn set_workspace(&self, workspace: *mut c_void, bytes: usize) -> Status {
+        // SAFETY: the handle is live; the caller's for the memory.
+        gpu_status(unsafe { wwr_sys::wwr_blas_set_workspace(self.get(), workspace, bytes) })
+    }
 }
 
 impl Deref for BlasHandle {
@@ -134,8 +158,8 @@ impl DeviceHandleStream for BlasHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpu_status;
-    use crate::runtime::tests::ok;
+    use crate::runtime::tests::{DeviceBytes, ok};
+    use wwr_sys::{wwr_blas_operation, wwr_memcpy_kind};
 
     #[test]
     fn every_status_has_a_name_and_a_description() {
@@ -179,6 +203,79 @@ mod tests {
         assert_eq!(bound, owner.stream());
         drop(blas);
         assert_eq!(Rc::strong_count(&owner), 1);
+        ok(owner.sync());
+    }
+
+    /// Needs a GPU. A handle handed a [`WORKSPACE_BYTES`] workspace runs a
+    /// DGEMM through it to the exact product: small integers, so every
+    /// partial sum is exact in any order.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn runs_a_gemm_on_a_workspace_it_was_handed() {
+        const N: usize = 16;
+        let owner = Rc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner.clone());
+        let workspace = DeviceBytes::new(WORKSPACE_BYTES);
+        assert_eq!(workspace.0 as usize % 256, 0);
+        // SAFETY: a live allocation of WORKSPACE_BYTES on device 0, which
+        // outlives every call through the handle below.
+        unsafe { blas.set_workspace(workspace.0, WORKSPACE_BYTES) }.unwrap();
+
+        let a: Vec<f64> = (0..N * N).map(|i| (i % 7) as f64 - 3.0).collect();
+        let b: Vec<f64> = (0..N * N).map(|i| (i % 5) as f64 - 2.0).collect();
+        let mut want = vec![0.0; N * N];
+        for j in 0..N {
+            for i in 0..N {
+                want[i + j * N] = (0..N).map(|k| a[i + k * N] * b[k + j * N]).sum();
+            }
+        }
+        let bytes = N * N * size_of::<f64>();
+        let (da, db, dc) = (
+            DeviceBytes::new(bytes),
+            DeviceBytes::new(bytes),
+            DeviceBytes::new(bytes),
+        );
+        let (one, zero) = (1.0f64, 0.0f64);
+        let n = N as i32;
+        // SAFETY: three live device buffers of N² doubles; the host inputs
+        // are N² doubles; the handle is live and bound to `owner`'s stream.
+        unsafe {
+            for (dst, src) in [(&da, &a), (&db, &b)] {
+                ok(wwr_sys::wwr_memcpy(
+                    dst.0,
+                    src.as_ptr().cast(),
+                    bytes,
+                    wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
+                ));
+            }
+            // A pageable copy may return before its DMA lands, and the
+            // owner's stream does not wait on the legacy one.
+            ok(wwr_sys::wwr_device_synchronize());
+            gpu_status(wwr_sys::wwr_blas_dgemm(
+                blas.get(),
+                wwr_blas_operation::WWR_BLAS_OP_N,
+                wwr_blas_operation::WWR_BLAS_OP_N,
+                n,
+                n,
+                n,
+                &one,
+                da.0.cast(),
+                n,
+                db.0.cast(),
+                n,
+                &zero,
+                dc.0.cast(),
+                n,
+            ))
+            .unwrap();
+        }
+        let got: Vec<f64> = dc
+            .read(owner.stream())
+            .chunks_exact(8)
+            .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(got, want);
+        drop(blas);
         ok(owner.sync());
     }
 }

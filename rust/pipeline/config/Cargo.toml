@@ -25,6 +25,7 @@ fb-io-basis.workspace = true
 fb-io-npy.workspace = true
 fb-io-xyz.workspace = true
 fb-pipeline-guess.workspace = true
+fb-recipes-matrix-ao.workspace = true
 serde.workspace = true
 toml.workspace = true
 wwr-sys.workspace = true

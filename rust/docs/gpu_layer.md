@@ -224,12 +224,14 @@ the query itself runs before planning). cuBLAS and hipBLAS allocate a workspace 
 handle on their own unless they are handed one (`cublasSetWorkspace` and its
 HIP twin), so the design hands every handle a worker row of the arena
 ([`memory.md`](memory.md), "The table"), and a run allocates nothing through
-a library either. That row waits on WarpWraps: its C ABI has no
-`wwr_blas_set_workspace` (requested in
-[WarpWraps#376](https://github.com/whatDiracIsCooking/WarpWraps/issues/376)),
-so until it does a BLAS handle allocates its own workspace when the
-`Device` backend makes it, once per worker and before the run, outside the
-arena's count.
+a library either. `fb_recipes_matrix_ao::add_blas_workspace` declares
+it, `blas workspace`, a worker row of `fb_core_wwr::blas::WORKSPACE_BYTES`
+(32 MiB), and adds a first stream task of the same name that hands it to the
+worker's handle through `wwr_blas_set_workspace` every run; it is rank 0 and
+ready at once, so it runs before any BLAS call on the worker. A plan that
+leaves it out still runs, on the workspace the handle allocated for itself
+when the `Device` backend made it, outside the arena's count; the plans of
+`overlap`'s and `scf`'s `Run` and the binary add it.
 
 **Rust never launches a kernel itself.** The C ABI exports a launch call
 (`wwr_launch_kernel_ex_c`), so Rust could take a kernel's address and launch

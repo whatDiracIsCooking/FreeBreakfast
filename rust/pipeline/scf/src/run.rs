@@ -14,6 +14,7 @@ use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_integrals_one_electron_overlap::add_overlap;
 use fb_molecule_nuclei::add_nuclei;
+use fb_recipes_matrix_ao::add_blas_workspace;
 use fb_recipes_orthogonalize::{ORTHOGONALIZE_EIGENVALUE_FLOOR, add_orthogonalize};
 use wwr_sys::wwr_memcpy_kind;
 
@@ -60,6 +61,7 @@ impl Run {
         let n_ao = basis.nao_sphe() as usize;
         let lwork = lwork(n_ao)?;
         let mut dag = Dag::new();
+        add_blas_workspace(&mut dag, 0);
         let nuclei = add_nuclei(&mut dag, 0, &molecule);
         let mut u = None;
         let classes = add_records(&mut dag, 0, &basis)?;
