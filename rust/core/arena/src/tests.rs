@@ -623,6 +623,24 @@ fn admit_is_exact_and_names_the_peak() {
     for (name, _) in &peak.rows {
         assert!(e.message.contains(name), "{name} not in {}", e.message);
     }
+    assert!(!e.message.contains("alone"), "{}", e.message);
+}
+
+/// A cap smaller than a row names that row, with its bytes, among the rows
+/// over the cap on their own, whether or not it is live at the peak, and
+/// names no row that fits: at 24 the `n²` matrices fit a cap of their own
+/// size exactly and the two `syevd` workspaces do not.
+#[test]
+fn admit_names_every_row_over_the_cap_alone() {
+    let table = scf_fixture(24);
+    let matrix = 24 * 24 * 8;
+    let work = (1 + 6 * 24 + 2 * 24 * 24) * 8;
+    let e = admit(&table, matrix, "stream0").unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Allocation);
+    let alone = format!(
+        "over the cap alone: syevd work (X) ({work} B), syevd work (F) ({work} B); its peak"
+    );
+    assert!(e.message.contains(&alone), "{alone:?} not in {}", e.message);
 }
 
 /// The builder refuses a read the plan could not order: before the

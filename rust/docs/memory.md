@@ -173,8 +173,13 @@ the config, siblings concurrent where room allows; when the peak is past the
 cap, serialize the widest concurrency first, then narrow each adaptive task
 in schedule order down to its least; refuse only when the serial plan at
 every adaptive task's least does not fit. The refusal names the worker, the
-kind, the instant of the peak and every row live at it, which is the C++
-message, the step that reaches the peak, with its rows.
+kind and the bytes over; then every row, and every loop's region, larger
+than the cap on its own, which no order could fit, live at the peak or not;
+then the instant of the peak and every row live at it, which is the C++
+message, the step that reaches the peak, with its rows. The peak alone
+would miss a row the peak does not hold: the DF step's peak is the
+three-center task, before B is live, so a cap short of B would name only
+the integrals' rows.
 
 **The block is the pre-warm.** Pre-flight today allocates and frees the
 pool's cap once so that a card another process holds part of is refused
@@ -402,7 +407,7 @@ them.
 | No two live rows alias | The assigner fuzzed as a pure function over random rows and orders | 3 |
 | The block is the plan | The arena's total, committed and compared bitwise per example config | 3 |
 | `bytes(width)` is monotone | Bisection against a linear scan over random dims | 3 |
-| Admission refuses what does not fit | A cap one byte under the peak refused naming the rows live at it; one byte over admitted, as the C++ nested cases pin the room to the byte | 3 |
+| Admission refuses what does not fit | A cap one byte under the peak refused naming the rows live at it; a cap under a row refused naming that row, the DF step's B not live at its peak among them; one byte over admitted, as the C++ nested cases pin the room to the byte | 3 |
 | A task reaches only its rows | The view's borrow flags and layout check, always on | 2 |
 | Reusing bytes is ordered | Random DAGs run in random orders consistent with their edges and handoffs, no two rows sharing bytes live at once | 3 |
 | A loop's body lies in its region, apart from every parent row live across the loop | Random bodies laid out, then unrolled over iterations and run in random orders consistent with the reads and handoffs, no two rows sharing bytes live at once | 3 |
