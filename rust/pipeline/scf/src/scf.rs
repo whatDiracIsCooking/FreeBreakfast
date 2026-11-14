@@ -24,13 +24,12 @@ use wwr_sys::wwr_blas_side_mode::{WWR_BLAS_SIDE_LEFT as LEFT, WWR_BLAS_SIDE_RIGH
 use super::iteration::{add_density, add_fock, add_published_density, occupied_orbitals};
 use super::tasks::add_solve_fock;
 
-/// An eigenvalue of the guess density at or under this, halved, is dropped
-/// from the guess's factor: what it drops is the eigensolver's round-off
-/// on a positive semidefinite D. The C++ `kDensityFactorFloor` is the same
-/// 1e-12 relative to the largest eigenvalue; here it is absolute, the
-/// kernel's floor, since the eigenvalues stay on the device. A SAD
-/// density's largest is of order one, and its round-off `n ε` of that.
-const GUESS_FACTOR_FLOOR: f64 = 0.5e-12;
+/// The C++ `kDensityFactorFloor`: an eigenvalue of the guess density at or
+/// under this fraction of its largest is dropped from the guess's factor,
+/// and one below minus this fraction is warned of. What it drops is the
+/// eigensolver's round-off on a positive semidefinite D, about `n ε` of the
+/// largest eigenvalue, so the floor is relative to it, as in the C++.
+const GUESS_FLOOR: f64 = 1e-12;
 
 /// The closed-shell SCF's options: the C++ `ScfStep`'s keys that the
 /// density-fitted closed-shell loop reads, each at the C++ default
@@ -121,21 +120,23 @@ impl ScfStep {
 /// **Before the loop**, the guess enters as its factor, as the C++ first
 /// build does, since K is built from a factor of D, never from D: the
 /// eigendecomposition `D = U diag(w) Uᵀ` ([`add_diagonalize`] on the rows
-/// `"guess U"`, `"guess w"`), then **`guess factor`** (stream):
-/// `C̃ = U diag((w/2)^(1/2))`, an eigenvalue at or under 1e-12 a zero
-/// column, so `D = 2 C̃ C̃ᵀ` to round-off. The guess's rank is about its
-/// minimal basis, above `nocc`, but the loop's factor row is `n × nocc`,
-/// the width of every later K. So C̃'s `nocc` columns of the largest
-/// eigenvalues become the carried factor `"C occ"`, and the other `n - nocc`
-/// the row `"C rest"`, whose K ([`add_df_exchange`], once) the first
-/// iteration adds to its own: the C++ takes the same factor `nocc` columns
-/// at a time and sums their K. `guess factor` also copies `w` down to the
-/// pinned row `"guess w host"`, which **`guess check`** (CPU) reads: an
-/// eigenvalue below `-1e-12` of the largest, possible only for a guess
-/// loaded from a file, is warned of, its part of D left out of the first
-/// K, as in the C++. Then `diis history` ([`add_diis`], the rings
-/// of `"DIIS F"`), and **`energy before`** (CPU): the decision's carried
-/// row `"last build"`, its energy 0 as the C++ starts it.
+/// `"guess U"`, `"guess w"`); **`guess w down`** (stream), `w` copied to
+/// the pinned row `"guess w host"`; **`guess check`** (CPU), which reads it
+/// and writes the floor, 1e-12 of the largest eigenvalue (0 if none is
+/// positive), to the pinned row `"guess floor"`, and warns of an eigenvalue
+/// below minus that floor, possible only for a guess loaded from a file,
+/// as in the C++; then **`guess factor`** (stream), which reads the floor
+/// as it enqueues: `C̃ = U diag((w/2)^(1/2))`, an eigenvalue at or under the
+/// floor a zero column, so `D = 2 C̃ C̃ᵀ` to round-off and a negative part
+/// of D is left out of the first K, as in the C++. The guess's rank is
+/// about its minimal basis, above `nocc`, but the loop's factor row is
+/// `n × nocc`, the width of every later K. So C̃'s `nocc` columns of the
+/// largest eigenvalues become the carried factor `"C occ"`, and the other
+/// `n - nocc` the row `"C rest"`, whose K ([`add_df_exchange`], once) the
+/// first iteration adds to its own: the C++ takes the same factor `nocc`
+/// columns at a time and sums their K. Then `diis history` ([`add_diis`],
+/// the rings of `"DIIS F"`), and **`energy before`** (CPU): the decision's
+/// carried row `"last build"`, its energy 0 as the C++ starts it.
 ///
 /// **The body**, one iteration: `df coulomb` (J of D) and `df exchange` (K
 /// of the factor); **`guess exchange`** (stream), when `nocc < n`: K plus
@@ -201,8 +202,19 @@ pub fn add_scf(
     // Before the loop: the guess's factor, the rest's K, DIIS's rings and
     // the decision's last energy.
     let (u, w) = add_diagonalize(dag, worker, "guess", n, lwork, guess);
-    let factor = dag.add("guess factor", worker, GuessFactor { u, w, n, nocc });
-    dag.add("guess check", worker, GuessCheck { w: factor.w_host });
+    let w_host = dag.add("guess w down", worker, GuessDown { w, n });
+    let floor = dag.add("guess check", worker, GuessCheck { w: w_host });
+    let factor = dag.add(
+        "guess factor",
+        worker,
+        GuessFactor {
+            u,
+            w,
+            floor,
+            n,
+            nocc,
+        },
+    );
     let rest_k = match factor.rest {
         Some(rest) => Some(add_df_exchange(
             dag,
@@ -251,11 +263,89 @@ pub fn add_scf(
     Ok((previous, [eps, c, d]))
 }
 
-/// GPU: `C̃ = U diag((w/2)^(1/2))`, its last `nocc` columns into the
-/// carried factor and the rest into a row of their own.
+/// GPU: the guess's eigenvalues copied down to a pinned row of their own.
+struct GuessDown {
+    w: RowId<Device, f64>,
+    n: usize,
+}
+
+impl Task for GuessDown {
+    type Rows = RowId<Pinned, f64>;
+    const GPU: bool = true;
+
+    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+        device.read(self.w);
+        host.output("guess w host", self.n)
+    }
+
+    fn dims(&self) -> Vec<(&'static str, usize)> {
+        vec![("n", self.n)]
+    }
+
+    fn run(
+        &self,
+        w_host: &Self::Rows,
+        device: &Bufs<'_, Device>,
+        host: &Bufs<'_, Pinned>,
+        lane: Lane<'_, DeviceStream>,
+    ) -> Status {
+        let Lane::Stream { stream: worker, .. } = lane else {
+            unreachable!("a GPU task runs on a stream")
+        };
+        memcpy_d2p(host, *w_host, device.get(self.w), worker)
+    }
+}
+
+/// CPU, before the loop: the guess's eigenvalues, ascending, read for the
+/// factor's floor, [`GUESS_FLOOR`] of the largest, written to a pinned row
+/// of one double; and for a negative eigenvalue below minus the floor,
+/// which is warned of as the C++ first build does.
+struct GuessCheck {
+    w: RowId<Pinned, f64>,
+}
+
+impl Task for GuessCheck {
+    type Rows = RowId<Pinned, f64>;
+    const GPU: bool = false;
+
+    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+        host.read(self.w);
+        host.output("guess floor", 1)
+    }
+
+    fn run(
+        &self,
+        floor_row: &Self::Rows,
+        _: &Bufs<'_, Device>,
+        host: &Bufs<'_, Pinned>,
+        _: Lane<'_, DeviceStream>,
+    ) -> Status {
+        let w = host.get(self.w);
+        let (smallest, largest) = (
+            w.first().copied().unwrap_or(0.0),
+            w.last().copied().unwrap_or(0.0),
+        );
+        let floor = GUESS_FLOOR * largest.max(0.0);
+        host.take_mut(*floor_row)[0] = floor;
+        if smallest < -floor {
+            // Only a density loaded from a file can be: the SAD guess is
+            // PSD. Its negative part only moves the first iterate.
+            log::warn!(
+                "scf: the first density has an eigenvalue {smallest:.3e}, below \
+                 -{GUESS_FLOOR:.1e} of its largest; its exchange is of the positive part"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// GPU: `C̃ = U diag((w/2)^(1/2))`, an eigenvalue at or under the floor a
+/// zero column, its last `nocc` columns into the carried factor and the
+/// rest into a row of their own.
 struct GuessFactor {
     u: RowId<Device, f64>,
     w: RowId<Device, f64>,
+    floor: RowId<Pinned, f64>,
     n: usize,
     nocc: usize,
 }
@@ -268,7 +358,6 @@ struct GuessFactorRows {
     factor: RowId<Device, f64>,
     c_occ: RowId<Device, f64>,
     rest: Option<RowId<Device, f64>>,
-    w_host: RowId<Pinned, f64>,
 }
 
 impl Task for GuessFactor {
@@ -278,6 +367,7 @@ impl Task for GuessFactor {
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.u);
         device.read(self.w);
+        host.read(self.floor);
         let n = self.n;
         GuessFactorRows {
             half: device.scratch("w/2", n),
@@ -286,7 +376,6 @@ impl Task for GuessFactor {
             factor: device.scratch("guess factor", n * n),
             c_occ: device.output("C occ", n * self.nocc),
             rest: (self.nocc < n).then(|| device.output("C rest", n * (n - self.nocc))),
-            w_host: host.output("guess w host", n),
         }
     }
 
@@ -307,6 +396,10 @@ impl Task for GuessFactor {
         let blas = worker.blas();
         // add_scf checked that n² fits an i32.
         let n = self.n as i32;
+        // `guess check` wrote it before this task enqueues: a CPU node's
+        // work is done when it returns. Halved, as the map is of w/2; the
+        // halving is exact, so the test is the C++'s `w <= floor`.
+        let floor = 0.5 * host.get(self.floor)[0];
         let (u, w) = (device.get(self.u), device.get(self.w));
         let (mut half, mut root, mut weights, mut factor, mut c_occ) = (
             device.take_mut(rows.half),
@@ -317,10 +410,10 @@ impl Task for GuessFactor {
         );
         // Each call follows the one before on the stream. (w/2)^(1/2) as
         // (w/2) (w/2)^(-1/2): the kernel maps an eigenvalue at or under the
-        // floor, or a negative one, to 0, and so drops its column.
+        // floor, so a negative one too, to 0, and so drops its column.
         geam(blas, OP_N, OP_N, n, 1, 0.5, &w, n, 0.0, &w, n, &mut half, n)?;
         copy::d2d(&mut root, &half, worker)?;
-        inverse_sqrt(worker, self.n, &mut root, GUESS_FACTOR_FLOOR)?;
+        inverse_sqrt(worker, self.n, &mut root, floor)?;
         dgmm(blas, LEFT, n, 1, &half, n, &root, 1, &mut weights, n)?;
         dgmm(blas, RIGHT, n, n, &u, n, &weights, 1, &mut factor, n)?;
         // Ascending: the largest eigenvalues are the last nocc columns.
@@ -328,49 +421,6 @@ impl Task for GuessFactor {
         copy::d2d(&mut c_occ, &tail, worker)?;
         if let Some(rest) = rows.rest {
             copy::d2d(&mut device.take_mut(rest), &head, worker)?;
-        }
-        memcpy_d2p(host, rows.w_host, w, worker)
-    }
-}
-
-/// The C++ `kDensityFactorFloor`: an eigenvalue of the guess below minus
-/// this fraction of its largest is not round-off on a positive semidefinite
-/// D, and is warned of.
-const GUESS_NEGATIVE_FLOOR: f64 = 1e-12;
-
-/// CPU, before the loop: the guess's eigenvalues, ascending, read for a
-/// negative one past round-off, which is warned of as the C++ first build
-/// does. Its part of D is already left out of the factor.
-struct GuessCheck {
-    w: RowId<Pinned, f64>,
-}
-
-impl Task for GuessCheck {
-    type Rows = ();
-    const GPU: bool = false;
-
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) {
-        host.read(self.w);
-    }
-
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
-        let w = host.get(self.w);
-        let (Some(&smallest), Some(&largest)) = (w.first(), w.last()) else {
-            return Ok(());
-        };
-        if smallest < -GUESS_NEGATIVE_FLOOR * largest.max(0.0) {
-            // Only a density loaded from a file can be: the SAD guess is
-            // PSD. Its negative part only moves the first iterate.
-            log::warn!(
-                "scf: the first density has an eigenvalue {smallest:.3e}, below \
-                 -{GUESS_NEGATIVE_FLOOR:.1e} of its largest; its exchange is of the positive part"
-            );
         }
         Ok(())
     }
