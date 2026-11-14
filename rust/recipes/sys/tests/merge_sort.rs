@@ -9,13 +9,15 @@
 //! to six times, an odd and an even number each. Keys repeat, so
 //! stability shows in the permutation, which must equal the host's exactly:
 //! it is integers. Each sort gets exactly the workspace its query asked for.
+//! The sorts go through the safe [`merge_sort`] and [`merge_sort_keys`];
+//! the C wrapper's own refusals, which the safe calls cannot reach, are
+//! called raw.
 
-use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::runtime::tests::DeviceBytes;
 use fb_recipes_sys::{
-    FB_DEVICE_ALIGNMENT, FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, fb_merge_sort,
-    fb_merge_sort_workspace_bytes,
+    FB_DEVICE_ALIGNMENT, FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, fb_merge_sort, merge_sort,
+    merge_sort_keys, merge_sort_workspace_bytes,
 };
 
 const SIZES: &[u32] = &[
@@ -52,14 +54,11 @@ fn keys(n: u32) -> Vec<f64> {
         .collect()
 }
 
-fn workspace(n: u32, with_values: bool) -> (Option<DeviceBytes>, usize) {
-    // SAFETY: a host function of its arguments alone.
-    let bytes = unsafe { fb_merge_sort_workspace_bytes(n, with_values) };
-    let buffer = (bytes > 0).then(|| DeviceBytes::new(bytes));
-    if let Some(b) = &buffer {
-        assert_eq!(b.0 as usize % FB_DEVICE_ALIGNMENT, 0);
-    }
-    (buffer, bytes)
+/// Exactly the workspace the query asks for `n` keys, empty up to a tile.
+fn workspace(n: u32, with_values: bool) -> DeviceBytes {
+    let buffer = DeviceBytes::new(merge_sort_workspace_bytes(n as usize, with_values));
+    assert_eq!(buffer.0 as usize % FB_DEVICE_ALIGNMENT, 0);
+    buffer
 }
 
 /// Needs a GPU. Keys and their permutation, for every size.
@@ -73,22 +72,11 @@ fn sorts_keys_and_values_as_the_host_stable_sort() {
         order.sort_by(|&a, &b| host[a as usize].total_cmp(&host[b as usize]));
         let expected: Vec<u64> = order.iter().map(|&i| host[i as usize].to_bits()).collect();
 
-        let d_keys = DeviceBytes::upload(&host, &stream);
-        let d_values = DeviceBytes::upload(&(0..n).collect::<Vec<u32>>(), &stream);
-        let (scratch, bytes) = workspace(n, true);
-        // SAFETY: device arrays of n keys and n values, and exactly the
-        // workspace the query asked for, none overlapping.
-        let status = unsafe {
-            fb_merge_sort(
-                stream.stream(),
-                n,
-                d_keys.0.cast(),
-                d_values.0.cast(),
-                scratch.as_ref().map_or(std::ptr::null_mut(), |s| s.0),
-                bytes,
-            )
-        };
-        assert_eq!(status, FB_LAUNCH_SUCCESS, "n = {n}");
+        let mut d_keys = DeviceBytes::upload(&host, &stream);
+        let mut d_values = DeviceBytes::upload(&(0..n).collect::<Vec<u32>>(), &stream);
+        let mut scratch = workspace(n, true);
+        merge_sort(&stream, &mut d_keys, &mut d_values, &mut scratch)
+            .unwrap_or_else(|e| panic!("n = {n}: {e:?}"));
         let got_keys: Vec<u64> = d_keys
             .read(&stream)
             .as_chunks::<8>()
@@ -119,20 +107,10 @@ fn sorts_keys_alone_as_the_host_sort() {
         expected.sort_by(f64::total_cmp);
         let expected: Vec<u64> = expected.iter().map(|k| k.to_bits()).collect();
 
-        let d_keys = DeviceBytes::upload(&host, &stream);
-        let (scratch, bytes) = workspace(n, false);
-        // SAFETY: as above, with no values.
-        let status = unsafe {
-            fb_merge_sort(
-                stream.stream(),
-                n,
-                d_keys.0.cast(),
-                std::ptr::null_mut(),
-                scratch.as_ref().map_or(std::ptr::null_mut(), |s| s.0),
-                bytes,
-            )
-        };
-        assert_eq!(status, FB_LAUNCH_SUCCESS, "n = {n}");
+        let mut d_keys = DeviceBytes::upload(&host, &stream);
+        let mut scratch = workspace(n, false);
+        merge_sort_keys(&stream, &mut d_keys, &mut scratch)
+            .unwrap_or_else(|e| panic!("n = {n}: {e:?}"));
         let got: Vec<u64> = d_keys
             .read(&stream)
             .as_chunks::<8>()
@@ -148,8 +126,7 @@ fn sorts_keys_alone_as_the_host_sort() {
 /// to the alignment and the values' half after it. Host only.
 #[test]
 fn workspace_query_is_the_two_halves() {
-    // SAFETY: a host function of its arguments alone.
-    let bytes = |n, with_values| unsafe { fb_merge_sort_workspace_bytes(n, with_values) };
+    let bytes = merge_sort_workspace_bytes;
     assert_eq!(bytes(0, true), 0);
     assert_eq!(bytes(2816, true), 0);
     // 2817 keys are 22536 bytes, 22784 at 256; the values 11268 more.
@@ -157,8 +134,36 @@ fn workspace_query_is_the_two_halves() {
     assert_eq!(bytes(2817, true), 22784 + 11268);
 }
 
-/// A null key array, or a workspace one byte short, is refused before any
-/// launch: no device is touched.
+/// Needs a GPU. A workspace one byte short of the query panics before
+/// anything is enqueued.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+#[should_panic(
+    expected = "merge_sort: 2817 keys need a workspace of 34052 bytes, but it holds 34051"
+)]
+fn the_safe_call_refuses_a_short_workspace() {
+    let stream = Stream::new(0);
+    let mut keys = DeviceBytes::new(2817 * size_of::<f64>());
+    let mut values = DeviceBytes::new(2817 * size_of::<u32>());
+    let mut scratch = DeviceBytes::new(merge_sort_workspace_bytes(2817, true) - 1);
+    let _ = merge_sort(&stream, &mut keys, &mut values, &mut scratch);
+}
+
+/// Needs a GPU. Values shorter than the keys panic before anything is
+/// enqueued.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+#[should_panic(expected = "merge_sort: values holds 4, but keys 5")]
+fn the_safe_call_refuses_short_values() {
+    let stream = Stream::new(0);
+    let mut keys = DeviceBytes::new(5 * size_of::<f64>());
+    let mut values = DeviceBytes::new(4 * size_of::<u32>());
+    let mut scratch = DeviceBytes::new(0);
+    let _ = merge_sort(&stream, &mut keys, &mut values, &mut scratch);
+}
+
+/// The C wrapper's refusals: a null key array, or a workspace one byte
+/// short, is refused before any launch; no device is touched.
 #[test]
 fn refuses_null_keys_and_a_short_workspace() {
     let null = std::ptr::null_mut();
@@ -174,8 +179,7 @@ fn refuses_null_keys_and_a_short_workspace() {
         sort(5, null.cast(), null.cast(), null, 0),
         FB_LAUNCH_INVALID_ARGUMENT
     );
-    // SAFETY: a host function of its arguments alone.
-    let bytes = unsafe { fb_merge_sort_workspace_bytes(5000, true) };
+    let bytes = merge_sort_workspace_bytes(5000, true);
     let dangling = std::ptr::NonNull::<f64>::dangling().as_ptr();
     assert_eq!(
         sort(5000, dangling, dangling.cast(), dangling.cast(), bytes - 1),

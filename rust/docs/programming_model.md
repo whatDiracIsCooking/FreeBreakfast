@@ -516,8 +516,7 @@ list is in three tiers:
 - **Method crates:** `fb-integrals-mmd`,
   `fb-integrals-one-electron-overlap`, `fb-integrals-one-electron-kinetic`,
   `fb-integrals-one-electron-potential-en`,
-  `fb-integrals-one-electron-core-hamiltonian`, `fb-recipes-matrix-ao`,
-  `fb-recipes-orthogonalize`.
+  `fb-integrals-one-electron-core-hamiltonian`, `fb-recipes-matrix-ao`.
 
 The core crates hold the wrappers: `fb-core-wwr` over the `wwr-sys`
 bindings, the arena over the raw allocation and copy bindings, the two
@@ -546,13 +545,16 @@ A library call reaches the crates above `core` through a safe wrapper, not
 memory with its length, which the arena's rows implement) and check each
 extent against them in every build (syevd's work against the solver's own
 query), and `fb-recipes-blas`, the BLAS calls' packed shorthand, forbids
-`unsafe` itself, as the arena's `memcpy_*` do for the copies. That is the
-shape for the rest. `fb-pipeline-scf` and `fb-recipes-diagonalize` have
-nothing left to call raw and forbid `unsafe`; the other recipe crates still
-call `wwr-sys` or a kernel library directly (`fb-recipes-matrix-ao` the BLAS
-workspace hand-off, `fb-recipes-orthogonalize` its `fb_inverse_sqrt`
-launch, the method crates their kernels), so they do not yet, and each call
-moves behind a checked wrapper of its own.
+`unsafe` itself, as the arena's `memcpy_*` do for the copies. A kernel
+library's launch is wrapped the same way in its binding crate, beside the
+generated bindings: `fb_recipes_sys::inverse_sqrt`, `merge_sort` and
+`merge_sort_keys` take `DeviceSlice`s and map the launch status through
+`fb_kernel_abi::launch_status`. That is the shape for the rest.
+`fb-pipeline-scf`, `fb-recipes-diagonalize` and `fb-recipes-orthogonalize`
+have nothing left to call raw and forbid `unsafe`; `fb-recipes-matrix-ao`
+still calls `wwr-sys` for the BLAS workspace hand-off, and the integrals
+method crates call `fb-integrals-sys`'s launchers directly, so they do not
+yet, and each call moves behind a checked wrapper of its own.
 
 ```toml
 [workspace.lints.clippy]            # every member: [lints] workspace = true
