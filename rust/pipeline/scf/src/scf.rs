@@ -3,7 +3,7 @@
 
 use std::ops::ControlFlow;
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Decision, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
@@ -129,7 +129,11 @@ impl ScfStep {
 /// eigenvalues become the carried factor `"C occ"`, and the other `n - nocc`
 /// the row `"C rest"`, whose K ([`add_df_exchange`], once) the first
 /// iteration adds to its own: the C++ takes the same factor `nocc` columns
-/// at a time and sums their K. Then `diis history` ([`add_diis`], the rings
+/// at a time and sums their K. `guess factor` also copies `w` down to the
+/// pinned row `"guess w host"`, which **`guess check`** (CPU) reads: an
+/// eigenvalue below `-1e-12` of the largest, possible only for a guess
+/// loaded from a file, is warned of, its part of D left out of the first
+/// K, as in the C++. Then `diis history` ([`add_diis`], the rings
 /// of `"DIIS F"`), and **`energy before`** (CPU): the decision's carried
 /// row `"last build"`, its energy 0 as the C++ starts it.
 ///
@@ -143,8 +147,9 @@ impl ScfStep {
 /// and `‖e‖` and the iteration count written into `"last build"`, the row
 /// returned as `scalars`; converged when `|ΔE| < energy_tolerance` and
 /// `‖e‖ < commutator_tolerance`, from the second iteration on; otherwise a
-/// singular DIIS extrapolation restarts the history ([`Diis::reset`]). Each
-/// iteration is logged at `info`.
+/// singular DIIS extrapolation restarts the history from this iteration's
+/// pair, every residual from it on scaled by `1/‖e‖` ([`Diis::restart`]),
+/// as the C++ loop does. Each iteration is logged at `info`.
 ///
 /// **After the loop**, the published orbitals are the converged F's as
 /// built, not of its extrapolation, as in the C++: [`add_solve_fock`] on
@@ -197,6 +202,7 @@ pub fn add_scf(
     // the decision's last energy.
     let (u, w) = add_diagonalize(dag, worker, "guess", n, lwork, guess);
     let factor = dag.add("guess factor", worker, GuessFactor { u, w, n, nocc });
+    dag.add("guess check", worker, GuessCheck { w: factor.w_host });
     let rest_k = match factor.rest {
         Some(rest) => Some(add_df_exchange(
             dag,
@@ -262,13 +268,14 @@ struct GuessFactorRows {
     factor: RowId<Device, f64>,
     c_occ: RowId<Device, f64>,
     rest: Option<RowId<Device, f64>>,
+    w_host: RowId<Pinned, f64>,
 }
 
 impl Task for GuessFactor {
     type Rows = GuessFactorRows;
     const GPU: bool = true;
 
-    fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.u);
         device.read(self.w);
         let n = self.n;
@@ -279,6 +286,7 @@ impl Task for GuessFactor {
             factor: device.scratch("guess factor", n * n),
             c_occ: device.output("C occ", n * self.nocc),
             rest: (self.nocc < n).then(|| device.output("C rest", n * (n - self.nocc))),
+            w_host: host.output("guess w host", n),
         }
     }
 
@@ -290,7 +298,7 @@ impl Task for GuessFactor {
         &self,
         rows: &GuessFactorRows,
         device: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
+        host: &Bufs<'_, Pinned>,
         lane: Lane<'_, DeviceStream>,
     ) -> Status {
         let Lane::Stream { stream: worker, .. } = lane else {
@@ -320,6 +328,49 @@ impl Task for GuessFactor {
         copy::d2d(&mut c_occ, &tail, worker)?;
         if let Some(rest) = rows.rest {
             copy::d2d(&mut device.take_mut(rest), &head, worker)?;
+        }
+        memcpy_d2p(host, rows.w_host, w, worker)
+    }
+}
+
+/// The C++ `kDensityFactorFloor`: an eigenvalue of the guess below minus
+/// this fraction of its largest is not round-off on a positive semidefinite
+/// D, and is warned of.
+const GUESS_NEGATIVE_FLOOR: f64 = 1e-12;
+
+/// CPU, before the loop: the guess's eigenvalues, ascending, read for a
+/// negative one past round-off, which is warned of as the C++ first build
+/// does. Its part of D is already left out of the factor.
+struct GuessCheck {
+    w: RowId<Pinned, f64>,
+}
+
+impl Task for GuessCheck {
+    type Rows = ();
+    const GPU: bool = false;
+
+    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) {
+        host.read(self.w);
+    }
+
+    fn run(
+        &self,
+        _: &(),
+        _: &Bufs<'_, Device>,
+        host: &Bufs<'_, Pinned>,
+        _: Lane<'_, DeviceStream>,
+    ) -> Status {
+        let w = host.get(self.w);
+        let (Some(&smallest), Some(&largest)) = (w.first(), w.last()) else {
+            return Ok(());
+        };
+        if smallest < -GUESS_NEGATIVE_FLOOR * largest.max(0.0) {
+            // Only a density loaded from a file can be: the SAD guess is
+            // PSD. Its negative part only moves the first iterate.
+            log::warn!(
+                "scf: the first density has an eigenvalue {smallest:.3e}, below \
+                 -{GUESS_NEGATIVE_FLOOR:.1e} of its largest; its exchange is of the positive part"
+            );
         }
         Ok(())
     }
@@ -405,7 +456,8 @@ impl Task for EnergyBefore {
 }
 
 /// The loop's decision: the iteration recorded and logged, convergence
-/// tested, and a singular DIIS subspace restarted.
+/// tested, and a singular DIIS subspace restarted at residual scale
+/// `1/‖e‖`.
 struct Converged {
     scalars: RowId<Pinned, f64>,
     singular: RowId<Pinned, i32>,
@@ -445,10 +497,16 @@ impl Decision for Converged {
             return Ok(ControlFlow::Break(()));
         }
         if host.get(self.singular)[0] != 0 && norm > 0.0 {
-            // The push already returned F as built, the plain step; the
-            // next push starts a fresh subspace.
-            log::info!("scf: DIIS subspace singular at |[F,D]| = {norm:.3e}; restarted");
-            self.diis.reset();
+            // The push already returned F as built, the plain step. The
+            // history restarts from this pair, its residual scaled to unit
+            // norm, and every later residual by the same 1/‖e‖, so the next
+            // push extrapolates over two pairs again.
+            let scale = 1.0 / norm;
+            log::info!(
+                "scf: DIIS subspace singular at |[F,D]| = {norm:.3e}; restarted with its \
+                 residuals scaled by {scale:.3e}"
+            );
+            self.diis.restart(scale);
         }
         Ok(ControlFlow::Continue(()))
     }

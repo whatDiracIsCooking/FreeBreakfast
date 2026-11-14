@@ -70,13 +70,13 @@
 //! | `fock_rebuild_interval`, `tau_j`, incremental builds, `DirectFockBuilder` | not ported: every DF build is full, and the direct ERIs are not ported |
 //! | ROHF, `roothaan_fock`, `publish_open`, `molden` | not ported: an odd electron count is refused |
 //! | `guess_exchange`: `syevd(D)`, `C̃ = V (Λ/2)^(1/2)` over the eigenvalues above 1e-12 of the largest, `df_exchange` over `n_alpha` columns at a time, summed | `syevd` on the guess, `guess factor` (the floor 1e-12 absolute, applied on the device by `fb_recipes_sys::inverse_sqrt`), the largest `nocc` columns the carried factor, the other `n - nocc` one K before the loop that `guess exchange` adds to the first iteration's and then zeroes |
-//! | a loaded guess that is not PSD: its negative part left out, with a warning | left out, silently: the eigenvalues never reach the host |
+//! | a loaded guess that is not PSD: its negative part left out, with a warning | left out, and the same warning from `guess check`, a CPU node reading the eigenvalues `guess factor` copies to a pinned row |
 //! | the guess rescaled by `N / Σ Z` for an ion | not ported: it moves only the first iterate, and [`Run`] plans a neutral molecule |
 //! | `previous = 0.0`, the loop's local | the pinned row `last build`, which the decision carries, with the last build's `‖e‖` and the iteration count beside E (`docs/memory.md`, "Nested plans") |
 //! | `ScfStep`'s keys read from the config's `[scf]` table | [`ScfStep`] itself, deserialized by `fb-pipeline-config` |
 //! | converged: `full && iteration > 1 && \|dE\| < energy_tolerance && norm < commutator_tolerance` | the decision's test, from its second iteration (index 1) on |
 //! | on convergence, `solve_fock` on F as built, not on the extrapolation | the same after the loop, `published density` its D; the last body iteration's extrapolated step is computed and left |
-//! | a singular extrapolation: logged, `diis.reset()`, the pair pushed again with every later residual scaled by `1/\|[F,D]\|` | logged, [`Diis::reset`](fb_recipes_diis::Diis::reset) from the decision; not pushed again, so the next iteration is a plain step too, and no residual scaled |
+//! | a singular extrapolation: logged, `diis.reset()`, the pair pushed again with every later residual scaled by `1/\|[F,D]\|` | logged, [`Diis::restart`](fb_recipes_diis::Diis::restart)`(1/‖e‖)` from the decision: the pair kept and every later residual scaled, the kept pair's move done by the next push before its own, so the next iteration extrapolates over two pairs as the C++'s does |
 //! | `err_max_iterations_exceeded`, naming the tolerances | the loop's bound, `MaxIterationsExceeded` from the executor |
 //! | `FBF_LOG_INFO` per iteration and on convergence | `log::info!` from the decision, the same lines |
 //! | the core guess's orbitals, a test vehicle of the Roothaan step | not here: the tests build that plan themselves |

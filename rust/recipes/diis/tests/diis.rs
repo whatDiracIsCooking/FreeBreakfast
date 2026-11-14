@@ -247,14 +247,23 @@ impl Task for Down {
 /// What the decision saw after each push: the output and the flag.
 type Seen = Arc<Mutex<Vec<(Vec<f64>, i32)>>>;
 
-/// The decision: the output and the flag kept, the history reset after
-/// push `reset_after` if given, and the loop ended after `pushes`.
+/// What the decision does to the history after one push.
+#[derive(Clone, Copy)]
+enum Action {
+    /// [`Diis::reset`].
+    Reset,
+    /// [`Diis::restart`] at this scale.
+    Restart(f64),
+}
+
+/// The decision: the output and the flag kept, `action` taken after push
+/// `after.0` if given, and the loop ended after `pushes`.
 struct Record {
     out: RowId<Pinned, f64>,
     singular: RowId<Pinned, i32>,
     seen: Seen,
     diis: Diis,
-    reset_after: Option<usize>,
+    after: Option<(usize, Action)>,
     pushes: usize,
 }
 
@@ -269,8 +278,10 @@ impl Decision for Record {
     fn decide(&self, _: &(), h: &Bufs<'_, Pinned>, iteration: usize) -> Result<ControlFlow<()>> {
         let seen = (h.get(self.out).to_vec(), h.get(self.singular)[0]);
         self.seen.lock().unwrap().push(seen);
-        if self.reset_after == Some(iteration) {
-            self.diis.reset();
+        match self.after {
+            Some((push, Action::Reset)) if push == iteration => self.diis.reset(),
+            Some((push, Action::Restart(scale))) if push == iteration => self.diis.restart(scale),
+            _ => {}
         }
         Ok(if iteration + 1 == self.pushes {
             ControlFlow::Break(())
@@ -281,12 +292,12 @@ impl Decision for Record {
 }
 
 /// `pairs` pushed in order, one per iteration of one run, into a history
-/// of `cap`, reset after push `reset_after` if given: what the decision saw
-/// after each.
+/// of `cap`, with `after`'s action after its push if given: what the
+/// decision saw after each.
 fn run_pushes(
     pairs: Vec<(Vec<f64>, Vec<f64>)>,
     cap: usize,
-    reset_after: Option<usize>,
+    after: Option<(usize, Action)>,
 ) -> Vec<(Vec<f64>, i32)> {
     let len = pairs[0].0.len();
     let pushes = pairs.len();
@@ -316,7 +327,7 @@ fn run_pushes(
             singular,
             seen: Arc::clone(&seen),
             diis,
-            reset_after,
+            after,
             pushes,
         },
     );
@@ -374,7 +385,7 @@ fn a_singular_subspace_falls_back_to_the_newest_iterate() {
 fn a_reset_drops_the_subspace_and_keeps_the_rows() {
     let pairs = pairs(37);
     let pairs = pairs[..7].to_vec();
-    let seen = run_pushes(pairs.clone(), 3, Some(4));
+    let seen = run_pushes(pairs.clone(), 3, Some((4, Action::Reset)));
     assert_eq!(
         seen[5],
         (pairs[5].0.clone(), 0),
@@ -385,6 +396,65 @@ fn a_reset_drops_the_subspace_and_keeps_the_rows() {
     let error = relative(&seen[6].0, &want);
     assert!(error <= 1e-12, "relative error {error:e}");
     assert_eq!(seen[6].1, 0);
+}
+
+/// The committed pairs cut to 16, five of them, each residual times
+/// `1e-8`, and the second's residual the first's: a duplicated pair, so
+/// the second push is singular at any scale.
+fn small_pairs_with_a_duplicate() -> Vec<(Vec<f64>, Vec<f64>)> {
+    let mut pairs: Vec<_> = pairs(16)[..5]
+        .iter()
+        .map(|(f, e)| (f.clone(), e.iter().map(|x| x * 1e-8).collect::<Vec<_>>()))
+        .collect();
+    pairs[1].1 = pairs[0].1.clone();
+    pairs
+}
+
+/// Needs a GPU. The C++ SCF's restart: a duplicated pair makes the second
+/// push singular (flag 1, the newest iterate bit for bit), and the
+/// decision restarts at `1/‖e‖` of it. The pushes after it extrapolate
+/// over the kept pair and each new one, every residual at that scale, and
+/// none is singular: each output is the host's extrapolation over the
+/// pairs since the restart, their residuals times the scale, within the
+/// bar, the condition number under [`KAPPA`].
+///
+/// The residuals are `1e-8` of the committed ones, so the Gram's entries
+/// are under `1e-15` and every pivot after the border's under the solve's
+/// absolute `1e-14`: [`a_reset_leaves_small_residuals_singular`] is the
+/// same pairs reset instead, and its third push after the reset is
+/// singular. So what the restart's scale changes is what this case sees.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn a_restart_extrapolates_at_the_new_scale() {
+    let pairs = small_pairs_with_a_duplicate();
+    let scale = 1.0 / dot(&pairs[1].1, &pairs[1].1).sqrt();
+    let seen = run_pushes(pairs.clone(), 4, Some((1, Action::Restart(scale))));
+    assert_eq!(seen[1], (pairs[1].0.clone(), 1), "the duplicated push");
+    let scaled: Vec<(Vec<f64>, Vec<f64>)> = pairs
+        .iter()
+        .map(|(f, e)| (f.clone(), e.iter().map(|x| x * scale).collect()))
+        .collect();
+    for step in 2..pairs.len() {
+        assert_eq!(seen[step].1, 0, "push {step} was singular");
+        let held: Vec<_> = scaled[1..=step].iter().collect();
+        let (want, kappa) = extrapolate(&held);
+        assert!(kappa <= KAPPA, "push {step}: κ = {kappa}");
+        let error = relative(&seen[step].0, &want);
+        assert!(error <= 1e-12, "push {step}: relative error {error:e}");
+    }
+}
+
+/// Needs a GPU. [`a_restart_extrapolates_at_the_new_scale`]'s pairs with a
+/// reset after the duplicated push in place of the restart: the next push
+/// is a first one (the iterate, flag 0), and the one after it, over two
+/// pairs of residuals near `1e-8`, is singular under the absolute pivot.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn a_reset_leaves_small_residuals_singular() {
+    let pairs = small_pairs_with_a_duplicate();
+    let seen = run_pushes(pairs.clone(), 4, Some((1, Action::Reset)));
+    assert_eq!(seen[2], (pairs[2].0.clone(), 0), "the first push after it");
+    assert_eq!(seen[3], (pairs[3].0.clone(), 1), "the second, singular");
 }
 
 /// The order of the linear map.

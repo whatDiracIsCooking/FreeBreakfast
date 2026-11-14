@@ -47,7 +47,24 @@
 //! unit selector at the slot just written, so the output is the newest
 //! iterate, bit for bit, and the flag the push copies into a pinned row says
 //! so, for a host node to read: a loop's decision, which may log it and
-//! reset.
+//! reset or restart.
+//!
+//! **A singular subspace is restarted at a residual scale, the C++ SCF's
+//! way, not by a relative pivot.** The solve's pivot test is absolute, and
+//! the Gram's entries are squares of the residuals, so a history of small,
+//! nearly parallel residuals reads as singular while the coefficients,
+//! which do not depend on a common scale, are still well determined (the
+//! C++ issue #865). [`Diis::restart`] keeps the newest pair, sets the scale
+//! every later residual is multiplied by (the C++ loop's `1/|[F,D]|` at
+//! the singular push), and brings the kept residual to it, so the next push
+//! extrapolates over two pairs. The scale is cursor state the push reads,
+//! applied as the residual enters the ring (a geam in place of the copy)
+//! and as the gemvs' alpha. A relative pivot inside the solve was the other
+//! fix (#1552): it would change the forked kernel away from the C++ one and
+//! its header's documented test, and the loop's iterates away from the
+//! C++'s after a restart, which the scale reproduces to rounding; and a
+//! duplicated pair is singular at any scale, so the restart from the newest
+//! pair is needed either way.
 //!
 //! | C++ | Here |
 //! |---|---|
@@ -58,6 +75,7 @@
 //! | `out_fock`, left untouched with fewer than two pairs, and allowed to alias `cur_fock` | the push's own output row, which it writes on every push, with the iterate itself when there are fewer than two pairs: a task writes only its own rows, so there is no alias, and what an untouched aliased output held is what that copy holds |
 //! | `last_extrapolation_singular()`, one stream synchronize per push | the flag copied into the push's pinned output row, which a later CPU node reads after the executor waited, as the C++ synchronize did |
 //! | `reset()` | [`Diis::reset`], and `diis history` at the start of every run |
+//! | the SCF loop's restart: `reset()`, the pair's residual scaled by `1/(residual_scale ‖e‖)` and pushed again, every later residual scaled by `residual_scale = 1/‖e‖` with `scal` before its push | [`Diis::restart`]`(1/‖e‖)` from the decision: the scale held by the cursor, the kept pair moved to column 0 and rescaled by the next push, which then pushes its own pair, its residual scaled as it enters the ring |
 //! | `size()`, `capacity()`, `length()` | nothing: the cursor is the tasks' |
 //! | `res.dev_idx()` checked against the constructor's, and `ScopedDeviceIndex` for the call | nothing: a stream worker's tasks run on its device |
 //! | `len` past `INT32_MAX`: `InvalidConfig` | a panic at planning; `len == 0` refused by a contract |
@@ -75,11 +93,11 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use contracts::debug_requires;
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p};
+use fb_core_arena::{Bufs, Device, DeviceMut, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::blas::gemv;
+use fb_core_wwr::blas::{geam, gemv};
 use fb_core_wwr::copy;
 use fb_core_wwr::device_slice::split_at_mut;
 use fb_core_wwr::memset;
@@ -114,11 +132,36 @@ struct History {
     gram: RowId<Device, f64>,
 }
 
-/// How many pairs the ring holds, and its oldest column once it is full.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// How many pairs the ring holds, its oldest column once it is full, the
+/// column the last push wrote, the scale every incoming residual is
+/// multiplied by, and a restart [`Diis::restart`] left for the next push.
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Cursor {
     size: usize,
     head: usize,
+    last: usize,
+    scale: f64,
+    restart: Option<Restart>,
+}
+
+/// The pair a restart keeps: the column it is in, and what its residual is
+/// multiplied by to stand at the new scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Restart {
+    slot: usize,
+    factor: f64,
+}
+
+impl Default for Cursor {
+    fn default() -> Cursor {
+        Cursor {
+            size: 0,
+            head: 0,
+            last: 0,
+            scale: 1.0,
+            restart: None,
+        }
+    }
 }
 
 impl Cursor {
@@ -127,7 +170,7 @@ impl Cursor {
     /// ring grows, the oldest once it is full, so the valid columns are
     /// always `0..m`.
     fn push(&mut self, cap: usize) -> (usize, usize) {
-        if self.size < cap {
+        let taken = if self.size < cap {
             let slot = self.size;
             self.size += 1;
             (slot, self.size)
@@ -135,7 +178,36 @@ impl Cursor {
             let slot = self.head;
             self.head = (self.head + 1) % cap;
             (slot, cap)
-        }
+        };
+        self.last = taken.0;
+        taken
+    }
+
+    /// Restart at residual scale `scale`: every pair dropped but the last
+    /// one pushed (or the one an earlier restart kept, if no push came
+    /// since), which the next push moves to column 0 first.
+    fn restart(&mut self, scale: f64) {
+        let kept = self.restart.or((self.size > 0).then_some(Restart {
+            slot: self.last,
+            factor: 1.0,
+        }));
+        *self = Cursor {
+            scale,
+            restart: kept.map(|r| Restart {
+                slot: r.slot,
+                factor: r.factor * scale / self.scale,
+            }),
+            ..Cursor::default()
+        };
+    }
+
+    /// The next push's restart, taken, with the kept pair counted as held
+    /// in column 0. None in a ring of one column, where the next push
+    /// replaces the kept pair anyway.
+    fn take_restart(&mut self, cap: usize) -> Option<Restart> {
+        let restart = self.restart.take().filter(|_| cap > 1)?;
+        self.size = 1;
+        Some(restart)
     }
 }
 
@@ -244,11 +316,36 @@ impl Diis {
         (rows.out, rows.singular)
     }
 
-    /// Drop every pair, so the next push starts a fresh subspace. The rows
-    /// are kept. Call it between pushes, from a CPU node the executor runs
-    /// after the push, such as the loop's decision.
+    /// Drop every pair, so the next push starts a fresh subspace, and the
+    /// residual scale a [`Diis::restart`] set, so residuals are taken as
+    /// pushed again. The rows are kept. Call it between pushes, from a CPU
+    /// node the executor runs after the push, such as the loop's decision.
     pub fn reset(&self) {
         *lock(&self.cursor) = Cursor::default();
+    }
+
+    /// Restart the subspace from the last pair pushed, at residual scale
+    /// `scale`: every other pair is dropped, and from the next push on
+    /// every incoming residual is multiplied by `scale` before it enters
+    /// the ring and the Gram, the kept pair's residual by what brings it to
+    /// the same scale. So the next push extrapolates over two pairs again.
+    /// Call it as [`Diis::reset`], between pushes; before any push it only
+    /// sets the scale.
+    ///
+    /// What it is for is a singular subspace: the solve's pivot test is
+    /// absolute (`1e-14`), the Gram's entries are the residuals' squares,
+    /// and the coefficients do not depend on a common scale, so a history
+    /// of small residuals reads as singular long before it is. `scale =
+    /// 1/‖e‖` at the singular push, the C++ SCF's restart, brings the
+    /// kept residual to unit norm.
+    ///
+    /// The next push does the move on the stream before its own pair: the
+    /// kept iterate into column 0, the kept residual times its factor into
+    /// column 0 through the output row (overwritten by that push's
+    /// extrapolation after), and the Gram's entry `(0, 0)` by a gemv.
+    #[debug_requires(scale.is_finite() && scale > 0.0, "a positive, finite scale")]
+    pub fn restart(&self, scale: f64) {
+        lock(&self.cursor).restart(scale);
     }
 }
 
@@ -340,8 +437,10 @@ impl Task for Push {
             unreachable!("a GPU task runs on a stream")
         };
         let mut cursor = lock(&self.diis.cursor);
+        let restart = cursor.take_restart(self.diis.cap);
+        let scale = cursor.scale;
         let (slot, m) = cursor.push(self.diis.cap);
-        let status = self.push(slot, m, rows, device, host, worker);
+        let status = self.push(restart, slot, m, scale, rows, device, host, worker);
         // A failure part-way may leave a column or a Gram entry
         // half-written, so it drops the whole subspace.
         if status.is_err() {
@@ -352,11 +451,19 @@ impl Task for Push {
 }
 
 impl Push {
-    /// Enqueue the push into column `slot`, `m` pairs held after it.
+    /// Enqueue the push into column `slot`, `m` pairs held after it, its
+    /// residual multiplied by `scale`, after `restart`'s move ([`keep`])
+    /// if given.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the push's restart, column, count and scale beside the task's own arguments"
+    )]
     fn push(
         &self,
+        restart: Option<Restart>,
         slot: usize,
         m: usize,
+        scale: f64,
         rows: &PushRows,
         device: &Bufs<'_, Device>,
         host: &Bufs<'_, Pinned>,
@@ -371,12 +478,49 @@ impl Push {
         let mut out = device.take_mut(rows.out);
         let mut coefficients = device.take_mut(rows.coefficients);
         let mut flag = device.take_mut(rows.flag);
+        if let Some(restart) = restart {
+            keep(
+                restart,
+                len,
+                &mut iterates,
+                &mut residuals,
+                &mut gram,
+                &mut out,
+                worker,
+            )?;
+        }
 
-        // The pair into column `slot` of each ring.
-        for (ring, pair) in [(&mut iterates, iterate), (&mut residuals, residual)] {
+        // add_diis checked that len fits an i32; cap is at most 64.
+        let blas = worker.blas();
+        let (len32, cap32) = (len as i32, cap as i32);
+
+        // The pair into column `slot` of each ring, the residual times
+        // `scale`: a copy at scale 1, as the C++ skips its scal there.
+        for (ring, pair, alpha) in [
+            (&mut iterates, iterate, 1.0),
+            (&mut residuals, residual, scale),
+        ] {
             let (_, mut tail) = split_at_mut(ring, slot * len);
             let (mut column, _) = split_at_mut(&mut tail, len);
-            copy::d2d(&mut column, &pair, worker)?;
+            if alpha == 1.0 {
+                copy::d2d(&mut column, &pair, worker)?;
+            } else {
+                geam(
+                    blas,
+                    WWR_BLAS_OP_N,
+                    WWR_BLAS_OP_N,
+                    len32,
+                    1,
+                    alpha,
+                    &pair,
+                    len32,
+                    0.0,
+                    &pair,
+                    len32,
+                    &mut column,
+                    len32,
+                )?;
+            }
         }
 
         // The Gram's changed products, <e_j, e_slot>, straight into the
@@ -384,10 +528,9 @@ impl Push {
         // slot): j = 0..=slot down column `slot` (from gram + slot, stride
         // cap), j = slot..m along row `slot` (from gram + slot cap + slot,
         // stride 1). Both write the diagonal. Every push rewrites them, so
-        // entry (a, c) is always the push of column max(a, c)'s.
-        // add_diis checked that len fits an i32; cap is at most 64.
-        let blas = worker.blas();
-        let (len32, cap32) = (len as i32, cap as i32);
+        // entry (a, c) is always the push of column max(a, c)'s. The
+        // incoming row is the unscaled residual, so `scale` is each gemv's
+        // alpha.
         {
             let (_, mut column) = split_at_mut(&mut gram, slot);
             gemv(
@@ -395,7 +538,7 @@ impl Push {
                 WWR_BLAS_OP_T,
                 len32,
                 slot as i32 + 1,
-                1.0,
+                scale,
                 &residuals,
                 len32,
                 &residual,
@@ -413,7 +556,7 @@ impl Push {
                 WWR_BLAS_OP_T,
                 len32,
                 (m - slot) as i32,
-                1.0,
+                scale,
                 &newer,
                 len32,
                 &residual,
@@ -452,6 +595,72 @@ impl Push {
     }
 }
 
+/// Enqueue a restart's move: the kept pair from column `restart.slot` of
+/// the rings into column 0, its residual multiplied by `restart.factor`
+/// through `out`, `len` doubles, and the Gram's entry `(0, 0)` of it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the push's rows, each borrowed once by it"
+)]
+fn keep(
+    restart: Restart,
+    len: usize,
+    iterates: &mut DeviceMut<'_, f64>,
+    residuals: &mut DeviceMut<'_, f64>,
+    gram: &mut DeviceMut<'_, f64>,
+    out: &mut DeviceMut<'_, f64>,
+    worker: &DeviceStream,
+) -> Status {
+    let Restart { slot, factor } = restart;
+    if slot != 0 {
+        let (mut first, mut rest) = split_at_mut(iterates, slot * len);
+        let (column, _) = split_at_mut(&mut rest, len);
+        let (mut zero, _) = split_at_mut(&mut first, len);
+        copy::d2d(&mut zero, &column, worker)?;
+    }
+    {
+        let (_, mut tail) = split_at_mut(residuals, slot * len);
+        let (column, _) = split_at_mut(&mut tail, len);
+        copy::d2d(out, &column, worker)?;
+    }
+    // add_diis checked that len fits an i32.
+    let len32 = len as i32;
+    let blas = worker.blas();
+    {
+        let (mut zero, _) = split_at_mut(residuals, len);
+        geam(
+            blas,
+            WWR_BLAS_OP_N,
+            WWR_BLAS_OP_N,
+            len32,
+            1,
+            factor,
+            &*out,
+            len32,
+            0.0,
+            &*out,
+            len32,
+            &mut zero,
+            len32,
+        )?;
+    }
+    // <e_0, e_0> as factor <e_0, the kept residual as it was>.
+    gemv(
+        blas,
+        WWR_BLAS_OP_T,
+        len32,
+        1,
+        factor,
+        &*residuals,
+        len32,
+        &*out,
+        1,
+        0.0,
+        gram,
+        1,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,5 +690,37 @@ mod tests {
         );
         cursor = Cursor::default();
         assert_eq!(cursor.push(4), (0, 1));
+    }
+
+    /// Tier 3: a restart keeps the column the last push wrote, its factor
+    /// the new scale over the old, and the next push counts it as held in
+    /// column 0, so it writes column 1 with two pairs held. A second
+    /// restart before a push keeps the same pair, the factors multiplied;
+    /// one before any push sets only the scale; a ring of one drops it.
+    #[test]
+    fn a_restart_keeps_the_last_pair_at_the_new_scale() {
+        let mut cursor = Cursor::default();
+        cursor.restart(4.0);
+        assert_eq!((cursor.scale, cursor.restart), (4.0, None));
+        cursor = Cursor::default();
+        for _ in 0..6 {
+            cursor.push(4);
+        }
+        assert_eq!(cursor.last, 1);
+        cursor.restart(0.5);
+        cursor.restart(0.25);
+        assert_eq!(cursor.scale, 0.25);
+        let mut one = cursor;
+        assert_eq!(
+            cursor.take_restart(4),
+            Some(Restart {
+                slot: 1,
+                factor: 0.25
+            })
+        );
+        assert_eq!(cursor.push(4), (1, 2));
+        assert_eq!(cursor.restart, None);
+        assert_eq!(one.take_restart(1), None);
+        assert_eq!(one.push(1), (0, 1));
     }
 }

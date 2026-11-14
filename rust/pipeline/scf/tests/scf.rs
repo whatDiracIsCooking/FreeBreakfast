@@ -14,7 +14,9 @@
 //! trace of D with them, a few times `1e-10 max|J|` over water's 24 AOs,
 //! about 1e-10 hartree: one decade of margin.
 //!
-//! Beside it, on the same run: the final residual under
+//! Beside it, on the same run: no warning (the SAD guess is positive
+//! semidefinite; a loaded guess that is not is its own case, warned of
+//! once), the final residual under
 //! `commutator_tolerance`, and replay allocates nothing (`docs/memory.md`,
 //! "What is checked"): the card's free memory, read at each iteration's
 //! log line from the loop's decision, after the body's GPU work has
@@ -53,11 +55,19 @@ use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
 
 use fb_core_error_handling::ErrorKind;
+use fb_core_planner::Dag;
 use fb_core_wwr::common::ScopedDeviceIndex;
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::solver::SolverHandle;
-use fb_pipeline_scf::{Run, ScfOutput, ScfStep};
+use fb_integrals_mmd::add_records;
+use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
+use fb_integrals_one_electron_overlap::add_overlap;
+use fb_molecule_nuclei::add_nuclei;
+use fb_pipeline_eri::add_df_eri;
+use fb_pipeline_guess::{add_guess_upload, add_loaded_guess};
+use fb_pipeline_scf::{Run, ScfOutput, ScfStep, add_scf};
 use fb_recipes_diagonalize::syevd_lwork;
+use fb_recipes_orthogonalize::{ORTHOGONALIZE_EIGENVALUE_FLOOR, add_orthogonalize};
 use wwr_sys::wwr_status;
 
 /// The energy bar, hartree.
@@ -69,6 +79,9 @@ static TURN: Mutex<()> = Mutex::new(());
 
 /// The card's free memory at each `scf: iteration` line, in order.
 static FREE: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// Every line logged at `warn`, in order.
+static WARNED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Device 0's free memory, with it made current.
 #[allow(
@@ -84,9 +97,9 @@ fn free_bytes() -> usize {
     free
 }
 
-/// A logger that prints every line and, at each iteration line, samples
-/// the free memory: the decision writes the line after the body's GPU
-/// work has completed.
+/// A logger that prints every line, keeps each warning, and, at each
+/// iteration line, samples the free memory: the decision writes the line
+/// after the body's GPU work has completed.
 struct Sampler;
 
 impl log::Log for Sampler {
@@ -99,14 +112,17 @@ impl log::Log for Sampler {
         if line.starts_with("scf: iteration") {
             FREE.lock().unwrap().push(free_bytes());
         }
+        if record.level() == log::Level::Warn {
+            WARNED.lock().unwrap().push(line.clone());
+        }
         println!("{line}");
     }
 
     fn flush(&self) {}
 }
 
-/// Install [`Sampler`] once, empty the samples, and return the case's
-/// turn.
+/// Install [`Sampler`] once, empty the samples and the warnings, and
+/// return the case's turn.
 fn turn() -> std::sync::MutexGuard<'static, ()> {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     let guard = TURN.lock().unwrap_or_else(|e| e.into_inner());
@@ -115,6 +131,7 @@ fn turn() -> std::sync::MutexGuard<'static, ()> {
         log::set_max_level(log::LevelFilter::Info);
     });
     FREE.lock().unwrap().clear();
+    WARNED.lock().unwrap().clear();
     guard
 }
 
@@ -146,8 +163,9 @@ fn run(xyz: &Path, step: &ScfStep) -> (fb_core_thread_pool::Record, Option<ScfOu
 }
 
 /// The case `stem` converged and held to the energy bar, the residual
-/// under the tolerance, and the free memory never falling from the second
-/// iteration to the last.
+/// under the tolerance, the free memory never falling from the second
+/// iteration to the last, and no warning: the SAD guess is positive
+/// semidefinite, so `guess check` has nothing to say.
 fn converges_to_pyscf(stem: &str, xyz: &Path) {
     let _turn = turn();
     let step = ScfStep::default();
@@ -172,6 +190,8 @@ fn converges_to_pyscf(stem: &str, xyz: &Path) {
         "{stem}: ‖e‖ = {:e}",
         out.residual
     );
+    let warned = WARNED.lock().unwrap();
+    assert!(warned.is_empty(), "{stem}: warned {warned:?}");
     let n = (out.epsilon.len(), out.c.len(), out.d.len());
     assert_eq!((n.0 * n.0, n.0 * n.0), (n.1, n.2), "{stem}: ε, C and D");
     let free = FREE.lock().unwrap();
@@ -226,4 +246,94 @@ fn too_few_iterations_is_max_iterations_exceeded() {
     assert_eq!(err.kind, ErrorKind::MaxIterationsExceeded, "{err:?}");
     assert!(out.is_none());
     assert_eq!(FREE.lock().unwrap().len(), 2, "two iterations logged");
+}
+
+/// Needs a GPU. Water planned from a loaded guess that is not positive
+/// semidefinite, `D = diag(1/2, …, 1/2, -1/4)` written to a `.npy` file
+/// ([`add_loaded_guess`]), at `max_iterations = 1`: the run fails with
+/// `MaxIterationsExceeded` after its one build, and before the loop
+/// `guess check` has warned once, of the eigenvalue `-2.500e-1` below
+/// `-1e-12` of the largest, as the C++ first build does. The SAD runs
+/// above warn of nothing.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn a_guess_with_a_negative_eigenvalue_is_warned_of() {
+    let _turn = turn();
+    let molecule = fb_io_xyz::read_xyz(&water(), 0, 1).unwrap();
+    let basis = fb_io_basis::resolve_basis("cc-pvdz")
+        .unwrap()
+        .primitive_normalized()
+        .place(&molecule)
+        .unwrap();
+    let n = basis.nao_sphe() as usize;
+    let mut d = vec![0.0; n * n];
+    for i in 0..n {
+        d[i * (n + 1)] = 0.5;
+    }
+    d[n * n - 1] = -0.25;
+    let path = std::env::temp_dir().join(format!(
+        "fb-pipeline-scf-negative-guess-{}.npy",
+        std::process::id()
+    ));
+    fb_io_npy::write_npy(
+        &path,
+        &fb_io_npy::NpyArray {
+            shape: vec![n, n],
+            data: d,
+        },
+    )
+    .unwrap();
+
+    let lwork = syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n).unwrap();
+    let mut dag = Dag::new();
+    dag.blas_workspace(0);
+    let nuclei = add_nuclei(&mut dag, 0, &molecule);
+    let mut u = None;
+    let classes = add_records(&mut dag, 0, &basis).unwrap();
+    let s = add_overlap(&mut dag, 0, &basis, &classes, &mut u);
+    let h = add_core_hamiltonian(&mut dag, 0, &basis, &classes, nuclei, &mut u).unwrap();
+    let x = add_orthogonalize(
+        &mut dag,
+        0,
+        "X",
+        n,
+        lwork,
+        s,
+        ORTHOGONALIZE_EIGENVALUE_FLOOR,
+    )
+    .unwrap();
+    let eri = add_df_eri(&mut dag, 0, &molecule, &basis, &classes, "cc-pvdz-jkfit").unwrap();
+    let guess = add_loaded_guess(&mut dag, 0, &basis, path.clone()).unwrap();
+    let guess = add_guess_upload(&mut dag, 0, &basis, guess);
+    let step = ScfStep {
+        max_iterations: 1,
+        ..ScfStep::default()
+    };
+    add_scf(
+        &mut dag,
+        0,
+        &step,
+        &molecule,
+        n,
+        lwork,
+        &eri,
+        [h, s, x],
+        guess,
+    )
+    .unwrap();
+    let mut instance = dag.plan().instantiate(&[0]);
+    let mut backend = instance.backend();
+    let record = instance.run(&mut backend, 1);
+    let _ = std::fs::remove_file(&path);
+
+    let err = record.result.expect_err("not converged in one build");
+    assert_eq!(err.kind, ErrorKind::MaxIterationsExceeded, "{err:?}");
+    let warned = WARNED.lock().unwrap();
+    assert_eq!(
+        *warned,
+        [
+            "scf: the first density has an eigenvalue -2.500e-1, below -1.0e-12 of its largest; \
+          its exchange is of the positive part"
+        ],
+    );
 }
