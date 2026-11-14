@@ -3,6 +3,13 @@
 //!
 //! A binary of its own: a case measures the card's free memory, which
 //! another test allocating beside it would move, so the cases take turns.
+//!
+//! The reading is the device's, every tenant of the card counted, and a
+//! process outside the gates' card lock can free memory mid-case (#1553).
+//! So the checks that a run allocates nothing ask that free memory never
+//! fall: an allocation of this process lowers it, another tenant's free
+//! cannot. `fb-pipeline-scf`'s `tests/scf.rs` says what that gives up
+//! against equality, and why nothing narrower can be read.
 
 use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
@@ -153,7 +160,7 @@ impl Task for Check {
 /// stream task copies it up, another copies it down into a second pinned
 /// row that takes the first's bytes, and a CPU task compares. Nothing but
 /// the derived dependencies orders the reuse. The plan runs twice with the
-/// card's free memory unchanged between: a run allocates nothing.
+/// card's free memory not fallen between: a run allocates nothing.
 ///
 /// The record carries the plan's device and pinned block sizes, the
 /// tables' own, and a host wait for every CPU task's GPU predecessor: the
@@ -211,7 +218,11 @@ fn a_round_trip_through_the_planner() {
     }
     let between = free_bytes();
     instance.run(&mut backend, 1).result.unwrap();
-    assert_eq!(free_bytes(), between, "a run allocated device memory");
+    let after = free_bytes();
+    assert!(
+        after >= between,
+        "a run allocated device memory: free {between} before, {after} after"
+    );
 }
 
 /// The length of a [`Stage`]'s row: big enough that its copy is real device
@@ -474,7 +485,7 @@ impl Task for CarryX {
 
 /// The decision: stops when `y` moved at most [`STEP`] from the last
 /// iterate, which it carries in `prev`. Also reads the card's free memory
-/// every iteration, keeping the first and the last.
+/// every iteration.
 struct Moved {
     y: RowId<Pinned, f64>,
     prev: RowId<Pinned, f64>,
@@ -574,8 +585,8 @@ impl Task for Keep {
 /// business, not a bar.
 ///
 /// And replay allocates nothing: the card's free memory, read by the
-/// decision every iteration, is the same at the last as at the first, with
-/// the gemm's workspace the plan's declared row.
+/// decision every iteration, never falls from one iteration to the next,
+/// with the gemm's workspace the plan's declared row.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn a_device_loop_to_its_fixed_point() {
@@ -627,9 +638,10 @@ fn a_device_loop_to_its_fixed_point() {
 
     let free = free.lock().unwrap();
     assert_eq!(free.len(), iterations[0]);
-    assert_eq!(
-        free.first(),
-        free.last(),
-        "free memory moved between the first iteration and the last"
+    let fell = free.windows(2).position(|w| w[1] < w[0]);
+    assert!(
+        fell.is_none(),
+        "free memory fell after iteration {}: {free:?}",
+        fell.map_or(0, |i| i + 1)
     );
 }
