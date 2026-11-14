@@ -10,6 +10,8 @@
 //! | the same `gemm<T>`, called with raw pointers | [`gemm`], over [`DeviceSlice`]s it checks |
 //! | `dgmm<T>` over `wwrblas{S,D,C,Z}dgmm` | [`BlasScalar`]'s `dgmm_raw` |
 //! | the same `dgmm<T>`, called with raw pointers | [`dgmm`], over [`DeviceSlice`]s it checks; `incx` at least 1, and C never A (no in-place call) |
+//! | `trsm<T>` and `syrk<T>` over `wwrblas{S,D,C,Z}trsm` and `…syrk` | [`BlasScalar`]'s `trsm_raw` and `syrk_raw` |
+//! | the same `trsm<T>` and `syrk<T>`, called with raw pointers | [`trsm`] and [`syrk`], over [`DeviceSlice`]s they check; B and C never A (no in-place call) |
 //! | `kOne<T>`, `kZero<T>` (`core/constants`), the BLAS scalars one and zero by address | [`BlasScalar::ONE`] and [`BlasScalar::ZERO`], by value |
 //!
 //! As in wwr, the handle is a [`StreamBoundHandle`]: made from a shared
@@ -29,8 +31,9 @@
 //! **The typed calls.** [`BlasScalar`] is wwr's typed dispatch: one trait
 //! method per routine, implemented for the four types the library computes
 //! in, each forwarding to its letter's C ABI call. It takes raw pointers
-//! and is `unsafe`, as the C ABI is; only this crate calls it. [`gemm`] and
-//! [`dgmm`] are the safe calls over it: their operands are
+//! and is `unsafe`, as the C ABI is; only this crate calls it. [`gemm`],
+//! [`dgmm`], [`trsm`] and [`syrk`] are the safe calls over it: their
+//! operands are
 //! [`DeviceSlice`]s, each extent
 //! the call will touch is checked against the slice's length before
 //! anything is enqueued, and a slice too short panics, as an index out of
@@ -43,15 +46,18 @@
 //! [`dgmm`] offers no in-place form: C is always memory of its own. Its
 //! stride `incx` is at least 1: the library's 0 (one scale for every
 //! row or column) and negative strides (x read backwards) are refused, as
-//! nothing in the tree asks for them.
+//! nothing in the tree asks for them. Likewise [`trsm`]'s B and [`syrk`]'s
+//! C are memory of their own, apart from A: a caller whose operands are
+//! blocks of one matrix cuts it into disjoint parts first
+//! ([`split_at_mut`](crate::device_slice::split_at_mut)).
 
 use std::ops::Deref;
 use std::panic::Location;
 use std::rc::Rc;
 
 use wwr_sys::{
-    wwr_blas_handle, wwr_blas_operation, wwr_blas_side_mode, wwr_blas_status, wwr_complex64,
-    wwr_complex128, wwr_stream,
+    wwr_blas_diag_type, wwr_blas_fill_mode, wwr_blas_handle, wwr_blas_operation,
+    wwr_blas_side_mode, wwr_blas_status, wwr_complex64, wwr_complex128, wwr_stream,
 };
 
 use crate::common::ErrorCode;
@@ -253,8 +259,8 @@ impl DeviceHandleStream for BlasHandle {
 
 /// A type the BLAS computes in: `f32`, `f64`, [`wwr_complex64`] and
 /// [`wwr_complex128`], wwr's `usual_fp`. Each method is the C ABI call of
-/// the type's letter. Sealed, since [`gemm`] and [`dgmm`] trust each method
-/// to be that call.
+/// the type's letter. Sealed, since [`gemm`], [`dgmm`], [`trsm`] and
+/// [`syrk`] trust each method to be that call.
 pub trait BlasScalar: Copy + sealed::Sealed {
     /// One (`1 + 0i` on a complex type), the `alpha` of a plain product:
     /// the C++ `kOne<T>`.
@@ -314,6 +320,53 @@ pub trait BlasScalar: Copy + sealed::Sealed {
         c: *mut Self,
         ldc: i32,
     ) -> wwr_blas_status;
+
+    /// `wwrblas<t>trsm`: `op(A) X = alpha B` (`WWR_BLAS_SIDE_LEFT`) or
+    /// `X op(A) = alpha B` (`_RIGHT`), X written over B, column-major, A
+    /// triangular m × m on the left and n × n on the right, its `fill`
+    /// triangle read, B m × n.
+    ///
+    /// # Safety
+    /// The library's: `handle` is live; A and B are device memory on its
+    /// device covering their extents at `lda` and `ldb`; B apart from A;
+    /// `alpha` read as the handle's pointer mode says; all of it alive
+    /// until the work enqueued on the handle's stream has finished.
+    #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+    unsafe fn trsm_raw(
+        handle: wwr_blas_handle,
+        side: wwr_blas_side_mode,
+        fill: wwr_blas_fill_mode,
+        op: wwr_blas_operation,
+        diag: wwr_blas_diag_type,
+        m: i32,
+        n: i32,
+        alpha: *const Self,
+        a: *const Self,
+        lda: i32,
+        b: *mut Self,
+        ldb: i32,
+    ) -> wwr_blas_status;
+
+    /// `wwrblas<t>syrk`: `C = alpha op(A) op(A)ᵀ + beta C` on C's `fill`
+    /// triangle, column-major, `op(A)` n × k, C n × n.
+    ///
+    /// # Safety
+    /// As [`BlasScalar::trsm_raw`], with C in B's place and `beta` read as
+    /// `alpha` is.
+    #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+    unsafe fn syrk_raw(
+        handle: wwr_blas_handle,
+        fill: wwr_blas_fill_mode,
+        op: wwr_blas_operation,
+        n: i32,
+        k: i32,
+        alpha: *const Self,
+        a: *const Self,
+        lda: i32,
+        beta: *const Self,
+        c: *mut Self,
+        ldc: i32,
+    ) -> wwr_blas_status;
 }
 
 mod sealed {
@@ -321,7 +374,7 @@ mod sealed {
 }
 
 macro_rules! blas_scalar {
-    ($($t:ty => $gemm:ident, $dgmm:ident, $one:expr, $zero:expr);* $(;)?) => {$(
+    ($($t:ty => $gemm:ident, $dgmm:ident, $trsm:ident, $syrk:ident, $one:expr, $zero:expr);* $(;)?) => {$(
         impl sealed::Sealed for $t {}
 
         impl BlasScalar for $t {
@@ -367,16 +420,53 @@ macro_rules! blas_scalar {
                 // SAFETY: the caller's, which are the call's.
                 unsafe { wwr_sys::$dgmm(handle, side, m, n, a, lda, x, incx, c, ldc) }
             }
+
+            unsafe fn trsm_raw(
+                handle: wwr_blas_handle,
+                side: wwr_blas_side_mode,
+                fill: wwr_blas_fill_mode,
+                op: wwr_blas_operation,
+                diag: wwr_blas_diag_type,
+                m: i32,
+                n: i32,
+                alpha: *const Self,
+                a: *const Self,
+                lda: i32,
+                b: *mut Self,
+                ldb: i32,
+            ) -> wwr_blas_status {
+                // SAFETY: the caller's, which are the call's.
+                unsafe {
+                    wwr_sys::$trsm(handle, side, fill, op, diag, m, n, alpha, a, lda, b, ldb)
+                }
+            }
+
+            unsafe fn syrk_raw(
+                handle: wwr_blas_handle,
+                fill: wwr_blas_fill_mode,
+                op: wwr_blas_operation,
+                n: i32,
+                k: i32,
+                alpha: *const Self,
+                a: *const Self,
+                lda: i32,
+                beta: *const Self,
+                c: *mut Self,
+                ldc: i32,
+            ) -> wwr_blas_status {
+                // SAFETY: the caller's, which are the call's.
+                unsafe { wwr_sys::$syrk(handle, fill, op, n, k, alpha, a, lda, beta, c, ldc) }
+            }
         }
     )*};
 }
 
 blas_scalar! {
-    f32 => wwr_blas_sgemm, wwr_blas_sdgmm, 1.0, 0.0;
-    f64 => wwr_blas_dgemm, wwr_blas_ddgmm, 1.0, 0.0;
-    wwr_complex64 => wwr_blas_cgemm, wwr_blas_cdgmm,
+    f32 => wwr_blas_sgemm, wwr_blas_sdgmm, wwr_blas_strsm, wwr_blas_ssyrk, 1.0, 0.0;
+    f64 => wwr_blas_dgemm, wwr_blas_ddgmm, wwr_blas_dtrsm, wwr_blas_dsyrk, 1.0, 0.0;
+    wwr_complex64 => wwr_blas_cgemm, wwr_blas_cdgmm, wwr_blas_ctrsm, wwr_blas_csyrk,
         wwr_complex64 { re: 1.0, im: 0.0 }, wwr_complex64 { re: 0.0, im: 0.0 };
-    wwr_complex128 => wwr_blas_zgemm, wwr_blas_zdgmm,
+    wwr_complex128 => wwr_blas_zgemm, wwr_blas_zdgmm, wwr_blas_ztrsm, wwr_blas_zsyrk,
         wwr_complex128 { re: 1.0, im: 0.0 }, wwr_complex128 { re: 0.0, im: 0.0 };
 }
 
@@ -555,6 +645,139 @@ pub fn dgmm<T: BlasScalar>(
             lda,
             x.as_ptr(),
             incx,
+            c,
+            ldc,
+        )
+    })
+}
+
+/// `op(A) X = alpha B` (`side` `WWR_BLAS_SIDE_LEFT`) or `X op(A) = alpha B`
+/// (`_RIGHT`) on `handle`'s stream, X written over B: column-major, A
+/// triangular, m × m on the left and n × n on the right, only its `fill`
+/// triangle read (its diagonal taken as ones under `WWR_BLAS_DIAG_UNIT`), B
+/// m × n, each at its leading dimension. wwr's `trsm<T>`, with every matrix
+/// a slice it checks.
+///
+/// `alpha` is a host value, read in the handle's default pointer mode. The
+/// borrow checker keeps B apart from A; blocks of one matrix are its
+/// disjoint parts ([`split_at_mut`](crate::device_slice::split_at_mut)). A
+/// singular A is not detected: X comes back Inf or NaN.
+///
+/// # Errors
+/// The library's refusal, as a `GpuRuntime` error naming the status.
+///
+/// # Panics
+/// If m or n is negative, a leading dimension is less than its matrix's row
+/// count (or 1), or a slice is shorter than its matrix at its leading
+/// dimension; before anything is enqueued.
+#[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+#[track_caller]
+pub fn trsm<T: BlasScalar>(
+    handle: &BlasHandle,
+    side: wwr_blas_side_mode,
+    fill: wwr_blas_fill_mode,
+    op: wwr_blas_operation,
+    diag: wwr_blas_diag_type,
+    m: i32,
+    n: i32,
+    alpha: T,
+    a: &impl DeviceSlice<T>,
+    lda: i32,
+    b: &mut impl DeviceSliceMut<T>,
+    ldb: i32,
+) -> Status {
+    assert!(m >= 0 && n >= 0, "trsm: m and n are {m} and {n}");
+    let order = match side {
+        wwr_blas_side_mode::WWR_BLAS_SIDE_LEFT => m,
+        wwr_blas_side_mode::WWR_BLAS_SIDE_RIGHT => n,
+    };
+    check_extent("trsm", "A", a.len(), order, order, lda);
+    check_extent("trsm", "B", b.len(), m, n, ldb);
+    let b = b.as_mut_ptr();
+    // SAFETY: the handle is live; each slice is device memory covering its
+    // extent, checked above, and stays so until the enqueued work finishes
+    // (DeviceSlice's promise); B is its memory's only user
+    // (DeviceSliceMut's), so apart from A; alpha is a host value, the
+    // handle's default pointer mode.
+    gpu_status(unsafe {
+        T::trsm_raw(
+            handle.get(),
+            side,
+            fill,
+            op,
+            diag,
+            m,
+            n,
+            &alpha,
+            a.as_ptr(),
+            lda,
+            b,
+            ldb,
+        )
+    })
+}
+
+/// `C = alpha op(A) op(A)ᵀ + beta C` on `handle`'s stream, only C's `fill`
+/// triangle read and written: column-major, `op(A)` n × k, so A stored
+/// n × k under `WWR_BLAS_OP_N` and k × n under `_T`, C n × n, each at its
+/// leading dimension. wwr's `syrk<T>`, with every matrix a slice it checks.
+/// The transpose is plain on a complex `T` too: this is the symmetric rank-k
+/// update, not the Hermitian one.
+///
+/// `alpha` and `beta` are host values, read in the handle's default pointer
+/// mode. With `beta` zero, C's triangle need not be initialised; the other
+/// triangle is neither read nor written. The borrow checker keeps C apart
+/// from A; blocks of one matrix are its disjoint parts
+/// ([`split_at_mut`](crate::device_slice::split_at_mut)).
+///
+/// # Errors
+/// The library's refusal, as a `GpuRuntime` error naming the status (an
+/// `op` of `WWR_BLAS_OP_C` on a complex `T` among them).
+///
+/// # Panics
+/// If n or k is negative, a leading dimension is less than its matrix's row
+/// count (or 1), or a slice is shorter than its matrix at its leading
+/// dimension; before anything is enqueued.
+#[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+#[track_caller]
+pub fn syrk<T: BlasScalar>(
+    handle: &BlasHandle,
+    fill: wwr_blas_fill_mode,
+    op: wwr_blas_operation,
+    n: i32,
+    k: i32,
+    alpha: T,
+    a: &impl DeviceSlice<T>,
+    lda: i32,
+    beta: T,
+    c: &mut impl DeviceSliceMut<T>,
+    ldc: i32,
+) -> Status {
+    assert!(n >= 0 && k >= 0, "syrk: n and k are {n} and {k}");
+    let (a_rows, a_cols) = if op == wwr_blas_operation::WWR_BLAS_OP_N {
+        (n, k)
+    } else {
+        (k, n)
+    };
+    check_extent("syrk", "A", a.len(), a_rows, a_cols, lda);
+    check_extent("syrk", "C", c.len(), n, n, ldc);
+    let c = c.as_mut_ptr();
+    // SAFETY: the handle is live; each slice is device memory covering its
+    // extent, checked above, and stays so until the enqueued work finishes
+    // (DeviceSlice's promise); C is its memory's only user
+    // (DeviceSliceMut's), so apart from A; the scalars are host values, the
+    // handle's default pointer mode.
+    gpu_status(unsafe {
+        T::syrk_raw(
+            handle.get(),
+            fill,
+            op,
+            n,
+            k,
+            &alpha,
+            a.as_ptr(),
+            lda,
+            &beta,
             c,
             ldc,
         )
@@ -794,6 +1017,212 @@ mod tests {
         let _ = gemm(
             &blas, OP_N, OP_N, 4, 4, 4, 1.0, &a, 4, &a, 4, 0.0, &mut c, 4,
         );
+    }
+
+    use wwr_blas_diag_type::WWR_BLAS_DIAG_NON_UNIT as NON_UNIT;
+    use wwr_blas_fill_mode::{
+        WWR_BLAS_FILL_MODE_LOWER as LOWER, WWR_BLAS_FILL_MODE_UPPER as UPPER,
+    };
+
+    /// What an unread triangle or a padding row holds: a NaN, so a library
+    /// that read it would carry it into the result.
+    const UNREAD: f64 = f64::NAN;
+
+    /// A k × k lower-triangular matrix at leading dimension `ld`: ones on
+    /// the diagonal and -1, 0 or 1 below it, so its inverse has small
+    /// integer entries and a solve against it is exact in any order and by
+    /// any blocking; NaN above the diagonal and in the padding rows.
+    fn unit_lower(k: usize, ld: usize) -> Vec<f64> {
+        let mut a = vec![UNREAD; ld * k];
+        for j in 0..k {
+            a[j + j * ld] = 1.0;
+            for i in j + 1..k {
+                a[i + j * ld] = ((i * 3 + j) % 3) as f64 - 1.0;
+            }
+        }
+        a
+    }
+
+    /// One trsm on a card, with A's strict upper triangle and every padding
+    /// row NaN: X is the exact solution, B's padding rows come back as
+    /// they were, and nothing NaN reaches X.
+    fn check_trsm(side: wwr_blas_side_mode, op: wwr_blas_operation) {
+        let (m, n) = (5, 3);
+        let left = side == LEFT;
+        let order = if left { m } else { n };
+        let (lda, ldb) = (order + 2, m + 1);
+        let a = unit_lower(order, lda);
+        // X small integers; B = op(A) X (left) or X op(A) (right), exact.
+        let x = matrix(m, n, 4);
+        let at = |i: usize, j: usize| {
+            let (i, j) = if op == OP_N { (i, j) } else { (j, i) };
+            if i >= j { a[i + j * lda] } else { 0.0 }
+        };
+        let mut b = vec![UNREAD; ldb * n];
+        for j in 0..n {
+            for i in 0..m {
+                b[i + j * ldb] = if left {
+                    (0..m).map(|l| at(i, l) * x[l + j * m]).sum()
+                } else {
+                    (0..n).map(|l| x[i + l * m] * at(l, j)).sum()
+                };
+            }
+        }
+        let owner = Rc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner.clone());
+        let (da, mut db) = (
+            DeviceBytes::upload(&a, &owner),
+            DeviceBytes::upload(&b, &owner),
+        );
+        let i = |v: usize| v as i32;
+        trsm::<f64>(
+            &blas,
+            side,
+            LOWER,
+            op,
+            NON_UNIT,
+            i(m),
+            i(n),
+            1.0,
+            &da,
+            i(lda),
+            &mut db,
+            i(ldb),
+        )
+        .unwrap();
+        let got = download(&db, &owner);
+        for j in 0..n {
+            for r in 0..ldb {
+                let (g, w) = (got[r + j * ldb], b[r + j * ldb]);
+                if r < m {
+                    assert_eq!(g, x[r + j * m], "X({r}, {j})");
+                } else {
+                    assert!(g.is_nan() && w.is_nan(), "B's padding ({r}, {j}) is {g}");
+                }
+            }
+        }
+    }
+
+    /// Needs a GPU. `X L11ᵀ = A21`, the right-sided transposed solve of a
+    /// Cholesky panel: exact, A's upper triangle unread.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn trsm_solves_on_the_right_against_the_transpose() {
+        check_trsm(RIGHT, OP_T);
+    }
+
+    /// Needs a GPU. `L X = B`, the left-sided plain solve a density fit's
+    /// `L⁻¹ (P|mn)` is.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn trsm_solves_on_the_left() {
+        check_trsm(LEFT, OP_N);
+    }
+
+    /// One syrk on a card, `C = -op(A) op(A)ᵀ + 2 C` on the lower triangle,
+    /// with every leading dimension padded: the lower triangle is the
+    /// host's, exact, and the strict upper triangle and the padding, NaN,
+    /// come back as they were.
+    fn check_syrk(op: wwr_blas_operation) {
+        let (n, k) = (5, 3);
+        let (a_rows, a_cols) = if op == OP_N { (n, k) } else { (k, n) };
+        let (lda, ldc) = (a_rows + 2, n + 1);
+        let a = matrix(lda, a_cols, 5);
+        let mut c = matrix(ldc, n, 6);
+        for j in 0..n {
+            for i in 0..ldc {
+                if i < j || i >= n {
+                    c[i + j * ldc] = UNREAD;
+                }
+            }
+        }
+        let opa = |i: usize, l: usize| {
+            if op == OP_N {
+                a[i + l * lda]
+            } else {
+                a[l + i * lda]
+            }
+        };
+        let owner = Rc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner.clone());
+        let (da, mut dc) = (
+            DeviceBytes::upload(&a, &owner),
+            DeviceBytes::upload(&c, &owner),
+        );
+        let i = |v: usize| v as i32;
+        syrk::<f64>(
+            &blas,
+            LOWER,
+            op,
+            i(n),
+            i(k),
+            -1.0,
+            &da,
+            i(lda),
+            2.0,
+            &mut dc,
+            i(ldc),
+        )
+        .unwrap();
+        let got = download(&dc, &owner);
+        for j in 0..n {
+            for r in 0..ldc {
+                let g = got[r + j * ldc];
+                if r >= j && r < n {
+                    let dot: f64 = (0..k).map(|l| opa(r, l) * opa(j, l)).sum();
+                    assert_eq!(g, 2.0 * c[r + j * ldc] - dot, "C({r}, {j})");
+                } else {
+                    assert!(g.is_nan(), "C's unwritten ({r}, {j}) is {g}");
+                }
+            }
+        }
+    }
+
+    /// Needs a GPU. `C - A Aᵀ` on the lower triangle, a Cholesky's trailing
+    /// update.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn syrk_updates_the_lower_triangle() {
+        check_syrk(OP_N);
+    }
+
+    /// Needs a GPU. The same with A stored transposed, k × n.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn syrk_reads_a_transposed_a() {
+        check_syrk(OP_T);
+    }
+
+    /// Needs a GPU. On the right A is n × n, so an A holding m × m (fewer)
+    /// is short, and panics before anything is enqueued.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    #[should_panic(
+        expected = "trsm: A is 4 x 4 at leading dimension 4, 16 elements, but its slice holds 9"
+    )]
+    fn trsm_refuses_a_short_slice() {
+        let owner = Rc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner);
+        let a = DeviceBytes::new(9 * size_of::<f64>());
+        let mut b = DeviceBytes::new(12 * size_of::<f64>());
+        let _ = trsm::<f64>(
+            &blas, RIGHT, UPPER, OP_N, NON_UNIT, 3, 4, 1.0, &a, 4, &mut b, 3,
+        );
+    }
+
+    /// Needs a GPU. A C one element short of n × n panics before anything
+    /// is enqueued.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    #[should_panic(
+        expected = "syrk: C is 3 x 3 at leading dimension 3, 9 elements, but its slice holds 8"
+    )]
+    fn syrk_refuses_a_short_slice() {
+        let owner = Rc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner);
+        let a = DeviceBytes::new(6 * size_of::<f64>());
+        let mut c = DeviceBytes::new(8 * size_of::<f64>());
+        let _ = syrk::<f64>(&blas, LOWER, OP_T, 3, 2, 1.0, &a, 2, 0.0, &mut c, 3);
     }
 
     #[test]
