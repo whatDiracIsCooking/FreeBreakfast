@@ -17,10 +17,10 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::solver::SolverHandle;
 use fb_recipes_diagonalize::{add_diagonalize, syevd_lwork};
@@ -34,21 +34,14 @@ const FIXTURES: [&str; 3] = ["h2o_sto-3g", "h2o_cc-pvdz", "co_cc-pvtz"];
 /// CPU: A written into a pinned row.
 struct Stage(Vec<f64>);
 
-impl Task for Stage {
+impl CpuTask for Stage {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.output("A", self.0.len())
     }
 
-    fn run(
-        &self,
-        a: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, a: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
         host.take_mut(*a).copy_from_slice(&self.0);
         Ok(())
     }
@@ -70,9 +63,8 @@ enum Copied {
     Down(RowId<Pinned, f64>),
 }
 
-impl Task for Transfer {
+impl GpuTask for Transfer {
     type Rows = Copied;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Copied {
         match (self.pinned, self.device) {
@@ -92,14 +84,13 @@ impl Task for Transfer {
         &self,
         rows: &Copied,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         match *rows {
-            Copied::Up(d) => memcpy_p2d(&device.take_mut(d), host, self.pinned.unwrap(), stream),
+            Copied::Up(d) => {
+                memcpy_p2d(&mut device.take_mut(d), host, self.pinned.unwrap(), stream)
+            }
             Copied::Down(p) => memcpy_d2p(host, p, device.get(self.device.unwrap()), stream),
         }
     }
@@ -112,22 +103,15 @@ struct Collect {
     out: Arc<Mutex<(Vec<f64>, Vec<f64>)>>,
 }
 
-impl Task for Collect {
+impl CpuTask for Collect {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) {
         host.read(self.u);
         host.read(self.w);
     }
 
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
         *self.out.lock().unwrap() = (host.get(self.u).to_vec(), host.get(self.w).to_vec());
         Ok(())
     }
@@ -154,8 +138,8 @@ fn diagonalize(n: usize, a: Vec<f64>) -> (usize, Vec<f64>, Vec<f64>) {
         syevd_lwork(&solver, n).unwrap()
     };
     let mut dag = Dag::new();
-    let staged = dag.add("stage", 0, Stage(a));
-    let Copied::Up(a) = dag.add(
+    let staged = dag.add_cpu("stage", 0, Stage(a));
+    let Copied::Up(a) = dag.add_gpu(
         "upload",
         0,
         Transfer {
@@ -169,7 +153,7 @@ fn diagonalize(n: usize, a: Vec<f64>) -> (usize, Vec<f64>, Vec<f64>) {
     };
     let (u, w) = add_diagonalize(&mut dag, 0, "A", n, lwork, a);
     let mut down = |device, len, name| {
-        let Copied::Down(p) = dag.add(
+        let Copied::Down(p) = dag.add_gpu(
             format!("download {name}"),
             0,
             Transfer {
@@ -185,7 +169,7 @@ fn diagonalize(n: usize, a: Vec<f64>) -> (usize, Vec<f64>, Vec<f64>) {
     };
     let (u, w) = (down(u, n * n, "U"), down(w, n, "w"));
     let out = Arc::new(Mutex::new((Vec::new(), Vec::new())));
-    dag.add(
+    dag.add_cpu(
         "collect",
         0,
         Collect {

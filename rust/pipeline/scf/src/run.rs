@@ -4,10 +4,10 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2h};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2h};
 use fb_core_error_handling::{Result, Status};
-use fb_core_planner::{Dag, Planned, Task};
-use fb_core_thread_pool::{DeviceStream, Lane, Record};
+use fb_core_planner::{CpuTask, Dag, GpuTask, Planned};
+use fb_core_thread_pool::{DeviceStream, Record};
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_integrals_one_electron_overlap::add_overlap;
@@ -117,7 +117,7 @@ impl Run {
             [h, s, x],
             guess,
         )?;
-        let pinned = dag.add(
+        let pinned = dag.add_gpu(
             "download",
             0,
             Download {
@@ -125,7 +125,7 @@ impl Run {
             },
         );
         let out = Arc::new(Mutex::new(None));
-        dag.add(
+        dag.add_cpu(
             "collect",
             0,
             Collect {
@@ -172,9 +172,8 @@ struct Download {
     rows: [(RowId<Device, f64>, usize); 3],
 }
 
-impl Task for Download {
+impl GpuTask for Download {
     type Rows = [RowId<Pinned, f64>; 3];
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         let names = ["epsilon", "C", "D"];
@@ -190,12 +189,9 @@ impl Task for Download {
         &self,
         pinned: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         for (&(src, _), &dst) in self.rows.iter().zip(pinned) {
             memcpy_d2p(host, dst, device.get(src), stream)?;
         }
@@ -211,24 +207,17 @@ struct Collect {
     out: Arc<Mutex<Option<ScfOutput>>>,
 }
 
-impl Task for Collect {
+impl CpuTask for Collect {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) {
         host.read(self.scalars);
         for &row in &self.pinned {
             host.read(row);
         }
     }
 
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
         let scalars = host.get(self.scalars);
         let [epsilon, c, d] = self.pinned.map(|row| memcpy_p2h(host, row));
         *self.out.lock().unwrap_or_else(|e| e.into_inner()) = Some(ScfOutput {

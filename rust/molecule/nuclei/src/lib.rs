@@ -34,10 +34,10 @@
 
 #![forbid(unsafe_code)]
 
-use fb_core_arena::{Bufs, Device, HostKind, Layout, Pinned, RowId, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, HostKind, Layout, Pinned, RowId, memcpy_p2d};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_molecule::{Molecule, nuclear_charge};
 
 #[cfg(test)]
@@ -72,14 +72,14 @@ impl NucleiRows {
 /// the device rows it returns. Every size is the molecule's, fixed here at
 /// planning; a `Molecule` has at least one atom and at most `i32::MAX`.
 pub fn add_nuclei(dag: &mut Dag<'_>, worker: usize, molecule: &Molecule) -> NucleiRows {
-    let staged = dag.add(
+    let staged = dag.add_cpu(
         "nuclei",
         worker,
         Stage {
             molecule: molecule.clone(),
         },
     );
-    dag.add(
+    dag.add_gpu(
         "nuclei upload",
         worker,
         Upload {
@@ -97,22 +97,15 @@ struct Stage {
     molecule: Molecule,
 }
 
-impl<H: HostKind, S> Task<H, S> for Stage {
+impl<H: HostKind> CpuTask<H> for Stage {
     type Rows = (RowId<H, f64>, RowId<H, f64>);
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, H>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, H>) -> Self::Rows {
         let n = self.molecule.atoms().len();
         (host.output("nuclei z", n), host.output("nuclei c", 3 * n))
     }
 
-    fn run(
-        &self,
-        rows: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, H>,
-        _: Lane<'_, S>,
-    ) -> Status {
+    fn run(&self, rows: &Self::Rows, host: &Bufs<'_, H>) -> Status {
         let z = host.take_mut(rows.0);
         let c = host.take_mut(rows.1);
         for (a, atom) in self.molecule.atoms().iter().enumerate() {
@@ -132,9 +125,8 @@ struct Upload {
     staged: (RowId<Pinned, f64>, RowId<Pinned, f64>),
 }
 
-impl Task for Upload {
+impl GpuTask for Upload {
     type Rows = NucleiRows;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> NucleiRows {
         host.read(self.staged.0);
@@ -151,14 +143,11 @@ impl Task for Upload {
         &self,
         rows: &NucleiRows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         for (dst, src) in [(rows.z, self.staged.0), (rows.c, self.staged.1)] {
-            memcpy_p2d(&device.take_mut(dst), host, src, stream)?;
+            memcpy_p2d(&mut device.take_mut(dst), host, src, stream)?;
         }
         Ok(())
     }

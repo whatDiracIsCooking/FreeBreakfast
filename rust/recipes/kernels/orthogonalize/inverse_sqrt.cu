@@ -3,9 +3,9 @@
 // under CUDA, clang -x hip under HIP.
 //
 // Forked from src/recipes/orthogonalize/inverse_sqrt.cu: the element map is
-// unchanged, and the launcher is rewritten as fb_inverse_sqrt, inverse_sqrt.h's
-// extern "C", enqueue-only launch wrapper, double only (rust/docs/gpu_layer.md,
-// "Layering"). The C++ runs the map through wwr's parallel_for, which returns
+// unchanged but for an optional device factor on the floor, and the launcher is
+// rewritten as fb_inverse_sqrt, inverse_sqrt.h's extern "C", enqueue-only launch
+// wrapper, double only (rust/docs/gpu_layer.md, "Layering"). The C++ runs the map through wwr's parallel_for, which returns
 // the vendor's wwrError_t and consumes the launch error itself; here the same
 // index-per-thread launch, four warps a block, is written out, so the status is
 // the C ABI's wwr_get_last_error() and no vendor code crosses.
@@ -46,7 +46,11 @@ namespace {
 // division are each correctly rounded, as nvcc's are by default, so both
 // backends give the host's 1.0 / x.sqrt() bit for bit. nvcc does no such fold
 // and does not know the pragma.
-__global__ void inverse_sqrt_kernel(double *const data, const uint32_t count, const double floor) {
+//
+// The floor is floor, or floor * *floor_scale when floor_scale is not null: one
+// correctly rounded product, the same bits as the host's floor * scale.
+__global__ void inverse_sqrt_kernel(double *const data, const uint32_t count, const double floor,
+                                    const double *const floor_scale) {
 #if defined(__HIP__)
 #pragma clang fp contract(off)
 #endif
@@ -54,8 +58,9 @@ __global__ void inverse_sqrt_kernel(double *const data, const uint32_t count, co
   if (i >= count) {
     return;
   }
+  const double bound = floor_scale == nullptr ? floor : floor * *floor_scale;
   const double value = data[i];
-  data[i] = value <= floor ? 0.0 : 1.0 / sqrt(value);
+  data[i] = value <= bound ? 0.0 : 1.0 / sqrt(value);
 }
 
 } // namespace
@@ -63,7 +68,8 @@ __global__ void inverse_sqrt_kernel(double *const data, const uint32_t count, co
 } // namespace free_breakfast::device
 
 extern "C" fb_launch_status fb_inverse_sqrt(const wwr_stream stream, const uint32_t count,
-                                            double *data, const double floor) {
+                                            double *data, const double floor,
+                                            const double *floor_scale) {
   using namespace free_breakfast;
   if (count == 0) {
     return FB_LAUNCH_SUCCESS;
@@ -73,7 +79,8 @@ extern "C" fb_launch_status fb_inverse_sqrt(const wwr_stream stream, const uint3
   }
   // The C ABI's stream is the runtime's, behind a void *.
   device::inverse_sqrt_kernel<<<math::idivup(count, kFourWarps), kFourWarps, 0,
-                                static_cast<wwr::wwrStream_t>(stream)>>>(data, count, floor);
+                                static_cast<wwr::wwrStream_t>(stream)>>>(data, count, floor,
+                                                                         floor_scale);
   // The launch just enqueued, as a status: the C ABI's own wwr_get_last_error(),
   // whose wwr_status values are fb_launch_status's positive range.
   return static_cast<fb_launch_status>(wwr_get_last_error());

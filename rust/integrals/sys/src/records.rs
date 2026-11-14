@@ -23,10 +23,12 @@
 
 use std::sync::Arc;
 
-use fb_core_arena::{Bufs, Device, Element, Kind, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d};
+use fb_core_arena::{
+    Bufs, CopyOnly, Device, Element, Kind, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d,
+};
 use fb_core_error_handling::{Result, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::memset;
 
@@ -366,7 +368,7 @@ const I_OFF_B: usize = 17;
 ///   same stream, or an event on it), and keeps the rows' bytes from any
 ///   other row until the reader is done.
 /// - **Which plan.** A row names its table, so a `ClassRows` of another
-///   plan or another worker panics in [`Dag::add`] or at [`Bufs::get`]
+///   plan or another worker panics in [`Dag::add_gpu`] or at [`Bufs::get`]
 ///   rather than reading some other row as records.
 ///
 /// What the launchers check, in every build, is the rest: the output is
@@ -641,14 +643,14 @@ fn record_tasks(dag: &mut Dag<'_>, worker: usize, tables: RecordTables) -> Vec<C
         return Vec::new();
     }
     let tables = Arc::new(tables);
-    let staged = dag.add(
+    let staged = dag.add_cpu(
         "mmd tables",
         worker,
         Stage {
             tables: Arc::clone(&tables),
         },
     );
-    dag.add("mmd records", worker, Records { tables, staged })
+    dag.add_gpu("mmd records", worker, Records { tables, staged })
         .classes
 }
 
@@ -716,21 +718,14 @@ struct Stage {
     tables: Arc<RecordTables>,
 }
 
-impl Task for Stage {
+impl CpuTask for Stage {
     type Rows = TableRows<Pinned>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         TableRows::declare(host, &self.tables, true)
     }
 
-    fn run(
-        &self,
-        rows: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, rows: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
         let s = &self.tables.shells;
         memcpy_h2p(host, rows.prim_begin, &s.prim_begin);
         memcpy_h2p(host, rows.exponent, &s.exponent);
@@ -773,9 +768,8 @@ struct RecordsRows {
     classes: Vec<ClassRows>,
 }
 
-impl Task for Records {
+impl GpuTask for Records {
     type Rows = RecordsRows;
-    const GPU: bool = true;
 
     fn layout(
         &self,
@@ -869,12 +863,9 @@ impl Task for Records {
         &self,
         rows: &RecordsRows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let stream = worker.stream();
         let (d, s) = (&rows.tables, &self.staged);
         let prim_begin = upload(worker, device, d.prim_begin, host, s.prim_begin)?;
@@ -1043,11 +1034,11 @@ fn upload<T: Element>(
     worker: &DeviceStream,
     device: &Bufs<'_, Device>,
     dst: RowId<Device, T>,
-    host: &Bufs<'_, Pinned>,
+    host: &CopyOnly<'_, Pinned>,
     src: RowId<Pinned, T>,
 ) -> Result<*const T> {
-    let dst = device.take_mut(dst);
-    memcpy_p2d(&dst, host, src, worker)?;
+    let mut dst = device.take_mut(dst);
+    memcpy_p2d(&mut dst, host, src, worker)?;
     Ok(dst.as_ptr())
 }
 

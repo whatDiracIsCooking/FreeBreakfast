@@ -28,7 +28,7 @@
 //! |---|---|
 //! | `core_hamiltonian(res, classes, molecule, h.cartesian())`: `kinetic` (zeroed, then one launch per class) and `add_nuclear_attraction` on top, each class on a stream forked from `res.stream()` and joined back | the `core hamiltonian` task of [`add_core_hamiltonian`]: zeroed, then [`kinetic_classes`] and [`potential_en_classes`] on the worker's one stream, so every V launch follows every T launch by stream order; the records' [`ClassRows`] passed in by the caller |
 //! | `check_one_electron_build`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | `fb-integrals-sys`'s launchers: a contract for the class, an always-on `assert!` of the matrix's `n_cart²` and the `i32` bound; [`add_core_hamiltonian`] asserts the `i32` bound at planning, and the records hold only `la <= lb` |
-//! | `check_nuclei`'s `InvalidConfig`, before anything launches | [`add_core_hamiltonian`]'s `InvalidConfig` at planning for [`NucleiRows`] with no nucleus, adding nothing; nuclei of another worker are another table's rows, which [`Dag::add`] refuses with a panic |
+//! | `check_nuclei`'s `InvalidConfig`, before anything launches | [`add_core_hamiltonian`]'s `InvalidConfig` at planning for [`NucleiRows`] with no nucleus, adding nothing; nuclei of another worker are another table's rows, which [`Dag::add_gpu`] refuses with a panic |
 //! | `molecule.view()`, the `NucleiView` | [`NucleiRows`] from [`fb_molecule_nuclei::add_nuclei`], passed in, so one upload serves every reader of the plan |
 //! | `upload_spherical_transform_matrix`, `MatrixAOPair::cartesian_to_spherical` | [`fb_recipes_matrix_ao::add_cartesian_to_spherical`], U's slot passed in by the caller |
 //! | `res.dev_idx()` made current for the call | nothing: a stream task runs with its worker's device current |
@@ -40,10 +40,10 @@
 
 use contracts::debug_requires;
 use fb_basis::BasisSet;
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, Result, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::memset;
 use fb_integrals_one_electron_kinetic::kinetic_classes;
 use fb_integrals_one_electron_potential_en::potential_en_classes;
@@ -76,7 +76,7 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// # Panics
 /// If `nao_cart²` does not fit an `i32` (the kernels index the matrix in
 /// 32 bits), or `classes` or `nuclei` are rows of another worker's or
-/// another plan's table ([`Dag::add`]).
+/// another plan's table ([`Dag::add_gpu`]).
 ///
 /// [`kinetic_classes`]: fb_integrals_one_electron_kinetic::kinetic_classes
 /// [`potential_en_classes`]: fb_integrals_one_electron_potential_en::potential_en_classes
@@ -101,7 +101,7 @@ pub fn add_core_hamiltonian(
         i32::try_from(n_cart * n_cart).is_ok(),
         "add_core_hamiltonian: {n_cart}² Cartesian AOs do not fit the kernels' 32-bit index"
     );
-    let h_cart = dag.add(
+    let h_cart = dag.add_gpu(
         "core hamiltonian",
         worker,
         CoreHamiltonian {
@@ -124,9 +124,8 @@ struct CoreHamiltonian {
     n_cart: usize,
 }
 
-impl Task for CoreHamiltonian {
+impl GpuTask for CoreHamiltonian {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         for c in &self.classes {
@@ -140,12 +139,9 @@ impl Task for CoreHamiltonian {
         &self,
         h: &Self::Rows,
         device: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let mut h = device.take_mut(*h);
         memset::zero(&mut h, stream)?;
         // Both on the one stream: every V launch follows every T launch, and

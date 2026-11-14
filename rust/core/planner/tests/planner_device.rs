@@ -19,11 +19,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fb_core_arena::{
-    Bufs, DEVICE_ALIGNMENT, Device, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p, memcpy_p2d,
+    Bufs, CopyOnly, DEVICE_ALIGNMENT, Device, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p,
+    memcpy_p2d,
 };
 use fb_core_error_handling::{Result, Status};
-use fb_core_planner::{Dag, Decision, Task};
-use fb_core_thread_pool::{DeviceStream, Lane, Placement};
+use fb_core_planner::{CpuTask, Dag, Decision, GpuTask};
+use fb_core_thread_pool::{DeviceStream, Placement};
 use fb_core_wwr::blas::gemm;
 use fb_core_wwr::common::ScopedDeviceIndex;
 use fb_core_wwr::memset;
@@ -56,21 +57,14 @@ fn value(i: usize) -> f64 {
 /// CPU: fills a pinned row.
 struct Fill;
 
-impl Task for Fill {
+impl CpuTask for Fill {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, h: &mut Layout<'_, Pinned>) -> Self::Rows {
         h.output("up", N)
     }
 
-    fn run(
-        &self,
-        up: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, up: &Self::Rows, h: &Bufs<'_, Pinned>) -> Status {
         let up = h.take_mut(*up);
         assert_eq!(up.as_ptr().addr() % DEVICE_ALIGNMENT, 0);
         up.iter_mut().enumerate().for_each(|(i, e)| *e = value(i));
@@ -83,9 +77,8 @@ impl Task for Fill {
 struct Upload(RowId<Pinned, f64>);
 struct Download(RowId<Device, f64>);
 
-impl Task for Upload {
+impl GpuTask for Upload {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
         h.read(self.0);
@@ -96,23 +89,19 @@ impl Task for Upload {
         &self,
         dev: &Self::Rows,
         d: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
-        let dst = d.take_mut(*dev);
+        let mut dst = d.take_mut(*dev);
         assert_eq!(dst.as_ptr().addr() % DEVICE_ALIGNMENT, 0);
         // The source is not rewritten before this copy completes: its
         // bytes' next owner is ordered after this task's event by a handoff.
-        memcpy_p2d(&dst, h, self.0, stream)
+        memcpy_p2d(&mut dst, h, self.0, stream)
     }
 }
 
-impl Task for Download {
+impl GpuTask for Download {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
         d.read(self.0);
@@ -123,12 +112,9 @@ impl Task for Download {
         &self,
         down: &Self::Rows,
         d: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         // No host write here: `down` is `up`'s bytes, and the upload out of
         // them may still be in flight. A stream task only enqueues.
         memcpy_d2p(h, *down, d.get(self.0), stream)
@@ -138,21 +124,14 @@ impl Task for Download {
 /// CPU: compares, after the executor waited on the download's event.
 struct Check(RowId<Pinned, f64>);
 
-impl Task for Check {
+impl CpuTask for Check {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) {
+    fn layout(&self, h: &mut Layout<'_, Pinned>) {
         h.read(self.0);
     }
 
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, _: &(), h: &Bufs<'_, Pinned>) -> Status {
         let got = h.get(self.0);
         assert!(got.iter().enumerate().all(|(i, &e)| e == value(i)));
         Ok(())
@@ -174,10 +153,10 @@ impl Task for Check {
 fn a_round_trip_through_the_planner() {
     let _turn = TURN.lock().unwrap_or_else(|p| p.into_inner());
     let mut dag = Dag::new();
-    let up = dag.add("fill", 0, Fill);
-    let dev = dag.add("upload", 0, Upload(up));
-    let down = dag.add("download", 0, Download(dev));
-    dag.add("check", 0, Check(down));
+    let up = dag.add_cpu("fill", 0, Fill);
+    let dev = dag.add_gpu("upload", 0, Upload(up));
+    let down = dag.add_gpu("download", 0, Download(dev));
+    dag.add_cpu("check", 0, Check(down));
     let planned = dag.plan();
     assert_eq!(
         planned.host_table(0).offset(down),
@@ -241,9 +220,8 @@ const BIG: usize = 4 << 20;
 /// copying the row it reads.
 struct Stage(Option<RowId<Device, f64>>);
 
-impl Task for Stage {
+impl GpuTask for Stage {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, d: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         if let Some(input) = self.0 {
@@ -256,12 +234,9 @@ impl Task for Stage {
         &self,
         out: &Self::Rows,
         d: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let mut dst = d.take_mut(*out);
         match self.0 {
             None => memset::zero(&mut dst, stream),
@@ -279,9 +254,9 @@ impl Task for Stage {
 fn every_gpu_task_has_a_stream_scope() {
     let _turn = TURN.lock().unwrap_or_else(|p| p.into_inner());
     let mut dag = Dag::new();
-    let mut row = dag.add("stage0", 0, Stage(None));
+    let mut row = dag.add_gpu("stage0", 0, Stage(None));
     for i in 1..6 {
-        row = dag.add(format!("stage{i}"), 0, Stage(Some(row)));
+        row = dag.add_gpu(format!("stage{i}"), 0, Stage(Some(row)));
     }
     let mut instance = dag.plan().instantiate(&[0]);
     let mut backend = instance.backend();
@@ -343,11 +318,10 @@ struct HostStart {
 /// CPU: `A`, `b`, and zeros for `x` and the decision's last iterate.
 struct Start;
 
-impl Task for Start {
+impl CpuTask for Start {
     type Rows = HostStart;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> HostStart {
+    fn layout(&self, h: &mut Layout<'_, Pinned>) -> HostStart {
         HostStart {
             a: h.output("A", M * M),
             b: h.output("b", M),
@@ -356,13 +330,7 @@ impl Task for Start {
         }
     }
 
-    fn run(
-        &self,
-        r: &HostStart,
-        _: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, r: &HostStart, h: &Bufs<'_, Pinned>) -> Status {
         h.take_mut(r.a).copy_from_slice(&contraction());
         h.take_mut(r.b).copy_from_slice(&offset());
         h.take_mut(r.x0).fill(0.0);
@@ -383,9 +351,8 @@ struct DeviceStart {
 /// GPU: `A`, `b` and `x0` up to the device.
 struct Up(HostStart);
 
-impl Task for Up {
+impl GpuTask for Up {
     type Rows = DeviceStart;
-    const GPU: bool = true;
 
     fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> DeviceStart {
         h.read(self.0.a);
@@ -402,15 +369,12 @@ impl Task for Up {
         &self,
         r: &DeviceStart,
         d: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
-        memcpy_p2d(&d.take_mut(r.a), h, self.0.a, stream)?;
-        memcpy_p2d(&d.take_mut(r.b), h, self.0.b, stream)?;
-        memcpy_p2d(&d.take_mut(r.x), h, self.0.x0, stream)
+        memcpy_p2d(&mut d.take_mut(r.a), h, self.0.a, stream)?;
+        memcpy_p2d(&mut d.take_mut(r.b), h, self.0.b, stream)?;
+        memcpy_p2d(&mut d.take_mut(r.x), h, self.0.x0, stream)
     }
 }
 
@@ -418,9 +382,8 @@ impl Task for Up {
 /// pinned copy for the decision.
 struct Affine(DeviceStart);
 
-impl Task for Affine {
+impl GpuTask for Affine {
     type Rows = (RowId<Device, f64>, RowId<Pinned, f64>);
-    const GPU: bool = true;
 
     fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
         d.read(self.0.a);
@@ -433,12 +396,9 @@ impl Task for Affine {
         &self,
         &(y, y_host): &Self::Rows,
         d: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let mut dy = d.take_mut(y);
         memcpy_d2d(&dy, d.get(self.0.b), stream)?;
         let m = M as i32;
@@ -468,9 +428,8 @@ struct CarryX {
     x: RowId<Device, f64>,
 }
 
-impl Task for CarryX {
+impl GpuTask for CarryX {
     type Rows = ();
-    const GPU: bool = true;
 
     fn layout(&self, d: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) {
         d.read(self.y);
@@ -481,12 +440,9 @@ impl Task for CarryX {
         &self,
         _: &(),
         d: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         memcpy_d2d(&d.take_mut(self.x), d.get(self.y), stream)
     }
 }
@@ -536,9 +492,8 @@ impl Decision for Moved {
 /// GPU, after the loop: `x` down to a pinned row.
 struct DownX(RowId<Device, f64>);
 
-impl Task for DownX {
+impl GpuTask for DownX {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
         d.read(self.0);
@@ -549,12 +504,9 @@ impl Task for DownX {
         &self,
         &x: &Self::Rows,
         d: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         memcpy_d2p(h, x, d.get(self.0), stream)
     }
 }
@@ -562,21 +514,14 @@ impl Task for DownX {
 /// CPU: `x` out of its pinned row.
 struct Keep(RowId<Pinned, f64>, Arc<Mutex<Vec<f64>>>);
 
-impl Task for Keep {
+impl CpuTask for Keep {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) {
+    fn layout(&self, h: &mut Layout<'_, Pinned>) {
         h.read(self.0);
     }
 
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, _: &(), h: &Bufs<'_, Pinned>) -> Status {
         *self.1.lock().unwrap() = h.get(self.0).to_vec();
         Ok(())
     }
@@ -609,11 +554,11 @@ fn a_device_loop_to_its_fixed_point() {
     );
     let mut dag = Dag::new();
     dag.blas_workspace(0);
-    let host = dag.add("start", 0, Start);
-    let dev = dag.add("up", 0, Up(host));
+    let host = dag.add_cpu("start", 0, Start);
+    let dev = dag.add_gpu("up", 0, Up(host));
     let body = dag.len();
-    let (y, y_host) = dag.add("A x + b", 0, Affine(dev));
-    dag.add("x = y", 0, CarryX { y, x: dev.x });
+    let (y, y_host) = dag.add_gpu("A x + b", 0, Affine(dev));
+    dag.add_gpu("x = y", 0, CarryX { y, x: dev.x });
     dag.add_loop(
         "moved",
         0,
@@ -625,8 +570,8 @@ fn a_device_loop_to_its_fixed_point() {
             samples: Arc::clone(&samples),
         },
     );
-    let x = dag.add("down", 0, DownX(dev.x));
-    dag.add("keep", 0, Keep(x, Arc::clone(&out)));
+    let x = dag.add_gpu("down", 0, DownX(dev.x));
+    dag.add_cpu("keep", 0, Keep(x, Arc::clone(&out)));
     let planned = dag.plan();
     let text = planned.to_string();
     assert!(text.contains("loop 2-4: region of"), "{text}");

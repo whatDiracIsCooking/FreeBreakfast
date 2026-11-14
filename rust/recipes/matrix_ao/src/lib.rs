@@ -33,10 +33,10 @@
 
 use contracts::debug_requires;
 use fb_basis::BasisSet;
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::gemm;
 use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N as OP_N, WWR_BLAS_OP_T as OP_T};
 
@@ -53,7 +53,7 @@ use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N as OP_N, WWR_BLAS_OP_T as OP_T};
 /// `basis` on `worker`, and U is copied up once and read by every one.
 ///
 /// # Panics
-/// If `u` holds a row of another worker's table ([`Dag::add`]).
+/// If `u` holds a row of another worker's table ([`Dag::add_gpu`]).
 #[debug_requires(basis.nshells() > 0, "a basis of at least one shell")]
 #[track_caller]
 pub fn add_cartesian_to_spherical(
@@ -65,7 +65,7 @@ pub fn add_cartesian_to_spherical(
     cartesian: RowId<Device, f64>,
 ) -> RowId<Device, f64> {
     let u = add_harmonics(dag, worker, basis, u);
-    dag.add(
+    dag.add_gpu(
         "spherical transform",
         worker,
         Transform {
@@ -105,8 +105,8 @@ pub fn add_harmonics(
     *u.get_or_insert_with(|| {
         let u = fb_basis::spherical_transform_matrix(basis);
         let len = u.len();
-        let host = dag.add("harmonics", worker, Harmonics { u });
-        dag.add("harmonics upload", worker, Upload { host, len })
+        let host = dag.add_cpu("harmonics", worker, Harmonics { u });
+        dag.add_gpu("harmonics upload", worker, Upload { host, len })
     })
 }
 
@@ -116,21 +116,14 @@ struct Harmonics {
     u: Vec<f64>,
 }
 
-impl Task for Harmonics {
+impl CpuTask for Harmonics {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.output("U", self.u.len())
     }
 
-    fn run(
-        &self,
-        u: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, u: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
         memcpy_h2p(host, *u, &self.u);
         Ok(())
     }
@@ -144,9 +137,8 @@ struct Upload {
     len: usize,
 }
 
-impl Task for Upload {
+impl GpuTask for Upload {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.read(self.host);
@@ -157,13 +149,10 @@ impl Task for Upload {
         &self,
         u: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
-        memcpy_p2d(&device.take_mut(*u), host, self.host, worker)
+        memcpy_p2d(&mut device.take_mut(*u), host, self.host, worker)
     }
 }
 
@@ -185,9 +174,8 @@ struct TransformRows {
     m: RowId<Device, f64>,
 }
 
-impl Task for Transform {
+impl GpuTask for Transform {
     type Rows = TransformRows;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> TransformRows {
         device.read(self.u);
@@ -202,12 +190,9 @@ impl Task for Transform {
         &self,
         rows: &TransformRows,
         device: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let u = device.get(self.u);
 
         // The worker's handle, bound to `stream` when the backend was made.

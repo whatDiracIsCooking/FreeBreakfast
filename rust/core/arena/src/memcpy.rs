@@ -32,6 +32,8 @@
 #[cfg(feature = "device")]
 use fb_core_error_handling::Status;
 #[cfg(feature = "device")]
+use fb_core_wwr::device_slice::DeviceSliceMut;
+#[cfg(feature = "device")]
 use fb_core_wwr::gpu_status;
 #[cfg(feature = "device")]
 use fb_core_wwr::handle::DeviceHandleStream;
@@ -42,7 +44,7 @@ use wwr_sys::wwr_memcpy_kind;
 
 use super::bufs::Bufs;
 #[cfg(feature = "device")]
-use super::bufs::{DeviceMut, DeviceRef};
+use super::bufs::{CopyOnly, DeviceMut, DeviceRef};
 #[cfg(feature = "device")]
 use super::kind::Pinned;
 use super::kind::{Element, HostKind};
@@ -66,20 +68,23 @@ pub fn memcpy_p2h<K: HostKind, T: Element>(host: &Bufs<'_, K>, src: RowId<K, T>)
     host.get(src).to_vec()
 }
 
-/// The pinned row `src`, which the node reads, copied on `stream` into the
-/// device row `dst`.
+/// The pinned row `src`, which the node reads, copied on `stream` into
+/// `dst`: a device row the node writes, or a part of one
+/// (`fb_core_wwr::device_slice::split_at_mut`), held as the copy's
+/// destination by the promise of [`DeviceSliceMut`], as a kernel's output
+/// is.
 ///
 /// # Panics
 /// If the lengths differ, or as [`Bufs::get`] does.
 #[cfg(feature = "device")]
 #[track_caller]
 pub fn memcpy_p2d<T: Element>(
-    dst: &DeviceMut<'_, T>,
-    host: &Bufs<'_, Pinned>,
+    dst: &mut impl DeviceSliceMut<T>,
+    host: &CopyOnly<'_, Pinned>,
     src: RowId<Pinned, T>,
     stream: &Stream,
 ) -> Status {
-    let (src, len) = host.acquire_ptr(src, false);
+    let (src, len) = host.0.acquire_ptr(src, false);
     copy(
         dst.as_mut_ptr(),
         dst.len(),
@@ -99,13 +104,13 @@ pub fn memcpy_p2d<T: Element>(
 #[cfg(feature = "device")]
 #[track_caller]
 pub fn memcpy_d2p<'s, T: Element>(
-    host: &Bufs<'_, Pinned>,
+    host: &CopyOnly<'_, Pinned>,
     dst: RowId<Pinned, T>,
     src: impl Into<DeviceRef<'s, T>>,
     stream: &Stream,
 ) -> Status {
     let src = src.into();
-    let (dst, len) = host.acquire_ptr(dst, true);
+    let (dst, len) = host.0.acquire_ptr(dst, true);
     copy(
         dst,
         len,

@@ -120,9 +120,10 @@ only in review. Each library exports two entries,
 `fb_<module>_abi_version()` and `fb_<module>_backend()`, defined in its
 `kernels/abi.cu`: the first returns the `FB_<MODULE>_ABI_VERSION` its C
 header defines, bumped by hand with any change to a declaration the header
-reaches (`FB_RECIPES_ABI_VERSION` is 5, bumped as the inverse square root,
+reaches (`FB_RECIPES_ABI_VERSION` is 6, bumped as the inverse square root,
 the symmetrization, the Cholesky diagonal tile and the DIIS solve joined the
-merge sort;
+merge sort, then as the inverse square root took its floor's factor from the
+device;
 `FB_INTEGRALS_ABI_VERSION` is 3, bumped as the kinetic and
 nuclear-attraction wrappers with `fb_nuclei_view`, then density fitting's
 metric and three-center launchers, joined the overlap; `fb-doc-check`'s
@@ -227,8 +228,8 @@ out, which costs a caller three arguments and no second name to learn.
 
 **A library handle is the stream worker's, made before the run.** Each
 stream worker owns one handle per library, bound to its stream and on its
-device: `fb_core_thread_pool::DeviceStream`, what a GPU task's `Lane` hands
-it, is the worker's stream (it derefs to `fb_core_wwr::runtime::Stream`)
+device: `fb_core_thread_pool::DeviceStream`, what a GPU task's `run` is handed
+as its stream, is the worker's stream (it derefs to `fb_core_wwr::runtime::Stream`)
 and its handles (`blas()`, an `fb_core_wwr::blas::BlasHandle`, and
 `solver()`, an `fb_core_wwr::solver::SolverHandle`, the dense solver's). The
 `Device` backend makes them when it is built over an instance's plan, with

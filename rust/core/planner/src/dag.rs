@@ -6,15 +6,22 @@ use std::fmt;
 use std::ops::ControlFlow;
 
 use super::BLAS_WORKSPACE_BYTES;
-use super::task::{Decision, Task};
+use super::task::{CpuTask, Decision, GpuTask};
 use contracts::debug_requires;
-use fb_core_arena::{Bufs, Device, Element, HostKind, Pinned, RowId, Table, TableBuilder};
+use fb_core_arena::{
+    Bufs, CopyOnly, Device, Element, HostKind, Pinned, RowId, Table, TableBuilder,
+};
 use fb_core_error_handling::{Result, Status};
-use fb_core_thread_pool::{DeviceStream, Lane, Placement};
+use fb_core_thread_pool::{DeviceStream, Placement};
 
-/// A task's `run` with its rows bound: what the executor's node calls.
-pub(super) type Run<'a, H, S> =
-    Box<dyn Fn(&Bufs<'_, Device>, &Bufs<'_, H>, Lane<'_, S>) -> Status + Send + Sync + 'a>;
+/// A GPU task's `run` with its rows bound: what the executor's stream
+/// node calls.
+pub(super) type GpuRun<'a, H, S> =
+    Box<dyn Fn(&Bufs<'_, Device>, &CopyOnly<'_, H>, &S) -> Status + Send + Sync + 'a>;
+
+/// A CPU task's `run` with its rows bound: what the executor's CPU node
+/// calls.
+pub(super) type CpuRun<'a, H> = Box<dyn Fn(&Bufs<'_, H>) -> Status + Send + Sync + 'a>;
 
 /// A decision's `decide` with its rows bound: what the executor's
 /// decision node calls with the iteration's index.
@@ -24,14 +31,22 @@ pub(super) type Decide<'a, H> =
 /// Bind the closure's signature where it is written: a closure passed
 /// straight to `Box::new` does not take its higher-ranked signature from
 /// the box's type.
-fn erase<'a, H: HostKind, S, F>(f: F) -> Run<'a, H, S>
+fn erase_gpu<'a, H: HostKind, S, F>(f: F) -> GpuRun<'a, H, S>
 where
-    F: Fn(&Bufs<'_, Device>, &Bufs<'_, H>, Lane<'_, S>) -> Status + Send + Sync + 'a,
+    F: Fn(&Bufs<'_, Device>, &CopyOnly<'_, H>, &S) -> Status + Send + Sync + 'a,
 {
     Box::new(f)
 }
 
-/// As [`erase`], for a decision.
+/// As [`erase_gpu`], for a CPU task.
+fn erase_cpu<'a, H: HostKind, F>(f: F) -> CpuRun<'a, H>
+where
+    F: Fn(&Bufs<'_, H>) -> Status + Send + Sync + 'a,
+{
+    Box::new(f)
+}
+
+/// As [`erase_gpu`], for a decision.
 fn erase_decide<'a, H: HostKind, F>(f: F) -> Decide<'a, H>
 where
     F: Fn(&Bufs<'_, H>, usize) -> Result<ControlFlow<()>> + Send + Sync + 'a,
@@ -39,9 +54,12 @@ where
     Box::new(f)
 }
 
-/// What a node runs: a task, or a loop's decision.
+/// What a node runs: a task of either sort, or a loop's decision. The
+/// sort is where it runs: a GPU task on its worker's stream, the rest on
+/// the CPU pool.
 pub(super) enum Work<'a, H: HostKind, S> {
-    Task(Run<'a, H, S>),
+    Gpu(GpuRun<'a, H, S>),
+    Cpu(CpuRun<'a, H>),
     /// The decision of the loop over the tasks from `body` to the one
     /// before it, replayed at most `max_iterations` times.
     Decide {
@@ -51,14 +69,22 @@ pub(super) enum Work<'a, H: HostKind, S> {
     },
 }
 
-/// A node as declared: its name, its worker, where it runs, its
-/// dimensions, and its work.
+/// A node as declared: its name, its worker, its dimensions, and its work.
 pub(super) struct Declared<'a, H: HostKind, S> {
     pub(super) name: String,
     pub(super) dims: Vec<(&'static str, usize)>,
     pub(super) worker: usize,
-    pub(super) placement: Placement,
     pub(super) work: Work<'a, H, S>,
+}
+
+impl<H: HostKind, S> Declared<'_, H, S> {
+    /// Where it runs, which its work's sort decides.
+    pub(super) fn placement(&self) -> Placement {
+        match self.work {
+            Work::Gpu(_) => Placement::Stream(self.worker),
+            Work::Cpu(_) | Work::Decide { .. } => Placement::Cpu,
+        }
+    }
 }
 
 /// One GPU worker's rows, of both kinds, and its BLAS workspace row if
@@ -72,7 +98,7 @@ struct Worker<H> {
 /// Tasks declared in plan order, each on a GPU worker: the planner's input.
 ///
 /// A task's position is the number added before it ([`Dag::len`]), so the
-/// order of [`Dag::add`] is the plan's rank order, which is a topological
+/// order of [`Dag::add_gpu`] and [`Dag::add_cpu`] is the plan's rank order, which is a topological
 /// order: a task can only read what an earlier one produced. A loop
 /// ([`Dag::add_loop`]) is a run of them replayed between host decisions.
 pub struct Dag<'a, H: HostKind = Pinned, S = DeviceStream> {
@@ -110,47 +136,58 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         self.nodes.is_empty()
     }
 
-    /// Add `task` on GPU worker `worker`, call its layout, and return its
-    /// rows. A GPU task runs on the worker's stream; a CPU task runs on the
-    /// CPU pool, with its host rows in that worker's block (a pinned row
-    /// belongs to the GPU worker whose copies it stages).
+    /// Add a GPU task on GPU worker `worker`, to run on its stream, call
+    /// its layout, and return its rows.
     ///
-    /// The layout's declarations are held to the worker's table's
+    /// The layout's declarations are held to the worker's tables'
     /// contracts ([`TableBuilder::read`], [`TableBuilder::write`]).
     ///
     /// # Panics
-    /// If a CPU task declares or reads a device row. And if the layout
-    /// reads a row of another worker's table (an edge between two workers
-    /// needs a transport row, which placement does not make yet): here, by
-    /// the table's contract, in a debug build; in every build, when the
-    /// task's run asks for the row, by the view's checks ([`Bufs`]).
-    pub fn add<T>(&mut self, name: impl Into<String>, worker: usize, task: T) -> T::Rows
+    /// If the layout reads a row of another worker's table (an edge between
+    /// two workers needs a transport row, which placement does not make
+    /// yet): here, by the table's contract, in a debug build; in every
+    /// build, when the task's run asks for the row, by the view's checks
+    /// ([`Bufs`]).
+    pub fn add_gpu<T>(&mut self, name: impl Into<String>, worker: usize, task: T) -> T::Rows
     where
-        T: Task<H, S> + 'a,
+        T: GpuTask<H, S> + 'a,
         T::Rows: 'a,
     {
-        let name = name.into();
         let pos = self.nodes.len();
         let w = self.worker(worker);
-        let mut device = w.device.node(pos);
-        let mut host = w.host.node(pos);
-        let rows = task.layout(&mut device, &mut host);
-        let device_rows = device.used();
-        assert!(
-            T::GPU || device_rows == 0,
-            "{name}: a CPU task holds no device row, but its layout uses {device_rows}"
-        );
+        let rows = task.layout(&mut w.device.node(pos), &mut w.host.node(pos));
         let kept = rows.clone();
         self.nodes.push(Declared {
-            name,
+            name: name.into(),
             dims: task.dims(),
             worker,
-            placement: if T::GPU {
-                Placement::Stream(worker)
-            } else {
-                Placement::Cpu
-            },
-            work: Work::Task(erase(move |d, h, lane| task.run(&kept, d, h, lane))),
+            work: Work::Gpu(erase_gpu(move |d, p, stream| task.run(&kept, d, p, stream))),
+        });
+        rows
+    }
+
+    /// Add a CPU task, to run on the CPU pool with its host rows in GPU
+    /// worker `worker`'s block (a pinned row belongs to the GPU worker whose
+    /// copies it stages), call its layout, and return its rows.
+    ///
+    /// The layout's declarations are held to the worker's host table's
+    /// contracts, as in [`Dag::add_gpu`].
+    ///
+    /// # Panics
+    /// As [`Dag::add_gpu`], for a row of another worker's table.
+    pub fn add_cpu<T>(&mut self, name: impl Into<String>, worker: usize, task: T) -> T::Rows
+    where
+        T: CpuTask<H> + 'a,
+        T::Rows: 'a,
+    {
+        let pos = self.nodes.len();
+        let rows = task.layout(&mut self.worker(worker).host.node(pos));
+        let kept = rows.clone();
+        self.nodes.push(Declared {
+            name: name.into(),
+            dims: task.dims(),
+            worker,
+            work: Work::Cpu(erase_cpu(move |h| task.run(&kept, h))),
         });
         rows
     }
@@ -178,7 +215,7 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
     /// decision's `Break`, never after a single iteration.
     ///
     /// The decision's layout is held to the table's contracts, as a
-    /// task's is in [`Dag::add`].
+    /// task's is in [`Dag::add_cpu`].
     #[debug_requires(body < self.nodes.len(), "the body has a task")]
     #[debug_requires(
         self.loops.last().is_none_or(|&(_, decision)| decision < body),
@@ -204,7 +241,6 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
             name: name.into(),
             dims: Vec::new(),
             worker,
-            placement: Placement::Cpu,
             work: Work::Decide {
                 body,
                 max_iterations,
@@ -367,7 +403,7 @@ impl<H: HostKind, S> Planned<'_, H, S> {
 
     /// Where `pos` runs.
     pub fn placement(&self, pos: usize) -> Placement {
-        self.nodes[pos].placement
+        self.nodes[pos].placement()
     }
 }
 
@@ -385,7 +421,7 @@ impl<H: HostKind, S> fmt::Display for Planned<'_, H, S> {
             "task", "worker", "lane"
         )?;
         for (pos, (node, deps)) in self.nodes.iter().zip(&self.deps).enumerate() {
-            let lane = match node.placement {
+            let lane = match node.placement() {
                 Placement::Stream(_) => "stream",
                 Placement::Cpu => "cpu",
             };

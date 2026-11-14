@@ -37,10 +37,10 @@
 
 use contracts::debug_requires;
 use fb_basis::BasisSet;
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::device_slice::DeviceSliceMut;
 use fb_core_wwr::memset;
 use fb_core_wwr::runtime::Stream;
@@ -95,7 +95,7 @@ pub fn kinetic_classes(
 /// # Panics
 /// If `nao_cart²` does not fit an `i32` (the kinetic kernels index the
 /// matrix in 32 bits), or `classes` are rows of another worker's or another
-/// plan's table ([`Dag::add`]).
+/// plan's table ([`Dag::add_gpu`]).
 #[debug_requires(basis.nshells() > 0, "a basis of at least one shell")]
 #[track_caller]
 pub fn add_kinetic(
@@ -110,7 +110,7 @@ pub fn add_kinetic(
         i32::try_from(n_cart * n_cart).is_ok(),
         "add_kinetic: {n_cart}² Cartesian AOs do not fit the kernels' 32-bit index"
     );
-    let t_cart = dag.add(
+    let t_cart = dag.add_gpu(
         "kinetic",
         worker,
         Kinetic {
@@ -128,9 +128,8 @@ struct Kinetic {
     n_cart: usize,
 }
 
-impl Task for Kinetic {
+impl GpuTask for Kinetic {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         for c in &self.classes {
@@ -143,12 +142,9 @@ impl Task for Kinetic {
         &self,
         t: &Self::Rows,
         device: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let mut t = device.take_mut(*t);
         memset::zero(&mut t, stream)?;
         kinetic_classes(stream, device, &self.classes, &mut t)

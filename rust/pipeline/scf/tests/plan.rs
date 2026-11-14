@@ -17,10 +17,10 @@ mod common;
 
 use std::ops::ControlFlow;
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, ErrorKind, Result, Status};
-use fb_core_planner::{Dag, Decision, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, Decision, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_pipeline_scf::{Run, ScfStep, add_density, add_fock};
 use fb_test_support::golden;
 
@@ -175,9 +175,8 @@ struct Input {
     len: usize,
 }
 
-impl Task for Input {
+impl GpuTask for Input {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.output(self.name, self.len)
@@ -187,8 +186,8 @@ impl Task for Input {
         &self,
         _: &Self::Rows,
         _: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        _: &DeviceStream,
     ) -> Status {
         unreachable!("the plan is never run")
     }
@@ -224,8 +223,8 @@ fn iteration_plan_golden() {
     let mut dag = Dag::new();
     dag.blas_workspace(0);
     let [h, j, k, s, x, c, d] = ["H", "J", "K", "S", "X", "C", "D"]
-        .map(|name| dag.add(name, 0, Input { name, len: n * n }));
-    let c_occ = dag.add(
+        .map(|name| dag.add_gpu(name, 0, Input { name, len: n * n }));
+    let c_occ = dag.add_gpu(
         "C occ",
         0,
         Input {

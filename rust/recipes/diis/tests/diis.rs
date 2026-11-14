@@ -32,11 +32,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fb_core_arena::{
-    Bufs, Device, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p, memcpy_h2p, memcpy_p2d,
+    Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p, memcpy_h2p, memcpy_p2d,
 };
 use fb_core_error_handling::{Result, Status};
-use fb_core_planner::{Dag, Decision, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, Decision, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::gemv;
 use fb_core_wwr::memset;
 use fb_recipes_diis::{Diis, add_diis};
@@ -166,22 +166,15 @@ struct Feed {
     next: Arc<AtomicUsize>,
 }
 
-impl Task for Feed {
+impl CpuTask for Feed {
     type Rows = (RowId<Pinned, f64>, RowId<Pinned, f64>);
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, h: &mut Layout<'_, Pinned>) -> Self::Rows {
         let len = self.pairs[0].0.len();
         (h.output("F host", len), h.output("e host", len))
     }
 
-    fn run(
-        &self,
-        &(f, e): &Self::Rows,
-        _: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, &(f, e): &Self::Rows, h: &Bufs<'_, Pinned>) -> Status {
         let pair = &self.pairs[self.next.fetch_add(1, Ordering::Relaxed)];
         memcpy_h2p(h, f, &pair.0);
         memcpy_h2p(h, e, &pair.1);
@@ -192,9 +185,8 @@ impl Task for Feed {
 /// GPU, in the body: the pair up to two device rows.
 struct Up((RowId<Pinned, f64>, RowId<Pinned, f64>), usize);
 
-impl Task for Up {
+impl GpuTask for Up {
     type Rows = (RowId<Device, f64>, RowId<Device, f64>);
-    const GPU: bool = true;
 
     fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
         let (f, e) = self.0;
@@ -207,23 +199,19 @@ impl Task for Up {
         &self,
         &(f, e): &Self::Rows,
         d: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
-        memcpy_p2d(&d.take_mut(f), h, self.0.0, stream)?;
-        memcpy_p2d(&d.take_mut(e), h, self.0.1, stream)
+        memcpy_p2d(&mut d.take_mut(f), h, self.0.0, stream)?;
+        memcpy_p2d(&mut d.take_mut(e), h, self.0.1, stream)
     }
 }
 
 /// GPU, in the body: a device row down to a pinned one.
 struct Down(RowId<Device, f64>, usize);
 
-impl Task for Down {
+impl GpuTask for Down {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
         d.read(self.0);
@@ -234,12 +222,9 @@ impl Task for Down {
         &self,
         &out: &Self::Rows,
         d: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         memcpy_d2p(h, out, d.get(self.0), stream)
     }
 }
@@ -306,7 +291,7 @@ fn run_pushes(
     dag.blas_workspace(0);
     let diis = add_diis(&mut dag, 0, "F*", len, cap).unwrap();
     let body = dag.len();
-    let host = dag.add(
+    let host = dag.add_cpu(
         "feed",
         0,
         Feed {
@@ -314,9 +299,9 @@ fn run_pushes(
             next: Arc::new(AtomicUsize::new(0)),
         },
     );
-    let (f, e) = dag.add("up", 0, Up(host, len));
+    let (f, e) = dag.add_gpu("up", 0, Up(host, len));
     let (out, singular) = diis.add_push(&mut dag, f, e);
-    let out = dag.add("down", 0, Down(out, len));
+    let out = dag.add_gpu("down", 0, Down(out, len));
     dag.add_loop(
         "record",
         0,
@@ -474,11 +459,10 @@ struct Fixed {
 /// matrices column-major.
 struct Start;
 
-impl Task for Start {
+impl CpuTask for Start {
     type Rows = [RowId<Pinned, f64>; 3];
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, h: &mut Layout<'_, Pinned>) -> Self::Rows {
         [
             h.output("A host", N * N),
             h.output("A - I host", N * N),
@@ -486,13 +470,7 @@ impl Task for Start {
         ]
     }
 
-    fn run(
-        &self,
-        &[a, a_minus_i, b]: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, &[a, a_minus_i, b]: &Self::Rows, h: &Bufs<'_, Pinned>) -> Status {
         let (_, column_major) = fixture("linear_a.npy");
         let shifted: Vec<f64> = column_major
             .iter()
@@ -509,9 +487,8 @@ impl Task for Start {
 /// GPU, before the loop: [`Fixed`]'s rows.
 struct Upload([RowId<Pinned, f64>; 3]);
 
-impl Task for Upload {
+impl GpuTask for Upload {
     type Rows = Fixed;
-    const GPU: bool = true;
 
     fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Fixed {
         for row in self.0 {
@@ -529,16 +506,13 @@ impl Task for Upload {
         &self,
         rows: &Fixed,
         d: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let [a, a_minus_i, b] = self.0;
-        memcpy_p2d(&d.take_mut(rows.a), h, a, stream)?;
-        memcpy_p2d(&d.take_mut(rows.a_minus_i), h, a_minus_i, stream)?;
-        memcpy_p2d(&d.take_mut(rows.b), h, b, stream)?;
+        memcpy_p2d(&mut d.take_mut(rows.a), h, a, stream)?;
+        memcpy_p2d(&mut d.take_mut(rows.a_minus_i), h, a_minus_i, stream)?;
+        memcpy_p2d(&mut d.take_mut(rows.b), h, b, stream)?;
         memset::zero(&mut d.take_mut(rows.x), stream)
     }
 }
@@ -547,9 +521,8 @@ impl Task for Upload {
 /// `e` down to a pinned row for the decision.
 struct Apply(Fixed);
 
-impl Task for Apply {
+impl GpuTask for Apply {
     type Rows = (RowId<Device, f64>, RowId<Device, f64>, RowId<Pinned, f64>);
-    const GPU: bool = true;
 
     fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
         d.read(self.0.a);
@@ -563,12 +536,9 @@ impl Task for Apply {
         &self,
         &(f, e, e_host): &Self::Rows,
         d: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let n = N as i32;
         let (mut f, mut e) = (d.take_mut(f), d.take_mut(e));
         for (out, map) in [(&mut f, self.0.a), (&mut e, self.0.a_minus_i)] {
@@ -598,9 +568,8 @@ struct CarryX {
     x: RowId<Device, f64>,
 }
 
-impl Task for CarryX {
+impl GpuTask for CarryX {
     type Rows = ();
-    const GPU: bool = true;
 
     fn layout(&self, d: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) {
         d.read(self.out);
@@ -611,12 +580,9 @@ impl Task for CarryX {
         &self,
         _: &(),
         d: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         memcpy_d2d(&d.take_mut(self.x), d.get(self.out), stream)
     }
 }
@@ -664,14 +630,14 @@ fn a_linear_fixed_point_converges_within_n_plus_one_pushes() {
     let norms = Arc::new(Mutex::new(Vec::new()));
     let mut dag = Dag::new();
     dag.blas_workspace(0);
-    let host = dag.add("start", 0, Start);
-    let fixed = dag.add("upload", 0, Upload(host));
+    let host = dag.add_cpu("start", 0, Start);
+    let fixed = dag.add_gpu("upload", 0, Upload(host));
     let diis = add_diis(&mut dag, 0, "x*", N, N + 2).unwrap();
     let body = dag.len();
     let x = fixed.x;
-    let (f, e, e_host) = dag.add("A x + b", 0, Apply(fixed));
+    let (f, e, e_host) = dag.add_gpu("A x + b", 0, Apply(fixed));
     let (out, _) = diis.add_push(&mut dag, f, e);
-    dag.add("x = x*", 0, CarryX { out, x });
+    dag.add_gpu("x = x*", 0, CarryX { out, x });
     dag.add_loop(
         "converged",
         0,

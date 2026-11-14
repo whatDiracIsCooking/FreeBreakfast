@@ -7,10 +7,10 @@
 //! (`docs/testing.md`, "Performance"). Planning touches no device; it does
 //! load `libfb_recipes_kernels.so`, whose load check planning runs.
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_integrals_eri_density_fitting_fit::add_density_fit;
 use fb_test_support::golden;
 
@@ -25,9 +25,8 @@ struct Input {
     len: usize,
 }
 
-impl Task for Input {
+impl GpuTask for Input {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.output(self.name, self.len)
@@ -37,8 +36,8 @@ impl Task for Input {
         &self,
         _: &Self::Rows,
         _: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        _: &DeviceStream,
     ) -> Status {
         unreachable!("the plan is never run")
     }
@@ -46,7 +45,7 @@ impl Task for Input {
 
 /// The metric and the tensor's producers, on worker 0 of a new plan.
 fn inputs(dag: &mut Dag<'_>) -> (RowId<Device, f64>, RowId<Device, f64>) {
-    let metric = dag.add(
+    let metric = dag.add_gpu(
         "metric",
         0,
         Input {
@@ -54,7 +53,7 @@ fn inputs(dag: &mut Dag<'_>) -> (RowId<Device, f64>, RowId<Device, f64>) {
             len: NAUX * NAUX,
         },
     );
-    let tensor = dag.add(
+    let tensor = dag.add_gpu(
         "three center",
         0,
         Input {

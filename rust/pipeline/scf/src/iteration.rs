@@ -3,10 +3,10 @@
 //! from J and K.
 
 use contracts::debug_requires;
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::{Error, Result, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::{geam, gemm, gemv};
 use fb_molecule::Molecule;
 use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N as OP_N, WWR_BLAS_OP_T as OP_T};
@@ -46,7 +46,7 @@ pub fn occupied_orbitals(molecule: &Molecule) -> Result<usize> {
 /// iteration's J reads this D and its K this factor.
 ///
 /// # Panics
-/// If `n²` does not fit an `i32`, the BLAS's integer; or as [`Dag::add`],
+/// If `n²` does not fit an `i32`, the BLAS's integer; or as [`Dag::add_gpu`],
 /// if a row is of another worker's table, or `d` or `c_occ` is written
 /// where no loop carries it.
 #[debug_requires(n > 0, "a basis of at least one function")]
@@ -62,7 +62,7 @@ pub fn add_density(
     c_occ: RowId<Device, f64>,
 ) {
     assert_square_fits(n);
-    dag.add(
+    dag.add_gpu(
         "density",
         worker,
         Density {
@@ -87,7 +87,7 @@ pub(crate) fn add_published_density(
     nocc: usize,
     c: RowId<Device, f64>,
 ) -> RowId<Device, f64> {
-    dag.add("published density", worker, PublishedDensity { c, n, nocc })
+    dag.add_gpu("published density", worker, PublishedDensity { c, n, nocc })
 }
 
 /// Add the Fock matrix of J and K, its energy and its DIIS residual to
@@ -123,7 +123,7 @@ pub(crate) fn add_published_density(
 ///   added and the square root taken.
 ///
 /// # Panics
-/// If `n²` does not fit an `i32`, the BLAS's integer; or as [`Dag::add`],
+/// If `n²` does not fit an `i32`, the BLAS's integer; or as [`Dag::add_gpu`],
 /// if a row is of another worker's table.
 #[debug_requires(n > 0, "a basis of at least one function")]
 #[allow(
@@ -144,8 +144,8 @@ pub fn add_fock(
     x: RowId<Device, f64>,
 ) -> (RowId<Device, f64>, RowId<Device, f64>, RowId<Pinned, f64>) {
     assert_square_fits(n);
-    let fock = dag.add("fock", worker, Fock { h, j, k, d, n });
-    let residual = dag.add(
+    let fock = dag.add_gpu("fock", worker, Fock { h, j, k, d, n });
+    let residual = dag.add_gpu(
         "residual",
         worker,
         Residual {
@@ -156,7 +156,7 @@ pub fn add_fock(
             n,
         },
     );
-    let scalars = dag.add(
+    let scalars = dag.add_cpu(
         "energy and norm",
         worker,
         Scalars {
@@ -187,9 +187,8 @@ struct Density {
     nocc: usize,
 }
 
-impl Task for Density {
+impl GpuTask for Density {
     type Rows = ();
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) {
         device.read(self.c);
@@ -205,12 +204,9 @@ impl Task for Density {
         &self,
         _: &(),
         device: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         // add_density checked that n² fits an i32, and nocc <= n.
         let (n, nocc) = (self.n as i32, self.nocc as i32);
         let c = device.get(self.c);
@@ -258,9 +254,8 @@ struct PublishedDensity {
     nocc: usize,
 }
 
-impl Task for PublishedDensity {
+impl GpuTask for PublishedDensity {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.c);
@@ -275,12 +270,9 @@ impl Task for PublishedDensity {
         &self,
         d: &Self::Rows,
         device: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         // add_scf checked that n² fits an i32, and nocc <= n.
         let (n, nocc) = (self.n as i32, self.nocc as i32);
         let (c, mut d) = (device.get(self.c), device.take_mut(*d));
@@ -322,9 +314,8 @@ struct FockRows {
     trace: RowId<Device, f64>,
 }
 
-impl Task for Fock {
+impl GpuTask for Fock {
     type Rows = FockRows;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> FockRows {
         for row in [self.h, self.j, self.k, self.d] {
@@ -346,12 +337,9 @@ impl Task for Fock {
         &self,
         rows: &FockRows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let blas = worker.blas();
         // add_fock checked that n² fits an i32.
         let (n, n2) = (self.n as i32, (self.n * self.n) as i32);
@@ -397,9 +385,8 @@ struct ResidualRows {
     square: RowId<Device, f64>,
 }
 
-impl Task for Residual {
+impl GpuTask for Residual {
     type Rows = ResidualRows;
-    const GPU: bool = true;
 
     fn layout(
         &self,
@@ -428,12 +415,9 @@ impl Task for Residual {
         &self,
         rows: &ResidualRows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let blas = worker.blas();
         // add_fock checked that n² fits an i32.
         let (n, n2) = (self.n as i32, (self.n * self.n) as i32);
@@ -505,23 +489,16 @@ struct Scalars {
     e_nuc: f64,
 }
 
-impl Task for Scalars {
+impl CpuTask for Scalars {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.read(self.e_elec);
         host.read(self.norm2);
         host.output("E, |e|", 2)
     }
 
-    fn run(
-        &self,
-        scalars: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, scalars: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
         let (e_elec, norm2) = (host.get(self.e_elec)[0], host.get(self.norm2)[0]);
         host.take_mut(*scalars)
             .copy_from_slice(&[e_elec + self.e_nuc, norm2.sqrt()]);

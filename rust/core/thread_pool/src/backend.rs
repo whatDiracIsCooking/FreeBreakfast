@@ -186,7 +186,7 @@ impl Deref for DeviceStream {
 }
 
 /// Without the `device` feature: a stream that cannot exist, so the
-/// planner's production defaults (`Task<Pinned, DeviceStream>`) still name a
+/// planner's production default (`GpuTask<Pinned, DeviceStream>`) still names a
 /// type, and a task over it can be declared and planned but never run,
 /// since there is no `Device` backend to run it on.
 #[cfg(not(feature = "device"))]

@@ -7,10 +7,10 @@
 //! (`docs/testing.md`, "Performance"). Planning touches no device; K's
 //! does load `libfb_recipes_kernels.so`, whose load check it runs.
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Planned, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, GpuTask, Planned};
+use fb_core_thread_pool::DeviceStream;
 use fb_integrals_eri_density_fitting_jk::{add_df_coulomb, add_df_exchange};
 use fb_test_support::golden;
 
@@ -27,9 +27,8 @@ struct Input {
     len: usize,
 }
 
-impl Task for Input {
+impl GpuTask for Input {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.output(self.name, self.len)
@@ -39,8 +38,8 @@ impl Task for Input {
         &self,
         _: &Self::Rows,
         _: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        _: &DeviceStream,
     ) -> Status {
         unreachable!("the plan is never run")
     }
@@ -48,7 +47,8 @@ impl Task for Input {
 
 /// B's producer and one density's (`name`, `len` doubles), on worker 0.
 fn inputs(dag: &mut Dag<'_>, name: &'static str, len: usize) -> [RowId<Device, f64>; 2] {
-    [("B", NAUX * NAO * NAO), (name, len)].map(|(name, len)| dag.add(name, 0, Input { name, len }))
+    [("B", NAUX * NAO * NAO), (name, len)]
+        .map(|(name, len)| dag.add_gpu(name, 0, Input { name, len }))
 }
 
 /// `planned`'s text, each line's trailing whitespace stripped (an empty

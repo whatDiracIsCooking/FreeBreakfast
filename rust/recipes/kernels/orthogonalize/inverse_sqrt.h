@@ -16,17 +16,23 @@ extern "C" {
 #endif
 
 /// Replaces each of the first count of data with 1 / sqrt(x), in place, on
-/// stream, except an element at or below floor, which becomes 0.
+/// stream, except an element at or below the floor, which becomes 0. The
+/// floor is floor, or floor * *floor_scale when floor_scale is not null:
+/// a value on the device, such as one a copy enqueued before this on stream
+/// wrote, so a floor the host learns only from earlier work on the stream
+/// is never read back on the host.
 ///
 /// The floor test comes before the square root, so a zero or negative
 /// element never reaches it and the result is never Inf, nor a NaN that was
-/// not one already. floor should be non-negative. data is a device pointer.
+/// not one already. The floor should be non-negative. data and floor_scale
+/// are device pointers.
 ///
 /// Returns FB_LAUNCH_INVALID_ARGUMENT, enqueueing nothing, for a null data
 /// with count positive; FB_LAUNCH_SUCCESS, enqueueing nothing, for count 0;
 /// otherwise the launch's status. Launch errors only: a fault inside the
 /// kernel surfaces at the next synchronization.
-fb_launch_status fb_inverse_sqrt(wwr_stream stream, uint32_t count, double *data, double floor);
+fb_launch_status fb_inverse_sqrt(wwr_stream stream, uint32_t count, double *data, double floor,
+                                 const double *floor_scale);
 
 #ifdef __cplusplus
 }

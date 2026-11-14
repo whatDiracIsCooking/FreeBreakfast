@@ -93,10 +93,12 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use contracts::debug_requires;
-use fb_core_arena::{Bufs, Device, DeviceMut, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p};
+use fb_core_arena::{
+    Bufs, CopyOnly, Device, DeviceMut, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p,
+};
 use fb_core_error_handling::{Error, Result, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::{geam, gemv};
 use fb_core_wwr::copy;
 use fb_core_wwr::device_slice::split_at_mut;
@@ -260,7 +262,7 @@ pub fn add_diis(
         return Err(Error::gpu(e));
     }
     let cursor = Arc::new(Mutex::new(Cursor::default()));
-    let history = dag.add(
+    let history = dag.add_gpu(
         "diis history",
         worker,
         Produce {
@@ -296,7 +298,7 @@ impl Diis {
     /// push; a CPU node reads it.
     ///
     /// # Panics
-    /// As [`Dag::add`], if a row is of another worker's table.
+    /// As [`Dag::add_gpu`], if a row is of another worker's table.
     #[track_caller]
     pub fn add_push(
         &self,
@@ -304,7 +306,7 @@ impl Diis {
         iterate: RowId<Device, f64>,
         residual: RowId<Device, f64>,
     ) -> (RowId<Device, f64>, RowId<Pinned, i32>) {
-        let rows = dag.add(
+        let rows = dag.add_gpu(
             "diis push",
             self.worker,
             Push {
@@ -357,9 +359,8 @@ struct Produce {
     cursor: Arc<Mutex<Cursor>>,
 }
 
-impl Task for Produce {
+impl GpuTask for Produce {
     type Rows = History;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> History {
         let ring = self.len * self.cap;
@@ -378,8 +379,8 @@ impl Task for Produce {
         &self,
         _: &History,
         _: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        _: &DeviceStream,
     ) -> Status {
         // Nothing to write: every column and Gram entry is written by the
         // push that brings it into the subspace, before any read of it.
@@ -403,9 +404,8 @@ struct PushRows {
     singular: RowId<Pinned, i32>,
 }
 
-impl Task for Push {
+impl GpuTask for Push {
     type Rows = PushRows;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> PushRows {
         let d = &self.diis;
@@ -430,12 +430,9 @@ impl Task for Push {
         &self,
         rows: &PushRows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let mut cursor = lock(&self.diis.cursor);
         let restart = cursor.take_restart(self.diis.cap);
         let scale = cursor.scale;
@@ -466,7 +463,7 @@ impl Push {
         scale: f64,
         rows: &PushRows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
+        host: &CopyOnly<'_, Pinned>,
         worker: &DeviceStream,
     ) -> Status {
         let (len, cap, history) = (self.diis.len, self.diis.cap, self.diis.history);

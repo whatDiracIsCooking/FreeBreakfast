@@ -12,10 +12,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_overlap::add_overlap;
 use fb_molecule::nuclear_charge;
@@ -46,9 +46,8 @@ struct Download {
     len: usize,
 }
 
-impl Task for Download {
+impl GpuTask for Download {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.row);
@@ -59,12 +58,9 @@ impl Task for Download {
         &self,
         pinned: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         memcpy_d2p(host, *pinned, device.get(self.row), stream)
     }
 }
@@ -75,23 +71,16 @@ struct Collect {
     out: Arc<Mutex<Vec<Vec<f64>>>>,
 }
 
-impl Task for Collect {
+impl CpuTask for Collect {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) {
         for &row in &self.rows {
             host.read(row);
         }
     }
 
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
         *self.out.lock().unwrap() = self.rows.iter().map(|&r| host.get(r).to_vec()).collect();
         Ok(())
     }
@@ -114,7 +103,7 @@ fn trace_of_d_s_is_the_nuclear_charge_and_the_upload_moves_bytes() {
         let d_device = add_guess_upload(&mut dag, 0, &basis, d);
         let classes = add_records(&mut dag, 0, &basis).unwrap();
         let s = add_overlap(&mut dag, 0, &basis, &classes, &mut None);
-        let d_back = dag.add(
+        let d_back = dag.add_gpu(
             "download D",
             0,
             Download {
@@ -123,7 +112,7 @@ fn trace_of_d_s_is_the_nuclear_charge_and_the_upload_moves_bytes() {
                 len: n * n,
             },
         );
-        let s_host = dag.add(
+        let s_host = dag.add_gpu(
             "download S",
             0,
             Download {
@@ -133,7 +122,7 @@ fn trace_of_d_s_is_the_nuclear_charge_and_the_upload_moves_bytes() {
             },
         );
         let out = Arc::new(Mutex::new(Vec::new()));
-        dag.add(
+        dag.add_cpu(
             "collect",
             0,
             Collect {

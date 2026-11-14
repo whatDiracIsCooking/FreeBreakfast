@@ -14,10 +14,10 @@ use std::sync::{Arc, Mutex};
 
 use fb_atom::{Atom, Element};
 use fb_basis::{BasisSet, Primitive, Shell};
-use fb_core_arena::{Bufs, Device, Heap, Layout, RowId};
+use fb_core_arena::{Bufs, Heap, Layout, RowId};
 use fb_core_error_handling::{ErrorKind, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{HostOnly, Lane, Record};
+use fb_core_planner::{CpuTask, Dag};
+use fb_core_thread_pool::{HostOnly, Record};
 use fb_core_types::Double3;
 use fb_io_npy::{NpyArray, write_npy};
 use fb_io_sad::builtin_sad_density;
@@ -67,15 +67,14 @@ struct Collect {
     out: Arc<Mutex<Vec<f64>>>,
 }
 
-impl Task<Heap, ()> for Collect {
+impl CpuTask<Heap> for Collect {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Heap>) {
+    fn layout(&self, host: &mut Layout<'_, Heap>) {
         host.read(self.row);
     }
 
-    fn run(&self, _: &(), _: &Bufs<'_, Device>, host: &Bufs<'_, Heap>, _: Lane<'_, ()>) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Heap>) -> Status {
         *self.out.lock().unwrap() = host.get(self.row).to_vec();
         Ok(())
     }
@@ -85,7 +84,7 @@ impl Task<Heap, ()> for Collect {
 /// the record, and D if the run succeeded.
 fn run(mut dag: Dag<'static, Heap, ()>, d: RowId<Heap, f64>, n_cpu: usize) -> (Record, Vec<f64>) {
     let out = Arc::new(Mutex::new(Vec::new()));
-    dag.add(
+    dag.add_cpu(
         "collect",
         0,
         Collect {

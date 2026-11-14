@@ -109,7 +109,7 @@ In memory, the record is what a run returns: `fb_core_thread_pool::Record`,
 from `thread_pool::run` and the planner's `Instance::run`. Today it holds
 the run's result; the profile that built it (`debug` or `release`, from
 `cfg!(debug_assertions)`); its wall time; per task its node's rank, its
-name, its worker, its dimensions (a task's `Task::dims`, empty by default),
+name, its worker, its dimensions (a task's `GpuTask::dims` or `CpuTask::dims`, empty by default),
 its host time and its device time, and for a loop's body node or decision
 the iteration it ran in, one entry per iteration; every sync point, with
 the worker that waited, the node it waited for, the iteration of the node

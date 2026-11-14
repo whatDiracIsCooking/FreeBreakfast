@@ -14,10 +14,10 @@ use std::sync::{Arc, Mutex};
 
 use fb_atom::{Atom, Element};
 use fb_basis::BasisSet;
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_types::Double3;
 use fb_integrals_sys::{ClassRows, MixedClassRows};
 use fb_molecule::Molecule;
@@ -146,8 +146,8 @@ impl From<&MixedClassRows> for Class {
 #[allow(dead_code, reason = "the plan binary downloads nothing")]
 pub fn run(mut dag: Dag<'static>, classes: Vec<Class>) -> Vec<HostClass> {
     let out = Arc::new(Mutex::new(Vec::new()));
-    let down = dag.add("download", 0, Download(classes.clone()));
-    dag.add(
+    let down = dag.add_gpu("download", 0, Download(classes.clone()));
+    dag.add_cpu(
         "collect",
         0,
         Collect {
@@ -173,9 +173,8 @@ struct PinnedClass {
 /// stream.
 struct Download(Vec<Class>);
 
-impl Task for Download {
+impl GpuTask for Download {
     type Rows = Vec<PinnedClass>;
-    const GPU: bool = true;
 
     fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
         self.0
@@ -204,12 +203,9 @@ impl Task for Download {
         &self,
         rows: &Self::Rows,
         d: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         for (c, down) in self.0.iter().zip(rows) {
             for (&src, &dst) in c.f64s.iter().zip(&down.f64s) {
                 memcpy_d2p(h, dst, d.get(src), stream)?;
@@ -230,11 +226,10 @@ struct Collect {
     out: Arc<Mutex<Vec<HostClass>>>,
 }
 
-impl Task for Collect {
+impl CpuTask for Collect {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) {
+    fn layout(&self, h: &mut Layout<'_, Pinned>) {
         for c in &self.down {
             c.f64s.iter().for_each(|&r| {
                 h.read(r);
@@ -245,13 +240,7 @@ impl Task for Collect {
         }
     }
 
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, _: &(), h: &Bufs<'_, Pinned>) -> Status {
         *self.out.lock().unwrap() = self
             .classes
             .iter()

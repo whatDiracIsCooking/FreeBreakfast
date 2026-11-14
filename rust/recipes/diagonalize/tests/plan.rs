@@ -5,10 +5,10 @@
 //! (`docs/testing.md`, "Performance"). Planning touches no device: `lwork`
 //! is a number here, where a run asks the device's handle for it.
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_recipes_diagonalize::add_diagonalize;
 use fb_test_support::golden;
 
@@ -21,9 +21,8 @@ const LWORK: usize = 1234;
 /// GPU: the symmetric matrix, declared and never computed.
 struct Matrix;
 
-impl Task for Matrix {
+impl GpuTask for Matrix {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.output("S", N * N)
@@ -33,8 +32,8 @@ impl Task for Matrix {
         &self,
         _: &Self::Rows,
         _: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        _: &DeviceStream,
     ) -> Status {
         unreachable!("the plan is never run")
     }
@@ -43,7 +42,7 @@ impl Task for Matrix {
 #[test]
 fn plan_golden() {
     let mut dag = Dag::new();
-    let s = dag.add("S", 0, Matrix);
+    let s = dag.add_gpu("S", 0, Matrix);
     let (u, w) = add_diagonalize(&mut dag, 0, "S", N, LWORK, s);
     let planned = dag.plan();
     let table = planned.device_table(0);
@@ -76,6 +75,6 @@ fn plan_golden() {
 #[should_panic(expected = "a matrix of at least one row")]
 fn an_empty_matrix_is_refused() {
     let mut dag = Dag::new();
-    let s = dag.add("S", 0, Matrix);
+    let s = dag.add_gpu("S", 0, Matrix);
     add_diagonalize(&mut dag, 0, "S", 0, 0, s);
 }

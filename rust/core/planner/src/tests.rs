@@ -8,9 +8,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use proptest::prelude::*;
 
 use super::*;
-use fb_core_arena::{Bufs, Device, Heap, Layout, RowId};
+use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, RowId};
 use fb_core_error_handling::{Error, ErrorKind, Result, Status};
-use fb_core_thread_pool::{HostOnly, Lane, Placement};
+use fb_core_thread_pool::{HostOnly, Placement};
 use fb_test_support::{golden, panic_message};
 
 /// One row declaration, in the order a [`Declares`] makes them.
@@ -23,13 +23,12 @@ enum Decl {
     Scratch(&'static str, usize),
 }
 
-/// A task that only declares device rows, in a given order, and returns
-/// the ones it made. For planning tests; its run does nothing.
-struct Declares<const GPU: bool>(Vec<Decl>);
+/// A GPU task that only declares device rows, in a given order, and
+/// returns the ones it made. For planning tests; its run does nothing.
+struct Declares(Vec<Decl>);
 
-impl<const GPU: bool> Task<Heap, ()> for Declares<GPU> {
+impl GpuTask<Heap, ()> for Declares {
     type Rows = Vec<RowId<Device, f64>>;
-    const GPU: bool = GPU;
 
     fn layout(&self, d: &mut Layout<'_, Device>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         let mut made = Vec::new();
@@ -48,13 +47,7 @@ impl<const GPU: bool> Task<Heap, ()> for Declares<GPU> {
         made
     }
 
-    fn run(
-        &self,
-        _: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        _: &Bufs<'_, Heap>,
-        _: Lane<'_, ()>,
-    ) -> Status {
+    fn run(&self, _: &Self::Rows, _: &Bufs<'_, Device>, _: &CopyOnly<'_, Heap>, _: &()) -> Status {
         Ok(())
     }
 }
@@ -67,42 +60,34 @@ fn scf_dag(nbf: usize) -> Dag<'static, Heap, ()> {
     let lwork = 1 + 6 * nbf + 2 * n2;
     let mut dag = Dag::new();
     let _info = dag.device_worker_row::<i32>(0, "solver info", 1);
-    let s = dag.add("overlap", 0, Declares::<true>(vec![Out("S", n2)]))[0];
-    let h = dag.add("core", 0, Declares::<true>(vec![Out("H", n2)]))[0];
-    let x = dag.add(
+    let s = dag.add_gpu("overlap", 0, Declares(vec![Out("S", n2)]))[0];
+    let h = dag.add_gpu("core", 0, Declares(vec![Out("H", n2)]))[0];
+    let x = dag.add_gpu(
         "orthogonalizer",
         0,
-        Declares::<true>(vec![
+        Declares(vec![
             Read(s),
             Out("X", n2),
             Scratch("syevd work (X)", lwork),
         ]),
     )[0];
-    let d = dag.add(
-        "guess",
-        0,
-        Declares::<true>(vec![Read(h), Read(x), Out("D", n2)]),
-    )[0];
-    let f = dag.add(
+    let d = dag.add_gpu("guess", 0, Declares(vec![Read(h), Read(x), Out("D", n2)]))[0];
+    let f = dag.add_gpu(
         "fock",
         0,
-        Declares::<true>(vec![Read(h), Read(d), Scratch("J", n2), Out("F", n2)]),
+        Declares(vec![Read(h), Read(d), Scratch("J", n2), Out("F", n2)]),
     )[1];
-    let c = dag.add(
+    let c = dag.add_gpu(
         "diagonalize",
         0,
-        Declares::<true>(vec![
+        Declares(vec![
             Read(f),
             Read(x),
             Out("C", n2),
             Scratch("syevd work (F)", lwork),
         ]),
     )[0];
-    dag.add(
-        "density",
-        0,
-        Declares::<true>(vec![Read(c), Out("D next", n2)]),
-    );
+    dag.add_gpu("density", 0, Declares(vec![Read(c), Out("D next", n2)]));
     dag
 }
 
@@ -146,40 +131,32 @@ fn scf_loop_dag(nbf: usize) -> Dag<'static, Heap, ()> {
     let lwork = 1 + 6 * nbf + 2 * n2;
     let mut dag = Dag::new();
     let _info = dag.device_worker_row::<i32>(0, "solver info", 1);
-    let s = dag.add("overlap", 0, Declares::<true>(vec![Out("S", n2)]))[0];
-    let h = dag.add("core", 0, Declares::<true>(vec![Out("H", n2)]))[0];
-    let x = dag.add(
-        "orthogonalizer",
-        0,
-        Declares::<true>(vec![Read(s), Out("X", n2)]),
-    )[0];
-    let d = dag.add(
-        "guess",
-        0,
-        Declares::<true>(vec![Read(h), Read(x), Out("D", n2)]),
-    )[0];
+    let s = dag.add_gpu("overlap", 0, Declares(vec![Out("S", n2)]))[0];
+    let h = dag.add_gpu("core", 0, Declares(vec![Out("H", n2)]))[0];
+    let x = dag.add_gpu("orthogonalizer", 0, Declares(vec![Read(s), Out("X", n2)]))[0];
+    let d = dag.add_gpu("guess", 0, Declares(vec![Read(h), Read(x), Out("D", n2)]))[0];
     let body = dag.len();
-    let f = dag.add(
+    let f = dag.add_gpu(
         "fock",
         0,
-        Declares::<true>(vec![Read(h), Read(d), Scratch("J", n2), Out("F", n2)]),
+        Declares(vec![Read(h), Read(d), Scratch("J", n2), Out("F", n2)]),
     )[1];
-    dag.add(
+    dag.add_gpu(
         "residual",
         0,
-        Declares::<true>(vec![Read(f), Read(d), Read(s), Read(x), Out("e", n2)]),
+        Declares(vec![Read(f), Read(d), Read(s), Read(x), Out("e", n2)]),
     );
-    let c = dag.add(
+    let c = dag.add_gpu(
         "diagonalize",
         0,
-        Declares::<true>(vec![
+        Declares(vec![
             Read(f),
             Read(x),
             Out("C", n2),
             Scratch("syevd work (F)", lwork),
         ]),
     )[0];
-    dag.add("density", 0, Declares::<true>(vec![Read(c), Write(d)]));
+    dag.add_gpu("density", 0, Declares(vec![Read(c), Write(d)]));
     dag.add_loop("converged", 0, body, 50, Stops);
     dag
 }
@@ -217,24 +194,17 @@ struct IterateRows {
     prev: RowId<Heap, f64>,
 }
 
-impl Task<Heap, ()> for Iterate {
+impl CpuTask<Heap> for Iterate {
     type Rows = IterateRows;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) -> IterateRows {
+    fn layout(&self, h: &mut Layout<'_, Heap>) -> IterateRows {
         IterateRows {
             x: h.output("x", 1),
             prev: h.output("prev", 1),
         }
     }
 
-    fn run(
-        &self,
-        r: &IterateRows,
-        _: &Bufs<'_, Device>,
-        h: &Bufs<'_, Heap>,
-        _: Lane<'_, ()>,
-    ) -> Status {
+    fn run(&self, r: &IterateRows, h: &Bufs<'_, Heap>) -> Status {
         h.take_mut(r.x)[0] = 0.0;
         h.take_mut(r.prev)[0] = 0.0;
         Ok(())
@@ -244,9 +214,8 @@ impl Task<Heap, ()> for Iterate {
 /// `next = x / 2 + 1`, on the stream.
 struct Step(RowId<Heap, f64>);
 
-impl Task<Heap, ()> for Step {
+impl GpuTask<Heap, ()> for Step {
     type Rows = RowId<Heap, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) -> Self::Rows {
         h.read(self.0);
@@ -257,9 +226,10 @@ impl Task<Heap, ()> for Step {
         &self,
         &next: &Self::Rows,
         _: &Bufs<'_, Device>,
-        h: &Bufs<'_, Heap>,
-        _: Lane<'_, ()>,
+        h: &CopyOnly<'_, Heap>,
+        _: &(),
     ) -> Status {
+        let h = h.bufs();
         h.take_mut(next)[0] = h.get(self.0)[0] / 2.0 + 1.0;
         Ok(())
     }
@@ -271,16 +241,15 @@ struct Carry {
     x: RowId<Heap, f64>,
 }
 
-impl Task<Heap, ()> for Carry {
+impl CpuTask<Heap> for Carry {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) {
+    fn layout(&self, h: &mut Layout<'_, Heap>) {
         h.read(self.next);
         h.write(self.x);
     }
 
-    fn run(&self, _: &(), _: &Bufs<'_, Device>, h: &Bufs<'_, Heap>, _: Lane<'_, ()>) -> Status {
+    fn run(&self, _: &(), h: &Bufs<'_, Heap>) -> Status {
         h.take_mut(self.x)[0] = h.get(self.next)[0];
         Ok(())
     }
@@ -316,15 +285,14 @@ impl Decision<Heap> for Converged {
 /// Reads `x` after the loop.
 struct Report(RowId<Heap, f64>, Arc<std::sync::Mutex<f64>>);
 
-impl Task<Heap, ()> for Report {
+impl CpuTask<Heap> for Report {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) {
+    fn layout(&self, h: &mut Layout<'_, Heap>) {
         h.read(self.0);
     }
 
-    fn run(&self, _: &(), _: &Bufs<'_, Device>, h: &Bufs<'_, Heap>, _: Lane<'_, ()>) -> Status {
+    fn run(&self, _: &(), h: &Bufs<'_, Heap>) -> Status {
         *self.1.lock().unwrap() = h.get(self.0)[0];
         Ok(())
     }
@@ -339,12 +307,12 @@ impl Task<Heap, ()> for Report {
 fn a_loop_carries_its_rows_to_the_fixed_point() {
     let out = Arc::new(std::sync::Mutex::new(0.0));
     let mut dag = Dag::<Heap, ()>::new();
-    let IterateRows { x, prev } = dag.add("init", 0, Iterate);
+    let IterateRows { x, prev } = dag.add_cpu("init", 0, Iterate);
     let body = dag.len();
-    let next = dag.add("step", 0, Step(x));
-    dag.add("carry", 0, Carry { next, x });
+    let next = dag.add_gpu("step", 0, Step(x));
+    dag.add_cpu("carry", 0, Carry { next, x });
     dag.add_loop("converged", 0, body, 100, Converged { next, prev });
-    dag.add("report", 0, Report(x, Arc::clone(&out)));
+    dag.add_cpu("report", 0, Report(x, Arc::clone(&out)));
     let planned = dag.plan();
     assert_eq!(
         planned.predecessors(2),
@@ -386,7 +354,7 @@ fn a_loop_carries_its_rows_to_the_fixed_point() {
 fn a_body_holds_no_loop() {
     let mut dag = Dag::<Heap, ()>::new();
     let body = dag.len();
-    dag.add("inner", 0, Declares::<false>(vec![]));
+    dag.add_gpu("inner", 0, Declares(vec![]));
     dag.add_loop("inner loop", 0, body, 2, Stops);
     dag.add_loop("outer loop", 0, body, 2, Stops);
 }
@@ -410,11 +378,9 @@ struct NodeRows {
     scratch: RowId<Heap, u64>,
 }
 
-impl<const GPU: bool> Task<Heap, ()> for Node<GPU> {
-    type Rows = NodeRows;
-    const GPU: bool = GPU;
-
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) -> NodeRows {
+impl<const GPU: bool> Node<GPU> {
+    /// Either sort's layout.
+    fn declare(&self, h: &mut Layout<'_, Heap>) -> NodeRows {
         for &(row, _) in &self.inputs {
             h.read(row);
         }
@@ -424,17 +390,8 @@ impl<const GPU: bool> Task<Heap, ()> for Node<GPU> {
         }
     }
 
-    fn dims(&self) -> Vec<(&'static str, usize)> {
-        vec![("len", self.len), ("scratch", self.scratch)]
-    }
-
-    fn run(
-        &self,
-        rows: &NodeRows,
-        _: &Bufs<'_, Device>,
-        h: &Bufs<'_, Heap>,
-        _: Lane<'_, ()>,
-    ) -> Status {
+    /// Either sort's run.
+    fn compute(&self, rows: &NodeRows, h: &Bufs<'_, Heap>) -> Status {
         for &(row, from) in &self.inputs {
             if h.get(row) != self.expect[from].as_slice() {
                 return Err(Error::numerical(format!(
@@ -447,6 +404,38 @@ impl<const GPU: bool> Task<Heap, ()> for Node<GPU> {
         h.take_mut(rows.out).copy_from_slice(&self.expect[self.pos]);
         self.ran.fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+}
+
+impl GpuTask<Heap, ()> for Node<true> {
+    type Rows = NodeRows;
+
+    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) -> NodeRows {
+        self.declare(h)
+    }
+
+    fn dims(&self) -> Vec<(&'static str, usize)> {
+        vec![("len", self.len), ("scratch", self.scratch)]
+    }
+
+    fn run(&self, rows: &NodeRows, _: &Bufs<'_, Device>, h: &CopyOnly<'_, Heap>, _: &()) -> Status {
+        self.compute(rows, h.bufs())
+    }
+}
+
+impl CpuTask<Heap> for Node<false> {
+    type Rows = NodeRows;
+
+    fn layout(&self, h: &mut Layout<'_, Heap>) -> NodeRows {
+        self.declare(h)
+    }
+
+    fn dims(&self) -> Vec<(&'static str, usize)> {
+        vec![("len", self.len), ("scratch", self.scratch)]
+    }
+
+    fn run(&self, rows: &NodeRows, h: &Bufs<'_, Heap>) -> Status {
+        self.compute(rows, h)
     }
 }
 
@@ -498,9 +487,9 @@ impl Spec {
                 };
             }
             let rows = if *gpu {
-                dag.add(name, *worker, node!(true))
+                dag.add_gpu(name, *worker, node!(true))
             } else {
-                dag.add(name, *worker, node!(false))
+                dag.add_cpu(name, *worker, node!(false))
             };
             outs.push(rows.out);
         }
@@ -623,21 +612,14 @@ fn carried_value(pos: usize, old: &[u64], inputs: &[&[u64]]) -> Vec<u64> {
 /// The parent's rows of a random loop, made before it.
 struct Parent(Vec<usize>);
 
-impl Task<Heap, ()> for Parent {
+impl CpuTask<Heap> for Parent {
     type Rows = Vec<RowId<Heap, u64>>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) -> Self::Rows {
+    fn layout(&self, h: &mut Layout<'_, Heap>) -> Self::Rows {
         self.0.iter().map(|&len| h.output("parent", len)).collect()
     }
 
-    fn run(
-        &self,
-        rows: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        h: &Bufs<'_, Heap>,
-        _: Lane<'_, ()>,
-    ) -> Status {
+    fn run(&self, rows: &Self::Rows, h: &Bufs<'_, Heap>) -> Status {
         for (k, &row) in rows.iter().enumerate() {
             h.take_mut(row).copy_from_slice(&parent_value(k, self.0[k]));
         }
@@ -656,11 +638,9 @@ struct BodyNode<const GPU: bool> {
     scratch: usize,
 }
 
-impl<const GPU: bool> Task<Heap, ()> for BodyNode<GPU> {
-    type Rows = NodeRows;
-    const GPU: bool = GPU;
-
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) -> NodeRows {
+impl<const GPU: bool> BodyNode<GPU> {
+    /// Either sort's layout.
+    fn declare(&self, h: &mut Layout<'_, Heap>) -> NodeRows {
         for &row in &self.reads {
             h.read(row);
         }
@@ -673,13 +653,8 @@ impl<const GPU: bool> Task<Heap, ()> for BodyNode<GPU> {
         }
     }
 
-    fn run(
-        &self,
-        rows: &NodeRows,
-        _: &Bufs<'_, Device>,
-        h: &Bufs<'_, Heap>,
-        _: Lane<'_, ()>,
-    ) -> Status {
+    /// Either sort's run.
+    fn compute(&self, rows: &NodeRows, h: &Bufs<'_, Heap>) -> Status {
         let ins: Vec<&[u64]> = self.reads.iter().map(|&r| h.get(r)).collect();
         if let Some(row) = self.carries {
             let carried = h.take_mut(row);
@@ -692,6 +667,30 @@ impl<const GPU: bool> Task<Heap, ()> for BodyNode<GPU> {
             *x = mix(self.pos, i, &ins);
         }
         Ok(())
+    }
+}
+
+impl GpuTask<Heap, ()> for BodyNode<true> {
+    type Rows = NodeRows;
+
+    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) -> NodeRows {
+        self.declare(h)
+    }
+
+    fn run(&self, rows: &NodeRows, _: &Bufs<'_, Device>, h: &CopyOnly<'_, Heap>, _: &()) -> Status {
+        self.compute(rows, h.bufs())
+    }
+}
+
+impl CpuTask<Heap> for BodyNode<false> {
+    type Rows = NodeRows;
+
+    fn layout(&self, h: &mut Layout<'_, Heap>) -> NodeRows {
+        self.declare(h)
+    }
+
+    fn run(&self, rows: &NodeRows, h: &Bufs<'_, Heap>) -> Status {
+        self.compute(rows, h)
     }
 }
 
@@ -734,17 +733,16 @@ type Collected = Arc<std::sync::Mutex<Vec<(usize, Vec<u64>)>>>;
 /// index.
 struct Collect(Vec<(usize, RowId<Heap, u64>)>, Collected);
 
-impl Task<Heap, ()> for Collect {
+impl CpuTask<Heap> for Collect {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) {
+    fn layout(&self, h: &mut Layout<'_, Heap>) {
         for &(_, row) in &self.0 {
             h.read(row);
         }
     }
 
-    fn run(&self, _: &(), _: &Bufs<'_, Device>, h: &Bufs<'_, Heap>, _: Lane<'_, ()>) -> Status {
+    fn run(&self, _: &(), h: &Bufs<'_, Heap>) -> Status {
         *self.1.lock().unwrap() = self
             .0
             .iter()
@@ -824,7 +822,7 @@ impl LoopSpec {
     /// The DAG, and where the node after the loop leaves what it read.
     fn dag(&self) -> (Dag<'static, Heap, ()>, Collected) {
         let mut dag = Dag::new();
-        let mut rows = dag.add("parent", 0, Parent(self.parent.clone()));
+        let mut rows = dag.add_cpu("parent", 0, Parent(self.parent.clone()));
         let body = dag.len();
         for (j, b) in self.body.iter().enumerate() {
             let pos = dag.len();
@@ -843,9 +841,9 @@ impl LoopSpec {
             }
             let name = format!("b{j}");
             let made = if b.gpu {
-                dag.add(name, 0, node!(true))
+                dag.add_gpu(name, 0, node!(true))
             } else {
-                dag.add(name, 0, node!(false))
+                dag.add_cpu(name, 0, node!(false))
             };
             rows.push(made.out);
         }
@@ -857,7 +855,7 @@ impl LoopSpec {
         dag.add_loop("count", 0, body, self.max_iterations, decision);
         let out = Arc::new(std::sync::Mutex::new(Vec::new()));
         let collected = self.collected().into_iter().map(|k| (k, rows[k])).collect();
-        dag.add("collect", 0, Collect(collected, Arc::clone(&out)));
+        dag.add_cpu("collect", 0, Collect(collected, Arc::clone(&out)));
         (dag, out)
     }
 }
@@ -963,21 +961,14 @@ proptest! {
 /// Writes nothing, and fails.
 struct Fails;
 
-impl Task<Heap, ()> for Fails {
+impl CpuTask<Heap> for Fails {
     type Rows = RowId<Heap, u64>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) -> Self::Rows {
+    fn layout(&self, h: &mut Layout<'_, Heap>) -> Self::Rows {
         h.output("never", 1)
     }
 
-    fn run(
-        &self,
-        _: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        _: &Bufs<'_, Heap>,
-        _: Lane<'_, ()>,
-    ) -> Status {
+    fn run(&self, _: &Self::Rows, _: &Bufs<'_, Heap>) -> Status {
         Err(Error::numerical("diverged"))
     }
 }
@@ -988,8 +979,8 @@ impl Task<Heap, ()> for Fails {
 fn a_failure_skips_its_readers() {
     let ran = Arc::new(AtomicUsize::new(0));
     let mut dag = Dag::new();
-    let never = dag.add("fails", 0, Fails);
-    dag.add(
+    let never = dag.add_cpu("fails", 0, Fails);
+    dag.add_gpu(
         "reader",
         0,
         Node::<true> {
@@ -1021,13 +1012,12 @@ fn a_failure_skips_its_readers() {
 /// Reaches for a row it did not declare.
 struct Sneaky(RowId<Heap, u64>);
 
-impl Task<Heap, ()> for Sneaky {
+impl CpuTask<Heap> for Sneaky {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, _: &mut Layout<'_, Heap>) {}
+    fn layout(&self, _: &mut Layout<'_, Heap>) {}
 
-    fn run(&self, _: &(), _: &Bufs<'_, Device>, h: &Bufs<'_, Heap>, _: Lane<'_, ()>) -> Status {
+    fn run(&self, _: &(), h: &Bufs<'_, Heap>) -> Status {
         h.get(self.0);
         Ok(())
     }
@@ -1040,28 +1030,23 @@ impl Task<Heap, ()> for Sneaky {
 fn a_read_of_another_workers_row_is_refused() {
     let m = panic_message(|| {
         let mut dag = Dag::<Heap, ()>::new();
-        let s = dag.add("s", 0, Declares::<true>(vec![Decl::Out("S", 1)]))[0];
-        dag.add("x", 1, Declares::<true>(vec![Decl::Read(s)]));
+        let s = dag.add_gpu("s", 0, Declares(vec![Decl::Out("S", 1)]))[0];
+        dag.add_gpu("x", 1, Declares(vec![Decl::Read(s)]));
     });
     assert!(m.contains("a row of this table"), "{m}");
 }
 
-/// What the planner refuses in every build: a CPU task with a device row,
-/// at `add`; and a row a task did not declare, when it asks for it.
+/// What the planner refuses in every build: a row a task did not declare,
+/// when it asks for it. (A CPU task with a device row does not build:
+/// [`CpuTask`]'s `compile_fail` example.)
 #[test]
 fn refusals() {
-    let m = panic_message(|| {
-        let mut dag = Dag::<Heap, ()>::new();
-        dag.add("cpu", 0, Declares::<false>(vec![Decl::Out("D", 1)]));
-    });
-    assert!(m.contains("cpu: a CPU task holds no device row"), "{m}");
-
     let ran = Arc::new(AtomicUsize::new(0));
     let spec = Spec {
         nodes: vec![(0, false, vec![], 4, 4)],
     };
     let (mut dag, outs) = spec.dag(&ran);
-    dag.add("sneaky", 0, Sneaky(outs[0]));
+    dag.add_cpu("sneaky", 0, Sneaky(outs[0]));
     let mut instance = dag.plan().instantiate(&[0]);
     let m = panic_message(|| {
         let _ = instance.run(&mut HostOnly::new(0), 1);
@@ -1120,14 +1105,14 @@ fn two_workers_are_independent() {
 fn a_blas_workspace_is_a_worker_row_admission_counts() {
     use Decl::*;
     let n = 24 * 24;
-    let task = || Declares::<true>(vec![Out("S", n)]);
+    let task = || Declares(vec![Out("S", n)]);
     let mut bare = Dag::<Heap, ()>::new();
-    bare.add("S", 0, task());
+    bare.add_gpu("S", 0, task());
     let bare = bare.plan();
 
     let mut dag = Dag::<Heap, ()>::new();
     dag.blas_workspace(0);
-    dag.add("S", 0, task());
+    dag.add_gpu("S", 0, task());
     dag.blas_workspace(0);
     dag.blas_workspace(1);
     let planned = dag.plan();

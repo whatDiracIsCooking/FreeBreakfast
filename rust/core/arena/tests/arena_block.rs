@@ -10,7 +10,7 @@ use std::process::Command;
 use std::sync::Mutex;
 
 use fb_core_arena::{
-    Block, Device, Pinned, TableBuilder, allocations, memcpy_d2d, memcpy_d2p, memcpy_h2p,
+    Block, CopyOnly, Device, Pinned, TableBuilder, allocations, memcpy_d2d, memcpy_d2p, memcpy_h2p,
     memcpy_p2d, memcpy_p2h,
 };
 use fb_core_wwr::common::ScopedDeviceIndex;
@@ -147,7 +147,7 @@ fn blocks_are_filled() {
     let host = Block::new(0, h.build());
     memcpy_h2p(&host.partition(0), hr, &vec![0; n]);
     let stream = Stream::new(0);
-    memcpy_d2p(&host.partition(0), hr, v.get(dr), &stream).unwrap();
+    memcpy_d2p(&CopyOnly::from(host.partition(0)), hr, v.get(dr), &stream).unwrap();
     ok(stream.sync());
     let got = memcpy_p2h(&host.partition(0), hr);
     assert!(got.iter().all(|&x| x == u64::MAX));
@@ -230,9 +230,9 @@ fn copies_round_trip_through_every_kind() {
 
     memcpy_h2p(&pinned.partition(0), input, &data);
     {
-        let (h, dv) = (pinned.partition(1), device.partition(1));
-        let (a, b) = (dv.take_mut(first), dv.take_mut(second));
-        memcpy_p2d(&a, &h, input, &stream).unwrap();
+        let (h, dv) = (CopyOnly::from(pinned.partition(1)), device.partition(1));
+        let (mut a, b) = (dv.take_mut(first), dv.take_mut(second));
+        memcpy_p2d(&mut a, &h, input, &stream).unwrap();
         memcpy_d2d(&b, &a, &stream).unwrap();
         memcpy_d2p(&h, output, &b, &stream).unwrap();
         ok(stream.sync());

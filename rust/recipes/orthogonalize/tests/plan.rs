@@ -7,10 +7,10 @@
 //! where a run asks the device's handle for it. It does load
 //! `libfb_recipes_kernels.so`, whose load check planning runs.
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_recipes_orthogonalize::{ORTHOGONALIZE_EIGENVALUE_FLOOR, add_orthogonalize};
 use fb_test_support::golden;
 
@@ -22,9 +22,8 @@ const LWORK: usize = 1234;
 /// GPU: the symmetric matrix, declared and never computed.
 struct Matrix;
 
-impl Task for Matrix {
+impl GpuTask for Matrix {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.output("S", N * N)
@@ -34,8 +33,8 @@ impl Task for Matrix {
         &self,
         _: &Self::Rows,
         _: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        _: &DeviceStream,
     ) -> Status {
         unreachable!("the plan is never run")
     }
@@ -44,7 +43,7 @@ impl Task for Matrix {
 #[test]
 fn plan_golden() {
     let mut dag = Dag::new();
-    let s = dag.add("S", 0, Matrix);
+    let s = dag.add_gpu("S", 0, Matrix);
     let x = add_orthogonalize(
         &mut dag,
         0,
@@ -80,6 +79,6 @@ fn plan_golden() {
 #[should_panic(expected = "a matrix of at least one row")]
 fn an_empty_matrix_is_refused() {
     let mut dag = Dag::new();
-    let s = dag.add("S", 0, Matrix);
+    let s = dag.add_gpu("S", 0, Matrix);
     let _ = add_orthogonalize(&mut dag, 0, "X", 0, 0, s, ORTHOGONALIZE_EIGENVALUE_FLOOR);
 }

@@ -5,10 +5,10 @@
 
 use std::path::PathBuf;
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2h};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2h};
 use fb_core_error_handling::{Error, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_io_npy::NpyArray;
 use serde_json::json;
 
@@ -28,7 +28,7 @@ use serde_json::json;
 /// written.
 ///
 /// # Panics
-/// If `m` is a row of another worker's table ([`Dag::add`]).
+/// If `m` is a row of another worker's table ([`Dag::add_gpu`]).
 pub fn add_write_npy(
     dag: &mut Dag<'_>,
     worker: usize,
@@ -39,7 +39,7 @@ pub fn add_write_npy(
     let file = path
         .file_name()
         .map_or_else(|| path.display().to_string(), |f| f.display().to_string());
-    let pinned = dag.add(
+    let pinned = dag.add_gpu(
         format!("download {file}"),
         worker,
         Download {
@@ -63,7 +63,7 @@ pub fn add_write_npy(
 /// naming a file that cannot be written.
 ///
 /// # Panics
-/// If `m` is a row of another worker's table ([`Dag::add`]).
+/// If `m` is a row of another worker's table ([`Dag::add_gpu`]).
 pub fn add_write_host_npy(
     dag: &mut Dag<'_>,
     worker: usize,
@@ -74,7 +74,7 @@ pub fn add_write_host_npy(
     let file = path
         .file_name()
         .map_or_else(|| path.display().to_string(), |f| f.display().to_string());
-    dag.add(
+    dag.add_cpu(
         format!("write {file}"),
         worker,
         Write { pinned: m, n, path },
@@ -91,7 +91,7 @@ pub fn add_write_host_npy(
 /// runs.
 ///
 /// # Panics
-/// If a row is of another worker's table ([`Dag::add`]).
+/// If a row is of another worker's table ([`Dag::add_gpu`]).
 pub(crate) fn add_write_scf_json(
     dag: &mut Dag<'_>,
     worker: usize,
@@ -100,7 +100,7 @@ pub(crate) fn add_write_scf_json(
     n: usize,
     path: PathBuf,
 ) {
-    let epsilon = dag.add(
+    let epsilon = dag.add_gpu(
         "download scf.json",
         worker,
         Download {
@@ -110,7 +110,7 @@ pub(crate) fn add_write_scf_json(
             len: n,
         },
     );
-    dag.add(
+    dag.add_cpu(
         "write scf.json",
         worker,
         WriteScf {
@@ -131,9 +131,8 @@ struct Download {
     len: usize,
 }
 
-impl Task for Download {
+impl GpuTask for Download {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.m);
@@ -148,12 +147,9 @@ impl Task for Download {
         &self,
         pinned: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         // The write that reads the pinned row runs after the executor
         // waited for this task's event.
         memcpy_d2p(host, *pinned, device.get(self.m), stream)
@@ -167,11 +163,10 @@ struct Write {
     path: PathBuf,
 }
 
-impl Task for Write {
+impl CpuTask for Write {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) {
         host.read(self.pinned);
     }
 
@@ -179,13 +174,7 @@ impl Task for Write {
         vec![("n", self.n)]
     }
 
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
         fb_io_npy::write_npy(
             &self.path,
             &NpyArray {
@@ -204,11 +193,10 @@ struct WriteScf {
     path: PathBuf,
 }
 
-impl Task for WriteScf {
+impl CpuTask for WriteScf {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) {
         host.read(self.scalars);
         host.read(self.epsilon);
     }
@@ -217,13 +205,7 @@ impl Task for WriteScf {
         vec![("n", self.n)]
     }
 
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
         let [energy, residual, builds] = host.get(self.scalars)[..] else {
             unreachable!("add_scf's scalars are [E, |e|, builds]")
         };

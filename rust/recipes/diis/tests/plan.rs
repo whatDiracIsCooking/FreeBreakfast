@@ -11,10 +11,10 @@
 
 use std::ops::ControlFlow;
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::{Result, Status};
-use fb_core_planner::{Dag, Decision, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, Decision, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_recipes_diis::add_diis;
 use fb_test_support::golden;
 
@@ -25,9 +25,8 @@ const CAP: usize = 8;
 /// GPU: an iterate and its residual, declared and never computed.
 struct Pair;
 
-impl Task for Pair {
+impl GpuTask for Pair {
     type Rows = (RowId<Device, f64>, RowId<Device, f64>);
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         (device.output("F", LEN), device.output("e", LEN))
@@ -37,8 +36,8 @@ impl Task for Pair {
         &self,
         _: &Self::Rows,
         _: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        _: &DeviceStream,
     ) -> Status {
         unreachable!("the plan is never run")
     }
@@ -64,7 +63,7 @@ fn plan_golden() {
     let mut dag = Dag::new();
     let diis = add_diis(&mut dag, 0, "F*", LEN, CAP).unwrap();
     let body = dag.len();
-    let (f, e) = dag.add("pair", 0, Pair);
+    let (f, e) = dag.add_gpu("pair", 0, Pair);
     let (out, singular) = diis.add_push(&mut dag, f, e);
     dag.add_loop("decide", 0, body, 50, Reads(singular));
     let planned = dag.plan();

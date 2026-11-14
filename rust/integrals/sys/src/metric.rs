@@ -18,10 +18,10 @@
 use std::sync::Arc;
 
 use contracts::debug_requires;
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::handle::DeviceHandleStream;
 
 use crate::{
@@ -248,14 +248,15 @@ impl Staging {
 #[debug_requires(aux.n_shells() > 0, "an aux basis of at least one shell")]
 pub fn add_metric_tasks(dag: &mut Dag<'_>, worker: usize, aux: &AuxTable) -> RowId<Device, f64> {
     let staging = Arc::new(Staging::new(aux));
-    let staged = dag.add(
+    let staged = dag.add_cpu(
         "metric tables",
         worker,
         Stage {
             staging: Arc::clone(&staging),
         },
     );
-    dag.add("metric", worker, Metric { staging, staged }).metric
+    dag.add_gpu("metric", worker, Metric { staging, staged })
+        .metric
 }
 
 /// The records and the pairs, one row each, of one kind: pinned as the
@@ -278,24 +279,17 @@ struct Stage {
     staging: Arc<Staging>,
 }
 
-impl Task for Stage {
+impl CpuTask for Stage {
     type Rows = TableRows<Pinned>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         TableRows {
             records: host.output("aux records", self.staging.records.len()),
             pairs: host.output("aux pairs", self.staging.pairs.len()),
         }
     }
 
-    fn run(
-        &self,
-        rows: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, rows: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
         memcpy_h2p(host, rows.records, &self.staging.records);
         memcpy_h2p(host, rows.pairs, &self.staging.pairs);
         Ok(())
@@ -315,9 +309,8 @@ struct MetricRows {
     metric: RowId<Device, f64>,
 }
 
-impl Task for Metric {
+impl GpuTask for Metric {
     type Rows = MetricRows;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> MetricRows {
         host.read(self.staged.records);
@@ -336,17 +329,14 @@ impl Task for Metric {
         &self,
         rows: &MetricRows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let s = &self.staging;
-        let records = device.take_mut(rows.tables.records);
-        memcpy_p2d(&records, host, self.staged.records, worker)?;
-        let pairs = device.take_mut(rows.tables.pairs);
-        memcpy_p2d(&pairs, host, self.staged.pairs, worker)?;
+        let mut records = device.take_mut(rows.tables.records);
+        memcpy_p2d(&mut records, host, self.staged.records, worker)?;
+        let mut pairs = device.take_mut(rows.tables.pairs);
+        memcpy_p2d(&mut pairs, host, self.staged.pairs, worker)?;
         let metric = device.take_mut(rows.metric);
         // In range, as the casts below: n_cart² fits an i32 (AuxTable::new),
         // and so do the records (AuxTable::push_shell) and the pairs, at

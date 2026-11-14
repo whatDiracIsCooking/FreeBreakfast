@@ -3,10 +3,10 @@
 //! enqueued, since the kernel writes wherever the records' device-held AO
 //! offsets say.
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_integrals_mmd::add_records;
 use fb_integrals_sys::{ClassRows, Fields, overlap_class};
 
@@ -16,9 +16,8 @@ struct Short {
     len: usize,
 }
 
-impl Task for Short {
+impl GpuTask for Short {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         for c in &self.classes {
@@ -31,12 +30,9 @@ impl Task for Short {
         &self,
         s: &Self::Rows,
         device: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let mut s = device.take_mut(*s);
         for c in &self.classes {
             overlap_class(stream, device, c, &mut s)?;
@@ -67,7 +63,7 @@ fn a_matrix_short_of_n_cart_squared_panics() {
     let mut dag = Dag::new();
     let classes = add_records(&mut dag, 0, &basis).unwrap();
     assert!(classes.iter().all(|c| c.n_cart() == 7));
-    dag.add("short", 0, Short { classes, len: 48 });
+    dag.add_gpu("short", 0, Short { classes, len: 48 });
     let planned = dag.plan();
     let mut instance = planned.instantiate(&[0]);
     let mut backend = instance.backend();
