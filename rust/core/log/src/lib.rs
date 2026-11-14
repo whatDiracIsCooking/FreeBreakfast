@@ -57,14 +57,17 @@
 //!
 //! `log` has no critical level; it stops at error. A critical line goes
 //! around the facade, straight to the sinks, labelled `critical`. It is
-//! still filtered by [`set_level`].
+//! still filtered by [`set_level`]. The panic hook's line is the one exception
+//! to losing it: filtered out, it goes to stderr.
 //!
 //! **A panic is logged at critical** (`docs/diagnostics.md`, "Panics and
 //! profiles"). Installing the logger installs a panic hook in place of std's:
 //! it writes the panic's message, located at the panic, as a critical line,
 //! so it reaches the file sink and is flushed before a release build's abort
 //! (which runs no exit handlers), then prints the backtrace to stderr (in a
-//! test, which unwinds, std's hook follows it and prints that). Every
+//! test, which unwinds, std's hook follows it and prints that). At level
+//! off, where the critical line is dropped, the hook writes the panic's
+//! message to stderr instead, so an abort never leaves a bare backtrace. Every
 //! binary calls [`init`] first thing; a test binary gets the same hook from
 //! its first call into this module. The C++ tree has no panic, and its
 //! nearest thing, the abort tier, is a `critical` line and then
@@ -362,21 +365,29 @@ fn installed() -> &'static Logger {
 /// (`docs/diagnostics.md`, "Panics and profiles"). Under unwinding (a test)
 /// std's hook follows it, and prints the backtrace when `RUST_BACKTRACE`
 /// asks.
+///
+/// A panic's message is never lost: when the critical line would not be
+/// written (the level is off, or this thread holds the sinks and locking
+/// them again would deadlock), the same message goes to stderr instead, as
+/// `thread '<name>' panicked at <file>:<line>:<col>: <message>`.
 fn panic_hook(info: &PanicHookInfo<'_>) {
     let message = info.payload_as_str().unwrap_or("Box<dyn Any>");
     let thread = std::thread::current();
     let name = thread.name().unwrap_or("<unnamed>");
-    let args = format_args!("thread '{name}' panicked: {message}");
-    if WRITING.try_with(Cell::get).unwrap_or(true) {
-        // This thread holds the sinks: locking them again would deadlock.
-        let at = info
-            .location()
-            .map(|l| format!(" at {l}"))
-            .unwrap_or_default();
-        eprintln!("[critical]{at} {args}");
+    let location = info.location().unwrap_or(Location::caller());
+    let holds_sinks = WRITING.try_with(Cell::get).unwrap_or(true);
+    // The hook is installed only with the logger, so `LOGGER` is set.
+    let emitted = LOGGER
+        .get()
+        .is_some_and(|lg| lg.enabled_at(LogLevel::Critical));
+    if !holds_sinks && emitted {
+        log_at(
+            LogLevel::Critical,
+            location,
+            format_args!("thread '{name}' panicked: {message}"),
+        );
     } else {
-        let location = info.location().unwrap_or(Location::caller());
-        log_at(LogLevel::Critical, location, args);
+        eprintln!("thread '{name}' panicked at {location}: {message}");
     }
     if cfg!(panic = "abort") {
         eprintln!("stack backtrace:\n{}", Backtrace::force_capture());
