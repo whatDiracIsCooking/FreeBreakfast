@@ -73,12 +73,13 @@ half costs nothing new. It opens a host scope around every node's callable,
 which for a CPU node is its compute and for a GPU node its enqueueing, and
 one around the whole run. Every pair is read after the run, when each stream
 worker has synced its stream on the way out: that is a sync point after
-every closing event, if not always the first. The host scopes around the
-syncs inside a run (a CPU node's wait on a GPU predecessor) are not timed
-yet, and neither is `scope!` inside a task. A failed run still returns the
-times of the tasks that ran; a scope that cannot be read fails a run that
-otherwise succeeded, and is dropped from one that already failed, since it
-would only echo that failure (below, "Sticky faults").
+every closing event, if not always the first. It also opens a host scope
+around every sync point: each CPU node's wait on each GPU predecessor, and
+each stream worker's sync as it exits. `scope!` inside a task is not here
+yet. A failed run still returns the times of the tasks that ran; a scope
+that cannot be read fails a run that otherwise succeeded, and is dropped
+from one that already failed, since it would only echo that failure
+(below, "Sticky faults").
 
 ### The timing record
 
@@ -102,11 +103,17 @@ together, comes from the task names, which are the plan's own.
 
 In memory, the record is what a run returns: `fb_core_thread_pool::Record`,
 from `thread_pool::run` and the planner's `Instance::run`. Today it holds
-the run's result, its wall time, and per task its name, its worker, its
-node's rank, its host time and its device time; the dimensions, the sync
-points, the arena size and the profile join it with the code that knows
-them, and writing it as `timing.json` waits for a binary that writes
-products.
+the run's result; the profile that built it (`debug` or `release`, from
+`cfg!(debug_assertions)`); its wall time; per task its node's rank, its
+name, its worker, its dimensions (a task's `Task::dims`, empty by default),
+its host time and its device time; every sync point, with the worker that
+waited, the node it waited for and the host time of the wait; and, from
+`Instance::run`, the plan's block sizes per worker and kind. `Record::to_json`
+is the `timing.json` text, and the type's rustdoc is its schema: times are
+integer nanoseconds, nodes their ranks, and an error keeps its kind,
+message and context but not its origin, a source location in the binary
+that wrote the file. Writing the file waits for a binary that writes
+products, and so do the tasks' dimensions: no task names its own yet.
 
 The record has three readers, and each is already written down elsewhere:
 

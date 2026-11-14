@@ -1,6 +1,9 @@
 //! A placed DAG: what [`run`](super::run) executes.
 
+use std::collections::BTreeMap;
+
 use fb_core_error_handling::Status;
+use serde::{Deserialize, Serialize};
 
 /// Where a node runs: the CPU pool, or one stream worker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -12,8 +15,10 @@ pub enum Placement {
 }
 
 /// A node in a [`Plan`], and its rank: nodes are numbered in the order they
-/// were added, which is a topological order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// were added, which is a topological order. In `timing.json` it is the
+/// rank, a bare integer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct NodeId(pub(super) usize);
 
 impl NodeId {
@@ -43,6 +48,7 @@ pub(super) struct Node<'a, S> {
     pub(super) name: String,
     pub(super) placement: Placement,
     pub(super) preds: Vec<usize>,
+    pub(super) dims: BTreeMap<String, usize>,
     pub(super) run: NodeFn<'a, S>,
 }
 
@@ -96,10 +102,20 @@ impl<'a, S> Plan<'a, S> {
             name: name.into(),
             placement,
             preds,
+            dims: BTreeMap::new(),
             run: Box::new(run),
         });
         self.succs.push(Vec::new());
         NodeId(id)
+    }
+
+    /// Name `node`'s dimensions, each by its name, for its entry in the
+    /// timing record ([`TaskTime::dims`](super::TaskTime::dims)): what the
+    /// nightly keys a task's times by beside its name. A name given twice
+    /// keeps its last value.
+    pub fn set_dims(&mut self, node: NodeId, dims: &[(&str, usize)]) {
+        let to = &mut self.nodes[node.0].dims;
+        to.extend(dims.iter().map(|&(name, n)| (name.to_string(), n)));
     }
 
     /// The number of nodes.

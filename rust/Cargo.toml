@@ -81,6 +81,8 @@ log = { version = "0.4.35", features = ["std"] }
 proptest = "1"
 # io/basis: the BSE JSON documents.
 serde_json = "1"
+# core::thread_pool: the timing record as timing.json.
+serde = { version = "1", features = ["derive"] }
 # runtime_api alone: a binary NEEDs libwwr_capi_runtime_api.so and nothing
 # else of wwr's.
 wwr-sys = { path = "../deps/WarpWraps/src/capi/wwr-sys", default-features = false, features = [

@@ -150,6 +150,10 @@ impl<const GPU: bool> Task<Heap, ()> for Node<GPU> {
         }
     }
 
+    fn dims(&self) -> Vec<(&'static str, usize)> {
+        vec![("len", self.len), ("scratch", self.scratch)]
+    }
+
     fn run(
         &self,
         rows: &NodeRows,
@@ -234,6 +238,8 @@ impl Spec {
 /// workers and a stream read and write their rows, a later output takes an
 /// earlier one's bytes, ordered only by the handoffs the plan derived, and
 /// the plan runs twice over the same blocks with every borrow returned.
+/// Each run's record carries every task's dimensions and the blocks'
+/// sizes, the plan's own.
 #[test]
 fn a_dag_through_the_executor() {
     const N: usize = 64;
@@ -258,9 +264,24 @@ fn a_dag_through_the_executor() {
     assert_eq!(planned.predecessors(3), &[0, 1, 2]);
     assert_eq!(planned.placement(1), Placement::Stream(0));
     assert_eq!(planned.placement(2), Placement::Cpu);
+    let sizes = [
+        planned.device_table(0).total(),
+        planned.host_table(0).total(),
+    ];
     let instance = planned.instantiate(&[0]);
     for _ in 0..2 {
-        instance.run(&HostOnly::new(1), 2).result.unwrap();
+        let record = instance.run(&HostOnly::new(1), 2);
+        record.result.unwrap();
+        let arena: Vec<_> = record
+            .arena
+            .iter()
+            .map(|a| (a.worker, a.kind.as_str(), a.bytes))
+            .collect();
+        assert_eq!(arena, [(0, "device", sizes[0]), (0, "heap", sizes[1])]);
+        for t in &record.tasks {
+            let dims: Vec<_> = t.dims.iter().map(|(k, &v)| (k.as_str(), v)).collect();
+            assert_eq!(dims, [("len", N), ("scratch", 0)], "{}", t.name);
+        }
     }
     assert_eq!(ran.load(Ordering::Relaxed), 10);
 }
