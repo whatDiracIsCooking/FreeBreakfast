@@ -23,6 +23,10 @@ const N: usize = 4096;
 static TURN: Mutex<()> = Mutex::new(());
 
 /// Device 0's free memory, with it made current.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a test measuring a plan's blocks on the card reads free memory; no width is sized from it"
+)]
 fn free_bytes() -> usize {
     let _device = ScopedDeviceIndex::new(0);
     let (mut free, mut total) = (0, 0);

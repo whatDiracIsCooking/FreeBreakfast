@@ -250,6 +250,8 @@ declare it.
 (`wwr_launch_kernel_ex_c`), so Rust could take a kernel's address and launch
 it. It does not, because the block and the dispatch belong with the kernel
 (below), and moving them to Rust would put the generated tables into the ABI.
+clippy's `disallowed_methods` holds it: `wwr_launch_kernel_ex_c` is listed
+in `clippy.toml`, and no site allows it.
 
 ## From bridge to C ABI
 
