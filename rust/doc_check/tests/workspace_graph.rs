@@ -9,7 +9,8 @@
 //! - a member is an umbrella: it re-exports a whole workspace crate, or
 //!   items of two or more of them, or its crate root holds nothing but
 //!   re-exports of them;
-//! - a crate that only logs ([`LOG_ONLY`]) reaches a handle crate
+//! - a crate that only logs ([`LOG_ONLY`]), or one that offers the logging
+//!   macros by re-exporting them ([`LOG_MACROS`]), reaches a handle crate
 //!   ([`HANDLES`]) through any edge;
 //! - a path rule in `devtools/test.py` (the files that lie in no crate but
 //!   belong to one) names a source that does not exist or a crate that is
@@ -36,6 +37,24 @@ const GLOBAL: &[&str] = &["fb-core-log", "fb-core-error-handling"];
 /// logger, and `fb-core-error-handling` is the error value over it, which
 /// its own docs say does not name WarpWraps.
 const LOG_ONLY: &[&str] = &["fb-core-log", "fb-core-error-handling"];
+
+/// The logging macros' paths, as [`reexports`] flattens them. A crate that
+/// re-exports any of them offers itself as a way to log, so a crate that
+/// only logs may come to depend on it, and it is held to [`LOG_ONLY`]'s
+/// rule. `fb-core-diagnostics` did this while depending on `fb-core-wwr`;
+/// the macros are now imported from where they are defined
+/// (`core/diagnostics/src/lib.rs`).
+const LOG_MACROS: &[&str] = &[
+    "log::*",
+    "log::trace",
+    "log::debug",
+    "log::info",
+    "log::warn",
+    "log::error",
+    "log::log",
+    "fb_core_log::*",
+    "fb_core_log::critical",
+];
 
 /// The handle types: the safe wrappers over wwr's handles, and the C ABI
 /// they wrap.
@@ -147,9 +166,40 @@ fn check_bar(g: &Graph) -> Vec<String> {
     failures
 }
 
-/// The handle check's failures, each naming the chain of edges.
-fn check_log_only(g: &Graph) -> Vec<String> {
+/// The members that offer the logging macros, each with the first
+/// [`LOG_MACROS`] path it re-exports.
+fn logging_facades(crates: &[Sources]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for c in crates {
+        let offered = c
+            .files
+            .iter()
+            .flat_map(|(_, text)| reexports(text))
+            .find(|path| LOG_MACROS.contains(&path.as_str()));
+        if let Some(path) = offered {
+            out.insert(c.name.clone(), path);
+        }
+    }
+    out
+}
+
+/// The handle check's failures, each naming the chain of edges: for each
+/// [`LOG_ONLY`] crate, and for each crate in `facades` (from
+/// [`logging_facades`]).
+fn check_log_only(g: &Graph, facades: &BTreeMap<String, String>) -> Vec<String> {
     let mut failures = Vec::new();
+    for (name, path) in facades {
+        for handle in HANDLES {
+            if let Some(chain) = g.path(name, handle) {
+                failures.push(format!(
+                    "{name}: offers the logging macros (`pub use {path}`), so a crate that only \
+                     logs may depend on it, but it depends on the handle crate {handle}: {}; \
+                     drop the re-export and log through `log` and `fb-core-log` directly",
+                    chain.join(" -> ")
+                ));
+            }
+        }
+    }
     for name in LOG_ONLY {
         if !g.members.contains_key(*name) {
             failures.push(format!("{name}: in LOG_ONLY but no member is named so"));
@@ -573,23 +623,9 @@ fn no_member_passes_the_reverse_dependents_bar() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-#[test]
-fn a_crate_that_only_logs_reaches_no_handle_crate() {
-    let failures = check_log_only(&read_graph(&rust_root()));
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
-}
-
-#[test]
-fn no_member_is_an_umbrella() {
-    let root = rust_root();
-    let g = read_graph(&root);
-    let libs: BTreeMap<String, String> = g
-        .members
-        .keys()
-        .map(|n| (n.replace('-', "_"), n.clone()))
-        .collect();
-    let crates: Vec<Sources> = g
-        .members
+/// Every member's sources under `src/`.
+fn read_sources(root: &Path, g: &Graph) -> Vec<Sources> {
+    g.members
         .iter()
         .map(|(name, (dir, _))| {
             let mut paths = Vec::new();
@@ -597,7 +633,7 @@ fn no_member_is_an_umbrella() {
             let files = paths
                 .iter()
                 .map(|p| {
-                    let rel = p.strip_prefix(&root).unwrap_or(p);
+                    let rel = p.strip_prefix(root).unwrap_or(p);
                     (
                         rel.to_string_lossy().into_owned(),
                         std::fs::read_to_string(p).unwrap(),
@@ -611,8 +647,28 @@ fn no_member_is_an_umbrella() {
                 lib,
             }
         })
+        .collect()
+}
+
+#[test]
+fn a_crate_that_only_logs_reaches_no_handle_crate() {
+    let root = rust_root();
+    let g = read_graph(&root);
+    let facades = logging_facades(&read_sources(&root, &g));
+    let failures = check_log_only(&g, &facades);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn no_member_is_an_umbrella() {
+    let root = rust_root();
+    let g = read_graph(&root);
+    let libs: BTreeMap<String, String> = g
+        .members
+        .keys()
+        .map(|n| (n.replace('-', "_"), n.clone()))
         .collect();
-    let failures = check_umbrella(&crates, &libs);
+    let failures = check_umbrella(&read_sources(&root, &g), &libs);
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
@@ -718,7 +774,7 @@ fn a_logger_reaching_the_handles_fails_with_the_chain() {
         ],
         &["wwr-sys"],
     );
-    let failures = check_log_only(&g);
+    let failures = check_log_only(&g, &BTreeMap::new());
     assert_eq!(failures.len(), 4, "{failures:?}");
     assert!(
         failures.contains(
@@ -726,6 +782,68 @@ fn a_logger_reaching_the_handles_fails_with_the_chain() {
           fb-core-log -> fb-mid -> fb-core-wwr"
                 .to_owned()
         )
+    );
+}
+
+/// Catches the old `fb-core-diagnostics`: a crate that re-exports the
+/// logging macros while depending on `fb-core-wwr`. A crate that depends on
+/// it without offering them, or whose re-export is commented out, passes,
+/// and so does one that offers them and reaches no handle crate.
+#[test]
+fn a_logging_facade_reaching_the_handles_fails() {
+    let src = |name: &str, lib: &str| Sources {
+        name: name.to_owned(),
+        files: vec![("src/lib.rs".to_owned(), lib.to_owned())],
+        lib: Some(lib.to_owned()),
+    };
+    let crates = [
+        src(
+            "fb-core-diagnostics",
+            "pub use ::log::{debug, error, info, trace, warn};\n\
+             pub use fb_core_log::critical;\npub fn gpu_must() {}\n",
+        ),
+        src("fb-gpu", "pub fn gpu_must() {}\n"),
+        src("fb-quiet", "// pub use log::info;\npub fn f() {}\n"),
+        src("fb-logs", "pub use fb_core_log::critical;\n"),
+    ];
+    let facades = logging_facades(&crates);
+    assert_eq!(
+        facades.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["fb-core-diagnostics", "fb-logs"]
+    );
+    assert_eq!(facades["fb-core-diagnostics"], "log::debug");
+    let g = graph(
+        &[
+            ("fb-core-log", &["log"]),
+            ("fb-core-error-handling", &["fb-core-log"]),
+            ("fb-core-wwr", &["fb-core-error-handling", "wwr-sys"]),
+            ("wwr-sys", &[]),
+            ("log", &[]),
+            (
+                "fb-core-diagnostics",
+                &["fb-core-log", "fb-core-wwr", "log"],
+            ),
+            ("fb-gpu", &["fb-core-wwr"]),
+            ("fb-quiet", &["fb-core-wwr"]),
+            ("fb-logs", &["fb-core-log"]),
+        ],
+        &["wwr-sys", "log"],
+    );
+    let failures = check_log_only(&g, &facades);
+    assert_eq!(failures.len(), 2, "{failures:#?}");
+    assert!(
+        failures[0].starts_with(
+            "fb-core-diagnostics: offers the logging macros (`pub use log::debug`), so a \
+             crate that only logs may depend on it, but it depends on the handle crate \
+             fb-core-wwr: fb-core-diagnostics -> fb-core-wwr;"
+        ),
+        "{}",
+        failures[0]
+    );
+    assert!(
+        failures[1].contains("wwr-sys: fb-core-diagnostics -> fb-core-wwr -> wwr-sys"),
+        "{}",
+        failures[1]
     );
 }
 

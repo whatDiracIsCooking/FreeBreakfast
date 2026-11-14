@@ -131,7 +131,14 @@ The record has three readers, and each is already written down elsewhere:
 
 ### Levels
 
-`core::log` already provides the levels. The rule for each level:
+`core::log` already provides the levels. A call site logs through `log`'s
+macros and `fb_core_log::critical!`, imported from those two crates, and no
+other crate re-exports them: `core::diagnostics` holds only `gpu_must`,
+which reads a wwr status, so it depends on the handle types, and a crate
+that only logs must not ([`testing.md`](testing.md), "Selection: the
+workspace graph is the selection graph").
+
+The rule for each level:
 
 | Level | For | Examples |
 |---|---|---|
