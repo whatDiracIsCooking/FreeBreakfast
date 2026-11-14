@@ -133,7 +133,7 @@ only through a row. Four owners, and the owner is what decides the lifetime:</p>
 <td>A task</td>
 <td>Its scratch, from <code>layout(dims)</code></td>
 <td>The task: its first launch to its last</td>
-<td>The SCF's DIIS history, a kernel's <code>*_workspace_bytes</code>, a solver's <code>lwork</code> and its <code>info</code> flag</td>
+<td>A kernel's <code>*_workspace_bytes</code>, a solver's <code>lwork</code> and its <code>info</code> flag, DIIS's coefficients for one push</td>
 </tr>
 <tr>
 <td>An edge</td>
@@ -389,8 +389,13 @@ the config, siblings concurrent where room allows; when the peak is past the
 cap, serialize the widest concurrency first, then narrow each adaptive task
 in schedule order down to its least; refuse only when the serial plan at
 every adaptive task's least does not fit. The refusal names the worker, the
-kind, the instant of the peak and every row live at it, which is the C++
-message, the step that reaches the peak, with its rows.</p>
+kind and the bytes over; then every row, and every loop's region, larger
+than the cap on its own, which no order could fit, live at the peak or not;
+then the instant of the peak and every row live at it, which is the C++
+message, the step that reaches the peak, with its rows. The peak alone
+would miss a row the peak does not hold: the DF step's peak is the
+three-center task, before B is live, so a cap short of B would name only
+the integrals' rows.</p>
 <figure><div class="scroll">
 <svg viewBox="0 0 680 172" role="img" aria-label="The admission search: start from the config's plan order with siblings concurrent; while the peak is over the cap, serialize the widest concurrency, then narrow each adaptive task in schedule order to its least; refuse only when the serial plan at every task's least still does not fit. Any step that fits admits.">
 <defs>
@@ -472,7 +477,11 @@ the room the schedule leaves at the task's position, once, at planning. The
 width is then a dimension of the plan, logged at <code>debug</code> and at <code>warn</code> when
 it is 1 (<a href="diagnostics.md"><code>diagnostics.md</code></a>, &quot;Levels&quot;), and <code>run</code> never reads
 free memory. A <code>bytes</code> that is not monotone is caught by the tier-3 fuzz
-that bisects it and checks the result against a linear scan.</p>
+that bisects it and checks the result against a linear scan. clippy's
+<code>disallowed_methods</code> lists <code>wwr_mem_get_info</code>, so a read of free memory is
+an <code>allow</code> naming its exception: an allocation's refusal (&quot;The two kinds&quot;),
+admission and the reserve's measurement (&quot;Admission&quot;), or a tier-4 test
+measuring what a block costs.</p>
 <figure><div class="scroll">
 <svg viewBox="0 0 680 226" role="img" aria-label="An adaptive task's bytes as a function of width, monotone non-decreasing from 1 to width_max. The planner bisects it once against the room the schedule leaves at the task's position and takes w*, the largest width whose bytes fit.">
 <defs>
@@ -578,6 +587,31 @@ row that outlives it.</li>
 </figure>
 <p>Concurrent sub-DAGs do not share a region: the width the planner admits is
 how many regions the parent holds at once, each at the sub-DAG's peak.</p>
+<p><strong>A loop is the nested plan the SCF has.</strong> Its body is one iteration's
+tasks and its decision the CPU node after them, and the body's table is the
+rows every user of which is in the loop: laid out alone, from the region's
+first byte, while the region is one row of the parent's table, live from the
+body's first position to the decision, of the body's laid-out total. Every
+other row the loop uses, S read every iteration or the energy read after
+the loop, is the parent's and live for the whole loop, so no body row takes
+its bytes, and admission counts the region once, at each of the loop's
+positions, by the name <code>loop first-last</code>. Within an iteration the body's
+rows share bytes as any table's do, ordered by their handoffs. Across the
+iteration edge nothing needs ordering: the decision is after every body
+node and the replay after the decision. A dependency from a body node to a
+node after the loop is taken from the decision instead, since a body node
+runs once per iteration and the decision's <code>Break</code> once.</p>
+<p><strong>A carried row is the parent's.</strong> The density, the occupied factor and
+DIIS's history pass from one iteration to the next. Such a row is produced
+before the loop (the guess, a zero fill, <code>add_diis</code>'s <code>diis history</code> task),
+read in the body, and written by
+its last user there, so each iteration reads what the one before wrote, or
+the producer's value in the first. The table orders every other user
+against that writer: the body's readers before it, a node after the loop
+after the decision. It is live across the whole loop, so no handoff crosses
+the iteration edge. A decision that keeps something from one iteration to
+the next, the last energy, keeps it the same way, as a host row it carries:
+nothing outside the rows survives the run.</p>
 <h2 id="the-two-kinds">The two kinds</h2>
 <div class="table"><table>
 <thead>
@@ -642,7 +676,9 @@ same reason restricts a row's type to an <code>Element</code>, a primitive for w
 every bit pattern is a value, since a reused row is read with whatever its
 previous owner left.</p>
 <p><strong>What is not a kind.</strong> Managed memory is not used and not modelled, and
-nothing here should grow a <code>Managed</code> marker. Pageable host memory is <code>Vec</code>,
+nothing here should grow a <code>Managed</code> marker; clippy's <code>disallowed_methods</code>
+lists <code>wwr_malloc_managed</code> and <code>wwr_stream_attach_mem_async</code>, and no site
+allows them. Pageable host memory is <code>Vec</code>,
 owned by the plan when it is part of the DAG
 (<a href="programming_model.html"><code>programming_model.md</code></a>, &quot;Memory kinds&quot;).</p>
 <p><strong>The three pinned layouts that exist.</strong> Every pinned use in the C++ tree
@@ -653,10 +689,10 @@ has no user yet. So the first pinned rows are small upload and readback
 buffers, and the ring, when it comes, is a pinned edge row with the lifetime
 of the copies that read it.</p>
 <h3 id="the-rust-shape">The Rust shape</h3>
-<p>One module, <code>core::arena</code>, the only one outside the <code>-sys</code> wrappers with
-<code>unsafe_code</code> allowed (<a href="programming_model.html"><code>programming_model.md</code></a>,
-&quot;Capabilities are enforced by lints&quot;); its raw calls are on a sealed trait
-nothing outside it can name. In it:</p>
+<p>One module, <code>core::arena</code>, one of the few crates with <code>unsafe_code</code>
+allowed (<a href="programming_model.html"><code>programming_model.md</code></a>, &quot;Capabilities are
+enforced by lints&quot;); its raw calls are on a sealed trait nothing outside it
+can name. In it:</p>
 <ul>
 <li><code>TableBuilder&lt;K&gt;</code>, the rows declared node by node, and <code>assign(rows)</code>,
 the pure offset assigner it lays them out with into a <code>Table&lt;K&gt;</code>: tier 3,
@@ -666,7 +702,9 @@ the reads, each reader after its producer; the two together are every
 dependency it asks of a plan. <code>TableBuilder::node(pos)</code> is a <code>Layout</code>,
 one node's declarations with its position bound, which is what a task's
 <code>layout</code> is handed. <code>core::planner</code> calls each task's layout in plan
-order, builds the tables, and adds the reads and handoffs to the plan.</li>
+order, builds the tables, and adds the reads and handoffs to the plan.
+<code>TableBuilder::add_loop(positions)</code> marks a loop and <code>Layout::write(row)</code>
+a row it carries (&quot;Nested plans&quot;).</li>
 <li><code>Block&lt;K&gt;</code>, with <code>K</code> one of two uninhabited markers, <code>Device</code> and
 <code>Pinned</code>. It holds the raw pointer, the table and one atomic borrow flag
 per row, allocates in <code>new</code> and frees in <code>Drop</code>, and the kind is in the
@@ -720,7 +758,7 @@ them.</p>
 </tr>
 <tr>
 <td>Admission refuses what does not fit</td>
-<td>A cap one byte under the peak refused naming the rows live at it; one byte over admitted, as the C++ nested cases pin the room to the byte</td>
+<td>A cap one byte under the peak refused naming the rows live at it; a cap under a row refused naming that row, the DF step's B not live at its peak among them; one byte over admitted, as the C++ nested cases pin the room to the byte</td>
 <td>3</td>
 </tr>
 <tr>
@@ -734,13 +772,23 @@ them.</p>
 <td>3</td>
 </tr>
 <tr>
+<td>A loop's body lies in its region, apart from every parent row live across the loop</td>
+<td>Random bodies laid out, then unrolled over iterations and run in random orders consistent with the reads and handoffs, no two rows sharing bytes live at once</td>
+<td>3</td>
+</tr>
+<tr>
+<td>Replay allocates nothing</td>
+<td>Free memory read by a device loop's decision every iteration, never falling from one iteration to the next: the reading is the device's, so another tenant's free can raise it, and an allocation of this process can only lower it</td>
+<td>4</td>
+</tr>
+<tr>
 <td>Declared equals allocated</td>
 <td>Free memory before and after instantiation differs by the block, under the reserve's growth</td>
 <td>4</td>
 </tr>
 <tr>
 <td>No library allocates behind the arena</td>
-<td>The same measurement across a run: free memory unchanged from the first launch to the last sync</td>
+<td>The same measurement across a run: free memory never falling from the first launch to the last sync</td>
 <td>4</td>
 </tr>
 <tr>
