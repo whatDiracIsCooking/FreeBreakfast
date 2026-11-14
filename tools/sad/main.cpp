@@ -13,7 +13,9 @@
 ///
 /// The sets to regenerate are named on the command line, each resolved as
 /// @c resolve_basis resolves a name (so `cc-pvdz` and `cc-pVDZ` are one set),
-/// or `--all` for every `<data>/basis/*.json`, each by its file name. A run
+/// or `--all` for every `<data>/basis/*.json`, each by its document's BSE
+/// `name` (@c sad_stamp_sets: a file name is not always a spelling
+/// @c resolve_basis folds to, as `6-31gstar.json` is `6-31G*`). A run
 /// names its sets because each costs minutes: the one set a change touched is
 /// what wants regenerating, not the hour of CPU the rest would cost. Resolving
 /// goes through the binary, not the file, so a set this build was not
@@ -37,6 +39,7 @@ import free_breakfast.basis;
 import free_breakfast.io.basis;
 import free_breakfast.io.npy;
 import free_breakfast.sad;
+import free_breakfast.tools.sad;
 
 namespace {
 
@@ -91,22 +94,6 @@ void compute(std::vector<Job> &jobs) {
   executor.run(flow).wait();
 }
 
-// The `<data>/basis/*.json` file names, sorted: what `--all` regenerates.
-fb::Result<std::vector<std::string>> every_set(const std::filesystem::path &basis_dir) {
-  std::error_code ec;
-  std::vector<std::string> specs;
-  for (const auto &entry : std::filesystem::directory_iterator(basis_dir, ec)) {
-    if (entry.path().extension() == ".json") {
-      specs.push_back(entry.path().stem().string());
-    }
-  }
-  if (ec) {
-    return fb::err_io("cannot list {}: {}", basis_dir.string(), ec.message());
-  }
-  std::ranges::sort(specs);
-  return specs;
-}
-
 fb::Status run(std::span<char *const> args) {
   if (args.size() < 3) {
     return fb::err_config("usage: {} <repo>/data (<basis>... | --all)",
@@ -118,7 +105,7 @@ fb::Status run(std::span<char *const> args) {
   const bool all = args.size() == 3 && std::string_view{args[2]} == "--all";
   std::vector<std::string> specs;
   if (all) {
-    specs = FBF_TRY(every_set(data / "basis"));
+    specs = FBF_TRY(fb::sad_stamp_sets(data / "basis"));
   } else {
     for (const char *arg : args.subspan(2)) {
       if (std::string_view{arg} == "--all") {
