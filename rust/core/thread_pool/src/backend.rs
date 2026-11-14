@@ -15,6 +15,8 @@ use fb_core_wwr::blas::BlasHandle;
 #[cfg(feature = "device")]
 use fb_core_wwr::common::ScopedDeviceIndex;
 #[cfg(feature = "device")]
+use fb_core_wwr::device_slice::DeviceSliceMut;
+#[cfg(feature = "device")]
 use fb_core_wwr::gpu_status;
 #[cfg(feature = "device")]
 use fb_core_wwr::runtime::{Event, Stream, event};
@@ -120,7 +122,9 @@ impl Backend for HostOnly {
 ///
 /// Every GPU node of the worker shares its handles, so a node that changes
 /// a handle's state (its pointer mode, say) sets it back before it returns;
-/// none does today. The libraries are BLAS and the dense solver.
+/// none does today. The libraries are BLAS and the dense solver. The BLAS
+/// handle's workspace is the backend's to hand over
+/// ([`Device::bind_blas_workspace`]), never a node's.
 #[cfg(feature = "device")]
 pub struct DeviceStream {
     // Fields drop in declaration order: the handles before the stream they
@@ -204,8 +208,10 @@ pub struct Device {
 // on one thread, and cuBLAS, hipBLAS, cuSOLVER and hipSOLVER allow a handle
 // to be used from any thread one call at a time.
 // Every handle is created before any run and destroyed only when the
-// `Device` drops, which a run's borrow of it rules out; so is every `Rc` a
-// `DeviceStream` holds, cloned and dropped only then, never during a run.
+// `Device` drops, and a BLAS handle's workspace is handed over only by
+// `bind_blas_workspace`, through `&mut self`; a run's borrow rules out
+// both. So is every `Rc` a `DeviceStream` holds, cloned and dropped only
+// then, never during a run.
 unsafe impl Sync for Device {}
 
 #[cfg(feature = "device")]
@@ -236,6 +242,24 @@ impl Device {
             streams,
             events,
         }
+    }
+
+    /// Hand stream worker `lane`'s BLAS handle `workspace`, `lane`'s device
+    /// memory, which the handle owns from here until the backend drops or
+    /// hands it another ([`BlasHandle::bind_workspace`]). `&mut self`, so
+    /// never during a run: a planner instance binds each worker's declared
+    /// row when it makes its backend.
+    ///
+    /// # Errors
+    /// As [`BlasHandle::bind_workspace`]: the library's refusal.
+    ///
+    /// # Panics
+    /// If the backend has no stream worker `lane`.
+    pub fn bind_blas_workspace<W>(&mut self, lane: usize, workspace: W) -> Status
+    where
+        W: DeviceSliceMut<u8> + Send + Sync + 'static,
+    {
+        self.streams[lane].blas.bind_workspace(workspace)
     }
 
     fn events(&self, node: NodeId) -> &(Event, Event) {

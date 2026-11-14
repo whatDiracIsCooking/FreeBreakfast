@@ -227,14 +227,24 @@ the query itself runs before planning). cuBLAS and hipBLAS allocate a workspace 
 handle on their own unless they are handed one (`cublasSetWorkspace` and its
 HIP twin), so the design hands every handle a worker row of the arena
 ([`memory.md`](memory.md), "The table"), and a run allocates nothing through
-a library either. `fb_recipes_matrix_ao::add_blas_workspace` declares
-it, `blas workspace`, a worker row of `fb_core_wwr::blas::WORKSPACE_BYTES`
-(32 MiB), and adds a first stream task of the same name that hands it to the
-worker's handle through `wwr_blas_set_workspace` every run; it is rank 0 and
-ready at once, so it runs before any BLAS call on the worker. A plan that
-leaves it out still runs, on the workspace the handle allocated for itself
-when the `Device` backend made it, outside the arena's count; the plans of
-`overlap`'s and `scf`'s `Run` and the binary add it.
+a library either. The planner declares it: `Dag::blas_workspace(worker)`
+adds `blas workspace`, a worker row of `fb_core_planner::BLAS_WORKSPACE_BYTES`
+(32 MiB), to the worker's device table, where admission counts it like any
+other row, and keeps its id, so no task can name it. It is bound where the
+backend and the instance meet: `Instance::backend` builds the `Device` over
+the instance's plan and hands each worker's handle its row, once, as an
+`fb_core_arena::HeldRow`, which holds the row's writer flag and keeps the
+block alive. The library keeps the pointer for every later call, beyond any
+borrow, so the handle owns the memory: `BlasHandle::bind_workspace` takes it
+by value, a `DeviceSliceMut` that is `'static`, and releases it only after
+the library holds the next one's pointer and the stream has drained, or
+after the handle is destroyed. That call's one `unsafe` block, in
+`fb-core-wwr`, carries the argument; a borrow-scoped hand-off per task or
+per run is not offered, since resetting a handle to no workspace is
+vendor-dependent. A plan that declares none still runs, on the workspace the
+handle allocated for itself when the `Device` backend made it, outside the
+arena's count; the plans of `overlap`'s and `scf`'s `Run` and the binary
+declare it.
 
 **Rust never launches a kernel itself.** The C ABI exports a launch call
 (`wwr_launch_kernel_ex_c`), so Rust could take a kernel's address and launch

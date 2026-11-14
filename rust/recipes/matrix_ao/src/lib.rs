@@ -23,9 +23,11 @@
 //! | `MatrixAO<L>`, `BasisLayout`, `ao_count` | nothing: a matrix is a device row, its order the basis's `nao_cart` or `nao_sphe` |
 //! | `MatrixAOPair::spherical_to_cartesian` | not ported yet |
 //!
-//! [`add_blas_workspace`] gives a worker's BLAS handle its workspace from
-//! the arena, a worker row, rather than the one the library allocates for
-//! itself: added first by a plan that runs these GEMMs, or any other BLAS.
+//! The GEMMs run on the worker's BLAS workspace, a worker row of the arena,
+//! when the plan declares one ([`Dag::blas_workspace`]), as a plan that runs
+//! these transforms, or any other BLAS, does.
+
+#![forbid(unsafe_code)]
 
 use contracts::debug_requires;
 use fb_basis::BasisSet;
@@ -34,9 +36,6 @@ use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_recipes_blas::{N, T, gemm};
-
-mod workspace;
-pub use workspace::add_blas_workspace;
 
 /// Add the spherical form of the Cartesian AO matrix `cartesian` of `basis`
 /// to `dag` on GPU worker `worker`, and return it: an output row of

@@ -4,6 +4,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
+use super::BLAS_WORKSPACE_BYTES;
 use super::task::Task;
 use fb_core_arena::{Bufs, Device, Element, HostKind, Pinned, RowId, Table, TableBuilder};
 use fb_core_error_handling::Status;
@@ -33,10 +34,12 @@ pub(super) struct Declared<'a, H: HostKind, S> {
     pub(super) run: Run<'a, H, S>,
 }
 
-/// One GPU worker's rows, of both kinds.
+/// One GPU worker's rows, of both kinds, and its BLAS workspace row if
+/// one is declared.
 struct Worker<H> {
     device: TableBuilder<Device>,
     host: TableBuilder<H>,
+    blas_workspace: Option<RowId<Device, u8>>,
 }
 
 /// Tasks declared in plan order, each on a GPU worker: the planner's input.
@@ -106,8 +109,8 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         rows
     }
 
-    /// A device row `worker` holds for the whole plan, such as a library
-    /// handle's workspace or a solver's `info` flag. Any task on the worker
+    /// A device row `worker` holds for the whole plan (a BLAS handle's
+    /// workspace is [`Dag::blas_workspace`]'s, not this). Any task on the worker
     /// may write it through the returned id, with no declaration in its
     /// layout; two such tasks are not ordered by it, so they must be
     /// ordered by something else (one stream does).
@@ -119,6 +122,23 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         len: usize,
     ) -> RowId<Device, T> {
         self.worker(worker).device.worker(name, len)
+    }
+
+    /// Declare worker `worker`'s BLAS workspace: a worker row of
+    /// [`BLAS_WORKSPACE_BYTES`], `blas workspace` in its device table,
+    /// which admission counts like any other row, and which the instance's
+    /// backend hands the worker's BLAS handle when it is made
+    /// (`Instance::backend`), so no BLAS call allocates behind the table.
+    /// No task can name the row, so it is the handle's alone. Declaring it
+    /// again for the same worker does nothing.
+    ///
+    /// A plan that declares none still runs, every BLAS call on the
+    /// workspace the handle allocated for itself, outside the count.
+    pub fn blas_workspace(&mut self, worker: usize) {
+        let w = self.worker(worker);
+        if w.blas_workspace.is_none() {
+            w.blas_workspace = Some(w.device.worker("blas workspace", BLAS_WORKSPACE_BYTES));
+        }
     }
 
     /// A host row `worker` holds for the whole plan.
@@ -136,6 +156,7 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
     /// dependencies: the producer of every row it reads, and every handoff
     /// into it. Pure: no device.
     pub fn plan(self) -> Planned<'a, H, S> {
+        let blas_workspaces = self.workers.iter().map(|w| w.blas_workspace).collect();
         let tables: Vec<(Table<Device>, Table<H>)> = self
             .workers
             .into_iter()
@@ -160,6 +181,7 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         }
         Planned {
             tables,
+            blas_workspaces,
             nodes: self.nodes,
             deps: deps.into_iter().map(|d| d.into_iter().collect()).collect(),
         }
@@ -170,6 +192,7 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
             self.workers.push(Worker {
                 device: TableBuilder::new(),
                 host: TableBuilder::new(),
+                blas_workspace: None,
             });
         }
         &mut self.workers[worker]
@@ -185,6 +208,8 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
 /// lane and dependencies, then every non-empty table.
 pub struct Planned<'a, H: HostKind = Pinned, S = DeviceStream> {
     pub(super) tables: Vec<(Table<Device>, Table<H>)>,
+    /// Per worker, its BLAS workspace row, if declared.
+    pub(super) blas_workspaces: Vec<Option<RowId<Device, u8>>>,
     pub(super) nodes: Vec<Declared<'a, H, S>>,
     pub(super) deps: Vec<Vec<usize>>,
 }
