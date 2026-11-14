@@ -126,6 +126,11 @@ pub mod tests {
     unsafe impl Sync for DeviceBytes {}
 
     impl DeviceBytes {
+        /// `n` uninitialized bytes, allocated by the synchronous
+        /// `wwr_malloc`.
+        ///
+        /// # Panics
+        /// If the allocation fails.
         pub fn new(n: usize) -> Self {
             let mut p = std::ptr::null_mut();
             // SAFETY: writes one pointer through a valid local.
