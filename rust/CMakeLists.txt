@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 4.2)
 
 # What the crates here link, built without the C++ tree: WarpWraps' C ABI
-# libraries libwwr_capi_runtime_api.so and libwwr_capi_blas.so, and the
+# libraries libwwr_capi_runtime_api.so, libwwr_capi_blas.so and
+# libwwr_capi_solver.so, and the
 # per-module kernel shared objects, libfb_recipes_kernels.so and
 # libfb_integrals_kernels.so so far ("The kernel shared objects" below). The
 # root CMakeLists.txt does not add this directory, and this one adds nothing
@@ -101,12 +102,15 @@ endif()
 # <build>/deps/WarpWraps/src/capi in either.
 add_subdirectory("${_fb_wwr}" deps/WarpWraps EXCLUDE_FROM_ALL)
 
-# `all` is what the crates link, and nothing else of wwr: the runtime, and
-# BLAS for the overlap's spherical transform (wwr-sys's `blas` feature).
+# `all` is what the crates link, and nothing else of wwr: the runtime, BLAS
+# for the overlap's spherical transform (wwr-sys's `blas` feature), and the
+# dense solver for the eigensolver (`solver`).
 add_custom_target(
   rust_native_libs ALL COMMENT "The libraries the rust/ crates link"
 )
-add_dependencies(rust_native_libs wwr.capi.runtime_api wwr.capi.blas)
+add_dependencies(
+  rust_native_libs wwr.capi.runtime_api wwr.capi.blas wwr.capi.solver
+)
 
 # ========================================================================
 # The kernel shared objects

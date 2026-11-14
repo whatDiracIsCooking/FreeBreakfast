@@ -7,6 +7,8 @@
 //!   memory pools and graphs built on them.
 //! - [`blas`]: wwr's `src/extension/blas`, the BLAS status as an error code
 //!   and the BLAS handle bound to a [`Stream`](runtime::Stream).
+//! - [`solver`]: wwr's `src/extension/solver`, the dense solver's status as
+//!   an error code and its handle, bound to a stream as the BLAS one is.
 //!
 //! And free_breakfast's own partitions of `free_breakfast.core.wwr`, over
 //! [`fb_core_error_handling`] and [`fb_core_log`]:
@@ -23,6 +25,7 @@ pub mod blas;
 pub mod common;
 pub mod handle;
 pub mod runtime;
+pub mod solver;
 mod status;
 
 pub use status::{gpu_log_error_at, gpu_status, gpu_status_at};

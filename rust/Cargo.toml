@@ -38,6 +38,7 @@ members = [
     "integrals/one_electron/core_hamiltonian",
     "pipeline/config",
     "tools/sad",
+    "recipes/diagonalize",
 ]
 
 [workspace.package]
@@ -80,6 +81,7 @@ fb-integrals-one-electron-potential-en = { path = "integrals/one_electron/potent
 fb-integrals-one-electron-core-hamiltonian = { path = "integrals/one_electron/core_hamiltonian" }
 fb-pipeline-config = { path = "pipeline/config" }
 fb-tools-sad = { path = "tools/sad" }
+fb-recipes-diagonalize = { path = "recipes/diagonalize" }
 
 contracts = "0.6.11"
 # core::log: the line's local time, and the OS thread id (std has none).

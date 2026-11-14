@@ -1,0 +1,23 @@
+[package]
+name = "fb-recipes-diagonalize"
+description = "recipes/diagonalize: the symmetric eigendecomposition, syevd and its flag check as tasks"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-core-arena.workspace = true
+fb-core-error-handling.workspace = true
+fb-core-planner.workspace = true
+fb-core-thread-pool = { workspace = true, features = ["device"] }
+fb-core-wwr.workspace = true
+# The dense solver's syevd, beside the runtime.
+wwr-sys = { workspace = true, features = ["solver"] }
+
+[dev-dependencies]
+fb-core-arena = { workspace = true, features = ["test-support"] }
+fb-io-npy.workspace = true
+fb-test-support.workspace = true

@@ -17,6 +17,8 @@ use fb_core_wwr::gpu_status;
 #[cfg(feature = "device")]
 use fb_core_wwr::runtime::{Event, Stream, event};
 #[cfg(feature = "device")]
+use fb_core_wwr::solver::SolverHandle;
+#[cfg(feature = "device")]
 use std::ops::Deref;
 #[cfg(feature = "device")]
 use std::rc::Rc;
@@ -114,25 +116,26 @@ impl Backend for HostOnly {
 ///
 /// Every GPU node of the worker shares its handles, so a node that changes
 /// a handle's state (its pointer mode, say) sets it back before it returns;
-/// none does today. BLAS is the one library so far; a solver handle joins
-/// it here.
+/// none does today. The libraries are BLAS and the dense solver.
 #[cfg(feature = "device")]
 pub struct DeviceStream {
     // Fields drop in declaration order: the handles before the stream they
     // are bound to (each also holds the stream until it is destroyed).
     blas: BlasHandle,
+    solver: SolverHandle,
     stream: Rc<Stream>,
 }
 
 #[cfg(feature = "device")]
 impl DeviceStream {
-    /// A non-blocking stream on `dev_idx` and a BLAS handle bound to it.
-    /// Aborts if either cannot be made.
+    /// A non-blocking stream on `dev_idx`, and a BLAS and a dense-solver
+    /// handle bound to it. Aborts if any cannot be made.
     #[track_caller]
     pub fn new(dev_idx: i32) -> Self {
         let stream = Rc::new(Stream::new(dev_idx));
         DeviceStream {
             blas: BlasHandle::new(Rc::clone(&stream)),
+            solver: SolverHandle::new(Rc::clone(&stream)),
             stream,
         }
     }
@@ -141,6 +144,13 @@ impl DeviceStream {
     /// a `wwr_blas_*` call, and the call enqueues on the stream.
     pub fn blas(&self) -> &BlasHandle {
         &self.blas
+    }
+
+    /// The worker's dense-solver handle, bound to its stream: pass its
+    /// `get()` to a `wwr_solver_dn_*` call, and the call enqueues on the
+    /// stream.
+    pub fn solver(&self) -> &SolverHandle {
+        &self.solver
     }
 }
 
@@ -180,8 +190,9 @@ pub struct Device {
 // which is why the wrappers are neither `Send` nor `Sync`. The runtime API is
 // thread-safe for every call made on them here (record, wait, synchronize,
 // elapsed time). A library handle is called through only by the tasks of
-// its own stream worker, which runs one at a time on one thread, and cuBLAS
-// and hipBLAS allow a handle to be used from any thread one call at a time.
+// its own stream worker, which runs one at a time on one thread, and cuBLAS,
+// hipBLAS, cuSOLVER and hipSOLVER allow a handle to be used from any thread
+// one call at a time.
 // Every handle is created before any run and destroyed only when the
 // `Device` drops, which a run's borrow of it rules out; so is every `Rc` a
 // `DeviceStream` holds, cloned and dropped only then, never during a run.
