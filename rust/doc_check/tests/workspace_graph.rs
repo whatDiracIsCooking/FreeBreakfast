@@ -14,13 +14,15 @@
 //! - a path rule in `devtools/test.py` (the files that lie in no crate but
 //!   belong to one) names a source that does not exist or a crate that is
 //!   not a member, or a `kernels/` directory under `rust/` is one the rule
-//!   does not cover or has no `-sys` crate wrapping it.
+//!   does not cover or has no `-sys` crate wrapping it;
+//! - a member declares a direct dependency its sources never name
+//!   ([`check_unused`]), unless [`UNNAMED`] gives the reason.
 //!
 //! Tier 3: it reads text and runs `cargo metadata`, and links nothing.
 
 #![forbid(unsafe_code)]
 
-use fb_doc_check::code_only;
+use fb_doc_check::{code_only, is_ident};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -817,4 +819,283 @@ def other():
     assert!(failures[0].contains("rust/fft/kernels/ has no -sys crate at rust/fft/sys/"));
     assert!(failures[1].contains("devtools/gone.py does not exist"));
     assert!(failures[2].contains("DOC_PATHS -> rust/doc_chek/: rust/doc_chek/ is no member"));
+}
+
+/// The direct dependencies a member may declare without naming them in its
+/// sources, as `(member, dependency, reason)`. Each is a package name; the
+/// reason is what the edge does that no `use` shows (a `links` crate kept so
+/// its link line reaches the binary, a feature switched on in another
+/// crate). An entry whose edge is gone, or whose dependency is now named,
+/// fails, so the list only holds what it must.
+const UNNAMED: &[(&str, &str, &str)] = &[];
+
+/// Where a member's sources name things, each `code_only`: comments and
+/// literals blanked, so a crate named in a doc comment or a string is not
+/// used.
+struct Named {
+    /// Every `.rs` under `src/`: the library, the binaries and their unit
+    /// tests.
+    src: String,
+    /// `build.rs`.
+    build: String,
+    /// Every `.rs` under `tests/`, `benches/` and `examples/`.
+    tests: String,
+}
+
+/// One direct dependency edge of a member.
+struct Dep {
+    /// The dependency's package name (`fb-core-wwr`).
+    package: String,
+    /// The name the member's code calls it by (`fb_core_wwr`): the library
+    /// name with any rename applied.
+    name: String,
+    /// Declared under `[dependencies]`.
+    normal: bool,
+    /// Declared under `[build-dependencies]`.
+    build: bool,
+    /// Declared under `[dev-dependencies]`.
+    dev: bool,
+}
+
+/// Whether `code` holds `name` as a whole identifier.
+fn names(code: &str, name: &str) -> bool {
+    let b = code.as_bytes();
+    code.match_indices(name).any(|(at, _)| {
+        let before = at.checked_sub(1).map(|i| b[i]);
+        let after = b.get(at + name.len()).copied();
+        !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
+    })
+}
+
+/// The unused-dependency check's failures for one member. A dependency is
+/// used where its kind can reach: a normal one in `src/` (named only in the
+/// tests, it is a dev-dependency that every reverse dependent inherits), a
+/// build one in `build.rs`, and a dev-only one in `src/`, `tests/`,
+/// `benches/` or `examples/`. A dev entry beside a normal one adds features
+/// to it and needs no use of its own.
+fn check_unused(member: &str, deps: &[Dep], code: &Named) -> Vec<String> {
+    let mut failures = Vec::new();
+    for d in deps {
+        if UNNAMED
+            .iter()
+            .any(|(m, p, _)| *m == member && *p == d.package)
+        {
+            continue;
+        }
+        let in_src = names(&code.src, &d.name);
+        let in_tests = names(&code.tests, &d.name);
+        if d.normal && !in_src {
+            failures.push(if in_tests {
+                format!(
+                    "{member}: depends on {} under [dependencies], but only its tests name \
+                     `{}`; move it to [dev-dependencies], so its reverse dependents do not \
+                     inherit the edge",
+                    d.package, d.name
+                )
+            } else {
+                format!(
+                    "{member}: depends on {} under [dependencies], but no source in src/ \
+                     names `{}`; remove the edge, or add it to UNNAMED with the reason",
+                    d.package, d.name
+                )
+            });
+        }
+        if d.build && !names(&code.build, &d.name) {
+            failures.push(format!(
+                "{member}: depends on {} under [build-dependencies], but build.rs does not \
+                 name `{}`; remove the edge, or add it to UNNAMED with the reason",
+                d.package, d.name
+            ));
+        }
+        if d.dev && !d.normal && !in_src && !in_tests {
+            failures.push(format!(
+                "{member}: depends on {} under [dev-dependencies], but no source in src/, \
+                 tests/, benches/ or examples/ names `{}`; remove the edge, or add it to \
+                 UNNAMED with the reason",
+                d.package, d.name
+            ));
+        }
+    }
+    failures
+}
+
+/// Every member's directory relative to `rust/` and its direct
+/// dependencies, by member, read with `guppy` as [`read_graph`] reads them.
+fn read_deps(root: &Path) -> BTreeMap<String, (String, Vec<Dep>)> {
+    let graph = guppy::MetadataCommand::new()
+        .manifest_path(root.join("Cargo.toml"))
+        .other_options(["--locked"])
+        .build_graph()
+        .expect("cargo metadata over rust/Cargo.toml");
+    let mut out = BTreeMap::new();
+    for p in graph.workspace().iter() {
+        let dir = p.manifest_path().parent().expect("a manifest's directory");
+        let dir = dir
+            .as_std_path()
+            .strip_prefix(root)
+            .unwrap_or(dir.as_std_path());
+        let deps = p
+            .direct_links()
+            .map(|l| Dep {
+                package: l.to().name().to_owned(),
+                name: l.resolved_name().to_owned(),
+                normal: l.normal().is_present(),
+                build: l.build().is_present(),
+                dev: l.dev().is_present(),
+            })
+            .collect();
+        out.insert(
+            p.name().to_owned(),
+            (dir.to_string_lossy().into_owned(), deps),
+        );
+    }
+    out
+}
+
+/// The intra-doc link targets in `source`'s doc comments, one per line:
+/// the path in `` [`a::b`] ``, `[a::b]`, `[text](a::b)` or
+/// ``[text](`a::b`)``. rustdoc resolves each against the crate's
+/// dependencies, so a crate a doc comment links to is used, and as a normal
+/// dependency, since `cargo doc` builds a library without its
+/// dev-dependencies.
+fn doc_links(source: &str) -> String {
+    let mut out = Vec::new();
+    for line in source.lines() {
+        let t = line.trim_start();
+        if !(t.starts_with("///") || t.starts_with("//!")) {
+            continue;
+        }
+        for (at, open) in t.match_indices(['[', '(']) {
+            if open == "(" && !t[..at].ends_with(']') {
+                continue;
+            }
+            let rest = t[at + 1..].trim_start_matches('`');
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+                .unwrap_or(rest.len());
+            if rest[..end].contains("::") {
+                out.push(&rest[..end]);
+            }
+        }
+    }
+    out.join("\n")
+}
+
+/// What the check reads of one source: its code ([`code_only`]), then its
+/// [`doc_links`].
+fn named_in(source: &str) -> String {
+    format!("{}\n{}", code_only(source), doc_links(source))
+}
+
+/// [`named_in`] of every `.rs` under each of `dirs`, or of `dirs`
+/// themselves when they are files.
+fn code_under(dirs: &[PathBuf]) -> String {
+    let mut paths = Vec::new();
+    for d in dirs {
+        if d.is_file() {
+            paths.push(d.clone());
+        } else {
+            rust_files(d, &mut paths);
+        }
+    }
+    paths
+        .iter()
+        .map(|p| named_in(&std::fs::read_to_string(p).unwrap()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn every_direct_dependency_is_named_in_its_crates_sources() {
+    let root = rust_root();
+    let members = read_deps(&root);
+    let mut failures = Vec::new();
+    for (member, dep, _) in UNNAMED {
+        let Some((dir, deps)) = members.get(*member) else {
+            failures.push(format!("UNNAMED: {member} is no member"));
+            continue;
+        };
+        let Some(d) = deps.iter().find(|d| d.package == *dep) else {
+            failures.push(format!("UNNAMED: {member} does not depend on {dep}"));
+            continue;
+        };
+        let dir = root.join(dir);
+        let all =
+            code_under(&["src", "tests", "benches", "examples", "build.rs"].map(|s| dir.join(s)));
+        if names(&all, &d.name) {
+            failures.push(format!(
+                "UNNAMED: {member} names `{}` now; drop its entry",
+                d.name
+            ));
+        }
+    }
+    for (member, (dir, deps)) in &members {
+        let dir = root.join(dir);
+        let code = Named {
+            src: code_under(&[dir.join("src")]),
+            build: code_under(&[dir.join("build.rs")]),
+            tests: code_under(&["tests", "benches", "examples"].map(|s| dir.join(s))),
+        };
+        failures.extend(check_unused(member, deps, &code));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Catches each kind of unused edge, a crate named only in a comment, a
+/// string, a longer identifier or a doc comment's code span among them,
+/// and leaves alone a use in a nested path, an intra-doc link, a dev entry
+/// that only adds features, and a dev-dependency a unit test names.
+#[test]
+fn unused_dependencies_fail_and_used_ones_pass() {
+    let dep = |name: &str, normal, build, dev| Dep {
+        package: name.replace('_', "-"),
+        name: name.to_owned(),
+        normal,
+        build,
+        dev,
+    };
+    let deps = [
+        dep("fb_used", true, false, true),
+        dep("fb_only_tested", true, false, false),
+        dep("fb_unused", true, false, false),
+        dep("fb_prefix", true, false, false),
+        dep("fb_build", false, true, false),
+        dep("fb_unit", false, false, true),
+        dep("fb_dev_unused", false, false, true),
+        dep("fb_linked", true, false, false),
+        dep("fb_linked_too", true, false, false),
+        dep("fb_in_parens", true, false, false),
+    ];
+    let code = Named {
+        src: named_in(
+            "//! Runs after [`fb_linked::add`], or [it](fb_linked_too::Thing).\n\
+             //! Not a link: (`fb_in_parens::x`).\n\
+             use std::{io, fb_used::x};\n// fb_unused\nconst S: &str = \"fb_unused\";\n\
+             fn f() { fb_prefix_more::g(); }\n#[cfg(test)] mod t { use fb_unit::*; }\n",
+        ),
+        build: named_in("fn main() { fb_used::h(); }\n"),
+        tests: named_in("use fb_only_tested as t;\n"),
+    };
+    let failures = check_unused("fb-m", &deps, &code);
+    let named: Vec<&str> = failures
+        .iter()
+        .map(|f| f.split_whitespace().nth(3).unwrap())
+        .collect();
+    assert_eq!(
+        named,
+        [
+            "fb-only-tested",
+            "fb-unused",
+            "fb-prefix",
+            "fb-build",
+            "fb-dev-unused",
+            "fb-in-parens"
+        ],
+        "{failures:#?}"
+    );
+    assert!(
+        failures[0].contains("move it to [dev-dependencies]"),
+        "{}",
+        failures[0]
+    );
 }

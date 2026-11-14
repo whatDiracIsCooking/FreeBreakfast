@@ -508,10 +508,8 @@ dependencies = [
  "fb-core-planner",
  "fb-core-thread-pool",
  "fb-core-types",
- "fb-core-wwr",
  "fb-molecule",
  "fb-test-support",
- "wwr-sys",
 ]
 
 [[package]]
@@ -523,7 +521,6 @@ dependencies = [
  "fb-core-log",
  "fb-core-planner",
  "fb-core-thread-pool",
- "fb-core-wwr",
  "fb-integrals-mmd",
  "fb-integrals-one-electron-overlap",
  "fb-io-basis",
@@ -531,13 +528,11 @@ dependencies = [
  "fb-io-sad",
  "fb-io-xyz",
  "fb-pipeline-guess",
- "fb-recipes-matrix-ao",
  "fb-sad",
  "fb-test-support",
  "serde",
  "serde_json",
  "toml",
- "wwr-sys",
 ]
 
 [[package]]
@@ -551,7 +546,6 @@ dependencies = [
  "fb-core-planner",
  "fb-core-thread-pool",
  "fb-core-types",
- "fb-core-wwr",
  "fb-integrals-mmd",
  "fb-integrals-one-electron-overlap",
  "fb-io-basis",
@@ -561,7 +555,6 @@ dependencies = [
  "fb-molecule",
  "fb-sad",
  "fb-test-support",
- "wwr-sys",
 ]
 
 [[package]]
@@ -583,7 +576,6 @@ dependencies = [
  "fb-molecule-nuclei",
  "fb-recipes-blas",
  "fb-recipes-diagonalize",
- "fb-recipes-matrix-ao",
  "fb-recipes-orthogonalize",
  "fb-test-support",
 ]
@@ -626,7 +618,6 @@ dependencies = [
  "fb-io-basis",
  "fb-io-xyz",
  "fb-recipes-blas",
- "log",
 ]
 
 [[package]]
