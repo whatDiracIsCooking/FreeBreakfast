@@ -40,7 +40,9 @@ device buffer through `fb_core_wwr::runtime::tests::DeviceBytes`.
 **A new rule joins the register.** `docs/rules.md` lists every rule these
 docs state and what checks it; a rule added to a doc gets a row there with
 its check, or `**unenforced**` if nothing can yet. `fb-doc-check` fails a
-row that names a check that does not exist.
+row that names a check that does not exist. A PR that builds a feature whose
+row is `**unenforced** (not built: ...)` ships that row's check and flips it
+(`docs/rules.md`, "Enforced at birth").
 
 **Gates:** `devtools/test.py pr --only cargo` from the repo root, and the
 commit hook's `cargo fmt --check` and clippy `-D warnings`. The hook's

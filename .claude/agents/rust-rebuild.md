@@ -101,7 +101,9 @@ full, with its check, in the section cited.
 If your change states a new rule in a doc, or changes one, the same PR adds
 or edits its row in `docs/rules.md` with what checks it: a lint, a type, a
 test. Write the check if you can. Mark the row unenforced only when nothing
-can check it yet, and say why in the PR. The `fb-doc-check` crate fails a
+can check it yet, and say why in the PR. If you build a feature whose row
+waits for it, you ship that row's check (`docs/rules.md`, "Enforced at
+birth"). The `fb-doc-check` crate fails a
 row naming a check that does not exist, a section citation whose heading
 is gone, and a crate holding `unsafe` that the docs do not list, so run it
 after any doc edit:
