@@ -16,8 +16,10 @@
 //! - **A copy between kinds that is a node's whole work is a planner copy
 //!   node** (`docs/memory.md`, "The table"): an `impl GpuTask` whose `run`
 //!   calls `memcpy_p2d` or `memcpy_d2p` and no other free function, its
-//!   other calls the views' and iterators' methods, is in [`COPY_TASKS`]:
-//!   the planner's own three.
+//!   other calls the views' and iterators' methods, and an `impl CpuTask`
+//!   whose `run` names its heap view and does nothing but a
+//!   `copy_from_slice` between rows, are in [`COPY_TASKS`]: the planner's
+//!   own three, and the two host halves of its heap copies.
 //!
 //! Every member's `.rs` is read, and the two at `rust/`'s top that the
 //! `build.rs` files include. Tier 3: it reads files and nothing else.
@@ -124,14 +126,16 @@ const LAUNCH_SHAPE: &[&str] = &[
     "launchbounds",
 ];
 
-/// The `GpuTask`s whose whole work is a copy between kinds, as `(file, how
+/// The tasks whose whole work is a copy between kinds, as `(file, how
 /// many, why)`, counted as [`ERROR_LOGS`] is, in non-test code: everything
 /// else adds a copy node (`Dag::upload`, `Dag::download`,
-/// `Dag::download_rows`). The list only shrinks.
+/// `Dag::download_rows`, `Dag::upload_heap`, `Dag::download_heap`). The
+/// list only shrinks.
 const COPY_TASKS: &[(&str, usize, &str)] = &[(
     "core/planner/src/copy.rs",
-    3,
-    "the planner's copy nodes themselves, `Dag::upload`, `Dag::download` and `Dag::download_rows`",
+    5,
+    "the planner's copy nodes themselves, `Dag::upload`, `Dag::download` and `Dag::download_rows`, \
+     and the host halves of `Dag::upload_heap` and `Dag::download_heap`",
 )];
 
 /// The checks that name what they forbid: this file, and
@@ -434,7 +438,10 @@ fn block_end(code: &str, from: usize) -> Option<(usize, usize)> {
 /// test items removed) whose `run` is a copy between kinds alone: it calls
 /// `memcpy_p2d` or `memcpy_d2p`, and every other call is a method (`.name(`)
 /// or `Ok(`, never another free or path function, a kernel's launch, a
-/// BLAS call or another copy.
+/// BLAS call or another copy. And of each `impl … CpuTask … for` whose
+/// `run` is a copy between a heap row and a pinned one alone: its heap
+/// view is named, not `_`, and its calls are `copy_from_slice` and the
+/// views' `get`, `take_mut` and `iteration`, nothing else.
 fn copy_tasks(code: &str) -> Vec<usize> {
     let mut found = Vec::new();
     let mut from = 0;
@@ -445,7 +452,9 @@ fn copy_tasks(code: &str) -> Vec<usize> {
         };
         let header = &code[at..open];
         let bounded = at == 0 || !is_ident(code.as_bytes()[at - 1]);
-        if !bounded || !idents(header).any(|(_, w)| w == "GpuTask") {
+        let gpu = idents(header).any(|(_, w)| w == "GpuTask");
+        let cpu = idents(header).any(|(_, w)| w == "CpuTask");
+        if !bounded || !(gpu || cpu) {
             continue;
         }
         let body = &code[open..close];
@@ -465,12 +474,17 @@ fn copy_tasks(code: &str) -> Vec<usize> {
             }
             let method = run_body[..i].trim_end().ends_with('.');
             match w {
-                "memcpy_p2d" | "memcpy_d2p" => copies += 1,
-                _ if method => {}
+                "memcpy_p2d" | "memcpy_d2p" if gpu => copies += 1,
+                "copy_from_slice" if cpu && method => copies += 1,
+                "get" | "take_mut" | "iteration" if cpu && method => {}
+                _ if gpu && method => {}
                 // A tuple pattern or a condition, not a call.
                 "Ok" | "Some" | "for" | "in" | "if" | "while" | "match" | "return" | "let" => {}
                 _ => other = true,
             }
+        }
+        if cpu && !names_its_heap_view(&body[run..run_open]) {
+            other = true;
         }
         if copies > 0 && !other {
             found.push(line_of(code, at));
@@ -478,6 +492,19 @@ fn copy_tasks(code: &str) -> Vec<usize> {
         from = close;
     }
     found
+}
+
+/// Whether a CPU task's `run` parameters, `params`, bind its heap view
+/// (`…: &Bufs<'_, Heap>`) to a name rather than `_`.
+fn names_its_heap_view(params: &str) -> bool {
+    idents(params).any(|(i, w)| {
+        let Some(colon) = (w == "Heap").then(|| params[..i].rfind(':')).flatten() else {
+            return false;
+        };
+        idents(&params[..colon])
+            .last()
+            .is_some_and(|(_, name)| name != "_")
+    })
 }
 
 fn copy_task_failures(files: &[(String, String)]) -> Vec<String> {
@@ -491,13 +518,15 @@ fn copy_task_failures(files: &[(String, String)]) -> Vec<String> {
                     (
                         p.clone(),
                         l,
-                        "a `GpuTask` whose `run` is a copy alone".to_owned(),
+                        "a task whose `run` is a copy alone".to_owned(),
                     )
                 })
         })
         .collect();
     against(
-        "a copy between kinds that is a node's whole work is a planner copy node:          `Dag::upload` or `Dag::download`, not a hand-written task          (docs/memory.md, \"The table\")",
+        "a copy between kinds that is a node's whole work is a planner copy node: \
+         `Dag::upload`, `Dag::download` or their heap forms, not a hand-written task \
+         (docs/memory.md, \"The table\")",
         &hits,
         COPY_TASKS,
     )
@@ -510,8 +539,10 @@ fn a_whole_copy_is_a_planner_copy_node() {
 }
 
 /// The copy scan finds a task whose `run` copies alone, in a loop or not,
-/// and passes one that copies beside a launch, a BLAS call or a device
-/// copy, and a CPU task.
+/// and a CPU task that copies between its heap and pinned rows alone; and
+/// passes one that copies beside a launch, a BLAS call or a device copy,
+/// a CPU task that copies a `Vec` in, one whose heap view is `_`, and one
+/// that computes what it copies.
 #[test]
 fn the_copy_scan_sees_a_copy_alone() {
     let alone = "impl GpuTask for Up {\n    fn layout(&self) {}\n    fn run(&self, r: &R, d: &Bufs, h: &CopyOnly, s: &S) -> Status {\n        \
@@ -520,7 +551,19 @@ fn the_copy_scan_sees_a_copy_alone() {
     let looped = "fn f() {}\nimpl<T> GpuTask for Down<T> {\n    fn run(&self) -> Status {\n        \
                   for (a, b) in self.rows.iter().zip(r) {\n            memcpy_d2p(h, b, d.get(a), s)?;\n        }\n        Ok(())\n    }\n}\n";
     assert_eq!(copy_tasks(looped), [2]);
+    let staged = "impl<T, P: StagingKind> CpuTask<P> for Stage<T> {\n    fn layout(&self) {}\n    \
+                  fn run(&self, w: &R, pinned: &Bufs<'_, P>, heap: &Bufs<'_, Heap>) -> Status {\n        \
+                  let from = self.start + heap.iteration() * self.len;\n        \
+                  pinned.take_mut(*w).copy_from_slice(&heap.get(self.src)[from..from + self.len]);\n        Ok(())\n    }\n}\n";
+    assert_eq!(copy_tasks(staged), [1]);
+    let unstaged = "impl CpuTask for Back {\n    fn run(&self, _: &(), p: &Bufs<'_, Pinned>, heap: &Bufs<'_, Heap>) -> Status {\n        \
+                    heap.take_mut(self.dst)[a..b].copy_from_slice(p.get(self.w));\n        Ok(())\n    }\n}\n";
+    assert_eq!(copy_tasks(unstaged), [1]);
     for busy in [
+        "impl CpuTask for C {\n    fn run(&self, _: &(), p: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {\n        \
+         p.take_mut(self.0).copy_from_slice(&self.data);\n        Ok(())\n    }\n}\n",
+        "impl CpuTask for C {\n    fn run(&self, _: &(), p: &Bufs<'_, Pinned>, heap: &Bufs<'_, Heap>) -> Status {\n        \
+         let x = heap.get(self.0);\n        p.take_mut(self.1).copy_from_slice(&scale(x));\n        Ok(())\n    }\n}\n",
         "impl GpuTask for G {\n    fn run(&self) -> Status {\n        memcpy_p2d(&mut a, h, x, s)?;\n        gemm(s.blas(), a)\n    }\n}\n",
         "impl GpuTask for G {\n    fn run(&self) -> Status {\n        memcpy_d2p(h, x, &f, s)?;\n        fb_recipes_sys::inverse_sqrt(s, n, f)\n    }\n}\n",
         "impl GpuTask for G {\n    fn run(&self) -> Status {\n        memcpy_d2d(&a, b, s)\n    }\n}\n",
