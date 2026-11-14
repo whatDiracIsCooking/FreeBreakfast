@@ -59,6 +59,9 @@ is wanted, the lock says which exact versions satisfy it, and
 `Dockerfile.base`'s `uv sync --frozen` installs that same lock — so the
 container and the host cannot drift. After editing `pyproject.toml`, run
 `uv lock` and commit the result. Do not hand-install with `uv pip install`.
+`rust/Cargo.lock` is tracked the same way: every cargo call of the gates and
+`cargo-lint` passes `--locked`, so a `Cargo.toml` edit committed without its
+lock fails them (`rust/README.md`, "Build and test").
 
 `devtools/doctor.sh` reports what is degraded. Run it first when something
 behaves oddly — **and run it on both sides**, because this repo has a host half

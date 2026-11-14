@@ -43,6 +43,8 @@ push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   `#[ignore = "tier 4: needs a GPU"]`: it runs (--include-ignored) only when
   wwr sees a device, and every case that did not run is printed in one list
   with its reason.
+  Every cargo call but `cargo fmt` passes --locked: a manifest change that
+  did not update rust/Cargo.lock fails the gate.
 
 pr: the gate before opening a PR (milestone-run requires it). Configure,
   build, ctest, then the fast pytest set. Of the C++ cases only each family's
@@ -94,6 +96,7 @@ cargo-lint: what the commit hook runs for a commit touching rust/, and CI's
   over the link-free members in each feature set that builds without the
   library (--no-default-features, and their defaults). Reads no config.sh.
   The members that link are linted by tier 4 of push and pr instead.
+  Its clippy passes --locked, as the gates' cargo calls do.
 
 push and pr run with FREE_BREAKFAST_FAST_TESTS=1, so every case under
 FBF_SKIP_IF_FAST_TESTS() skips; nightly is the unskipped run. Each
@@ -992,9 +995,18 @@ def cargo_env() -> dict[str, str]:
     return dict(os.environ, CARGO_TARGET_DIR=str(CARGO_TARGET_DIR))
 
 
+def cargo_cmd(sub: str, *args: str) -> list[str]:
+    """`cargo <sub>` as every gate runs it: --locked, so a manifest whose
+    rust/Cargo.lock was not updated with it fails here, loudly, instead of
+    resolving whatever crates.io serves today (rust/README.md, "Build and
+    test"). `cargo fmt` alone is run bare: it resolves nothing and takes no
+    --locked."""
+    return ["cargo", sub, "--locked", *args]
+
+
 def cargo_query(*args: str) -> str:
     proc = subprocess.run(
-        ["cargo", *args],
+        cargo_cmd(*args),
         cwd=RUST_DIR,
         env=cargo_env(),
         capture_output=True,
@@ -1002,8 +1014,12 @@ def cargo_query(*args: str) -> str:
         check=False,
     )
     if proc.returncode != 0:
-        why = proc.stderr.strip().splitlines()[-1:] or ["no output"]
-        raise CargoError(f"cargo {args[0]} exited {proc.returncode}: {why[0]}")
+        # cargo's `error:` line, not the `help:` after it: a stale lock's
+        # last line says how to regenerate it, not that it is stale.
+        lines = proc.stderr.strip().splitlines()
+        errors = [line for line in lines if line.startswith("error")]
+        why = (errors or lines[-1:] or ["no output"])[0]
+        raise CargoError(f"cargo {args[0]} exited {proc.returncode}: {why}")
     return proc.stdout
 
 
@@ -1107,7 +1123,7 @@ def cargo_half(
     steps = (
         (
             "cargo test",
-            ["cargo", "test", *jflag, "--no-default-features"]
+            cargo_cmd("test", *jflag, "--no-default-features")
             + [a for c in tested for a in ("-p", c)],
             # The slow cases return at once (rust/docs/testing.md, "Slow
             # cases"), as FBF_SKIP_IF_FAST_TESTS() skips in the C++ half.
@@ -1115,13 +1131,13 @@ def cargo_half(
         ),
         (
             "cargo doc --no-default-features",
-            ["cargo", "doc", *jflag, "--no-deps", "--no-default-features"]
+            cargo_cmd("doc", *jflag, "--no-deps", "--no-default-features")
             + [a for c in tested for a in ("-p", c)],
             {"RUSTDOCFLAGS": "-D warnings"},
         ),
         (
             "cargo doc",
-            ["cargo", "doc", *jflag, "--no-deps"]
+            cargo_cmd("doc", *jflag, "--no-deps")
             + [a for c in documented for a in ("-p", c)],
             {"RUSTDOCFLAGS": "-D warnings"},
         ),
@@ -1361,7 +1377,7 @@ def cargo_tier4(
     # build: first, so a lint error fails in a check build, and outside the
     # card lock, since clippy needs no device. The same env as the tests,
     # so a build script's environment does not differ between the two.
-    clippy = ["cargo", "clippy", *jflag, "--all-targets", *selected]
+    clippy = cargo_cmd("clippy", *jflag, "--all-targets", *selected)
     clippy += ["--", "-D", "warnings"]
     start = time.monotonic()
     with log.open("a") as f:
@@ -1386,7 +1402,7 @@ def cargo_tier4(
             say(f"{tag}:   {line}", err=True)
         return proc.returncode
     say(f"{tag}:   tier 4 clippy: ok ({time.monotonic() - start:.0f}s)", log=log)
-    cmd = ["cargo", "test", *jflag, *selected, "--", "--test-threads=1"]
+    cmd = cargo_cmd("test", *jflag, *selected, "--", "--test-threads=1")
     with Card(backend, cfg):
         count, seen = device_probe(build)
         say(f"{tag}:   {seen}")
@@ -1446,7 +1462,7 @@ def cmd_cargo_lint() -> int:
         say(f"cargo-lint: cannot list the link-free crates: {e}", err=True)
         return 1
 
-    clippy = ["cargo", "clippy", "--all-targets"]
+    clippy = cargo_cmd("clippy", "--all-targets")
     lint = "-- -D warnings".split()
     rc = 0
     for cmd in (

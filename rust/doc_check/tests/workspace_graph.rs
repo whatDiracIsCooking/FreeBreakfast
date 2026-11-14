@@ -536,10 +536,13 @@ fn rust_root() -> PathBuf {
     root.canonicalize().unwrap_or(root)
 }
 
-/// The workspace's package graph, read with `guppy`.
+/// The workspace's package graph, read with `guppy`, under `--locked` as
+/// every cargo call of the gates is, so the test never rewrites
+/// `Cargo.lock`.
 fn read_graph(root: &Path) -> Graph {
     let graph = guppy::MetadataCommand::new()
         .manifest_path(root.join("Cargo.toml"))
+        .other_options(["--locked"])
         .build_graph()
         .expect("cargo metadata over rust/Cargo.toml");
     let mut members = BTreeMap::new();
