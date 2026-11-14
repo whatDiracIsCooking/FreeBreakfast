@@ -1,0 +1,16 @@
+plan: 2 tasks, GPU workers: 1
+ task  worker  lane    name: after
+    0       0  cpu     nuclei
+    1       0  stream  nuclei upload: after 0
+worker 0 device table: 2 rows, 280 bytes
+peak: 96 bytes at node 1
+    offset      bytes  owner   life     name: users (w writes, r reads)
+       256         24  edge    1-1      nuclei z: 1w
+         0         72  edge    1-1      nuclei c: 1w
+handoffs:
+worker 0 pinned table: 2 rows, 280 bytes
+peak: 96 bytes at node 0
+    offset      bytes  owner   life     name: users (w writes, r reads)
+       256         24  edge    0-1      nuclei z: 0w 1r
+         0         72  edge    0-1      nuclei c: 0w 1r
+handoffs:
