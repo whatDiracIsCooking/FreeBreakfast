@@ -626,43 +626,58 @@ fn admit_is_exact_and_names_the_peak() {
 }
 
 /// The builder refuses a read the plan could not order: before the
-/// producer, at it, twice, of scratch, or of another table's row.
+/// producer, at it, twice, of scratch, or of another table's row. Each is a
+/// contract of [`TableBuilder::read`], and through it of [`Layout::read`].
 #[test]
+#[cfg(debug_assertions)] // the contracts are compiled out of release
 fn builder_refuses_misordered_reads() {
-    assert!(
-        panic_message(|| {
-            let mut b = TableBuilder::<Device>::new();
-            let r = b.output::<f64>(3, "A", 1);
-            b.read(3, r);
-        })
-        .contains("node 3 reads it, but node 3 produces it")
-    );
-    assert!(
-        panic_message(|| {
-            let mut b = TableBuilder::<Device>::new();
-            let r = b.output::<f64>(0, "A", 1);
-            b.read(1, r);
-            b.read(1, r);
-        })
-        .contains("already uses it")
-    );
-    assert!(
-        panic_message(|| {
-            let mut b = TableBuilder::<Device>::new();
-            let r = b.scratch::<f64>(0, "A", 1);
-            b.read(1, r);
-        })
-        .contains("only an output")
-    );
-    assert!(
-        panic_message(|| {
-            let mut a = TableBuilder::<Device>::new();
-            let r = a.output::<f64>(0, "A", 1);
-            let t = TableBuilder::<Device>::new().build();
-            let _ = t.offset(r);
-        })
-        .contains("another table")
-    );
+    let refused = |f: fn(&mut TableBuilder<Device>)| {
+        panic_message(move || f(&mut TableBuilder::<Device>::new()))
+    };
+    let m = refused(|b| {
+        let r = b.output::<f64>(3, "A", 1);
+        b.read(2, r);
+    });
+    assert!(m.contains("a row is read after its producer"), "{m}");
+    let m = refused(|b| {
+        let r = b.output::<f64>(3, "A", 1);
+        b.read(3, r);
+    });
+    assert!(m.contains("a row is read after its producer"), "{m}");
+    let m = refused(|b| {
+        let r = b.output::<f64>(0, "A", 1);
+        b.read(1, r);
+        b.read(1, r);
+    });
+    assert!(m.contains("a node uses a row once"), "{m}");
+    let m = refused(|b| {
+        let r = b.output::<f64>(0, "A", 1);
+        b.node(1).read(r);
+        b.node(1).read(r);
+    });
+    assert!(m.contains("a node uses a row once"), "{m}");
+    let m = refused(|b| {
+        let r = b.scratch::<f64>(0, "A", 1);
+        b.read(1, r);
+    });
+    assert!(m.contains("only an output is read by another node"), "{m}");
+    let m = refused(|b| {
+        let r = TableBuilder::<Device>::new().output::<f64>(0, "A", 1);
+        b.read(1, r);
+    });
+    assert!(m.contains("a row of this table"), "{m}");
+}
+
+/// A laid-out table refuses another table's row, in every build: a row's
+/// offset is what a view's pointer is made from.
+#[test]
+fn a_table_refuses_another_tables_row() {
+    let m = panic_message(|| {
+        let r = TableBuilder::<Device>::new().output::<f64>(0, "A", 1);
+        let t = TableBuilder::<Device>::new().build();
+        let _ = t.offset(r);
+    });
+    assert!(m.contains("a row of another table"), "{m}");
 }
 
 use super::kind::Heap;

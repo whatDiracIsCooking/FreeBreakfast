@@ -167,30 +167,23 @@ impl<K: Kind> TableBuilder<K> {
     ///
     /// The plan must have an edge from the row's producer to `pos`: the
     /// table records the use, the plan orders it.
-    ///
-    /// # Panics
-    /// If `row` is not an output of this table, or `pos` is not past its
-    /// producer, or `pos` already uses it.
+    #[debug_requires(row.table == self.id, "a row of this table")]
+    #[debug_requires(
+        self.rows.get(row.index).is_some_and(|r| r.owner == Owner::Edge),
+        "only an output is read by another node"
+    )]
+    #[debug_requires(
+        self.rows.get(row.index).is_some_and(|r| r.users[0].0 < pos),
+        "a row is read after its producer"
+    )]
+    #[debug_requires(
+        self.rows
+            .get(row.index)
+            .is_some_and(|r| r.users.iter().all(|&(p, _)| p != pos)),
+        "a node uses a row once"
+    )]
     pub fn read<T: Element>(&mut self, pos: usize, row: RowId<K, T>) {
-        assert_eq!(row.table, self.id, "a row of another table");
-        let info = &mut self.rows[row.index];
-        assert!(
-            info.owner == Owner::Edge,
-            "{}: only an output is read by another node",
-            info.name
-        );
-        let producer = info.users[0].0;
-        assert!(
-            pos > producer,
-            "{}: node {pos} reads it, but node {producer} produces it",
-            info.name
-        );
-        assert!(
-            info.users.iter().all(|&(p, _)| p != pos),
-            "{}: node {pos} already uses it",
-            info.name
-        );
-        info.users.push((pos, Access::Read));
+        self.rows[row.index].users.push((pos, Access::Read));
     }
 
     /// Node `pos` writes the output `row`, which a node before its loop
@@ -444,10 +437,7 @@ impl<K: Kind> Layout<'_, K> {
 
     /// This node reads the output `row`, which an earlier node produced.
     /// Returns `row`, so a task's rows can be written `h: l.read(self.h)`.
-    ///
-    /// # Panics
-    /// As [`TableBuilder::read`]: if `row` is not an output of this table,
-    /// or is this node's own, or is already read by it.
+    /// [`TableBuilder::read`]'s contracts hold here too.
     pub fn read<T: Element>(&mut self, row: RowId<K, T>) -> RowId<K, T> {
         self.used += 1;
         self.builder.read(self.pos, row);
