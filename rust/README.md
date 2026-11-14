@@ -1290,3 +1290,18 @@ gfx1200 (HIP), the `hip` preset: `devtools/test.py pr --only cargo --all`
 passes, tiers 1 to 3 328 tests, tier 4 343, none skipped; the records
 still match the C++ tree's at their bars, `zeta`, `ea` and `eb` bitwise.
 CUDA not run.
+
+2026-11-14, counted replay (#1601): a counted loop runs its body for a
+trip count and a depth `R` fixed at planning, with no decision, and
+iteration `k` waits on iteration `k - R` alone (the ring). Each body node
+runs after itself in the iteration before. The body's rows are `R`
+copies of its table, and each GPU body node has an event pair per trip.
+A batched tensor uploaded on one lane and reduced on another came out
+bitwise equal to the ordered reduce, and the record held no host wait
+for the loop. Dropping the ring by hand changed every element. On the
+RTX 3080 (CUDA), the `default` preset: `devtools/test.py pr --only cargo
+--all` passed, with 335 tier 3 tests and 353 tier 4 tests, none skipped,
+and every plan golden unchanged. On the gfx1200 (HIP), the `hip` preset:
+the same gate passed with the same counts, none skipped. On both cards, a
+wait on an event was released by the recording that came before it was
+enqueued.
