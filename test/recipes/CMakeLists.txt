@@ -70,6 +70,7 @@ add_executable(
   einsum_gpu.cpp
   expm_gpu.cpp
   footprint_gpu.cpp
+  inverse_sqrt_gpu.cpp
   lu_gpu.cpp
   matrix_ao_gpu.cpp
   norm_gpu.cpp
@@ -86,12 +87,17 @@ set_target_properties(
                                               CXX_SCAN_FOR_MODULES ON
 )
 
+# free_breakfast::recipes::orthogonalize::device has no module face:
+# inverse_sqrt_gpu.cpp drives its launcher through the bridge header, so its
+# .cu stays out of this executable (test/gtest's sort_bounds is the same
+# arrangement).
 target_link_libraries(
   free_breakfast_recipes_tests_gpu
   PRIVATE free_breakfast::core
           free_breakfast::core::resources
           free_breakfast::recipes
           free_breakfast::basis
+          free_breakfast::recipes::orthogonalize::device
           free_breakfast::test::support
           GTest::gtest
           GTest::gtest_main
