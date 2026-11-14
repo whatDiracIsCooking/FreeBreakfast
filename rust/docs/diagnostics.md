@@ -318,6 +318,16 @@ before the abort, which runs no exit handlers. A panic in a test binary goes
 through the same hook, so a tripped contract reads the same in a log as in the
 test's output.
 
+The hook is `fb-core-log`'s, installed with the logger: by `init`, which each
+binary's `main` calls first, and by every other function of the crate, so a
+test binary has it from its first call into the logger. Under abort it always
+prints the backtrace, which is the last chance to; under unwinding, where the
+panic may be caught, std's hook follows it, so a test harness still shows a
+failing test's panic in its report and prints the backtrace when
+`RUST_BACKTRACE` asks. Cargo builds test targets unwinding even under `--release`, so `cargo
+test --release` keeps `#[should_panic]`. `doc_check/tests/panic_profile.rs`
+checks the profile line and `core/log/tests/panic_hook.rs` the hook.
+
 **Contracts are debug-only**, as the crate already has them, so a release
 build pays nothing for a check and a debug build fails loudly on one.
 

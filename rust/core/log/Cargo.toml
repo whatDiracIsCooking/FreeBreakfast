@@ -12,3 +12,6 @@ workspace = true
 jiff.workspace = true
 libc.workspace = true
 log.workspace = true
+
+[dev-dependencies]
+libc.workspace = true

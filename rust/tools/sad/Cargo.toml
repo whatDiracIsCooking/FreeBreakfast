@@ -18,6 +18,7 @@ path = "src/main.rs"
 fb-atom.workspace = true
 fb-basis.workspace = true
 fb-core-error-handling.workspace = true
+fb-core-log.workspace = true
 fb-core-thread-pool.workspace = true
 fb-core-types.workspace = true
 fb-io-basis.workspace = true

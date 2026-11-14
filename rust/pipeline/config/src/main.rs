@@ -44,6 +44,8 @@ fn run(args: &[String]) -> Status {
 }
 
 fn main() -> ExitCode {
+    // The logger and its panic hook: a panic is a critical line before the
+    // release abort.
     log::init();
     let args: Vec<String> = std::env::args().collect();
     let status = run(&args);

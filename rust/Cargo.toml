@@ -126,6 +126,13 @@ missing_panics_doc = "deny"
 # at the caller's span, so clippy flags every contract. fb-doc-check's
 # tests/contracts.rs holds that rule instead.
 
+# A release build aborts on a panic; dev and test unwind, which
+# #[should_panic] needs (docs/diagnostics.md, "Panics and profiles"). Cargo
+# builds every test target and its dependencies unwinding even under
+# --release, so `cargo test --release` still catches its panics.
+[profile.release]
+panic = "abort"
+
 # fb-sad's atomic SCF optimized in the debug build too, contracts still on:
 # fb-io-sad's bitwise check of the stamps runs it for H, C and O of every
 # compiled-in set, 29 s unoptimized. Rust neither contracts nor reassociates
