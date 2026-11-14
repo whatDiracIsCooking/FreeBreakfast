@@ -40,5 +40,5 @@ pub fn add_step(
 ) -> fb_core_error_handling::Result<DensityFitted> {
     dag.blas_workspace(0);
     let classes = fb_integrals_mmd::add_records(dag, 0, basis).expect("the library loads");
-    add_df_eri(dag, 0, molecule, basis, &classes, aux)
+    add_df_eri(dag, 0, molecule, basis, &classes, &mut None, aux)
 }

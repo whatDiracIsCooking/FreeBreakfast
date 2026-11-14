@@ -377,9 +377,9 @@ fn refusal(kind: ErrorKind, path: &Path, text: &str, e: &toml::de::Error) -> Err
 /// `overlap.npy`. For [`Calculation::Guess`]: [`add_sad_guess`], or
 /// [`add_loaded_guess`] when [`GuessStep::from`] is set, then
 /// [`add_write_host_npy`] of D to `d.npy`. For [`Calculation::Rhf`]: the
-/// nuclei ([`add_nuclei`]), the records, S and H ([`add_core_hamiltonian`])
-/// over one staging of the spherical transform, the fitted integrals
-/// ([`add_df_eri`]), that guess uploaded ([`add_guess_upload`]),
+/// nuclei ([`add_nuclei`]), the records, S, H ([`add_core_hamiltonian`])
+/// and the fitted integrals ([`add_df_eri`]) over one staging of the
+/// orbital basis's spherical transform, that guess uploaded ([`add_guess_upload`]),
 /// `X = S^(-1/2)` ([`add_orthogonalize`], at the default floor) and the
 /// loop ([`add_scf`]); then [`add_write_npy`] of C to `c.npy` and of D to
 /// `d.npy`, and `download scf.json` (stream: ε into a pinned row) and
@@ -440,11 +440,19 @@ pub fn plan(
             let classes = add_records(&mut dag, 0, &basis)?;
             let s = add_overlap(&mut dag, 0, &basis, &classes, &mut u);
             let h = add_core_hamiltonian(&mut dag, 0, &basis, &classes, nuclei, &mut u)?;
-            let eri = add_df_eri(&mut dag, 0, &molecule, &basis, &classes, &eri.aux_basis)
-                .map_err(|e| match e.kind {
-                    ErrorKind::InvalidConfig => keyed(e, "[eri] aux_basis"),
-                    _ => e,
-                })?;
+            let eri = add_df_eri(
+                &mut dag,
+                0,
+                &molecule,
+                &basis,
+                &classes,
+                &mut u,
+                &eri.aux_basis,
+            )
+            .map_err(|e| match e.kind {
+                ErrorKind::InvalidConfig => keyed(e, "[eri] aux_basis"),
+                _ => e,
+            })?;
             let guess = add_guess(&mut dag, config, &basis, &molecule)?;
             let guess = add_guess_upload(&mut dag, 0, &basis, guess);
             let lwork = lwork(n)?;

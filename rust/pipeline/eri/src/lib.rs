@@ -20,9 +20,10 @@
 //! Then it adds, on one GPU worker:
 //!
 //! - the three-center integrals (mn|P)
-//!   ([`add_three_center`]: `harmonics` for the orbital basis and for the
-//!   aux one, `three-center download`, `three-center tables`,
-//!   `three-center`), over the orbital records the caller built once;
+//!   ([`add_three_center`]: `harmonics` for the aux basis, and for the
+//!   orbital one unless the caller's slot holds its U already,
+//!   `three-center download`, `three-center tables`, `three-center`), over
+//!   the orbital records and U the caller built once;
 //! - the metric M ([`add_metric`]: `metric tables`, `metric`, `spherical
 //!   transform`, `metric average`), reading the aux basis's U from the
 //!   `harmonics` row the three-center integrals added, so U_aux is staged
@@ -59,7 +60,7 @@
 #![forbid(unsafe_code)]
 
 use fb_basis::BasisSet;
-use fb_core_arena::{Device, RowId};
+use fb_core_arena::{Device, Pinned, RowId};
 use fb_core_error_handling::{Error, Result};
 use fb_core_planner::Dag;
 use fb_integrals_eri_density_fitting_fit::add_density_fit;
@@ -90,10 +91,12 @@ pub struct DensityFitted {
 /// [`fb_io_basis::is_builtin_aux_basis`] folds (`"cc-pvdz-jkfit"`); it is
 /// resolved and placed over `molecule`, the atoms `basis` is placed on,
 /// here at planning. `classes` are the records of `basis`, added on
-/// `worker` by `fb_integrals_mmd::add_records` earlier in `dag`. The tasks
-/// are the crate doc's: (mn|P), then M, then the fit, the aux basis's U
-/// staged once for (mn|P) and M; the orbital basis's U is staged here for
-/// (mn|P) alone. The step declares no
+/// `worker` by `fb_integrals_mmd::add_records` earlier in `dag`. `u` is the
+/// plan's slot for the orbital basis's U, the one its one-electron
+/// matrices fill (`fb_recipes_matrix_ao::add_harmonics`): (mn|P) reads the
+/// row it holds, and when it is `None` `harmonics` is added here and its
+/// row left in it. The tasks are the crate doc's: (mn|P), then M, then the
+/// fit, the aux basis's U staged once for (mn|P) and M. The step declares no
 /// BLAS workspace; the plan's caller does
 /// ([`Dag::blas_workspace`]).
 ///
@@ -118,6 +121,7 @@ pub fn add_df_eri(
     molecule: &Molecule,
     basis: &BasisSet,
     classes: &[ClassRows],
+    u: &mut Option<RowId<Pinned, f64>>,
     aux_basis: &str,
 ) -> Result<DensityFitted> {
     if !fb_io_basis::is_builtin_aux_basis(aux_basis) {
@@ -132,7 +136,7 @@ pub fn add_df_eri(
             e
         })?;
     let mut u_aux = None;
-    let tensor = add_three_center(dag, worker, basis, classes, &aux, &mut None, &mut u_aux)?;
+    let tensor = add_three_center(dag, worker, basis, classes, &aux, u, &mut u_aux)?;
     let metric = add_metric(dag, worker, &aux, &mut u_aux)?;
     let (nao, naux) = (basis.nao_sphe() as usize, aux.nao_sphe() as usize);
     let (b, l) = add_density_fit(dag, worker, nao, naux, metric, tensor)?;
