@@ -16,6 +16,7 @@ answer live in six documents of their own, cited rather than restated:
 | [`testing.md`](testing.md) | Contracts, tiers and levels, what runs when, selection, redundancy, regression, fuzzing, sanitizers |
 | [`diagnostics.md`](diagnostics.md) | Timing, logging, errors, panics |
 | [`documentation.md`](documentation.md) | rustdoc, the C header's comments, equations, references, the config reference, the book, diagrams, publishing |
+| [`rules.md`](rules.md) | The register: every rule these documents state, where it is stated, and what checks it, or that nothing does |
 
 A feature is a DAG of tasks ([`programming_model.md`](programming_model.md),
 "Three owners"), so most questions are asked per task and a few per DAG.
