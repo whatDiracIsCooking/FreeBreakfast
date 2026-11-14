@@ -729,6 +729,79 @@ def test_tier4_skips_without_cmake(
     assert "skipping tier 4" in capsys.readouterr().out
 
 
+# --- the nightly's cargo half (#1459) ----------------------------------------
+
+
+def test_nightly_cargo_runs_the_slow_cases_in_both_tiers(
+    fake_cargo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Cleared whatever the caller's shell exported, as the C++ half's is.
+    monkeypatch.setenv("FREE_BREAKFAST_FAST_TESTS", "1")
+    _tier4(monkeypatch, tmp_path, devices=1)  # installs the stand-ins
+    fake_cargo.write_text("")
+    Path(f"{fake_cargo}.fast").write_text("")
+    capsys.readouterr()
+    log = tmp_path / "night.log"
+    rc, counts = gates.nightly_cargo(
+        "nightly", {"GPU_HIP_PRESETS": "hip"}, "hip", "4", log
+    )
+    assert rc == 0
+    # Tier 3's 5 passed and 1 ignored, then tier 4's 2 passed.
+    assert counts == [7, 0, 1]
+    assert Path(f"{fake_cargo}.fast").read_text() == "unset\nunset\n"
+    calls = fake_cargo.read_text().splitlines()
+    tests = [c for c in calls if c.startswith("test")]
+    assert tests == [
+        "test -j 4 --no-default-features -p fb-core-log",
+        # Every crate's tier 4, as `pr --all`.
+        "test -j 4 -p fb-core-wwr -- --test-threads=1 --include-ignored",
+    ]
+    out = capsys.readouterr().out
+    assert out.count("slow cases run (no FREE_BREAKFAST_FAST_TESTS)") == 2
+    assert "FREE_BREAKFAST_FAST_TESTS=1" not in out
+    # The counts are in the night's log, not only on stdout.
+    text = log.read_text()
+    assert "nightly:   cargo test: 5 passed, 0 failed, 1 ignored" in text
+    assert "nightly:   tier 4: 2 passed, 0 failed, 0 ignored" in text
+
+
+def test_a_failing_nightly_cargo_tier3_runs_no_tier4(
+    fake_cargo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAKE_CARGO_TEST_RC", "101")
+    monkeypatch.setattr(
+        gates, "cargo_tier4", lambda *_a, **_k: pytest.fail("tier 4 ran")
+    )
+    rc, _ = gates.nightly_cargo("nightly", {}, "hip", "4", tmp_path / "n.log")
+    assert rc == 101
+
+
+def test_nightly_dry_run_lists_a_cargo_half_without_the_fast_switch(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert gates.main(["nightly", "--dry-run", "--preset", "hip"]) == 0
+    out = capsys.readouterr().out
+    cargo = [line for line in out.splitlines() if "cargo half" in line]
+    assert len(cargo) == 1
+    assert "tier 4 of every crate under the hip card lock" in cargo[0]
+    assert "slow cases included" in cargo[0]
+    assert "every case, unskipped (no FREE_BREAKFAST_FAST_TESTS)" in out
+    assert "FREE_BREAKFAST_FAST_TESTS=1" not in out
+
+
+def test_testing_md_the_nightly_names_the_cargo_half() -> None:
+    text = (_ROOT / "docs" / "testing.md").read_text()
+    night = text.split("\n## The nightly\n", 1)[1].split("\n### ", 1)[0]
+    assert "cargo half" in night
+    assert "nightly --dry-run`" in night
+    assert "`cargo=`" in night
+
+
 # --- the GPU batch split -----------------------------------------------------
 
 

@@ -7,7 +7,7 @@
                         [--report DIR] [--record] [-- <ctest args>]
   devtools/test.py nightly [--mode auto|nightly|weekly] [--rev REF]
                         [--preset NAME] [-j N] [--report DIR]
-                        [--issue-title TITLE] [-- <ctest args>]
+                        [--issue-title TITLE] [--dry-run] [-- <ctest args>]
   devtools/test.py cargo-lint
 
 push: what `git push` runs, by pre-commit's pre-push stage. It reads the
@@ -69,7 +69,9 @@ nightly: what the timer runs (docs/testing.md "The nightly"). Fetch origin,
   checkout's own test.py there: a build (warm; on NIGHTLY_WEEKLY_DAY, or with
   --mode weekly, clean with the compiler launcher off), then under the card
   lock every C++ case unskipped, then (the card released) the whole pytest
-  suite and cross-backend-check.sh, and a `nightly` or `weekly` record appended to
+  suite, then the cargo half as `pr --only cargo --all` runs it but with the
+  slow cases (no FREE_BREAKFAST_FAST_TESTS; tier 4 under the card lock again),
+  and cross-backend-check.sh, and a `nightly` or `weekly` record appended to
   `metrics`, then the slow-test report over it (devtools/slow_rule.py).
   Build and GPU run never overlap. CUDA (--preset default) by design.
   Logged to <report>/<mode>-<stamp>-<rev>-<preset>.log under the primary
@@ -78,9 +80,11 @@ nightly: what the timer runs (docs/testing.md "The nightly"). Fetch origin,
   it comments that it recovered and closes it (devtools/nightly_issue.py).
     --issue-title TITLE  file under this title (default: "Nightly fails on
                    origin/main" for origin/main; another rev files nothing)
+    --dry-run      print the night's phases and what each runs; nothing
+                   is fetched, built or run
     -- <args>      a reduced run: passed to ctest, and they select the GPU
-                   batches; no pytest, no slow-test report, and the record
-                   is `manual`, kept out of the timing series
+                   batches; no pytest, no cargo half, no slow-test report,
+                   and the record is `manual`, kept out of the timing series
 
 cargo-lint: what the commit hook runs for a commit touching rust/, and CI's
   lint job: `cargo fmt --check`, and `cargo clippy --all-targets -D warnings`
@@ -1059,7 +1063,17 @@ def cargo_counts(lines: list[str]) -> tuple[list[str], list[int]]:
     return rows, totals
 
 
-def cargo_half(tag: str, jobs: str, log: Path) -> int:
+def slow_line(fast: bool) -> str:
+    """The line beside each cargo test run's counts that says whether its
+    slow cases ran (libtest counts a returned one as passed)."""
+    if fast:
+        return "slow cases skipped (FREE_BREAKFAST_FAST_TESTS=1)"
+    return "slow cases run (no FREE_BREAKFAST_FAST_TESTS)"
+
+
+def cargo_half(
+    tag: str, jobs: str, log: Path, fast: bool = True, counts: list[int] | None = None
+) -> int:
     """The cargo half of the gates, tiers 1 to 3 (rust/docs/testing.md, "What
     runs when"): `cargo test --no-default-features` over link_free_crates'
     first set, in debug so every contract is on, then `cargo doc` with
@@ -1071,7 +1085,9 @@ def cargo_half(tag: str, jobs: str, log: Path) -> int:
     card nor library, so it never takes the card lock; skips, exit 0, where
     cargo is absent, as the C++ half does without its toolchain. Every line
     goes to `log`; the test counts, one line per binary that ran a case, to
-    stdout."""
+    stdout too. `fast` sets FREE_BREAKFAST_FAST_TESTS, so the slow cases
+    return at once (rust/docs/testing.md, "Slow cases"); the nightly clears
+    it. With `counts`, the [passed, failed, ignored] totals are added to it."""
     if shutil.which("cargo") is None:
         say(f"{tag}: cargo not found -- the Rust toolchain lives in the container")
         say(f"{tag}: skipping the cargo half")
@@ -1091,7 +1107,7 @@ def cargo_half(tag: str, jobs: str, log: Path) -> int:
             + [a for c in tested for a in ("-p", c)],
             # The slow cases return at once (rust/docs/testing.md, "Slow
             # cases"), as FBF_SKIP_IF_FAST_TESTS() skips in the C++ half.
-            {"FREE_BREAKFAST_FAST_TESTS": "1"},
+            {"FREE_BREAKFAST_FAST_TESTS": "1"} if fast else {},
         ),
         (
             "cargo doc --no-default-features",
@@ -1108,12 +1124,15 @@ def cargo_half(tag: str, jobs: str, log: Path) -> int:
     )
     for name, cmd, extra in steps:
         start = time.monotonic()
+        env = cargo_env() | extra
+        if not fast:
+            env.pop("FREE_BREAKFAST_FAST_TESTS", None)
         with log.open("a") as f:
             f.write(f"--- {name}: {' '.join(cmd)} ---\n")
             proc = subprocess.run(
                 cmd,
                 cwd=RUST_DIR,
-                env=cargo_env() | extra,
+                env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -1122,14 +1141,18 @@ def cargo_half(tag: str, jobs: str, log: Path) -> int:
             f.write(proc.stdout)
         lines = proc.stdout.splitlines()
         if name == "cargo test":
-            say(f"{tag}:   slow cases skipped (FREE_BREAKFAST_FAST_TESTS=1)")
-            rows, (passed, failed, ignored) = cargo_counts(lines)
+            say(f"{tag}:   {slow_line(fast)}", log=log)
+            rows, totals = cargo_counts(lines)
             for row in rows:
-                say(f"{tag}:   {row}")
+                say(f"{tag}:   {row}", log=log)
+            passed, failed, ignored = totals
             say(
                 f"{tag}:   cargo test: {passed} passed, {failed} failed,"
-                f" {ignored} ignored"
+                f" {ignored} ignored",
+                log=log,
             )
+            if counts is not None:
+                counts[:] = [c + t for c, t in zip(counts, totals, strict=True)]
         if proc.returncode != 0:
             say(f"{tag}: cargo half FAILED: {name} exited {proc.returncode}", err=True)
             for line in lines[-25:]:
@@ -1274,6 +1297,8 @@ def cargo_tier4(
     files: list[str] | None,
     jobs: str,
     log: Path,
+    fast: bool = True,
+    counts: list[int] | None = None,
 ) -> int:
     """Tier 4 of the cargo half (rust/docs/testing.md, "What runs when"):
     every test of the affected crates (affected_crates) that link the
@@ -1283,7 +1308,8 @@ def cargo_tier4(
     rust/target/<backend>. A device case runs only when wwr sees a device
     under the card lock; otherwise it is reported ignored, and every
     ignored case is printed in one list with its reason. Skips, exit 0,
-    where cmake is absent: the libraries cannot be built."""
+    where cmake is absent: the libraries cannot be built. `fast` and
+    `counts` as cargo_half's."""
     backend = backend_of_preset(preset, cfg)
     if why := toolchain_unavailable():
         say(f"{tag}: {why}")
@@ -1317,7 +1343,7 @@ def cargo_tier4(
             )
             return rc
     env = dict(
-        fast_env(),
+        fast_env() if fast else full_env(),
         CARGO_TARGET_DIR=str(RUST_DIR / "target" / backend),
         FB_RUST_BUILD_DIR=str(build),
     )
@@ -1342,18 +1368,24 @@ def cargo_tier4(
             )
             f.write(proc.stdout)
     lines = proc.stdout.splitlines()
-    rows, (passed, failed, ignored) = cargo_counts(lines)
+    rows, totals = cargo_counts(lines)
     for row in rows:
-        say(f"{tag}:   {row}")
-    say(f"{tag}:   slow cases skipped (FREE_BREAKFAST_FAST_TESTS=1)")
-    say(f"{tag}:   tier 4: {passed} passed, {failed} failed, {ignored} ignored")
+        say(f"{tag}:   {row}", log=log)
+    passed, failed, ignored = totals
+    say(f"{tag}:   {slow_line(fast)}", log=log)
+    say(
+        f"{tag}:   tier 4: {passed} passed, {failed} failed, {ignored} ignored",
+        log=log,
+    )
+    if counts is not None:
+        counts[:] = [c + t for c, t in zip(counts, totals, strict=True)]
     skips = cargo_skips(lines)
     if skips:
-        say(f"{tag}: tier 4 skipped {len(skips)} case(s) ({seen}):")
+        say(f"{tag}: tier 4 skipped {len(skips)} case(s) ({seen}):", log=log)
         for s in skips:
-            say(f"{tag}:   skipped {s}")
+            say(f"{tag}:   skipped {s}", log=log)
     else:
-        say(f"{tag}: tier 4 skipped: none")
+        say(f"{tag}: tier 4 skipped: none", log=log)
     if proc.returncode != 0:
         say(f"{tag}: tier 4 FAILED: cargo test exited {proc.returncode}", err=True)
         for line in lines[-25:]:
@@ -2388,6 +2420,45 @@ def cmd_nightly(
     return subprocess.run(cmd, cwd=worktree, check=False).returncode
 
 
+def nightly_cargo(
+    tag: str, cfg: dict[str, str], preset: str, jobs: str, log: Path
+) -> tuple[int, list[int]]:
+    """The nightly's cargo half: `pr --only cargo --all`'s, tiers 1 to 3 and
+    then every crate's tier 4 on `preset`'s card under its lock, with no
+    FREE_BREAKFAST_FAST_TESTS, so the slow cases run. Returns the status and
+    the [passed, failed, ignored] totals of both cargo test runs."""
+    counts = [0, 0, 0]
+    rc = cargo_half(tag, jobs, log, fast=False, counts=counts)
+    if rc == 0:
+        rc = cargo_tier4(tag, cfg, preset, None, jobs, log, fast=False, counts=counts)
+    else:
+        say(f"{tag}: tier 4 not run -- tiers 1 to 3 failed", log=log)
+    return rc, counts
+
+
+def nightly_plan(args: argparse.Namespace, cfg: dict[str, str]) -> list[str]:
+    """What `nightly --dry-run` prints: the night's phases, in nightly_run's
+    order, and what each runs. Nothing is fetched, built or run."""
+    mode = nightly_mode(args.mode, cfg["NIGHTLY_WEEKLY_DAY"], time.localtime().tm_wday)
+    preset = args.preset or "default"
+    backend = backend_of_preset(preset, cfg)
+    clean = "clean, launcher off" if mode == "weekly" else "warm"
+    return [
+        f"{args.rev} checked out clean in {cfg['NIGHTLY_WORKTREE']}, then its"
+        " own test.py",
+        f"mode={mode}  preset={preset}  card={backend}",
+        "every case, unskipped (no FREE_BREAKFAST_FAST_TESTS)",
+        f"1. build: cmake --preset {preset} ({clean})",
+        f"2. C++: ctest and the GPU batches, under the {backend} card lock",
+        "3. pytest: the whole suite, slow included, the card released",
+        "4. cargo half: tiers 1 to 3 (cargo test --no-default-features over the"
+        " link-free crates, cargo doc), then tier 4 of every crate under the"
+        f" {backend} card lock; slow cases included",
+        "5. cross-backend-check.sh",
+        "6. the metrics record, the slow-test report, the night's issue",
+    ]
+
+
 def nightly_run(
     args: argparse.Namespace, cfg: dict[str, str], passthrough: list[str]
 ) -> int:
@@ -2404,6 +2475,7 @@ def nightly_run(
     tag = mode
     reduced = bool(passthrough)
     failed: list[str] = []
+    cargo_totals: list[int] | None = None
     preset = args.preset or "default"
     backend = backend_of_preset(preset, cfg)
     jobs = args.jobs or cfg["BUILD_JOBS"]
@@ -2479,11 +2551,20 @@ def nightly_run(
             prc = 0
         else:
             prc = python_half(tag, cfg, log, results / "pytest.xml", select=[])
-        rc = crc or prc
+        # The cargo half after pytest: its tier 4 takes the card again, by
+        # itself, and nothing else of the night's is on it then.
+        if reduced:
+            say(f"{tag}: a reduced run -- the cargo half does not run", log=log)
+            grc, cargo_totals = 0, None
+        else:
+            grc, cargo_totals = nightly_cargo(tag, cfg, preset, jobs, log)
+        rc = crc or prc or grc
         if crc:
             failed.append(f"C++ tests: ctest or a GPU batch (rc={crc})")
         if prc:
             failed.append(f"pytest (rc={prc})")
+        if grc:
+            failed.append(f"cargo half (rc={grc})")
 
         # 3. The HIP cover: a compile of every .cu through clang -x hip.
         xrc = run_phase(
@@ -2510,6 +2591,9 @@ def nightly_run(
         f"test.py nightly {verdict}  rev={rev}  preset={preset}  mode={mode}"
         f"  stamp={stamp}{run_fields(args, passthrough)}"
     )
+    if cargo_totals is not None:
+        # passed/failed/ignored, over tier 3's and tier 4's cargo test.
+        summary += f"  cargo={'/'.join(map(str, cargo_totals))}"
     try:
         gpu, tools = metrics.probe(build_dir, backend)
         record = metrics.make_record(
@@ -2647,6 +2731,11 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         action="store_true",
         help="say which halves would run, and run neither",
     )
+    nightly.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="say what the night would run, and fetch, build and run nothing",
+    )
     pr.add_argument("--fresh", action="store_true", help="wipe the CMake cache first")
     pr.add_argument(
         "--clean", action="store_true", help="rebuild every object, keeping the cache"
@@ -2704,6 +2793,15 @@ def main(argv: list[str]) -> int:
     os.chdir(REPO_ROOT)
     cfg = read_config()
     if args.gate == "nightly":
+        if args.dry_run:
+            try:
+                plan = nightly_plan(args, cfg)
+            except NightlyError as e:
+                say(f"nightly: {e}", err=True)
+                return 2
+            for line in plan:
+                say(f"nightly: {line}")
+            return 0
         if args.in_checkout:
             return nightly_run(args, cfg, passthrough)
         return cmd_nightly(args, cfg, passthrough)

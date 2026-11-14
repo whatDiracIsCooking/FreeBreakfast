@@ -106,9 +106,11 @@ most of their card time:
 | **Nightly** | 4 in full; performance | Every GPU case. A release build, so the timings it records are real ("Performance", below). |
 | **Weekly** | sanitizers, fuzz, mutants, 5 | compute-sanitizer over tier 4. Miri and ASan over tier 3. The fuzzers and property tests with their large case counts. `cargo-mutants` over tier 3. Tier 5 on a multi-GPU VM. |
 
-The PR row is what the gates run today. No nightly or weekly run builds
-`rust/` yet; those rows are the finished shape. Rules that go with the
-table:
+The PR row is what the gates run today. The nightly runs the PR row with
+every crate's tier 4 and the slow cases ("Slow cases", below), in debug on
+the nightly's card (#1459; `docs/testing.md` "The nightly"); its release
+build and timings, and the weekly row, are the finished shape. Rules that
+go with the table:
 
 - **The PR gates keep the C++ rule: under five minutes on a busy card.**
   Tiers 1 to 3 are seconds, so the budget is spent on tier 4, and selection
@@ -214,8 +216,9 @@ tier 3): each changed file's crate and its reverse dependents through any
 edge, read from `cargo metadata`, in debug and on one test thread. The
 hand-written path rules of "Selection" below are in `devtools/test.py`:
 a module's `kernels/` affect every kernel `-sys` crate, `docs/` and
-`README.md` only `fb-doc-check`, and any other file outside every crate
-the whole workspace. `pr --all` runs every crate's tier 4.
+`README.md` only `fb-doc-check`, `examples/` only `fb-pipeline-config`
+(whose tests run them through the binary), and any other file outside
+every crate the whole workspace. `pr --all` runs every crate's tier 4.
 
 Tier 5 needs a second device, which no case asks for yet; when one does,
 the same rule extends with a reason of its own and a count in the probe.
@@ -228,8 +231,8 @@ and returns at once when it is set** (non-empty and not starting with
 cargo test runs, tier 3 and tier 4, whatever the caller's shell exported,
 and say so on a `slow cases skipped` line beside each one's counts. Unset,
 a case runs in full, so what runs the slow cases is any `cargo test` without
-the switch: `cargo test -p <crate>` by hand, and the nightly once it builds
-`rust/` ("What runs when"). It is the C++ rule's case, past about 1.5 s
+the switch: `cargo test -p <crate>` by hand, and the nightly's cargo half
+("What runs when"), which clears it and says so on a `slow cases run` line. It is the C++ rule's case, past about 1.5 s
 outside its family's representative, and it carries the reason in the
 case. The one today is `fb-io-sad`'s
 `baked_matches_computed_through_argon`, every element through argon in
