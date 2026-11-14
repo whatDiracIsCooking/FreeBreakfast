@@ -1,12 +1,11 @@
-//! Admission's fit check, a table against its worker's cap, and with
-//! `device` the reading of a card's free and total memory that a device
-//! cap is bounded by and the device's reserve is measured from.
+//! Admission's fit checks, a table against its worker's cap and a node's
+//! host blocks against its available memory; the reading of that memory;
+//! and with `device` the reading of a card's free and total memory that a
+//! device cap is bounded by and the device's reserve is measured from.
 
 use super::kind::Kind;
 use super::table::Table;
-#[cfg(feature = "device")]
-use fb_core_error_handling::Result;
-use fb_core_error_handling::{Error, Status};
+use fb_core_error_handling::{Error, Result, Status};
 
 /// Whether `table`'s block fits in `cap` bytes on the worker named
 /// `worker`.
@@ -55,6 +54,112 @@ pub fn admit<K: Kind>(table: &Table<K>, cap: usize, worker: &str) -> Status {
         peak.bytes,
         live.join(", ")
     )))
+}
+
+/// Whether a node's host blocks fit together in `available` bytes: every
+/// GPU worker's pinned block, `pinned`, and the plan's heap block, `heap`,
+/// each a table's total (`docs/memory.md`, "Admission"). Neither kind is
+/// paged out for the other: pinned is locked, and the heap block's pages
+/// are committed by its fill when it is made. Pure; no device.
+///
+/// # Errors
+/// [`ErrorKind::Allocation`](fb_core_error_handling::ErrorKind::Allocation)
+/// when the sum is over `available`, naming each kind's bytes, the bytes
+/// over and the available memory.
+pub fn admit_host(pinned: &[usize], heap: usize, available: usize) -> Status {
+    let locked = pinned.iter().fold(0usize, |sum, &b| sum.saturating_add(b));
+    let total = locked.saturating_add(heap);
+    if total <= available {
+        return Ok(());
+    }
+    let each: Vec<String> = pinned.iter().map(usize::to_string).collect();
+    Err(Error::allocation(format!(
+        "node: the host blocks need {total} bytes, {} over the {available} bytes available: \
+         the pinned blocks {locked} bytes ({} over the GPU workers) and the heap block {heap} \
+         bytes",
+        total - available,
+        each.join(" + ")
+    )))
+}
+
+/// The host memory the plan's host blocks may take together, in bytes,
+/// read at planning ([`admit_host`]): the node's `MemAvailable` from
+/// `/proc/meminfo`, or, under a cgroup v2 memory limit, the smaller of it
+/// and what the limit leaves, `memory.max` less `memory.current`, the
+/// cgroup's inactive page cache (`inactive_file` in `memory.stat`) counted
+/// free, as `MemAvailable` counts the node's. A container's `MemAvailable`
+/// is the host's; its limit is the cgroup's. The limit read is the
+/// process's own cgroup's (`/proc/self/cgroup`), or the root of
+/// `/sys/fs/cgroup` when that path is not mounted there, as inside a
+/// container without a cgroup namespace; an ancestor's lower limit is not
+/// read. A limit of `max`, or none, is no limit.
+///
+/// # Errors
+/// [`ErrorKind::Io`](fb_core_error_handling::ErrorKind::Io): `/proc/meminfo`
+/// cannot be read or holds no `MemAvailable` line it can parse, or a cgroup
+/// file present cannot be parsed.
+pub fn host_available() -> Result<usize> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo")
+        .map_err(|e| Error::io(format!("cannot read '/proc/meminfo': {e}")))?;
+    let dir = std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("0::"))
+                .map(|p| format!("/sys/fs/cgroup{}", p.trim_end_matches('/')))
+        })
+        .filter(|d| std::path::Path::new(&format!("{d}/memory.max")).exists())
+        .unwrap_or_else(|| "/sys/fs/cgroup".to_owned());
+    let read = |file: &str| std::fs::read_to_string(format!("{dir}/{file}")).ok();
+    available(
+        &meminfo,
+        read("memory.max").as_deref(),
+        read("memory.current").as_deref(),
+        read("memory.stat").as_deref(),
+    )
+}
+
+/// [`host_available`] from the files' text: `MemAvailable` from `meminfo`,
+/// and the cgroup's `memory.max`, `memory.current` and `memory.stat` where
+/// each was read.
+pub(super) fn available(
+    meminfo: &str,
+    max: Option<&str>,
+    current: Option<&str>,
+    stat: Option<&str>,
+) -> Result<usize> {
+    let unparsed = |what: &str| Error::io(format!("cannot parse {what}"));
+    let line = meminfo
+        .lines()
+        .find(|l| l.starts_with("MemAvailable:"))
+        .ok_or_else(|| Error::io("no MemAvailable in '/proc/meminfo'"))?;
+    let node = match line["MemAvailable:".len()..]
+        .split_whitespace()
+        .collect::<Vec<_>>()[..]
+    {
+        [kib, "kB"] => kib
+            .parse::<usize>()
+            .ok()
+            .and_then(|kib| kib.checked_mul(1024)),
+        _ => None,
+    }
+    .ok_or_else(|| unparsed(&format!("'{line}' in '/proc/meminfo'")))?;
+    let Some(max) = max.map(str::trim).filter(|m| *m != "max") else {
+        return Ok(node);
+    };
+    let bytes = |text: &str, what: &str| {
+        text.trim()
+            .parse::<usize>()
+            .map_err(|_| unparsed(&format!("the cgroup's {what} '{}'", text.trim())))
+    };
+    let max = bytes(max, "memory.max")?;
+    let current = current.map_or(Ok(0), |c| bytes(c, "memory.current"))?;
+    let inactive = match stat.and_then(|s| s.lines().find_map(|l| l.strip_prefix("inactive_file ")))
+    {
+        Some(v) => bytes(v, "memory.stat inactive_file")?,
+        None => 0,
+    };
+    Ok(node.min(max.saturating_sub(current.saturating_sub(inactive))))
 }
 
 /// Device `dev_idx`'s free and total memory, in bytes, read at planning:

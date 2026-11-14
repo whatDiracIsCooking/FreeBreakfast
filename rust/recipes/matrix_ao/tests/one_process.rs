@@ -15,7 +15,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2d};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
@@ -31,11 +31,11 @@ struct Fill {
 impl CpuTask for Fill {
     type Rows = RowId<Pinned, f64>;
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         host.output("cartesian host", self.len)
     }
 
-    fn run(&self, row: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, row: &Self::Rows, host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         for (i, x) in host.take_mut(*row).iter_mut().enumerate() {
             *x = (((i * 7919 + self.k * 104_729) % 1000) as f64 / 997.0).sin();
         }
@@ -74,13 +74,13 @@ struct Collect(Vec<RowId<Pinned, f64>>, Arc<Mutex<Vec<f64>>>);
 impl CpuTask for Collect {
     type Rows = ();
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
         for &r in &self.0 {
             host.read(r);
         }
     }
 
-    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         let mut out = self.1.lock().unwrap();
         for &r in &self.0 {
             out.extend_from_slice(host.get(r));

@@ -41,7 +41,7 @@
 
 use contracts::debug_requires;
 use fb_core_arena::{
-    Bufs, CopyOnly, Device, HostKind, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p,
+    Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, StagingKind, memcpy_d2d, memcpy_d2p,
 };
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{CpuTask, Dag, GpuTask};
@@ -195,19 +195,19 @@ impl GpuTask for Syevd {
 
 /// CPU: syevd's flag read from its pinned row, after the executor waited
 /// for the copy. Generic over the host kind and stream, so the tier-3 test
-/// hands it a flag from a fixture on `Heap` rows and `HostOnly` workers.
-struct Check<H: HostKind> {
+/// hands it a flag from a fixture on `PinnedStandIn` rows and `HostOnly` workers.
+struct Check<H: StagingKind> {
     info: RowId<H, i32>,
 }
 
-impl<H: HostKind> CpuTask<H> for Check<H> {
+impl<H: StagingKind> CpuTask<H> for Check<H> {
     type Rows = ();
 
-    fn layout(&self, host: &mut Layout<'_, H>) {
+    fn layout(&self, host: &mut Layout<'_, H>, _: &mut Layout<'_, Heap>) {
         host.read(self.info);
     }
 
-    fn run(&self, _: &(), host: &Bufs<'_, H>) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, H>, _: &Bufs<'_, Heap>) -> Status {
         // info < 0 names a refused argument (a bug in the caller, not in A);
         // info > 0 is non-convergence, which is A's doing.
         match host.get(self.info)[0] {
@@ -226,29 +226,38 @@ impl<H: HostKind> CpuTask<H> for Check<H> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fb_core_arena::Heap;
+    use fb_core_arena::PinnedStandIn;
     use fb_core_error_handling::ErrorKind;
     use fb_core_thread_pool::HostOnly;
 
     /// CPU: a fixture's flag written into a host row.
     struct Flag(i32);
 
-    impl CpuTask<Heap> for Flag {
-        type Rows = RowId<Heap, i32>;
+    impl CpuTask<PinnedStandIn> for Flag {
+        type Rows = RowId<PinnedStandIn, i32>;
 
-        fn layout(&self, host: &mut Layout<'_, Heap>) -> Self::Rows {
+        fn layout(
+            &self,
+            host: &mut Layout<'_, PinnedStandIn>,
+            _: &mut Layout<'_, Heap>,
+        ) -> Self::Rows {
             host.output("syevd info", 1)
         }
 
-        fn run(&self, info: &Self::Rows, host: &Bufs<'_, Heap>) -> Status {
+        fn run(
+            &self,
+            info: &Self::Rows,
+            host: &Bufs<'_, PinnedStandIn>,
+            _: &Bufs<'_, Heap>,
+        ) -> Status {
             host.take_mut(*info)[0] = self.0;
             Ok(())
         }
     }
 
-    /// The check of the flag `info`, run once on `Heap` rows and no device.
+    /// The check of the flag `info`, run once on `PinnedStandIn` rows and no device.
     fn check(info: i32) -> Status {
-        let mut dag: Dag<'static, Heap, ()> = Dag::new();
+        let mut dag: Dag<'static, PinnedStandIn, ()> = Dag::new();
         let row = dag.add_cpu("flag", 0, Flag(info));
         dag.add_cpu("syevd check", 0, Check { info: row });
         dag.plan()

@@ -22,11 +22,14 @@
 //!   it: each reader after its producer.
 //! - [`admit`] checks a table against its worker's cap, and refuses naming
 //!   every row larger than the cap on its own and the rows live at the
-//!   peak. With `device`, `device_memory` reads a card's free and total
+//!   peak; [`admit_host`] a node's pinned blocks and the plan's heap block
+//!   together against [`host_available`], the node's available memory
+//!   within its cgroup's limit. With `device`, `device_memory` reads a card's free and total
 //!   memory at planning: the card bounds a device cap, and the difference
 //!   is the device's measured reserve.
-//! - [`Block::new`] makes the table's one allocation, on the device or
-//!   pinned, filled with `0xFF`; it is freed when the block drops.
+//! - [`Block::new`] makes the table's one allocation, on the device,
+//!   pinned or on the heap, filled with `0xFF`; it is freed when the block
+//!   drops.
 //!   [`allocations`] counts them, for a test that a run allocates nothing.
 //! - [`Block::partition`] is what a node is handed when it runs, in one
 //!   iteration: a [`Bufs`] that gives it its own rows and no others, a
@@ -42,8 +45,8 @@
 //!   each is sound).
 //!
 //! Everything but the block is pure and needs no device. The kind of
-//! memory, [`Device`] or [`Pinned`], is in every type, so a row of one kind
-//! cannot reach a table or block of the other, and a row's element type is
+//! memory, [`Device`], [`Pinned`] or [`Heap`], is in every type, so a row
+//! of one kind cannot reach a table or block of another, and a row's element type is
 //! an [`Element`]. This module is the only one that allocates: the raw calls
 //! are on a trait nothing outside it can name.
 //!
@@ -86,8 +89,8 @@
 //! dependencies, is `fb_core_planner`'s. A block is
 //! allocated on the thread that makes it, not its worker's: a block lives
 //! for the plan, and the run's threads only for one run. Adaptive
-//! widths and the measured reserve are not built; the reserve's constant,
-//! the default caps and the node-wide pinned sum are admission's caller's
+//! widths are not built; the reserve, the default caps and which tables go
+//! into the node's host sum are admission's caller's
 //! (`fb_pipeline_config::admit_plan`).
 
 #![deny(
@@ -105,17 +108,17 @@ mod table;
 #[cfg(test)]
 mod tests;
 
-pub use admit::admit;
 #[cfg(feature = "device")]
 pub use admit::device_memory;
+pub use admit::{admit, admit_host, host_available};
 pub use assign::{Assignment, Life, Row, assign};
 pub use block::{Block, allocations};
 #[cfg(feature = "device")]
 pub use bufs::HeldRow;
 pub use bufs::{Bufs, CopyOnly, DeviceMut, DeviceRef};
 #[cfg(any(test, feature = "test-support"))]
-pub use kind::Heap;
-pub use kind::{Device, Element, HostKind, Kind, Pinned};
+pub use kind::PinnedStandIn;
+pub use kind::{Device, Element, Heap, HostKind, Kind, Pinned, StagingKind};
 #[cfg(feature = "device")]
 pub use memcpy::{memcpy_d2d, memcpy_d2p, memcpy_p2d};
 pub use memcpy::{memcpy_h2p, memcpy_p2h};

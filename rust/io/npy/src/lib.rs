@@ -22,11 +22,11 @@
 //! | nothing | the private `header_bounds` and `header_fields`, the header's checks, which [`parse_npy`] and [`read_npy_shape`] share |
 //! | `:writer`: `npy_header(shape)`, a `std::string` | [`npy_header`]`(shape)`, a `Vec<u8>` |
 //! | `:writer`: `npy_to_bytes(array)`, a `std::string` | [`npy_to_bytes`]`(array)`, a `Vec<u8>` |
-//! | `:writer`: `write_npy(path, array)` | [`write_npy`]`(path, array)` |
+//! | `:writer`: `write_npy(path, array)` | [`write_npy`]`(path, shape, data)`, the data borrowed, so a CPU node writes a row of its view in place |
 //! | `:format`: `kMagic` | the private `MAGIC` |
 //! | the reader's and writer's private helpers (`read_le`, `value_start`, `quoted_value`, `bool_value`, `shape_value`, `c_to_fortran_order`, `format_shape`, `layouts_differ`) | the private functions of those names here |
 //! | the `static_assert`s of a little-endian IEEE-754 host, which the C++ `memcpy` relies on | nothing: [`f64::from_le_bytes`] and [`f64::to_le_bytes`] are right on any host, and keep every bit, a NaN's payload included |
-//! | `io/base`'s `read_file` / `write_file`, which `read_npy` / `write_npy` go through | [`std::fs::read`] / [`std::fs::write`], a failure an [`ErrorKind::Io`] error naming the path |
+//! | `io/base`'s `read_file` / `write_file`, which `read_npy` / `write_npy` go through | [`std::fs::read`] / a buffered [`std::fs::File`], a failure an [`ErrorKind::Io`] error naming the path |
 //!
 //! **The reader** accepts versions 1.0 through 3.0 and both layouts: a
 //! Fortran-order payload is taken as is, a C-order one is reordered into
@@ -56,7 +56,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 
 use fb_core_error_handling::{Error, Result, Status};
@@ -385,15 +385,7 @@ pub fn npy_header(shape: &[usize]) -> Result<Vec<u8>> {
 /// A shape whose element count disagrees with `data.len()`, or overflows,
 /// is an [`ErrorKind::InvalidConfig`] error naming the shape.
 pub fn npy_to_bytes(array: &NpyArray) -> Result<Vec<u8>> {
-    let count = element_count(&array.shape)?;
-    if count != array.data.len() {
-        return Err(Error::config(format!(
-            "NPY shape {} describes {count} elements but data has {}",
-            format_shape(&array.shape),
-            array.data.len()
-        )));
-    }
-    let mut out = npy_header(&array.shape)?;
+    let mut out = checked_header(&array.shape, array.data.len())?;
     out.reserve(array.data.len() * ELEMENT_BYTES);
     for value in &array.data {
         out.extend_from_slice(&value.to_le_bytes());
@@ -401,11 +393,34 @@ pub fn npy_to_bytes(array: &NpyArray) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Write `array` to `path` as a `.npy` file: `write_npy`. The bytes are
-/// formed first, so a malformed array leaves no file; a file that cannot be
-/// written is an [`ErrorKind::Io`] error naming it.
-pub fn write_npy(path: &Path, array: &NpyArray) -> Status {
-    let bytes = npy_to_bytes(array)?;
-    std::fs::write(path, bytes)
-        .map_err(|e| Error::io(format!("cannot write '{}': {e}", path.display())))
+/// [`npy_header`] for `shape`, once `shape` is checked to describe `len`
+/// elements: an [`ErrorKind::InvalidConfig`] error naming the shape when
+/// it does not.
+fn checked_header(shape: &[usize], len: usize) -> Result<Vec<u8>> {
+    let count = element_count(shape)?;
+    if count != len {
+        return Err(Error::config(format!(
+            "NPY shape {} describes {count} elements but data has {len}",
+            format_shape(shape)
+        )));
+    }
+    npy_header(shape)
+}
+
+/// Write `data`, an array of `shape` in Fortran order, to `path` as a
+/// `.npy` file: `write_npy`, the bytes [`npy_to_bytes`] would form. The
+/// data is borrowed, so a CPU node writes a row of its view with no copy
+/// of it. The shape is checked against the data and the header formed
+/// first, so a malformed array leaves no file; the payload is then
+/// written through a buffer, and a file that cannot be written is an
+/// [`ErrorKind::Io`] error naming it.
+pub fn write_npy(path: &Path, shape: &[usize], data: &[f64]) -> Status {
+    let header = checked_header(shape, data.len())?;
+    let io = |e: std::io::Error| Error::io(format!("cannot write '{}': {e}", path.display()));
+    let mut out = std::io::BufWriter::new(std::fs::File::create(path).map_err(io)?);
+    out.write_all(&header).map_err(io)?;
+    for value in data {
+        out.write_all(&value.to_le_bytes()).map_err(io)?;
+    }
+    out.flush().map_err(io)
 }

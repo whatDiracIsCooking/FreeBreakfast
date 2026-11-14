@@ -3,7 +3,7 @@
 
 use std::ops::ControlFlow;
 
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_p2d};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{CpuTask, Dag, Decision, GpuTask};
 use fb_core_thread_pool::DeviceStream;
@@ -137,7 +137,9 @@ impl ScfStep {
 /// first iteration adds to its own: the C++ takes the same factor `nocc`
 /// columns at a time and sums their K. Then `diis history` ([`add_diis`],
 /// the rings of `"DIIS F"`), and **`energy before`** (CPU): the decision's
-/// carried row `"last build"`, its energy 0 as the C++ starts it.
+/// carried row `"last build"`, its energy 0 as the C++ starts it, on the
+/// heap, since it is host state no copy engine meets (`docs/memory.md`,
+/// "The three kinds").
 ///
 /// **The body**, one iteration: `df coulomb` (J of D) and `df exchange` (K
 /// of the factor); **`guess exchange`** (stream), when `nocc < n`: K plus
@@ -190,7 +192,7 @@ pub fn add_scf(
     eri: &DensityFitted,
     [h, s, x]: [RowId<Device, f64>; 3],
     guess: RowId<Device, f64>,
-) -> Result<(RowId<Pinned, f64>, [RowId<Device, f64>; 3])> {
+) -> Result<(RowId<Heap, f64>, [RowId<Device, f64>; 3])> {
     step.check()?;
     let nocc = occupied_orbitals(molecule)?;
     assert!(
@@ -275,12 +277,12 @@ struct GuessCheck {
 impl CpuTask for GuessCheck {
     type Rows = RowId<Pinned, f64>;
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         host.read(self.w);
         host.output("guess floor", 1)
     }
 
-    fn run(&self, floor_row: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, floor_row: &Self::Rows, host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         let w = host.get(self.w);
         let (smallest, largest) = (
             w.first().copied().unwrap_or(0.0),
@@ -439,18 +441,18 @@ impl GpuTask for GuessExchange {
 }
 
 /// CPU, before the loop: the decision's carried `[E, ‖e‖, builds]`, its
-/// energy 0.
+/// energy 0, a heap row: host state no copy engine meets.
 struct EnergyBefore;
 
 impl CpuTask for EnergyBefore {
-    type Rows = RowId<Pinned, f64>;
+    type Rows = RowId<Heap, f64>;
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        host.output("last build", 3)
+    fn layout(&self, _: &mut Layout<'_, Pinned>, heap: &mut Layout<'_, Heap>) -> Self::Rows {
+        heap.output("last build", 3)
     }
 
-    fn run(&self, row: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
-        host.take_mut(*row).fill(0.0);
+    fn run(&self, row: &Self::Rows, _: &Bufs<'_, Pinned>, heap: &Bufs<'_, Heap>) -> Status {
+        heap.take_mut(*row).fill(0.0);
         Ok(())
     }
 }
@@ -461,7 +463,7 @@ impl CpuTask for EnergyBefore {
 struct Converged {
     scalars: RowId<Pinned, f64>,
     singular: RowId<Pinned, i32>,
-    previous: RowId<Pinned, f64>,
+    previous: RowId<Heap, f64>,
     diis: Diis,
     energy_tolerance: f64,
     commutator_tolerance: f64,
@@ -470,17 +472,23 @@ struct Converged {
 impl Decision for Converged {
     type Rows = ();
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, heap: &mut Layout<'_, Heap>) {
         host.read(self.scalars);
         host.read(self.singular);
-        host.write(self.previous);
+        heap.write(self.previous);
     }
 
-    fn decide(&self, _: &(), host: &Bufs<'_, Pinned>, iteration: usize) -> Result<ControlFlow<()>> {
+    fn decide(
+        &self,
+        _: &(),
+        host: &Bufs<'_, Pinned>,
+        heap: &Bufs<'_, Heap>,
+        iteration: usize,
+    ) -> Result<ControlFlow<()>> {
         let [energy, norm] = host.get(self.scalars)[..] else {
             unreachable!("the scalars row is [E, |e|]")
         };
-        let last = host.take_mut(self.previous);
+        let last = heap.take_mut(self.previous);
         let delta = energy - last[0];
         // A count well under 2^53, so exact as a double.
         last.copy_from_slice(&[energy, norm, (iteration + 1) as f64]);

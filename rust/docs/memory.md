@@ -7,8 +7,8 @@ and a run allocates nothing ([`programming_model.md`](programming_model.md),
 plans and the process", "Memory kinds"). This document is the level below,
 the one a planner is written from: what a row of the table is and who owns
 it, how a lifetime is represented and when two rows may share bytes, the
-admission arithmetic, how an adaptive width is chosen, how the two kinds are
-allocated, and what checks each rule. Every rule here is fixed by a case the
+admission arithmetic, how an adaptive width is chosen, how the three kinds
+are allocated, and what checks each rule. Every rule here is fixed by a case the
 C++ tree already has, and the cases are cited rather than invented: the
 footprint vocabulary and fold
 ([`src/core/footprint`](../../src/core/footprint/README.md),
@@ -24,17 +24,25 @@ measured is here read off the plan.
 
 ## The table
 
-The planner's output for one worker and one memory kind is a table: one row
-per buffer, with its owner, its bytes, its alignment, its lifetime and the
-offset the assigner gave it, and the block's total. A `run` touches memory
-only through a row. Four owners, and the owner is what decides the lifetime:
+The planner's output for one worker and one memory kind, device or pinned,
+and for the plan's heap, is a table: one row per buffer, with its owner, its
+bytes, its alignment, its lifetime and the offset the assigner gave it, and
+the block's total. A `run` touches memory only through a row. Four owners,
+and the owner is what decides the lifetime:
 
 | Owner | Row | Lifetime | Example |
 |---|---|---|---|
 | A task | Its scratch, from `layout(dims)` | The task: its first launch to its last | A kernel's `*_workspace_bytes`, a solver's `lwork` and its `info` flag, DIIS's coefficients for one push |
-| An edge | Its producer's output, from the producer's `layout(dims)` | The edge: the producer's first write to the last consumer's last read | S, H_core, the converged C, B and L |
+| An edge | Its producer's output, from the producer's `layout(dims)` | The edge: the producer's first write to the last consumer's last read | S, H_core, the converged C, B and L; on the heap, the SCF decision's `last build` |
 | A worker | A buffer the worker holds for every task it runs | The plan | A BLAS handle's workspace |
 | The orchestrator | A buffer placement created | The edge it carries | A broadcast's copy on the consumer's card, a reduce's partials on the join's card |
+
+**The heap's rows are the plan's.** A CPU node's heap rows are in one
+table for the whole plan, not one per GPU worker, laid out like any other
+and owned as above, a task's scratch or an edge's output; a loop's region
+and the rows it carries work as in the other kinds ("Nested plans"). Its
+footprint is the table, as every kind's is: there is no second formula
+([`programming_model.md`](programming_model.md), "Memory kinds").
 
 **An output's bytes are declared once.** The task's layout names the output
 and its size; the edge declares its kind, its reduce order and its consumers
@@ -207,7 +215,18 @@ Per worker and per kind, the block must fit:
 | Kind | Must hold | Terms |
 |---|---|---|
 | Device | `block + reserve + stack <= cap` | `reserve`: the context, the handles and the loaded modules, outside any block; `stack`: the kernels' stack the driver takes back when the card has no free memory left for it (`kKernelStackBytes` per thread, up to 1.6 GiB on the RTX 3080) |
-| Pinned | `block <= pinned_cap`, and `sum over the node's workers <= MemAvailable` | The per-GPU cap, and the C++ `check_pinned_node` carried over, with no margin, as there |
+| Pinned | `block <= pinned_cap`, and `pinned_cap` times the node's workers `<= available` | The per-GPU cap, and the C++ `check_pinned_node` carried over, with no margin, as there |
+| Heap | `block <= max_host_mem` | The plan's cap, one block for every worker |
+| Host | `sum of the node's pinned blocks + heap block <= available` | Neither kind is paged out for the other: pinned is locked, and the heap block's pages are committed by its fill; no margin, as the pinned row's |
+
+**The available memory is the cgroup's too.** `available` is the node's
+`MemAvailable`, which inside a container is the host's, so under a cgroup
+v2 memory limit it is the smaller of that and what the limit leaves:
+`memory.max` less `memory.current`, the cgroup's inactive page cache
+(`inactive_file` in `memory.stat`) counted free, as `MemAvailable` counts
+the node's (`fb_core_arena::host_available`). The limit read is the
+process's own cgroup's; an ancestor's lower limit is not read (#1622). A limit of
+`max`, or none, leaves `MemAvailable`.
 
 **No headroom and no eighth.** The 64 MiB fragmentation headroom and the HIP
 `ceil(P / 8)` reuse rounding are properties of a pool that reserves in chunks
@@ -238,13 +257,14 @@ to that size, and the limit set back (`fb_core_wwr::runtime::stack_growth`).
 
 **Each cap's default is its floor.** The caps are the config's `[memory]`
 keys, the C++ ones with the C++ size strings: `max_device_mem_per_gpu`,
-default 8 GiB, and `max_pinned_mem_per_gpu`, default 2 GiB. Each key's one
+default 8 GiB, and `max_pinned_mem_per_gpu`, default 2 GiB; and one the C++
+does not have, the heap block's `max_host_mem`, default 16 GiB. Each key's one
 compiled-in value is both its default and its floor: a config with no key
 runs at it, and one that sets a key under it is refused, naming the key and
 the value, so a key can only raise a cap. A floor is what lets a compiled-in
 size, a streamed tensor's batch, be relied on to fit without a search; as the
 default it means a card with more than 8 GiB is used past that only when the
-config says so. The heap block's cap, `max_host_mem`, is not built.
+config says so.
 
 **Every cap is bounded by the card.** A device block is admitted against the
 smaller of its cap and the card's total memory, less the reserve and the
@@ -252,8 +272,9 @@ stack. The reserve being the total less the free memory, a cap past the card
 admits its free memory less the stack, so a card under its cap, or one
 another process holds part of, still refuses the plan before the first
 launch. The binary admits every worker's device and
-pinned table after planning and before it makes the blocks, and the node
-check before either (`fb_pipeline_config::admit_plan`).
+pinned table and the heap table after planning and before it makes the
+blocks, the node's caps before them and its blocks after
+(`fb_pipeline_config::admit_plan`).
 
 **Admission is a search over order.** The orchestrator's first job on one
 GPU is an order whose peak fits ([`programming_model.md`](programming_model.md),
@@ -297,7 +318,7 @@ it is 1 ([`diagnostics.md`](diagnostics.md), "Levels"), and `run` never reads
 free memory. A `bytes` that is not monotone is caught by the tier-3 fuzz
 that bisects it and checks the result against a linear scan. clippy's
 `disallowed_methods` lists `wwr_mem_get_info`, so a read of free memory is
-an `allow` naming its exception: an allocation's refusal ("The two kinds"),
+an `allow` naming its exception: an allocation's refusal ("The three kinds"),
 admission and the reserve's measurement ("Admission"), or a tier-4 test
 measuring what a block costs.
 
@@ -414,16 +435,44 @@ the iteration edge. A decision that keeps something from one iteration to
 the next, the last energy, keeps it the same way, as a host row it carries:
 nothing outside the rows survives the run.
 
-## The two kinds
+## The three kinds
 
-| | Device | Pinned host |
-|---|---|---|
-| Raw call | `wwr_malloc`, plain | `wwr_host_alloc`, portable |
-| Thread | The one that makes the plan, its device made current for the call, before any stream work on it; the worker's own thread once one outlives a run | The same; the worker's thread would put the pages on its socket |
-| Freed | At the plan's drop, after the last run's final sync | The same |
-| Alignment | `FB_DEVICE_ALIGNMENT` for every row ([`gpu_layer.md`](gpu_layer.md), "Scratch: the workspace query") | The same; the copy engines need no more, and `kWorkspaceAlignment` is 256 on both sides today |
-| Fill | Every byte `0xFF` at instantiation, in debug builds: a NaN in both float widths, and `-1` in every integer width | The same, in every build |
-| Failure | Aborts, as every create does (`check_or_abort`), naming the bytes and the free memory | The same, naming `MemAvailable` |
+| | Device | Pinned host | Heap |
+|---|---|---|---|
+| Owner | The GPU worker | The GPU worker whose copies it stages | The plan |
+| Raw call | `wwr_malloc`, plain | `wwr_host_alloc`, portable | The global allocator, once |
+| Thread | The one that makes the plan, its device made current for the call, before any stream work on it; the worker's own thread once one outlives a run | The same; the worker's thread would put the pages on its socket | The one that makes the plan |
+| Freed | At the plan's drop, after the last run's final sync | The same | At the plan's drop |
+| Alignment | `FB_DEVICE_ALIGNMENT` for every row ([`gpu_layer.md`](gpu_layer.md), "Scratch: the workspace query") | The same; the copy engines need no more, and `kWorkspaceAlignment` is 256 on both sides today | The pinned alignment |
+| Fill | Every byte `0xFF` at instantiation, in debug builds: a NaN in both float widths, and `-1` in every integer width | The same, in every build | The same, in every build, which also commits its pages when it is made |
+| Failure | Aborts, as every create does (`check_or_abort`), naming the bytes and the free memory | The same, naming `MemAvailable` | The same |
+| Held by | A GPU node | A GPU node, for its copies, and a CPU node | A CPU node |
+
+**Pinned is staging; large flat host data is a heap row.** A pinned row
+exists to feed or drain a copy on a stream: page-locked memory is for the
+copy engines, and host state no copy meets, a decision's carried energy, is
+locked for no reason. Host data too large to lock, an offloaded B past the
+pinned carve, needs a counted place too. So large flat host data is a heap
+row, a slice of an `Element` sized at planning; when it must reach the
+device, a pinned row is the window it streams through. **Structured
+planning input stays `Vec`**: the config, a `BasisSet` and the planner's own
+tables exist before any table can be sized, and fix its dimensions, so they
+are not rows and are not admitted. **No allocator**: the heap block is one
+global-allocator call at instantiation and freed at the plan's drop, as the
+other blocks are, so a run allocates nothing on the heap either.
+
+**No node holds all three kinds.** A GPU node holds device and pinned rows,
+a CPU node pinned and heap rows ([`programming_model.md`](programming_model.md),
+"A task declares"). A heap row reaches the device only through a
+CPU node's copy into a pinned row, which a copy node then uploads.
+
+**A plan's exit is the one copy a run makes.** What a run hands its caller
+after it, the SCF's orbitals or the overlap's S as a `Vec`, is copied out of
+its row by the CPU node that reads it last (`memcpy_p2h`): that copy is the
+one allocation a run makes, outside every block, once per run and never per
+iteration. A product written to disk is not an exit: the writer borrows its
+row (`fb_io_npy::write_npy` takes a slice), so the row's bytes are the
+file's.
 
 **Plain, not stream-ordered.** One allocation per plan has nothing for a
 pool to amortise, and `hipMallocFromPoolAsync` beside other threads' stream
@@ -442,9 +491,12 @@ be a third kind of buffer a task could reach.
 written is a bug the C++ pool, which hands back whatever a freed block held,
 cannot show. A block filled with `0xFF` makes every such read a NaN, which
 the first comparison or norm turns into a failed test. A release build skips
-the device fill, but not the pinned one: a pinned row is handed out as a
-`&mut [T]`, which must not be uninitialised memory in any build, and pinned
-blocks are small staging, so the fill costs nothing worth measuring. The
+the device fill, but not the host ones: a pinned or heap row is handed out
+as a `&mut [T]`, which must not be uninitialised memory in any build.
+Pinned blocks are small staging, so their fill costs nothing worth
+measuring; the heap block's commits its pages at instantiation, so the
+memory admission counted is held before the first run, not found missing
+at a first touch inside one. The
 same reason restricts a row's type to an `Element`, a primitive for which
 every bit pattern is a value, since a reused row is read with whatever its
 previous owner left.
@@ -452,9 +504,7 @@ previous owner left.
 **What is not a kind.** Managed memory is not used and not modelled, and
 nothing here should grow a `Managed` marker; clippy's `disallowed_methods`
 lists `wwr_malloc_managed` and `wwr_stream_attach_mem_async`, and no site
-allows them. Pageable host memory is `Vec`,
-owned by the plan when it is part of the DAG
-([`programming_model.md`](programming_model.md), "Memory kinds").
+allows them.
 
 **The three pinned layouts that exist.** Every pinned use in the C++ tree
 is staging sized by the dimensions: mmd's shell tables on their way up, the
@@ -462,7 +512,8 @@ Coulomb prune's kept counts on their way down, and the Molecule's charges
 and coordinates. `CountedPinned`, the offloaded B streamed through a ring,
 has no user yet. So the first pinned rows are small upload and readback
 buffers, and the ring, when it comes, is a pinned edge row with the lifetime
-of the copies that read it.
+of the copies that read it, the window a heap row of B streams through
+(`experimental/gemm_host_offload`).
 
 ### The Rust shape
 
@@ -482,11 +533,15 @@ can name. In it:
   order, builds the tables, and adds the reads and handoffs to the plan.
   `TableBuilder::add_loop(positions)` marks a loop and `Layout::write(row)`
   a row it carries ("Nested plans").
-- `Block<K>`, with `K` one of two uninhabited markers, `Device` and
-  `Pinned`. It holds the raw pointer, the table and one atomic borrow flag
+- `Block<K>`, with `K` one of three uninhabited markers, `Device`,
+  `Pinned` and `Heap`. It holds the raw pointer, the table and one atomic borrow flag
   per row, allocates in `new` and frees in `Drop`, and the kind is in the
   type, as it is in every `RowId<K, T>`, so a device row cannot be handed to
-  a host write.
+  a host write. A plan's per-worker host table is of a `StagingKind`,
+  `Pinned`, or in the device-free tests `PinnedStandIn` (the arena's
+  `test-support` feature), a staging kind on the global allocator; never
+  `Heap`, so no two tables of a plan share a kind and a heap row cannot be
+  asked of a worker's table.
 - `Block::<K>::partition(&self, node) -> Bufs`, called by the orchestrator
   once per node per run. A pinned row is a real `&[T]` or `&mut [T]`; a
   device row is a pointer-and-length view with no `Deref`. A stream node's
@@ -516,12 +571,12 @@ which the executor starts only after the events of the stream nodes before
 them. The type holds it: a GPU task's `run` is handed its pinned rows as a
 `CopyOnly`, never as a `Bufs`, so a host read of one does not build.
 
-**A CPU task holds no device row.** Its `layout` is handed the host
-`Layout` alone and its `run` the host `Bufs`, so a device row is not
-something it can declare or ask for.
+**A CPU task holds no device row.** Its `layout` is handed a pinned and a
+heap `Layout` and its `run` the two `Bufs`, so a device row is not
+something it can declare or ask for. A GPU task is handed no heap view.
 
-A GPU task's `run(device, pinned, stream)` and a CPU task's `run(pinned)`
-receive their views and nothing else that can allocate.
+A GPU task's `run(device, pinned, stream)` and a CPU task's
+`run(pinned, heap)` receive their views and nothing else that can allocate.
 
 ## What is checked
 
@@ -532,6 +587,8 @@ receive their views and nothing else that can allocate.
 | The block is the plan | The arena's total, committed and compared bitwise per example config | 3 |
 | `bytes(width)` is monotone | Bisection against a linear scan over random dims | 3 |
 | Admission refuses what does not fit | A cap one byte under the peak refused naming the rows live at it; a cap under a row refused naming that row, the DF step's B not live at its peak among them; one byte over admitted, as the C++ nested cases pin the room to the byte | 3 |
+| Admission counts pinned and heap together | The node's pinned blocks and the heap block admitted at their sum and refused one byte short of it | 3 |
+| No two tables of a plan share a kind | `Dag`'s host kind is a `StagingKind`, which `Heap` is not | 1 |
 | A task reaches only its rows | The view's borrow flags and layout check, always on | 2 |
 | Reusing bytes is ordered | Random DAGs over random lanes run in random orders consistent with their edges and handoffs, each node a random time on its lane, no two rows sharing bytes live at once | 3 |
 | A loop's body lies in its region, apart from every parent row live across the loop | Random bodies laid out, then unrolled over iterations and run in random orders consistent with the reads and handoffs, no two rows sharing bytes live at once | 3 |
@@ -540,6 +597,8 @@ receive their views and nothing else that can allocate.
 | No library allocates behind the arena | On an AMD card, this process's VRAM from amdgpu's DRM fdinfo (`drm-memory-vram`, per open file, once per client), which the kernel keeps per process so no other tenant moves it, and which counts every buffer of ours, the arena's and a library's: the same from the DF-RHF loop's second iteration to its last: once every kernel of the body has run, the DIIS solve's from the second, a replay takes nothing. What a kernel's first launch takes (24 KiB on the gfx1200, at the first DIIS solve) is not told apart from the code the runtime loads at a first launch, so it is outside the bar. On CUDA unenforced: nothing counts a library's allocations per process in a container, and the device-wide free memory moves with the card's other tenants (#1573), so the planner's and the SCF's cases print it and assert nothing of it (#1589) | 4 |
 | A kernel assumes no more scratch than it asked | The wrapper handed exactly its query's bytes under `memcheck` ([`testing.md`](testing.md), "The C++ boundary") | 4 |
 | A row is written before it is read | The debug fill, through every tier-4 test's comparisons | 4 |
+| The heap block is filled in every build | A heap block read back all NaN | 4 |
+| Large flat host data is a heap or pinned row, and a pinned row is read or written by a copy on a stream | Review alone: nothing tells a `Vec` of planning input from one of host data, or a pinned row a copy meets from one it does not ([`rules.md`](rules.md), "Memory") | none |
 
 What the C++ footprint tests measure, a pool peak held to a formula at two
 bars, has no counterpart: there is no second number to compare the first

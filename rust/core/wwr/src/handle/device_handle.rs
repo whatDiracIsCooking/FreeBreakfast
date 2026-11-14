@@ -10,7 +10,7 @@
 //! from, and its top rung, `device_handle_pool`, adds `pool()` for
 //! `wwrMallocFromPoolAsync`. That rung has no counterpart: the arena
 //! allocates one plain block per plan, never from a stream-ordered pool
-//! (`docs/memory.md`, "The two kinds"). Here the two traits are what a
+//! (`docs/memory.md`, "The three kinds"). Here the two traits are what a
 //! stream-bound handle needs of its stream owner.
 //!
 //! wwr's concepts are structural, so any type with the accessors qualifies;

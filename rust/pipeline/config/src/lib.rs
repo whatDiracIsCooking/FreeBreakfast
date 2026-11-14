@@ -40,16 +40,17 @@
 //! reader the tree has.
 //!
 //! **Memory caps.** `[memory]` ([`MemoryCaps`]) caps each GPU worker's
-//! device and pinned blocks, the C++ keys with the C++ size strings. Each
+//! device and pinned blocks, the C++ keys with the C++ size strings, and
+//! the plan's heap block, a key of its own. Each
 //! key's compiled-in default is also its floor: a config with no key runs
 //! at it, and one that sets a key under it is refused, so a key can only
 //! raise a cap. A floor is what lets a compiled-in size be relied on to
 //! fit without a search. [`admit_plan`] holds the plan to the caps after
 //! [`plan`] and before the blocks are made, a device cap bounded by the
-//! card and less the device's measured reserve and the kernels' stack, so
-//! a plan that does not fit is refused
-//! naming its rows before the first launch (`docs/memory.md`,
-//! "Admission").
+//! card and less the device's measured reserve and the kernels' stack,
+//! and the node's pinned blocks and the heap block together against the
+//! host's available memory, so a plan that does not fit is refused naming
+//! its rows before the first launch (`docs/memory.md`, "Admission").
 //!
 //! **Paths.** The geometry and a basis path are relative to the config
 //! file's directory, which [`read_config`] joins; a compiled-in basis name
@@ -77,7 +78,8 @@
 //! | `write_overlap_npy`, after a stream sync inside the step | [`add_write_npy`]: a download node and a write node that feeds nothing |
 //! | `[memory] max_device_mem_per_gpu`, `max_pinned_mem_per_gpu`, `read_byte_size`, each off when unset | [`MemoryCaps`], the same keys and size strings, each defaulted at its floor |
 //! | `preflight`'s fold and `check_plan`, the pool capped at the cap less `kDeviceReserve`, the pre-warm against the card | [`admit_plan`]: [`fb_core_arena::admit`] on each table, the device's cap the smaller of the key and the card, less the reserve measured at planning (at least [`DEVICE_RESERVE`]) and the kernels' stack ([`KERNEL_STACK_BYTES`]) |
-//! | `check_pinned_node` against `/proc/meminfo`'s `MemAvailable`, under a pinned cap | the same check in [`admit_plan`], at every cap, the default's included |
+//! | `check_pinned_node` against `/proc/meminfo`'s `MemAvailable`, under a pinned cap | the same check in [`admit_plan`], at every cap, the default's included, against [`fb_core_arena::host_available`], `MemAvailable` within the cgroup's limit |
+//! | nothing: host data too large to pin goes to pageable memory, outside every count | `[memory] max_host_mem` ([`MemoryCaps::max_host_mem`]): the plan's heap block, admitted against it, and with the pinned blocks against the host's available memory ([`fb_core_arena::admit_host`]) |
 //! | `-o <output_dir>`, default `fbf_output` | [`Config::output`], the same default |
 //! | `-i <input_dir>` | nothing: paths are relative to the config file |
 //! | `main`, `print_products` | `src/main.rs`: the error logged once, the exit code, `timing.json` |
@@ -88,7 +90,7 @@ mod write;
 
 use std::path::{Path, PathBuf};
 
-use fb_core_arena::{Pinned, RowId, admit};
+use fb_core_arena::{Pinned, RowId, admit, admit_host};
 use fb_core_error_handling::{Error, ErrorKind, Result, Status};
 use fb_core_planner::{Dag, Planned};
 use fb_integrals_mmd::add_records;
@@ -280,7 +282,8 @@ pub enum EriMode {
 }
 
 /// `[memory]`: the caps on each GPU worker's blocks, the keys of the C++
-/// tree's memory caps (its `src/pipeline/README.md`). Each key's default
+/// tree's memory caps (its `src/pipeline/README.md`), and on the plan's
+/// heap block, a key the C++ does not have. Each key's default
 /// is also its floor: [`read_config`] refuses a value under it, naming the
 /// key and the value, so a key can only raise a cap. [`admit_plan`] holds
 /// the plan to them.
@@ -297,6 +300,7 @@ pub enum EriMode {
 /// [memory]
 /// max_device_mem_per_gpu = "10GiB"
 /// max_pinned_mem_per_gpu = "2GiB"
+/// max_host_mem = "32GiB"
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -316,14 +320,24 @@ pub struct MemoryCaps {
     /// `"2GiB"`.
     #[serde(deserialize_with = "byte_size")]
     pub max_pinned_mem_per_gpu: usize,
+    /// `max_host_mem`: the plan's heap block, bytes, one for every GPU
+    /// worker: the large flat host data its CPU nodes hold, no copy
+    /// engine's (`docs/memory.md`, "The three kinds"). Beside it, the
+    /// node's pinned blocks and the heap block together must fit the
+    /// host's available memory ([`admit_plan`]). Default and floor
+    /// `"16GiB"`.
+    #[serde(deserialize_with = "byte_size")]
+    pub max_host_mem: usize,
 }
 
 impl Default for MemoryCaps {
-    /// Each key at its floor: 8 GiB of device memory and 2 GiB pinned.
+    /// Each key at its floor: 8 GiB of device memory, 2 GiB pinned and
+    /// 16 GiB on the heap.
     fn default() -> Self {
         MemoryCaps {
             max_device_mem_per_gpu: 8 << 30,
             max_pinned_mem_per_gpu: 2 << 30,
+            max_host_mem: 16 << 30,
         }
     }
 }
@@ -502,6 +516,11 @@ pub fn read_config(path: &Path) -> Result<Config> {
             "max_pinned_mem_per_gpu",
             config.memory.max_pinned_mem_per_gpu,
             floor.max_pinned_mem_per_gpu,
+        ),
+        (
+            "max_host_mem",
+            config.memory.max_host_mem,
+            floor.max_host_mem,
         ),
     ] {
         if value < floor {
@@ -684,8 +703,10 @@ pub fn plan(
 /// "Admission"). In order:
 ///
 /// 1. The node: every GPU worker's pinned cap together must fit
-///    `mem_available`, the node's `MemAvailable` in bytes, since pinned
-///    memory is not pageable (the C++ `check_pinned_node`).
+///    `host_available`, the host memory the plan may take in bytes
+///    ([`fb_core_arena::host_available`]: `MemAvailable` within the
+///    cgroup's limit), since pinned memory is not pageable (the C++
+///    `check_pinned_node`).
 /// 2. Each worker's device table, [`admit`]ted against the smaller of
 ///    [`MemoryCaps::max_device_mem_per_gpu`] and its card's total memory,
 ///    less the reserve and the stack: `block + reserve + stack <= cap`.
@@ -699,35 +720,43 @@ pub fn plan(
 ///    plan with none touches no device.
 /// 3. Each worker's pinned table, against
 ///    [`MemoryCaps::max_pinned_mem_per_gpu`].
+/// 4. The plan's heap table, against [`MemoryCaps::max_host_mem`].
+/// 5. The node again, by its blocks: every worker's pinned block and the
+///    heap block together against `host_available`
+///    ([`fb_core_arena::admit_host`]).
 ///
-/// Each worker admitted is logged at info, its blocks and their caps.
+/// Each worker admitted is logged at info, its blocks and their caps, and
+/// the heap block and the node's sum after them.
 ///
 /// # Errors
-/// - `InvalidConfig`, naming the key, the workers and `MemAvailable`: the
-///   pinned caps together past it.
+/// - `InvalidConfig`, naming the key, the workers and the available
+///   memory: the pinned caps together past it.
 /// - `device_memory`'s or `stack_growth`'s error.
 /// - [`admit`]'s refusal, `Allocation`, naming the worker (`gpu<w>`), the
 ///   kind, the bytes over, every row over the cap alone and the rows live
 ///   at the peak; then the cap's terms: the key, and for a device block
 ///   the card's total, the reserve with its reading and its floor, and
-///   the stack.
+///   the stack; for the heap block, `plan` for the worker and the key.
+/// - [`admit_host`]'s refusal, `Allocation`, naming each kind's bytes and
+///   the available memory.
 pub fn admit_plan(
     planned: &Planned<'_>,
     memory: &MemoryCaps,
     device_memory: impl Fn(usize) -> Result<(usize, usize)>,
     stack_growth: impl Fn(usize) -> Result<usize>,
-    mem_available: usize,
+    host_available: usize,
 ) -> Status {
     let workers = planned.n_workers();
     let pinned_cap = memory.max_pinned_mem_per_gpu;
     // workers * cap > available, without the product's overflow.
-    if workers != 0 && pinned_cap > mem_available / workers {
+    if workers != 0 && pinned_cap > host_available / workers {
         return Err(Error::config(format!(
             "{workers} GPU workers, each allowed [memory] max_pinned_mem_per_gpu = {pinned_cap} \
-             bytes ({:.3} GiB) of pinned memory, can pin more than the node's MemAvailable of \
-             {mem_available} bytes ({:.3} GiB); pinned memory is not pageable",
+             bytes ({:.3} GiB) of pinned memory, can pin more than the node's MemAvailable \
+             within its cgroup's limit, {host_available} bytes ({:.3} GiB); pinned memory is \
+             not pageable",
             gib(pinned_cap),
-            gib(mem_available)
+            gib(host_available)
         )));
     }
     for w in 0..workers {
@@ -770,6 +799,25 @@ pub fn admit_plan(
             host.total()
         );
     }
+    let heap = planned.heap_table();
+    let heap_cap = memory.max_host_mem;
+    admit(heap, heap_cap, "plan").map_err(|mut e| {
+        e.message = format!(
+            "{}; the cap is [memory] max_host_mem = {heap_cap} bytes",
+            e.message
+        );
+        e
+    })?;
+    let pinned: Vec<usize> = (0..workers)
+        .map(|w| planned.host_table(w).total())
+        .collect();
+    admit_host(&pinned, heap.total(), host_available)?;
+    log::info!(
+        "plan admitted: a heap block of {} bytes against a cap of {heap_cap}, and the host \
+         blocks, {} bytes, against the {host_available} bytes available",
+        heap.total(),
+        pinned.iter().sum::<usize>() + heap.total()
+    );
     Ok(())
 }
 

@@ -34,7 +34,7 @@
 use std::sync::Arc;
 
 use contracts::debug_requires;
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
 use fb_core_error_handling::{Error, Status};
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
@@ -357,7 +357,7 @@ struct Tables {
 impl CpuTask for Tables {
     type Rows = TableRows<Pinned>;
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         for d in &self.downloaded {
             for &row in &d.fields {
                 host.read(row);
@@ -373,7 +373,7 @@ impl CpuTask for Tables {
         }
     }
 
-    fn run(&self, rows: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, rows: &Self::Rows, host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         let s = &self.staging;
         let records = host.take_mut(rows.records);
         let cells = host.take_mut(rows.cells);

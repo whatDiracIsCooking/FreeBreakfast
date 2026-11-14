@@ -33,7 +33,7 @@
 
 use contracts::debug_requires;
 use fb_basis::BasisSet;
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
@@ -123,12 +123,12 @@ struct Harmonics {
 impl CpuTask for Harmonics {
     type Rows = RowId<Pinned, f64>;
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         let len = self.basis.nao_cart() as usize * self.basis.nao_sphe() as usize;
         host.output("U", len)
     }
 
-    fn run(&self, u: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, u: &Self::Rows, host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         fb_basis::spherical_transform_matrix(&self.basis, host.take_mut(*u));
         Ok(())
     }

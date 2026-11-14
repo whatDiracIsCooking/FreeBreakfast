@@ -3,7 +3,7 @@
 //! from J and K.
 
 use contracts::debug_requires;
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p};
+use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
@@ -492,13 +492,13 @@ struct Scalars {
 impl CpuTask for Scalars {
     type Rows = RowId<Pinned, f64>;
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         host.read(self.e_elec);
         host.read(self.norm2);
         host.output("E, |e|", 2)
     }
 
-    fn run(&self, scalars: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, scalars: &Self::Rows, host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         let (e_elec, norm2) = (host.get(self.e_elec)[0], host.get(self.norm2)[0]);
         host.take_mut(*scalars)
             .copy_from_slice(&[e_elec + self.e_nuc, norm2.sqrt()]);

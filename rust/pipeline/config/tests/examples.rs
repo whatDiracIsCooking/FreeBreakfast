@@ -98,8 +98,9 @@ fn overlap_example() {
 /// The example under raised `[memory]` caps through the binary: exit 0,
 /// its S against PySCF's at the overlap's bar, and its log naming worker
 /// 0's device and pinned blocks admitted, the pinned one against the
-/// example's 4 GiB: the binary admits every table before it runs. Needs a
-/// GPU.
+/// example's 4 GiB, and the plan's heap block against its 32 GiB beside
+/// the node's host blocks: the binary admits every table before it runs.
+/// Needs a GPU.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn memory_example() {
@@ -115,6 +116,10 @@ fn memory_example() {
     );
     assert!(
         stdout.contains("a pinned block of") && stdout.contains("against a cap of 4294967296"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("plan admitted: a heap block of 0 bytes against a cap of 34359738368"),
         "{stdout}"
     );
 
@@ -504,14 +509,7 @@ fn a_missing_guess_file_is_refused() {
 fn a_guess_file_of_the_wrong_shape_is_refused() {
     let dir = workdir("refused_wrong_guess_file");
     let wrong = dir.join("wrong.npy");
-    fb_io_npy::write_npy(
-        &wrong,
-        &fb_io_npy::NpyArray {
-            shape: vec![6, 6],
-            data: vec![0.0; 36],
-        },
-    )
-    .unwrap();
+    fb_io_npy::write_npy(&wrong, &[6, 6], &[0.0; 36]).unwrap();
     let config = format!(
         "calculation = \"guess\"\n\n[molecule]\nxyz = \"water.xyz\"\n\n[basis_set]\nbasis = \"sto-3g\"\n\n[guess]\nfrom = \"{}\"\n",
         wrong.display()

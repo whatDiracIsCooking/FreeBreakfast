@@ -48,7 +48,8 @@ disagreeing about the edge between them, and keeps each task's spec short.
 1. **Device.** CPU or GPU, and the two are different sorts of task. A GPU
    task holds device rows and pinned rows and runs on a stream, and reaches
    a pinned row only through a copy it enqueues; a CPU task holds host rows
-   alone and runs on the CPU pool, so a CPU task holds no device row.
+   alone, pinned and heap, and runs on the CPU pool, so a CPU task holds no
+   device row and no task holds all three kinds.
 2. **Layout.** Every buffer it will hold, as a function of its dimensions
    (`nbf`, `naux`, `nocc`, ...): each one's size, and whether it is scratch,
    freed when the task ends, or an output that outlives it. The footprint is
@@ -151,8 +152,9 @@ dimensions, so `dims` is `&self`, and `layout` declares through one
 by the row id that task's layout returned. A GPU task's `layout` is handed
 a device and a pinned `Layout`, and its `run` its device rows as a `Bufs`,
 its pinned rows as a `CopyOnly` that only its stream's copies can take, and
-the stream. A CPU task's `layout` is handed a host `Layout` alone, and its
-`run` those rows as a `Bufs`. The sort decides the worker: `Dag::add_gpu`
+the stream. A CPU task's `layout` is handed a pinned and a heap `Layout`,
+host kinds alone, and its `run` those rows as two `Bufs`; a loop's
+`Decision` is handed the same two. The sort decides the worker: `Dag::add_gpu`
 puts a task on its GPU worker's stream, `Dag::add_cpu` on the CPU pool.
 
 **Allocation is a capability, held by one module.** The raw allocation
@@ -175,7 +177,7 @@ planning a tensor compiler does. What that replaces, from the C++:
 | The 64 MiB fragmentation headroom | None. There is no dynamic pool to fragment. |
 | An adaptive routine's width chosen at run time from free memory | Chosen at planning: `layout` takes the room the schedule leaves and returns the width. Deterministic, and known before the first run. |
 | A nested pipeline's footprint folded into the outer step's | A sub-DAG's arena is carved from its parent's. Outputs that outlive a task live in the parent's layout. |
-| `Footprint<Device>` and `Footprint<Pinned>` | Two arenas, one per memory kind, and the kind stays in the type. |
+| `Footprint<Device>` and `Footprint<Pinned>` | One arena per memory kind, and the kind stays in the type. |
 
 Plan-once-run-many is what makes this physical: one arena per planned DAG,
 carved once, reused every run. An iteration, a geometry or a displacement
@@ -294,8 +296,8 @@ the width, so the width is a planning decision and not a correctness one.
 | Kind | Owner | Admitted against | How it is held |
 |---|---|---|---|
 | Device | The GPU worker | The per-GPU device cap | One block per plan |
-| Pinned host | The GPU worker whose copies it stages | The per-GPU pinned cap, and the sum over a node's workers within the host's available memory | One block per plan, allocated portable |
-| Pageable host | Nobody; the operating system's | Not modelled | `Vec`, owned by the plan when it is part of the DAG |
+| Pinned host | The GPU worker whose copies it stages | The per-GPU pinned cap, and with the heap block the sum over a node's workers within the host's available memory | One block per plan, allocated portable |
+| Heap | The plan | Its own cap, and with the pinned blocks within the host's available memory | One block per plan, from the global allocator |
 
 **Pinned memory is per GPU.** Physically it is the node's, page-locked host
 RAM any card can read, and the C ABI's portable flag is set on both backends
@@ -306,26 +308,36 @@ tree's `DeviceResources` already has it. A GPU worker is then one
 self-contained unit, its streams, its device block and its pinned block,
 admitted together against the per-GPU caps, and NUMA locality comes free
 from allocating the block on the worker's own thread. The node is a cap and
-not an owner: the sum of a node's pinned blocks must fit the host's memory
-less a margin, which is the C++ `check_pinned_node` check carried over. Host
+not an owner: the sum of a node's pinned blocks and the plan's heap block
+must fit the host's available memory, which is the C++ `check_pinned_node`
+check carried over, with the heap beside it. Host
 data broadcast to several cards is placed in one consumer's pinned block and
 read across, which the portable flag makes legal and the "GPUs on one node"
 row of the worker table prices, or staged once per card; both are placement.
 Pinning costs milliseconds and locks pages, so once per plan, reused every
 run, is where plan-once-run-many pays most.
 
-**Pageable host memory is not an arena.** The arena exists for memory that
-is admitted against a budget and whose peak must be a planned number.
-Pageable host memory is neither: the config, the basis, the planner's own
-tables and a file writer's buffer are the operating system's business, and
-`Vec` is the right tool. Making an arena the backend for `Vec` means the
-unstable allocator API or a third-party `Vec` across every host type, for no
-property the model asks for. Plan-once-run-many gives the host side what
-matters without an allocator: a host buffer that is part of the DAG is owned
-by the plan, allocated when the plan is built and reused every run. The C++
-footprint's rule carries over unchanged: large host-side data is pinned,
-where it is counted, and a step that would move something big to pageable
-memory moves it to pinned memory instead.
+**Pinned is staging; large flat host data is a heap row.** A pinned row
+exists to feed or drain a copy on a stream, and page-locked memory spent on
+anything else is locked for no reason: the SCF decision's carried energy
+never meets a copy engine, and host data too large to lock, B kept on the
+host past the pinned carve, has to live somewhere counted. Such data is a
+heap row: a slice of an `Element`, sized at planning, in the plan's one
+heap block, which the assigner lays out as it does any table, so its
+footprint is the table and there is no second formula. Only a CPU node
+holds one; when it must reach the device, a pinned row is the window it
+streams through. The heap block is one global-allocator call at
+instantiation, freed at the plan's drop: an arena, not an allocator, so a
+run allocates nothing on the host either.
+
+**Structured planning input is `Vec`.** The config, a `BasisSet` and the
+planner's own tables exist before any table can be sized, and fix its
+dimensions, so they cannot be rows: they are `Vec`, not modelled and not
+admitted. Making an arena the backend for `Vec` means the unstable allocator
+API or a third-party `Vec` across every host type, for no property the model
+asks for. What a run hands its caller after it, a `Vec` copied out of its
+last row, is the one copy a run makes ([`memory.md`](memory.md), "The three
+kinds").
 
 **What no arena reaches.** A vendor routine that allocates internally, as
 some solver paths do whatever workspace they are handed, is outside every

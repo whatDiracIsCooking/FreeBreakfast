@@ -29,7 +29,7 @@ use std::ops::ControlFlow;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Device, Heap, Layout, Pinned, RowId};
 use fb_core_error_handling::{Result, Status};
 use fb_core_planner::{CpuTask, Dag, Decision};
 use fb_pipeline_scf::{add_density, add_fock};
@@ -49,11 +49,11 @@ struct Stage {
 impl CpuTask for Stage {
     type Rows = RowId<Pinned, f64>;
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         host.output(self.name, self.data.len())
     }
 
-    fn run(&self, row: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, row: &Self::Rows, host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         host.take_mut(*row).copy_from_slice(&self.data);
         Ok(())
     }
@@ -68,13 +68,13 @@ struct Collect {
 impl CpuTask for Collect {
     type Rows = ();
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
         for &row in &self.rows {
             host.read(row);
         }
     }
 
-    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         *self.out.lock().unwrap() = self.rows.iter().map(|&r| host.get(r).to_vec()).collect();
         Ok(())
     }
@@ -86,9 +86,15 @@ struct Once;
 impl Decision for Once {
     type Rows = ();
 
-    fn layout(&self, _: &mut Layout<'_, Pinned>) {}
+    fn layout(&self, _: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {}
 
-    fn decide(&self, _: &(), _: &Bufs<'_, Pinned>, _: usize) -> Result<ControlFlow<()>> {
+    fn decide(
+        &self,
+        _: &(),
+        _: &Bufs<'_, Pinned>,
+        _: &Bufs<'_, Heap>,
+        _: usize,
+    ) -> Result<ControlFlow<()>> {
         Ok(ControlFlow::Break(()))
     }
 }

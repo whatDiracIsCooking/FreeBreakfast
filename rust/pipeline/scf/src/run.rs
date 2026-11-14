@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Layout, Pinned, RowId, memcpy_p2h};
+use fb_core_arena::{Bufs, Heap, Layout, Pinned, RowId, memcpy_p2h};
 use fb_core_error_handling::{Result, Status};
 use fb_core_planner::{CpuTask, Dag, Planned};
 use fb_core_thread_pool::Record;
@@ -165,10 +165,12 @@ impl Run {
     }
 }
 
-/// CPU: the last build's `[E, ‖e‖, builds]` and the pinned copies read out,
-/// after the executor waited for the download.
+/// CPU: the last build's `[E, ‖e‖, builds]`, a heap row, and the pinned
+/// copies read out, after the executor waited for the download. The copies
+/// are the run's exit, so a run's one allocation (`docs/memory.md`, "The
+/// three kinds").
 struct Collect {
-    scalars: RowId<Pinned, f64>,
+    scalars: RowId<Heap, f64>,
     pinned: [RowId<Pinned, f64>; 3],
     out: Arc<Mutex<Option<ScfOutput>>>,
 }
@@ -176,15 +178,15 @@ struct Collect {
 impl CpuTask for Collect {
     type Rows = ();
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) {
-        host.read(self.scalars);
+    fn layout(&self, host: &mut Layout<'_, Pinned>, heap: &mut Layout<'_, Heap>) {
+        heap.read(self.scalars);
         for &row in &self.pinned {
             host.read(row);
         }
     }
 
-    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
-        let scalars = host.get(self.scalars);
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>, heap: &Bufs<'_, Heap>) -> Status {
+        let scalars = heap.get(self.scalars);
         let [epsilon, c, d] = self.pinned.map(|row| memcpy_p2h(host, row));
         *self.out.lock().unwrap_or_else(|e| e.into_inner()) = Some(ScfOutput {
             energy: scalars[0],

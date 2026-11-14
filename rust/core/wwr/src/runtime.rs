@@ -48,7 +48,7 @@
 //! is wwr's ready-made top rung of the device-handle ladder, for a buffer
 //! that allocates from a pool. Neither the rung nor the bundle has a
 //! counterpart: the arena allocates one plain block per plan
-//! (`docs/memory.md`, "The two kinds"), and a [`Stream`] is a
+//! (`docs/memory.md`, "The three kinds"), and a [`Stream`] is a
 //! [`DeviceHandleStream`](super::handle::DeviceHandleStream) on its own.
 
 pub mod event;

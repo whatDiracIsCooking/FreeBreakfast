@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use fb_atom::{Atom, Element};
 use fb_basis::BasisSet;
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p};
+use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
@@ -229,7 +229,7 @@ struct Collect {
 impl CpuTask for Collect {
     type Rows = ();
 
-    fn layout(&self, h: &mut Layout<'_, Pinned>) {
+    fn layout(&self, h: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
         for c in &self.down {
             c.f64s.iter().for_each(|&r| {
                 h.read(r);
@@ -240,7 +240,7 @@ impl CpuTask for Collect {
         }
     }
 
-    fn run(&self, _: &(), h: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, _: &(), h: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         *self.out.lock().unwrap() = self
             .classes
             .iter()

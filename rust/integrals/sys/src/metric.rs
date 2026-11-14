@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use contracts::debug_requires;
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
@@ -282,14 +282,14 @@ struct Stage {
 impl CpuTask for Stage {
     type Rows = TableRows<Pinned>;
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
         TableRows {
             records: host.output("aux records", self.staging.records.len()),
             pairs: host.output("aux pairs", self.staging.pairs.len()),
         }
     }
 
-    fn run(&self, rows: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
+    fn run(&self, rows: &Self::Rows, host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         memcpy_h2p(host, rows.records, &self.staging.records);
         memcpy_h2p(host, rows.pairs, &self.staging.pairs);
         Ok(())

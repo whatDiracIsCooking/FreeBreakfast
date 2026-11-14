@@ -10,7 +10,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use fb_core_error_handling::{Error, Result, Status};
+use fb_core_error_handling::{Error, Status};
 use fb_core_log::{self as log, LogLevel};
 use fb_core_thread_pool::{DeviceStream, default_n_cpu};
 use fb_core_wwr::runtime::Stream;
@@ -21,34 +21,11 @@ use fb_recipes_diagonalize::syevd_lwork;
 /// The devices the plan's GPU workers run on, worker `w` on `DEVICES[w]`.
 const DEVICES: [i32; 1] = [0];
 
-/// The node's `MemAvailable`, in bytes, from `/proc/meminfo`: what the
-/// workers' pinned caps together must fit.
-fn read_mem_available() -> Result<usize> {
-    let meminfo = std::fs::read_to_string("/proc/meminfo")
-        .map_err(|e| Error::io(format!("cannot read '/proc/meminfo': {e}")))?;
-    let line = meminfo
-        .lines()
-        .find(|l| l.starts_with("MemAvailable:"))
-        .ok_or_else(|| Error::io("no MemAvailable in '/proc/meminfo'"))?;
-    match line["MemAvailable:".len()..]
-        .split_whitespace()
-        .collect::<Vec<_>>()[..]
-    {
-        [kib, "kB"] => kib
-            .parse::<usize>()
-            .ok()
-            .and_then(|kib| kib.checked_mul(1024))
-            .ok_or_else(|| Error::io(format!("cannot parse '{line}' in '/proc/meminfo'"))),
-        _ => Err(Error::io(format!(
-            "cannot parse '{line}' in '/proc/meminfo'"
-        ))),
-    }
-}
-
 /// Read, plan (syevd's work asked of a solver handle on device 0, if the
-/// plan asks), admit every worker's tables against the `[memory]` caps
-/// (each device's reserve measured with its worker's stream and handles
-/// made, and the kernels' stack read after it),
+/// plan asks), admit every worker's tables and the heap's against the
+/// `[memory]` caps (each device's reserve measured with its worker's
+/// stream and handles made, and the kernels' stack read after it; the
+/// host blocks against `MemAvailable` within the cgroup's limit),
 /// make the output directory, run, and write `timing.json`. Everything a
 /// config can get wrong is refused before a device is touched, and a plan
 /// too large for its caps or its card before a block is made.
@@ -71,7 +48,7 @@ fn run(args: &[String]) -> Status {
             fb_core_arena::device_memory(DEVICES[w])
         },
         |w| fb_core_wwr::runtime::stack_growth(DEVICES[w], KERNEL_STACK_BYTES),
-        read_mem_available()?,
+        fb_core_arena::host_available()?,
     )?;
     std::fs::create_dir_all(&config.output).map_err(|e| {
         Error::io(format!(

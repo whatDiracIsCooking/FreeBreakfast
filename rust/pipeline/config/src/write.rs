@@ -5,10 +5,9 @@
 
 use std::path::PathBuf;
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_p2h};
+use fb_core_arena::{Bufs, Device, Heap, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, Status};
 use fb_core_planner::{CpuTask, Dag};
-use fb_io_npy::NpyArray;
 use serde_json::json;
 
 /// Add the writing of the device matrix `m`, `n × n` doubles column-major,
@@ -17,8 +16,8 @@ use serde_json::json;
 /// Two nodes, both named after the file: `download <file>` (the planner's
 /// copy node, [`Dag::download`]: `m` copied into a pinned row of that
 /// name) and `write <file>` (CPU, after
-/// the executor waited for the copy: the pinned row written as a float64
-/// `.npy` in Fortran order, [`fb_io_npy::write_npy`]). The write feeds
+/// the executor waited for the copy: the pinned row written in place as a
+/// float64 `.npy` in Fortran order, [`fb_io_npy::write_npy`]). The write feeds
 /// nothing, so no later task waits on the disk. The directory must exist
 /// when the plan runs.
 ///
@@ -73,7 +72,7 @@ pub fn add_write_host_npy(
 }
 
 /// Add the writing of an SCF's results to the JSON file `path` to `dag` on
-/// GPU worker `worker`: `scalars`, the pinned `[E, ‖e‖, builds]` of
+/// GPU worker `worker`: `scalars`, the heap row `[E, ‖e‖, builds]` of
 /// [`fb_pipeline_scf::add_scf`], and `eps`, its device row of the `n`
 /// orbital energies. Two nodes: `download epsilon` (the planner's copy
 /// node, [`Dag::download`]: ε copied into a pinned row `epsilon`) and
@@ -87,7 +86,7 @@ pub fn add_write_host_npy(
 pub(crate) fn add_write_scf_json(
     dag: &mut Dag<'_>,
     worker: usize,
-    scalars: RowId<Pinned, f64>,
+    scalars: RowId<Heap, f64>,
     eps: RowId<Device, f64>,
     n: usize,
     path: PathBuf,
@@ -115,7 +114,7 @@ struct Write {
 impl CpuTask for Write {
     type Rows = ();
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
         host.read(self.pinned);
     }
 
@@ -123,20 +122,14 @@ impl CpuTask for Write {
         vec![("n", self.n)]
     }
 
-    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
-        fb_io_npy::write_npy(
-            &self.path,
-            &NpyArray {
-                shape: vec![self.n, self.n],
-                data: memcpy_p2h(host, self.pinned),
-            },
-        )
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
+        fb_io_npy::write_npy(&self.path, &[self.n, self.n], host.get(self.pinned))
     }
 }
 
-/// CPU: the SCF's scalars and ε written to disk as JSON.
+/// CPU: the SCF's scalars, from the heap, and ε written to disk as JSON.
 struct WriteScf {
-    scalars: RowId<Pinned, f64>,
+    scalars: RowId<Heap, f64>,
     epsilon: RowId<Pinned, f64>,
     n: usize,
     path: PathBuf,
@@ -145,8 +138,8 @@ struct WriteScf {
 impl CpuTask for WriteScf {
     type Rows = ();
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>) {
-        host.read(self.scalars);
+    fn layout(&self, host: &mut Layout<'_, Pinned>, heap: &mut Layout<'_, Heap>) {
+        heap.read(self.scalars);
         host.read(self.epsilon);
     }
 
@@ -154,8 +147,8 @@ impl CpuTask for WriteScf {
         vec![("n", self.n)]
     }
 
-    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
-        let [energy, residual, builds] = host.get(self.scalars)[..] else {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>, heap: &Bufs<'_, Heap>) -> Status {
+        let [energy, residual, builds] = heap.get(self.scalars)[..] else {
             unreachable!("add_scf's scalars are [E, |e|, builds]")
         };
         let text = json!({
@@ -163,7 +156,7 @@ impl CpuTask for WriteScf {
             "residual": residual,
             // A whole number the loop's decision wrote.
             "iterations": builds as usize,
-            "epsilon": memcpy_p2h(host, self.epsilon),
+            "epsilon": host.get(self.epsilon),
         });
         std::fs::write(&self.path, format!("{text:#}\n"))
             .map_err(|e| Error::io(format!("cannot write '{}': {e}", self.path.display())))

@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 use fb_core_error_handling::ErrorKind;
 use std::cell::Cell;
 
-use fb_core_planner::{Dag, Planned};
+use fb_core_arena::{Bufs, Heap, Layout, Pinned, RowId};
+use fb_core_error_handling::Status;
+use fb_core_planner::{CpuTask, Dag, Planned};
 use fb_pipeline_config::{
     Calculation, DEVICE_RESERVE, GuessKind, GuessStep, MemoryCaps, admit_plan, plan, read_config,
 };
@@ -410,6 +412,7 @@ fn memory_is_read() {
         MemoryCaps {
             max_device_mem_per_gpu: 8 * GIB,
             max_pinned_mem_per_gpu: 2 * GIB,
+            max_host_mem: 16 * GIB,
         }
     );
     assert_eq!(caps("memory_empty", "[memory]\n"), MemoryCaps::default());
@@ -419,6 +422,7 @@ fn memory_is_read() {
         MemoryCaps {
             max_device_mem_per_gpu: 10 * GIB,
             max_pinned_mem_per_gpu: 4 * GIB,
+            max_host_mem: 32 * GIB,
         }
     );
     for (value, bytes) in [
@@ -465,6 +469,11 @@ fn memory_floors() {
             "[memory] max_pinned_mem_per_gpu = 1073741824 bytes (1.000 GiB) is under its floor \
              of 2147483648 bytes (2 GiB)",
         ),
+        (
+            "max_host_mem = \"15GiB\"",
+            "[memory] max_host_mem = 16106127360 bytes (15.000 GiB) is under its floor of \
+             17179869184 bytes (16 GiB)",
+        ),
     ];
     for (key, named) in cases {
         let (_, config) = read_text(
@@ -479,7 +488,8 @@ fn memory_floors() {
     let (_, at) = read_text(
         "memory_at_floor",
         &overlap_config(
-            "[memory]\nmax_device_mem_per_gpu = 8589934592\nmax_pinned_mem_per_gpu = \"2GiB\"\n",
+            "[memory]\nmax_device_mem_per_gpu = 8589934592\nmax_pinned_mem_per_gpu = \"2GiB\"\n\
+             max_host_mem = \"16GiB\"\n",
         ),
     );
     assert_eq!(at.unwrap().memory, MemoryCaps::default());
@@ -487,8 +497,7 @@ fn memory_floors() {
 
 /// What `[memory]` refuses as a byte size, each `InvalidConfig` naming the
 /// file and the line: no unit, an unknown one, an exponent, a float, below
-/// 1 byte, past 2^63 bytes, no number; and an unknown key, the heap's cap
-/// among them, which is not built.
+/// 1 byte, past 2^63 bytes, no number; and an unknown key.
 #[test]
 fn memory_refusals() {
     let cases = [
@@ -506,7 +515,7 @@ fn memory_refusals() {
             "max_pinned_mem_per_gpu = \"GiB\"",
             "not a number and a unit",
         ),
-        ("max_host_mem = \"16GiB\"", "unknown field `max_host_mem`"),
+        ("max_disk_mem = \"16GiB\"", "unknown field `max_disk_mem`"),
     ];
     for (key, named) in cases {
         let (_, config) = read_text(
@@ -691,10 +700,11 @@ fn admission_reads_the_card_only_for_a_device_block() {
     assert_eq!(asked.get(), 2, "each read once");
 }
 
-/// The workers' pinned caps together must fit the node's `MemAvailable`,
-/// as the C++ `check_pinned_node`: one worker's 2 GiB default fits 2 GiB,
-/// and is refused by a byte less, `InvalidConfig`, naming the key and
-/// `MemAvailable`, before any card is read.
+/// The workers' pinned caps together must fit the node's `MemAvailable`
+/// within its cgroup's limit, as the C++ `check_pinned_node`: one worker's
+/// 2 GiB default fits 2 GiB, and is refused by a byte less,
+/// `InvalidConfig`, naming the key and `MemAvailable`, before any card is
+/// read.
 #[test]
 fn pinned_caps_fit_the_node() {
     let caps = MemoryCaps::default();
@@ -711,7 +721,79 @@ fn pinned_caps_fit_the_node() {
     assert_eq!(error.kind, ErrorKind::InvalidConfig, "{error}");
     for named in [
         "1 GPU workers, each allowed [memory] max_pinned_mem_per_gpu = 2147483648 bytes",
-        "MemAvailable of 2147483647 bytes",
+        "MemAvailable within its cgroup's limit, 2147483647 bytes",
+    ] {
+        assert!(error.message.contains(named), "{named}: {error}");
+    }
+}
+
+/// CPU: one heap output of `bytes` bytes, for a plan with a heap block.
+struct HeapRow(usize);
+
+impl CpuTask for HeapRow {
+    type Rows = RowId<Heap, u8>;
+
+    fn layout(&self, _: &mut Layout<'_, Pinned>, heap: &mut Layout<'_, Heap>) -> Self::Rows {
+        heap.output("heap row", self.0)
+    }
+
+    fn run(&self, _: &Self::Rows, _: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
+        Ok(())
+    }
+}
+
+/// [`rows`] with a heap row of `heap` bytes beside them.
+fn rows_and_heap(device: usize, pinned: usize, heap: usize) -> Planned<'static> {
+    let mut dag = Dag::new();
+    let _ = dag.device_worker_row::<u8>(0, "device row", device);
+    let _ = dag.host_worker_row::<u8>(0, "pinned row", pinned);
+    dag.add_cpu("heap", 0, HeapRow(heap));
+    dag.plan()
+}
+
+/// The heap block is admitted against `[memory] max_host_mem`: a block at
+/// the cap fits, and one past it is refused, `Allocation`, naming the
+/// plan, the heap block, its row and the key. The DF-RHF's plan holds the
+/// SCF's carried `last build` on the heap, and fits the default.
+#[test]
+fn heap_is_admitted_against_max_host_mem() {
+    let caps = MemoryCaps {
+        max_host_mem: 4096,
+        ..MemoryCaps::default()
+    };
+    admit_plan(&rows_and_heap(1, 1, 4096), &caps, tib, no_stack, NODE).unwrap();
+    let error = admit_plan(&rows_and_heap(1, 1, 4097), &caps, tib, no_stack, NODE).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Allocation, "{error}");
+    for named in [
+        "plan: the heap block needs 4097 bytes, 1 over its cap of 4096",
+        "over the cap alone: heap row (4097 B)",
+        "[memory] max_host_mem = 4096 bytes",
+    ] {
+        assert!(error.message.contains(named), "{named}: {error}");
+    }
+    let config = read_config(&examples().join("rhf.toml")).unwrap();
+    let rhf = plan(&config, |_| Ok(LWORK)).unwrap();
+    assert_eq!(rhf.heap_table().n_rows(), 1, "the SCF's last build");
+    admit_plan(&rhf, &MemoryCaps::default(), tib, no_stack, NODE).unwrap();
+}
+
+/// The node's pinned blocks and the heap block are admitted together
+/// against the host's available memory: at their sum exactly, and refused
+/// one byte short of it, `Allocation`, naming each kind's bytes; the
+/// pinned caps alone fit that memory either way.
+#[test]
+fn admission_counts_pinned_and_heap_together() {
+    let caps = MemoryCaps::default();
+    let planned = rows_and_heap(1, GIB, GIB + 256);
+    let sum = planned.host_table(0).total() + planned.heap_table().total();
+    assert_eq!(sum, 2 * GIB + 256);
+    admit_plan(&planned, &caps, tib, no_stack, sum).unwrap();
+    let error = admit_plan(&planned, &caps, tib, no_stack, sum - 1).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Allocation, "{error}");
+    for named in [
+        "node: the host blocks need 2147483904 bytes, 1 over the 2147483903 bytes available",
+        "the pinned blocks 1073741824 bytes",
+        "the heap block 1073742080 bytes",
     ] {
         assert!(error.message.contains(named), "{named}: {error}");
     }

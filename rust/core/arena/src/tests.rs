@@ -1037,8 +1037,6 @@ fn a_table_refuses_another_tables_row() {
     assert!(m.contains("a row of another table"), "{m}");
 }
 
-use super::kind::Heap;
-
 /// A view gives a node its own rows and refuses the rest: a value one node
 /// writes another reads back; a row outside the node's layout, a read-only
 /// row taken to write, a row taken twice, a row another live view holds
@@ -1159,4 +1157,64 @@ fn each_iteration_reaches_its_own_copy() {
         v.take_mut(acc).fill(k as f64);
     }
     assert_eq!(block.partition(2, 1).get(acc), &[3.0, 3.0]);
+}
+
+/// A node's host blocks are admitted together: the pinned blocks and the
+/// heap block admitted at their sum exactly, and refused one byte short of
+/// it, the refusal naming each kind's bytes and the bytes over.
+#[test]
+fn admission_counts_pinned_and_heap_together() {
+    let (pinned, heap) = ([4096, 1024], 2048);
+    let sum = 4096 + 1024 + 2048;
+    super::admit_host(&pinned, heap, sum).unwrap();
+    let e = super::admit_host(&pinned, heap, sum - 1).unwrap_err();
+    assert_eq!(e.kind, fb_core_error_handling::ErrorKind::Allocation);
+    for part in [
+        "7168 bytes, 1 over the 7167 bytes available",
+        "the pinned blocks 5120 bytes (4096 + 1024",
+        "the heap block 2048 bytes",
+    ] {
+        assert!(e.message.contains(part), "{part}: {}", e.message);
+    }
+}
+
+/// The host's available memory is `MemAvailable`, or under a cgroup limit
+/// the smaller of it and what the limit leaves, the cgroup's inactive page
+/// cache counted free; `max` or no limit is `MemAvailable`, and a file
+/// that cannot be parsed is an `Io` error.
+#[test]
+fn host_memory_is_the_smaller_of_the_node_and_its_cgroup() {
+    use super::admit::available;
+    let meminfo = "MemTotal: 64 kB\nMemAvailable:    1000 kB\n";
+    assert_eq!(available(meminfo, None, None, None).unwrap(), 1_024_000);
+    assert_eq!(
+        available(meminfo, Some("max\n"), Some("5\n"), None).unwrap(),
+        1_024_000
+    );
+    let stat = "anon 1\ninactive_file 300\nactive_file 7\n";
+    assert_eq!(
+        available(meminfo, Some("1000\n"), Some("500\n"), Some(stat)).unwrap(),
+        800
+    );
+    assert_eq!(
+        available(meminfo, Some("100\n"), Some("500\n"), None).unwrap(),
+        0
+    );
+    assert_eq!(
+        available(meminfo, Some("1000000000\n"), Some("0\n"), None).unwrap(),
+        1_024_000
+    );
+    for (meminfo, max) in [
+        ("MemTotal: 64 kB\n", None),
+        ("MemAvailable: lots\n", None),
+        (meminfo, Some("1.5G\n")),
+    ] {
+        let e = available(meminfo, max, None, None).unwrap_err();
+        assert_eq!(
+            e.kind,
+            fb_core_error_handling::ErrorKind::Io,
+            "{}",
+            e.message
+        );
+    }
 }

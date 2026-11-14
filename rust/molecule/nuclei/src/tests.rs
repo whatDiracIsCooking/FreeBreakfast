@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 use fb_atom::{Atom, Element};
-use fb_core_arena::Heap;
+use fb_core_arena::{Heap, PinnedStandIn};
 use fb_core_thread_pool::HostOnly;
 use fb_core_types::Double3;
 use fb_test_support::golden;
@@ -75,15 +75,15 @@ struct Collect<H> {
     out: Read,
 }
 
-impl<H: HostKind> CpuTask<H> for Collect<H> {
+impl<H: StagingKind> CpuTask<H> for Collect<H> {
     type Rows = ();
 
-    fn layout(&self, host: &mut Layout<'_, H>) {
+    fn layout(&self, host: &mut Layout<'_, H>, _: &mut Layout<'_, Heap>) {
         host.read(self.rows.0);
         host.read(self.rows.1);
     }
 
-    fn run(&self, _: &(), host: &Bufs<'_, H>) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, H>, _: &Bufs<'_, Heap>) -> Status {
         let bits = |row| host.get(row).iter().map(|e: &f64| e.to_bits()).collect();
         *self.out.lock().unwrap() = (bits(self.rows.0), bits(self.rows.1));
         Ok(())
@@ -118,7 +118,7 @@ fn plan_goldens() {
 #[test]
 fn staged_rows_are_the_molecules_nuclei() {
     for (stem, molecule) in cases() {
-        let mut dag: Dag<'_, Heap, ()> = Dag::new();
+        let mut dag: Dag<'_, PinnedStandIn, ()> = Dag::new();
         let staged = dag.add_cpu(
             "nuclei",
             0,

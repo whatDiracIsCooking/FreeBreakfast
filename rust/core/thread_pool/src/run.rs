@@ -81,9 +81,10 @@ pub struct SyncPoint {
 /// One block of the plan a [`Record`] timed: a worker's arena of one kind.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArenaSize {
-    /// The GPU worker it belongs to.
+    /// The GPU worker it belongs to; 0 for the plan's heap block, which
+    /// is every worker's.
     pub worker: usize,
-    /// Its kind's name: `device`, `pinned`, or `heap` in the tests.
+    /// Its kind's name: `device`, `pinned` or `heap`.
     pub kind: String,
     /// Its size in bytes.
     pub bytes: usize,

@@ -11,8 +11,8 @@
 //!   declares every row the task holds or reads, and `run`, which computes
 //!   through them. A GPU task declares device and pinned rows and runs on
 //!   a lane of its worker, one of the worker's streams, its pinned rows a
-//!   [`CopyOnly`] only its copies take; a CPU task declares host rows alone
-//!   and runs on the CPU pool.
+//!   [`CopyOnly`] only its copies take; a CPU task declares host rows alone,
+//!   pinned and on the heap, and runs on the CPU pool.
 //! - [`Dag`]: tasks added in plan order, each on a GPU worker, by
 //!   [`Dag::add_gpu`] (on a lane the caller names, a [`LaneId`]) or
 //!   [`Dag::add_cpu`], the sort deciding where it runs. A worker's tables
@@ -36,13 +36,15 @@
 //!   "The table").
 //!
 //! [`Bufs::iteration`]: fb_core_arena::Bufs::iteration
-//! - [`Planned`] ([`Dag::plan`]): each worker's device and host tables laid
-//!   out, and each task's dependencies derived, all pure. A task runs after
+//! - [`Planned`] ([`Dag::plan`]): each worker's device and host tables and
+//!   the plan's one heap table laid out, and each task's dependencies
+//!   derived, all pure. A task runs after
 //!   the producer of every row it reads ([`Table::reads`]) and after every
 //!   user of the bytes it takes over ([`Table::handoffs`]). Admission is
 //!   [`admit`](fb_core_arena::admit) on its tables; its text is the
 //!   plan's golden.
-//! - [`Instance`] ([`Planned::instantiate`]): the blocks, and a
+//! - [`Instance`] ([`Planned::instantiate`]): the blocks, each worker's two
+//!   and the plan's heap block, and a
 //!   [`thread_pool::Plan`] whose node for each task partitions the blocks
 //!   for it and calls its `run`. Run any number of times, one at a time:
 //!   [`Instance::run`] takes the instance and the backend by `&mut`
