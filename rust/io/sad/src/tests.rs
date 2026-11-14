@@ -129,12 +129,31 @@ fn every_element_of_every_compiled_in_set_is_baked() {
 #[test]
 fn nothing_else_is_baked() {
     // The canonical name, not a spelling: only a basis resolved from the
-    // binary carries a name, and it carries this one.
-    assert!(builtin_sad_density("cc-pvdz", 8).is_none());
-    assert!(builtin_sad_density("", 8).is_none());
-    // cc-pVDZ has no potassium, and nothing has element 0.
-    assert!(builtin_sad_density("cc-pVDZ", 19).is_none());
-    assert!(builtin_sad_density("STO-3G", 0).is_none());
+    // binary carries a name, and it carries this one. cc-pVDZ has no
+    // potassium, and nothing has element 0.
+    for (basis, z) in [("cc-pvdz", 8), ("", 8), ("cc-pVDZ", 19), ("STO-3G", 0)] {
+        assert!(builtin_sad_density(basis, z).is_none(), "{basis} Z={z}");
+        assert!(!carries_sad_stamp(basis, z), "{basis} Z={z}");
+    }
+}
+
+#[test]
+fn carries_exactly_what_the_lookup_finds() {
+    // The query the planner asks in place of the lookup: the same answer
+    // for every carried stamp and for every element 0 to 118 of every
+    // compiled-in set, carried or not.
+    for (basis, z, _) in BUILTIN {
+        assert!(carries_sad_stamp(basis, z), "{basis} Z={z}");
+    }
+    for name in COMPILED_IN_SETS {
+        for z in 0..=118 {
+            assert_eq!(
+                carries_sad_stamp(name, z),
+                builtin_sad_density(name, z).is_some(),
+                "{name} Z={z}"
+            );
+        }
+    }
 }
 
 #[test]

@@ -12,8 +12,9 @@
 //!   atom ([`fb_sad::distinct_stamps`]), its block written into a host row
 //!   of its own (`stamp <symbol>`). The node is `baked stamp <symbol>` when
 //!   the basis carries a name ([`BasisSet::name`], set only for a compiled-in
-//!   set) and `fb-io-sad` has the element ([`builtin_sad_density`]), which
-//!   it parses; `atomic scf <symbol>` otherwise, which runs `fb-sad`'s
+//!   set) and `fb-io-sad` carries the element ([`carries_sad_stamp`], which
+//!   parses nothing), the node parsing it ([`builtin_sad_density`]) when it
+//!   runs, so each stamp is parsed once; `atomic scf <symbol>` otherwise, which runs `fb-sad`'s
 //!   atomic SCF. Either way through [`fb_sad::stamp_density`], so the block
 //!   is bitwise the serial [`fb_sad::sad_density`]'s. A basis read from a
 //!   path carries no name, so it runs every SCF even if its document is a
@@ -56,7 +57,7 @@ use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
-use fb_io_sad::builtin_sad_density;
+use fb_io_sad::{builtin_sad_density, carries_sad_stamp};
 use fb_sad::{AtomicDensityStamp, SadStampLookup, distinct_stamps, stamp_density};
 use wwr_sys::wwr_memcpy_kind;
 
@@ -86,7 +87,7 @@ pub fn add_sad_guess<'a, H: HostKind, S: 'a>(
     for site in sites {
         let z = site.stamp.z;
         let symbol = Element::from_z(z as u8).map_or("?", Element::symbol);
-        let baked = !name.is_empty() && builtin_sad_density(name, z).is_some();
+        let baked = !name.is_empty() && carries_sad_stamp(name, z);
         let block: usize = site
             .stamp
             .shells
@@ -178,7 +179,8 @@ struct Stamp {
     shells: Vec<Shell>,
     /// The basis's name, empty for one read from a path.
     basis: String,
-    /// Whether `fb-io-sad` has the block, decided at planning.
+    /// Whether `fb-io-sad` carries the block, decided at planning without
+    /// parsing it.
     baked: bool,
     /// The row's name and length.
     row: String,
