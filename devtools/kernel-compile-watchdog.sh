@@ -2,10 +2,12 @@
 # Compile each generated kernel ON ITS OWN, under a per-file timeout, and
 # report the wall time of every one.
 #
-#   devtools/kernel-compile-watchdog.sh [--preset P] [--limit SECONDS]
-#                                       [-j N] [--keep] [REGEX ...]
+#   devtools/kernel-compile-watchdog.sh [--preset P | --build-dir DIR]
+#                                       [--limit SECONDS] [-j N] [--keep]
+#                                       [REGEX ...]
 #
-# WHY THIS EXISTS. The emitted kernels under src/integrals/*/kernels/ are one
+# WHY THIS EXISTS. The emitted kernels under src/integrals/*/kernels/ (and
+# their forks under rust/*/kernels/, built by rust/'s own CMake project) are one
 # translation unit per angular-momentum class, and their cost is not linear in
 # the class: an unrolled high class is hundreds of KB of straight-line
 # arithmetic, and the back end's time in it grows faster than its text. One
@@ -49,6 +51,14 @@
 # Flags:
 #   --preset P      configure/build preset (default: CMAKE_PRESET from
 #                   devtools/config.sh; `auto` resolves as elsewhere).
+#   --build-dir DIR time the kernels of a build directory that is already
+#                   configured, instead of a root preset's: rust/'s CMake
+#                   project, which the root presets do not build, is
+#                   `--build-dir rust/build-cuda` (or rust/build-hip), after
+#                   `cd rust && cmake --preset cuda && cmake --build --preset
+#                   cuda`. Nothing is configured; a directory with no
+#                   build.ninja or compile_commands.json cannot run (2). Not
+#                   with --preset. A relative DIR is from where you run this.
 #   --limit N       seconds one kernel may take (default
 #                   KERNEL_COMPILE_LIMIT, 300). A file that goes over is
 #                   killed and reported TIMEOUT, and the run FAILs.
@@ -78,7 +88,11 @@
 # family you touched:
 #
 #   devtools/kernel-compile-watchdog.sh 'density_fitting/.*kernels/'
+#   devtools/kernel-compile-watchdog.sh --build-dir rust/build-cuda 'integrals/kernels/'
 set -euo pipefail
+
+# Where a relative --build-dir is from, before the cd below.
+invoked_from=$PWD
 
 # shellcheck source=./lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
@@ -92,6 +106,8 @@ usage() { usage_from_header "${BASH_SOURCE[0]}"; }
 . "$REPO_ROOT/devtools/build.sh"
 
 preset=$CMAKE_PRESET
+preset_given=0
+build_dir_arg=
 limit=${KERNEL_COMPILE_LIMIT:-300}
 jobs=1
 keep=0
@@ -100,7 +116,14 @@ patterns=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --preset)    preset=$2; shift 2;;
+    --preset|--build-dir|--limit|-j|--jobs|--summarize)
+      [ $# -ge 2 ] || {
+        echo "kernel-compile-watchdog: $1 needs a value" >&2
+        exit 2
+      }
+      ;;&
+    --preset)    preset=$2; preset_given=1; shift 2;;
+    --build-dir) build_dir_arg=$2; shift 2;;
     --limit)     limit=$2; shift 2;;
     -j|--jobs)   jobs=$2; shift 2;;
     --keep)      keep=1; shift;;
@@ -110,6 +133,14 @@ while [ $# -gt 0 ]; do
     *)           patterns+=("$1"); shift;;
   esac
 done
+
+if [ -n "$build_dir_arg" ] && [ "$preset_given" -eq 1 ]; then
+  echo "kernel-compile-watchdog: --build-dir and --preset name the build" \
+    "twice; give one" >&2
+  exit 2
+fi
+# What the summary names the run by.
+built=preset=$preset
 
 # The table and the verdict, from a results file of "<seconds> <status>
 # <object>" lines. Sorted ONCE into a file and read back with awk, never
@@ -131,12 +162,12 @@ summarize() {
 
   if [ "$over" -gt 0 ]; then
     echo "kernel-compile-watchdog: FAIL -- $over of $n over ${limit}s" \
-      "or broken (preset=$preset, ${total}s total)"
+      "or broken ($built, ${total}s total)"
     awk '$2 != "ok" { printf "  %s %s %ss\n", $2, $3, $1 }' "$results"
     return 1
   fi
   echo "kernel-compile-watchdog: PASS -- $n kernels, all under" \
-    "${limit}s (preset=$preset, ${total}s total, worst ${worst%% *}s," \
+    "${limit}s ($built, ${total}s total, worst ${worst%% *}s," \
     "${worst##* })"
 }
 
@@ -151,15 +182,34 @@ if [ -n "$summarize" ]; then
 fi
 
 [ "${#patterns[@]}" -eq 0 ] && patterns=('/kernels/')
-[ "$preset" = auto ] && preset=$(gpu_auto_preset)
-cpp_require_build_tools || exit 2
+if [ -n "$build_dir_arg" ]; then
+  case "$build_dir_arg" in
+    /*) build_dir=$build_dir_arg;;
+    *)  build_dir=$invoked_from/$build_dir_arg;;
+  esac
+  built=build-dir=$build_dir_arg
+  for f in build.ninja compile_commands.json; do
+    [ -f "$build_dir/$f" ] || {
+      echo "kernel-compile-watchdog: $build_dir has no $f: configure and" \
+        "build it first (for rust/: cd rust && cmake --preset cuda &&" \
+        "cmake --build --preset cuda, or hip)" >&2
+      exit 2
+    }
+  done
+  cpp_require_build_tools || exit 2
+  echo "kernel-compile-watchdog: build-dir limit=${limit}s -j$jobs -> $build_dir"
+else
+  [ "$preset" = auto ] && preset=$(gpu_auto_preset)
+  built=preset=$preset
+  cpp_require_build_tools || exit 2
 
-build_dir=$(cpp_build_dir "$preset")
-echo "kernel-compile-watchdog: preset=$preset limit=${limit}s -j$jobs -> $build_dir"
-cmake --preset "$preset" >/dev/null || {
-  echo "kernel-compile-watchdog: configure failed -- rerun it to see why" >&2
-  exit 2
-}
+  build_dir=$(cpp_build_dir "$preset")
+  echo "kernel-compile-watchdog: preset=$preset limit=${limit}s -j$jobs -> $build_dir"
+  cmake --preset "$preset" >/dev/null || {
+    echo "kernel-compile-watchdog: configure failed -- rerun it to see why" >&2
+    exit 2
+  }
+fi
 
 # Every .cu object ninja knows, narrowed to the patterns. `-t targets all`
 # prints "<path>: <rule>", the path relative to the build directory.
@@ -273,7 +323,7 @@ compile_one() {
 }
 
 if [ "$jobs" -gt 1 ]; then
-  export build_dir limit keep results commands
+  export build_dir limit keep results commands built
   export -f compile_one
   # shellcheck disable=SC2016 # "$1" is the inner shell's argument
   printf '%s\n' "${objects[@]}" |
