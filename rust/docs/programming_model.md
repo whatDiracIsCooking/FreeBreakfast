@@ -587,7 +587,9 @@ A library call reaches the crates above `core` through a safe wrapper, not
 memory with its length, which the arena's rows implement) and check each
 extent against them in every build (syevd's work against the solver's own
 query), `fb_core_wwr::memset::zero` zeroes one on a stream, and
-`fb-recipes-blas`, the BLAS calls' packed shorthand, forbids `unsafe`
+`fb-recipes-blas`, the C++ recipes' sandwich products over those calls
+(and no single call of its own: [`gpu_layer.md`](gpu_layer.md),
+"Layering"), forbids `unsafe`
 itself, as the arena's `memcpy_*` do for the copies. A kernel library's
 launch is wrapped the same way in its binding crate, beside the generated
 bindings: `fb_recipes_sys::inverse_sqrt`, `merge_sort` and

@@ -1,4 +1,4 @@
-//! Six rules of the register (`docs/rules.md`) that a scan of the sources
+//! Seven rules of the register (`docs/rules.md`) that a scan of the sources
 //! holds, each failing with the file and line of every departure:
 //!
 //! - **`#[ignore]` is a device case's, and says so**: every `ignore` in an
@@ -20,6 +20,11 @@
 //! - **The safe wrapper links down**: in a binding crate (a member with a
 //!   `src/bindings.rs`), every `pub fn` that calls a binding links it in its
 //!   doc comment (`docs/documentation.md`, "The C header").
+//! - **One BLAS operation, one name**: no public function or `pub use`
+//!   of `fb-recipes-blas` (`recipes/blas/src/`) shares a name with a
+//!   free function of `fb_core_wwr::blas` (`core/wwr/src/blas.rs`), and
+//!   no `pub use` there re-exports a glob (`docs/gpu_layer.md`,
+//!   "Layering").
 //! - **A test that trips a contract is debug-only**: a
 //!   `#[should_panic(expected = …)]` whose text is a `#[debug_requires]`,
 //!   `#[debug_ensures]` or `#[debug_invariant]` message is under
@@ -582,6 +587,114 @@ fn an_export_is_found_and_a_callback_is_not_one() {
     assert_eq!(exports("a.rs", ok), Vec::<String>::new());
     assert!(c_library("a/Cargo.toml", "[lib]\ncrate-type = [\"cdylib\"]\n").is_some());
     assert!(c_library("a/Cargo.toml", "[lib]\n# crate-type = [\"cdylib\"]\n").is_none());
+}
+
+// ------------------------------------------------------ one name per BLAS call
+
+/// The free functions `fb_core_wwr::blas` exports: each `pub fn` at the
+/// start of a line of its code, so a method in an `impl` is not one.
+fn single_calls(code: &str) -> BTreeSet<String> {
+    let ws = words(code);
+    let mut out = BTreeSet::new();
+    for (k, (i, w)) in ws.iter().enumerate() {
+        let at_line_start = *i == 0 || code.as_bytes()[i - 1] == b'\n';
+        if *w == "pub"
+            && at_line_start
+            && let [(_, "fn"), (_, name), ..] = &ws[k + 1..]
+        {
+            out.insert((*name).to_owned());
+        }
+    }
+    out
+}
+
+/// The names one source of `fb-recipes-blas` exports that are also single
+/// calls: each `pub fn` (not `pub(crate) fn`, whose next word is `crate`)
+/// and each word of a `pub use`, which also fails on a glob.
+fn shared_blas_names(path: &str, source: &str, calls: &BTreeSet<String>) -> Vec<String> {
+    let code = code_only(source);
+    let ws = words(&code);
+    let mut failures = Vec::new();
+    for (k, (i, w)) in ws.iter().enumerate() {
+        if *w != "pub" {
+            continue;
+        }
+        let line = line_of(source, *i);
+        match ws.get(k + 1) {
+            Some((_, "fn")) => {
+                if let Some((_, name)) = ws.get(k + 2)
+                    && calls.contains(*name)
+                {
+                    failures.push(format!(
+                        "{path}:{line}: pub fn {name} is a single BLAS call, which is \
+                         fb_core_wwr::blas::{name}'s name alone; keep it private to the crate"
+                    ));
+                }
+            }
+            Some((j, "use")) => {
+                let end = code[*j..].find(';').map_or(code.len(), |e| j + e);
+                let stmt = &code[*j..end];
+                if stmt.contains('*') {
+                    failures.push(format!(
+                        "{path}:{line}: a glob pub use may re-export a single BLAS call"
+                    ));
+                }
+                for (_, name) in words(stmt) {
+                    if calls.contains(name) {
+                        failures.push(format!(
+                            "{path}:{line}: pub use re-exports {name}, a single BLAS call, \
+                             which is fb_core_wwr::blas::{name}'s name alone"
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    failures
+}
+
+#[test]
+fn recipes_blas_exports_no_single_call() {
+    let root = rust_root();
+    let core = std::fs::read_to_string(root.join("core/wwr/src/blas.rs")).unwrap();
+    let calls = single_calls(&code_only(&core));
+    for name in ["gemm", "dgmm", "gemv", "geam", "syrk", "trsm"] {
+        assert!(
+            calls.contains(name),
+            "core/wwr/src/blas.rs: no pub fn {name} found: {calls:?}"
+        );
+    }
+    let failures: Vec<String> = workspace_sources()
+        .iter()
+        .filter(|(p, _)| p.starts_with("recipes/blas/src/"))
+        .flat_map(|(p, s)| shared_blas_names(p, s, &calls))
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{} single BLAS call(s) exported by fb-recipes-blas:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn a_shared_blas_name_is_found_and_a_private_one_is_not() {
+    let calls = single_calls(&code_only(
+        "pub fn gemm() {}\nimpl H {\n    pub fn new() {}\n}\n/// pub fn trsm\npub fn dgmm() {}\n",
+    ));
+    assert_eq!(
+        calls,
+        BTreeSet::from(["gemm".to_owned(), "dgmm".to_owned()])
+    );
+    let bad = "pub fn gemm() {}\npub use fb_core_wwr::blas::dgmm;\npub use x::*;\n\
+               mod m {\n    pub fn gemm() {}\n}\n";
+    let f = shared_blas_names("a.rs", bad, &calls);
+    assert_eq!(f.len(), 4, "{f:#?}");
+    assert!(f.iter().any(|m| m.starts_with("a.rs:5:")), "{f:#?}");
+    let ok = "pub(crate) fn gemm() {}\nfn dgmm() {}\npub fn gemmwich() {}\n\
+              // pub fn gemm\nlet s = \"pub fn dgmm\";\nuse fb_core_wwr::blas::{self, gemm};\n";
+    assert_eq!(shared_blas_names("a.rs", ok, &calls), Vec::<String>::new());
 }
 
 // ------------------------------------------------------- safe wrapper links

@@ -1,6 +1,6 @@
 [package]
 name = "fb-recipes-blas"
-description = "recipes/blas: BLAS conveniences over fb_core_wwr's checked calls, packed operands, ops and sides fixed at compile time, and the sandwich products gemmwich and gmmwich"
+description = "recipes/blas: the sandwich products gemmwich and gmmwich over fb_core_wwr's checked calls, their ops fixed at compile time; a single call is fb_core_wwr::blas's"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

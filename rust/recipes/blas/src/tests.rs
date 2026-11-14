@@ -1,15 +1,14 @@
-//! The packed gemm on a card, against the product on the host: small
+//! The crate's packed gemm and dgmm on a card, against the host: small
 //! integers, so every partial sum is exact in any order and the comparison
-//! is bitwise.
+//! is bitwise. Unit tests, since neither call is exported
+//! (`docs/gpu_layer.md`, "Layering"): a caller outside the crate passes
+//! the leading dimensions to `fb_core_wwr::blas`.
 
 use std::rc::Rc;
 
-use fb_core_wwr::blas::BlasHandle;
-use fb_core_wwr::device_slice::DeviceSlice;
+use super::*;
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::runtime::tests::{DeviceBytes, ok};
-use fb_recipes_blas::{BlasOp, C, N, T, gemm};
-use wwr_sys::wwr_blas_operation;
 
 /// `rows` × `cols`, column-major, packed.
 fn matrix(rows: usize, cols: usize, seed: usize) -> Vec<f64> {
@@ -110,4 +109,42 @@ fn an_empty_product_is_a_no_op() {
     assert_eq!(DeviceSlice::<f64>::len(&c), 1);
     gemm::<N, N, f64>(&blas, 0, 0, 0, 1.0, &a, &a, 0.0, &mut c).unwrap();
     ok(owner.sync());
+}
+
+fn values(len: usize, seed: usize) -> Vec<f64> {
+    (0..len)
+        .map(|i| ((i * 7 + seed) % 11) as f64 - 5.0)
+        .collect()
+}
+
+/// One packed m × n dgmm on a card, checked bitwise against the host's.
+fn check_dgmm(side: wwr_blas_side_mode, (m, n): (usize, usize)) {
+    let left = side == wwr_blas_side_mode::WWR_BLAS_SIDE_LEFT;
+    let a = values(m * n, 1);
+    let x = values(if left { m } else { n }, 2);
+    let want: Vec<f64> = (0..m * n)
+        .map(|e| {
+            let (i, j) = (e % m, e / m);
+            x[if left { i } else { j }] * a[e]
+        })
+        .collect();
+    let owner = Rc::new(Stream::new(0));
+    let blas = BlasHandle::new(owner.clone());
+    let (da, dx) = (
+        DeviceBytes::upload(&a, &owner),
+        DeviceBytes::upload(&x, &owner),
+    );
+    let mut dc = DeviceBytes::new(m * n * size_of::<f64>());
+    let i = |v: usize| v as i32;
+    dgmm::<f64>(&blas, side, i(m), i(n), &da, &dx, &mut dc).unwrap();
+    assert_eq!(download(&dc, &owner, m * n), want);
+}
+
+/// Needs a GPU. Both sides on a rectangular shape, so x's length is m on
+/// the left and n on the right, and every leading dimension is m.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn each_side_scales_its_rows_or_columns() {
+    check_dgmm(wwr_blas_side_mode::WWR_BLAS_SIDE_LEFT, (5, 3));
+    check_dgmm(wwr_blas_side_mode::WWR_BLAS_SIDE_RIGHT, (5, 3));
 }

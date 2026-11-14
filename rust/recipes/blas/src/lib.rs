@@ -1,24 +1,28 @@
-//! BLAS conveniences over [`fb_core_wwr::blas`]'s checked calls: the C++
-//! `src/recipes/blas`, whose README is the reasoning.
+//! The C++ `src/recipes/blas`'s named compositions over
+//! [`fb_core_wwr::blas`]'s checked calls, whose README is the reasoning:
+//! the sandwich products [`gemmwich`] and [`gmmwich`].
 //!
-//! The general calls stay [`fb_core_wwr::blas`]'s ([`blas::gemm`] and
-//! [`blas::dgmm`], every leading dimension, op and side passed in); this crate is the shorthand for the
-//! common case, and holds no `unsafe`. Every matrix is a
-//! [`DeviceSlice`], checked against its extent by the call underneath.
+//! **One BLAS operation is [`fb_core_wwr::blas`]'s, under one name**
+//! (`docs/gpu_layer.md`, "Layering"): a task that makes a single call
+//! ([`blas::gemm`], [`blas::dgmm`], every leading dimension, op and side
+//! passed in) calls it there, so this crate exports no name of a single
+//! call, and its packed `gemm` and `dgmm` are its own. `fb-doc-check`
+//! holds that (`tests/source_rules.rs`). The crate holds no `unsafe`.
+//! Every matrix is a [`DeviceSlice`], checked against its extent by the
+//! call underneath.
 //!
 //! | C++ | Here |
 //! |---|---|
-//! | `template <wwrblasOperation_t OpA, OpB>`, each `WWRBLAS_OP_N` when not given | type parameters, the markers [`N`], [`T`] and [`C`] behind [`BlasOp`]: `gemm::<T, N, _>`, both always given (a function has no default type parameter) |
+//! | `template <wwrblasOperation_t OpA, OpB>`, each `WWRBLAS_OP_N` when not given | the sandwiches' type parameters, the markers [`N`], [`T`] and [`C`] behind [`BlasOp`]: `gemmwich::<N, N, _>`, every one always given (a function has no default type parameter) |
 //! | `concept BlasOp<Op>` | the trait [`BlasOp`] |
-//! | `gemm<OpA, OpB>(handle, m, n, k, alpha, a, b, beta, c)`, packed | [`gemm`], packed |
-//! | `gemm<OpA, OpB>(handle, n, alpha, a, b, beta, c)`, every matrix n × n | [`gemm`] at `m = n = k`: one name, not two |
+//! | `gemm<OpA, OpB>(handle, m, n, k, alpha, a, b, beta, c)`, packed, and its n × n overload | not exported: [`blas::gemm`] with the leading dimensions passed (m or k for A, k or n for B, m for C), the one name of a single call; the packed form is private, under the sandwiches |
 //! | `alpha`, `beta` by pointer, as the handle's pointer mode says | by value, read in the default (host) mode |
 //! | `handle`, a `BlasHandle` or a raw `wwrblasHandle_t` | a [`BlasHandle`] |
 //! | a raw `wwrblasStatus_t`, the caller picking the tier | a [`Status`] |
-//! | `wwr::dgmm<T>(handle, side, m, n, a, m, x, 1, c, m)`, as `gmmwich` and `orthogonalize` call it, packed | [`dgmm`], the side a type parameter, the marker [`Left`] or [`Right`] behind [`BlasSide`]: `dgmm::<Right, _>` |
-//! | `gemmwich<OpX, OpF>(handle, m, n, x, f, work, c)`, `C = OpX(X)ᴴ OpF(F) OpX(X)` | [`gemmwich`], two [`gemm`]s: `gemmwich::<N, N, _>` |
+//! | `wwr::dgmm<T>(handle, side, m, n, a, m, x, 1, c, m)`, as `gmmwich` and `orthogonalize` call it, packed | not exported: [`blas::dgmm`] with leading dimension m and stride 1; the packed form is private, under [`gmmwich`] |
+//! | `gemmwich<OpX, OpF>(handle, m, n, x, f, work, c)`, `C = OpX(X)ᴴ OpF(F) OpX(X)` | [`gemmwich`], two gemms: `gemmwich::<N, N, _>` |
 //! | `gemmwich<OpX, OpF>(handle, n, x, f, work, c)`, every matrix n × n | [`gemmwich`] at `m = n`: one name, not two |
-//! | `gmmwich<OpX>(handle, m, n, x, d, work, c)`, `C = OpX(X)ᴴ diag(d) OpX(X)` | [`gmmwich`], a [`dgmm`] and a [`gemm`]: `gmmwich::<T, _>` |
+//! | `gmmwich<OpX>(handle, m, n, x, d, work, c)`, `C = OpX(X)ᴴ diag(d) OpX(X)` | [`gmmwich`], a dgmm and a gemm: `gmmwich::<T, _>` |
 //! | `gmmwich<OpX>(handle, n, x, d, work, c)` | [`gmmwich`] at `m = n` |
 //! | `concept SandwichOp<Op, T>`, `kAdjointOp<T>` | the trait [`SandwichOp`], implemented for each scalar by [`N`] and the one adjoint marker, its associated type the op that gives `OpX(X)ᴴ` from X as stored |
 //! | `raw_blas_handle`, a `BlasHandle` or a raw handle unwrapped | not ported: every call takes a [`BlasHandle`] |
@@ -41,6 +45,9 @@ use fb_core_error_handling::Status;
 use fb_core_wwr::blas::{self, BlasHandle, BlasScalar};
 use fb_core_wwr::device_slice::{DeviceSlice, DeviceSliceMut};
 use wwr_sys::{wwr_blas_operation, wwr_blas_side_mode, wwr_complex64, wwr_complex128};
+
+#[cfg(test)]
+mod tests;
 
 /// A BLAS operation fixed at compile time: [`N`], [`T`] or [`C`]. The C++
 /// `BlasOp` concept, over a non-type template parameter Rust's stable
@@ -67,17 +74,11 @@ impl BlasOp for C {
     const RAW: wwr_blas_operation = wwr_blas_operation::WWR_BLAS_OP_C;
 }
 
-/// `C = alpha OpA(A) OpB(B) + beta C` on `handle`'s stream, for
-/// `OpA(A)` m × k, `OpB(B)` k × n and C m × n, every matrix column-major
-/// and packed: A is stored m × k under [`N`] and k × m otherwise (its
-/// leading dimension m or k), B k × n or n × k (k or n), and C's leading
-/// dimension is m. [`blas::gemm`] with those leading dimensions; for a
-/// padded one (a block of a larger matrix) or an op known only at run
-/// time, call that.
-///
-/// `alpha` and `beta` are host values. With `beta` zero, C need not be
-/// initialised. A leading dimension is at least 1, as the library asks, so
-/// an empty product is a call that touches nothing.
+/// `C = alpha OpA(A) OpB(B) + beta C` on `handle`'s stream, every matrix
+/// column-major and packed: [`blas::gemm`] with each leading dimension
+/// derived from its op (A's m under [`N`] and k otherwise, B's k or n, C's
+/// m), at least 1, as the library asks. The sandwiches' gemm; a caller
+/// outside this crate passes the leading dimensions to [`blas::gemm`].
 ///
 /// # Errors
 /// The library's refusal, as a `GpuRuntime` error naming the status.
@@ -89,7 +90,7 @@ impl BlasOp for C {
 /// [`blas::gemm`]: fb_core_wwr::blas::gemm
 #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
 #[track_caller]
-pub fn gemm<OpA: BlasOp, OpB: BlasOp, S: BlasScalar>(
+pub(crate) fn gemm<OpA: BlasOp, OpB: BlasOp, S: BlasScalar>(
     handle: &BlasHandle,
     m: i32,
     n: i32,
@@ -121,32 +122,11 @@ pub fn gemm<OpA: BlasOp, OpB: BlasOp, S: BlasScalar>(
     )
 }
 
-/// The side a [`dgmm`]'s diagonal stands on, fixed at compile time:
-/// [`Left`] or [`Right`]. As [`BlasOp`], a trait over markers where the
-/// C++ would take the enum as a template parameter.
-pub trait BlasSide {
-    /// The side, as the library takes it.
-    const RAW: wwr_blas_side_mode;
-}
-
-/// `diag(x) A`: each row of A scaled.
-pub struct Left;
-/// `A diag(x)`: each column of A scaled.
-pub struct Right;
-
-impl BlasSide for Left {
-    const RAW: wwr_blas_side_mode = wwr_blas_side_mode::WWR_BLAS_SIDE_LEFT;
-}
-impl BlasSide for Right {
-    const RAW: wwr_blas_side_mode = wwr_blas_side_mode::WWR_BLAS_SIDE_RIGHT;
-}
-
-/// `C = diag(x) A` under [`Left`] or `C = A diag(x)` under [`Right`] on
+/// `C = diag(x) A` on the left or `C = A diag(x)` on the right on
 /// `handle`'s stream, A and C m × n, column-major and packed (leading
-/// dimension m), x the diagonal, m entries on the left and n on the right,
-/// contiguous. [`blas::dgmm`] with those leading dimensions and stride 1;
-/// for a padded matrix, a strided x or a side known only at run time, call
-/// that. C is memory of its own: there is no in-place call.
+/// dimension m), x contiguous: [`blas::dgmm`] with those leading
+/// dimensions and stride 1. [`gmmwich`]'s dgmm; a caller outside this crate
+/// passes them to [`blas::dgmm`]. C is memory of its own.
 ///
 /// # Errors
 /// The library's refusal, as a `GpuRuntime` error naming the status.
@@ -157,15 +137,16 @@ impl BlasSide for Right {
 ///
 /// [`blas::dgmm`]: fb_core_wwr::blas::dgmm
 #[track_caller]
-pub fn dgmm<Side: BlasSide, S: BlasScalar>(
+pub(crate) fn dgmm<S: BlasScalar>(
     handle: &BlasHandle,
+    side: wwr_blas_side_mode,
     m: i32,
     n: i32,
     a: &impl DeviceSlice<S>,
     x: &impl DeviceSlice<S>,
     c: &mut impl DeviceSliceMut<S>,
 ) -> Status {
-    blas::dgmm(handle, Side::RAW, m, n, a, m.max(1), x, 1, c, m.max(1))
+    blas::dgmm(handle, side, m, n, a, m.max(1), x, 1, c, m.max(1))
 }
 
 /// An op a sandwich ([`gemmwich`], [`gmmwich`]) takes on a scalar `S`:
@@ -229,7 +210,7 @@ fn check_c(routine: &str, len: usize, m: i32) {
 
 /// `C = OpX(X)ᴴ OpF(F) OpX(X)` on `handle`'s stream, for `OpX(X)` n × m, F
 /// n × n and C m × m, through an n × m `work`: the sandwich product, as two
-/// [`gemm`]s with no host synchronisation between them,
+/// gemms with no host synchronisation between them,
 ///
 /// ```text
 /// work = OpF(F) OpX(X)
@@ -298,9 +279,9 @@ pub fn gemmwich<OpX: SandwichOp<S>, OpF: SandwichOp<S>, S: BlasScalar>(
 
 /// `C = OpX(X)ᴴ diag(d) OpX(X)` on `handle`'s stream, for `OpX(X)` n × m, d
 /// of n entries and C m × m, through a `work` of X's stored shape:
-/// [`gemmwich`] with F = diag(d), the diagonal never formed. A [`dgmm`]
+/// [`gemmwich`] with F = diag(d), the diagonal never formed. A dgmm
 /// scales X in O(nm), where a gemm against a dense diagonal would be
-/// O(n²m), and one [`gemm`] finishes, with no host synchronisation between
+/// O(n²m), and one gemm finishes, with no host synchronisation between
 /// them. There is no `OpF`: a diagonal is its own transpose.
 ///
 /// `OpX` is [`N`] or `S`'s adjoint ([`SandwichOp`]). Every matrix is
@@ -358,11 +339,27 @@ pub fn gmmwich<OpX: SandwichOp<S>, S: BlasScalar>(
     check_c("gmmwich", c.len(), m);
     if OpX::RAW == wwr_blas_operation::WWR_BLAS_OP_N {
         // work (n × m) = diag(d) X; C (m × m) = Xᴴ work
-        dgmm::<Left, S>(handle, n, m, x, d, work)?;
+        dgmm(
+            handle,
+            wwr_blas_side_mode::WWR_BLAS_SIDE_LEFT,
+            n,
+            m,
+            x,
+            d,
+            work,
+        )?;
         gemm::<OpX::Adjoint, N, S>(handle, m, m, n, S::ONE, x, &*work, S::ZERO, c)
     } else {
         // work (m × n) = X diag(d); C (m × m) = work Xᴴ, Xᴴ = OpX(X)
-        dgmm::<Right, S>(handle, m, n, x, d, work)?;
+        dgmm(
+            handle,
+            wwr_blas_side_mode::WWR_BLAS_SIDE_RIGHT,
+            m,
+            n,
+            x,
+            d,
+            work,
+        )?;
         gemm::<N, OpX, S>(handle, m, m, n, S::ONE, &*work, x, S::ZERO, c)
     }
 }
