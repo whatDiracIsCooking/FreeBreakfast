@@ -477,12 +477,11 @@ set to one at initialization, and this test is what notices when that slips.
 
 ### Capabilities are enforced by lints
 
-Three things a task may not do are each held by one module or one crate:
-allocating is the arena's ("Memory: layouts and arenas"), spawning is the
-worker module's, and `unsafe` is the wrappers'. Each is a lint in the
-manifest's `[lints]` table that
-[`documentation.md`](documentation.md) ("Code: rustdoc") already uses for
-`missing_docs`, so a violation is a build failure in every invocation, the
+Three things a task may not do are each held by named code: allocating is
+the arena's ("Memory: layouts and arenas"), spawning is the worker module's,
+and `unsafe` is a listed few crates'. Each is a lint, in the manifest's
+`[lints]` table that [`documentation.md`](documentation.md) ("Code:
+rustdoc") already uses for `missing_docs` or at a crate's root, so a violation is a build failure in every invocation, the
 gates and an editor alike, and not a convention a review has to remember.
 
 **Spawning.** `std::thread` cannot be removed from the standard library, but
@@ -503,16 +502,37 @@ The manifest does the rest: rayon and tokio are not dependencies, and a pool
 crate arriving later is a `Cargo.toml` diff a review sees.
 
 **`unsafe`.** The rebuild's `unsafe` is the FFI into `wwr-sys` and the
-libraries behind it, the arena over the raw allocation bindings, the two
+kernel libraries, and the code that wraps it. `unsafe_code` is rustc's own
+lint, and `forbid` is the level that cannot be allowed back, so it is set
+per crate: a crate on the list below leaves it at its default, and every
+other crate forbids it with `#![forbid(unsafe_code)]` at its root. That is
+an attribute rather than a manifest line because Cargo refuses a member that
+inherits `[workspace.lints]` and adds a `[lints.rust]` table of its own. The
+list is in three tiers:
+
+- **Core:** `fb-core-wwr`, `fb-core-arena`, `fb-core-log`,
+  `fb-core-thread-pool`.
+- **Bindings:** `fb-integrals-sys`, `fb-recipes-sys`.
+- **Method crates:** `fb-integrals-mmd`,
+  `fb-integrals-one-electron-overlap`, `fb-integrals-one-electron-kinetic`,
+  `fb-integrals-one-electron-potential-en`,
+  `fb-integrals-one-electron-core-hamiltonian`, `fb-recipes-matrix-ao`,
+  `fb-recipes-diagonalize`, `fb-recipes-orthogonalize`, `fb-pipeline-scf`.
+
+The core crates hold the wrappers: `fb-core-wwr` over the `wwr-sys`
+bindings, the arena over the raw allocation and copy bindings, the two
 `libc` calls in `core::log`, and the one `unsafe impl Sync` on
-`core::thread_pool`'s `Device` backend. Nothing else needs it, and the lints
-keep it there. `unsafe_code` is rustc's own lint, and `forbid` is the level
-that cannot be allowed back, so it is set per crate: the four crates that
-hold `unsafe` (`fb-core-wwr`, `fb-core-arena`, `fb-core-log` and
-`fb-core-thread-pool`) leave it at its default, and every other crate
-forbids it with `#![forbid(unsafe_code)]` at its root. That is an attribute
-rather than a manifest line because Cargo refuses a member that inherits
-`[workspace.lints]` and adds a `[lints.rust]` table of its own. Where `unsafe` is
+`core::thread_pool`'s `Device` backend. The binding crates declare a kernel
+library's `extern "C"` functions and check its version at load. A method
+crate's `unsafe` is a direct call into its kernels' launchers, the BLAS or
+the solver, or `wwr_memset_async`, each block with a `// SAFETY:` comment
+saying why its pointers and lengths hold; those calls could later be wrapped
+safely in the core and binding crates, which would empty the third tier.
+`fb-doc-check`'s `tests/unsafe_code.rs` reads this list: a crate root that
+neither forbids `unsafe_code` nor is listed fails it, and so does a listed
+crate with no `unsafe` left, so the list only shrinks.
+
+Where `unsafe` is
 allowed, clippy's `undocumented_unsafe_blocks` requires a `// SAFETY:`
 comment on every block, which turns the comment the crate already writes into
 a rule and names the blocks that lack one, and

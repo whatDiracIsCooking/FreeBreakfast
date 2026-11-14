@@ -52,7 +52,8 @@ private_intra_doc_links = "deny"
 `missing_docs` is the half `-D warnings` never covered: a public item with no
 doc comment is an error, so "a module's doc comment carries its spec" is a
 rule the build enforces rather than a habit. The same table carries the
-capability lints, `unsafe_code` and clippy's `disallowed_methods` among them
+capability lints, clippy's `disallowed_methods` among them, beside the
+`#![forbid(unsafe_code)]` at each crate root that may not hold `unsafe`
 ([`programming_model.md`](programming_model.md), "Capabilities are enforced
 by lints").
 

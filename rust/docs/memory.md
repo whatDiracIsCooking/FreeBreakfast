@@ -317,10 +317,10 @@ of the copies that read it.
 
 ### The Rust shape
 
-One module, `core::arena`, the only one outside the `-sys` wrappers with
-`unsafe_code` allowed ([`programming_model.md`](programming_model.md),
-"Capabilities are enforced by lints"); its raw calls are on a sealed trait
-nothing outside it can name. In it:
+One module, `core::arena`, one of the few crates with `unsafe_code`
+allowed ([`programming_model.md`](programming_model.md), "Capabilities are
+enforced by lints"); its raw calls are on a sealed trait nothing outside it
+can name. In it:
 
 - `TableBuilder<K>`, the rows declared node by node, and `assign(rows)`,
   the pure offset assigner it lays them out with into a `Table<K>`: tier 3,

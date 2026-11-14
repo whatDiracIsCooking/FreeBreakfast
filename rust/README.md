@@ -86,7 +86,7 @@ tree, not inputs to its build.
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
-`fb-doc-check` (`doc_check/`), the section-citation check. There is no
+`fb-doc-check` (`doc_check/`), the section-citation and `unsafe` checks. There is no
 umbrella crate. The crate graph is the selection graph
 ([`testing.md`](docs/testing.md), "Selection: the workspace graph is the
 selection graph"): `log` at the bottom, `error_handling` on it, `wwr` on
@@ -428,6 +428,11 @@ mdBook beside the rustdoc", has the rules). It reads files and nothing else,
 in a crate that links nothing, so it needs neither card nor library:
 `cargo test -p fb-doc-check`. It finds the members from the workspace
 manifest, so a new crate is scanned without being named there.
+`doc_check/tests/unsafe_code.rs`, in the same crate, checks every member's
+crate roots against the list of crates allowed `unsafe`
+([`programming_model.md`](docs/programming_model.md), "Capabilities are
+enforced by lints"): a root that does not `#![forbid(unsafe_code)]` must be
+a listed crate's, and a listed crate must still hold `unsafe`.
 
 Tests run in parallel, so a capture test must not use global capture mode.
 A global capture forbids other threads' unsafe calls, and on the 3080 it

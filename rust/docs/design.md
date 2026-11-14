@@ -280,7 +280,8 @@ until the `contracts` crate is known to render them
 ([`documentation.md`](documentation.md), "Open questions").
 
 The capabilities a task may not have are contracts the manifest holds:
-`unsafe_code` forbidden outside the `-sys` wrappers and the arena, spawning
+`unsafe_code` forbidden outside the core wrappers, the `-sys` bindings and
+the method crates' direct kernel, BLAS and solver calls, spawning
 disallowed outside the worker module
 ([`programming_model.md`](programming_model.md), "Capabilities are enforced
 by lints"). A feature that needs more than the lints allow has found a
