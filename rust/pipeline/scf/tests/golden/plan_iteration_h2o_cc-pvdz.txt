@@ -1,0 +1,45 @@
+plan: 13 tasks, GPU workers: 1
+ task  worker  lane    name: after
+    0       0  stream  H
+    1       0  stream  J
+    2       0  stream  K
+    3       0  stream  S
+    4       0  stream  X
+    5       0  stream  C
+    6       0  stream  D
+    7       0  stream  C occ
+    8       0  stream  fock: after 0 1 2 6
+    9       0  stream  residual: after 3 4 6 8
+   10       0  cpu     energy and norm: after 8 9
+   11       0  stream  density: after 5 6 7 8 9
+   12       0  cpu     converged: after 8 9 10 11; decides loop 8-12, at most 50 iterations
+worker 0 device table: 17 rows, 33610760 bytes
+peak: 33610696 bytes at node 8
+    offset      bytes  owner   life     name: users (w writes, r reads)
+         0   33554432  worker  plan     blas workspace
+  33554432       4608  edge    0-12     H: 0w 8r
+  33559040       4608  edge    1-12     J: 1w 8r
+  33563648       4608  edge    2-12     K: 2w 8r
+  33568256       4608  edge    3-12     S: 3w 9r
+  33572864       4608  edge    4-12     X: 4w 9r
+  33577472       4608  edge    5-12     C: 5w 11r
+  33582080       4608  edge    6-12     D: 6w 8r 9r 11w
+  33586688        960  edge    7-12     C occ: 7w 11w
+loop 8-12: region of 23048 bytes at 33587712, its body's rows:
+  33587712       4608  task    8-8      H + J: 8w
+  33596928          8  task    8-8      tr(D (H + F))/2: 8w
+  33592320       4608  edge    8-9      F: 8w 9r
+  33587712       4608  task    9-9      F D: 9w
+  33596928       4608  task    9-9      F D S: 9w
+  33601536       4608  task    9-9      F D S - S D F: 9w
+  33610752          8  task    9-9      |e|² on the device: 9w
+  33606144       4608  edge    9-9      e: 9w
+handoffs: 8->9
+worker 0 pinned table: 3 rows, 528 bytes
+peak: 528 bytes at node 8
+    offset      bytes  owner   life     name: users (w writes, r reads)
+loop 8-12: region of 528 bytes at 0, its body's rows:
+         0          8  edge    8-10     E elec: 8w 10r
+       256          8  edge    9-10     |e|²: 9w 10r
+       512         16  edge    10-12    E, |e|: 10w 12r
+handoffs:

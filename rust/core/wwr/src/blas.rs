@@ -16,6 +16,8 @@
 //! | the same `gemv<T>`, called with raw pointers | [`gemv`], over [`DeviceSlice`]s it checks; `incx` and `incy` at least 1 |
 //! | `trsm<T>` and `syrk<T>` over `wwrblas{S,D,C,Z}trsm` and `…syrk` | [`BlasScalar`]'s `trsm_raw` and `syrk_raw` |
 //! | the same `trsm<T>` and `syrk<T>`, called with raw pointers | [`trsm`] and [`syrk`], over [`DeviceSlice`]s they check; B and C never A (no in-place call) |
+//! | `geam<T>` over `wwrblas{S,D,C,Z}geam` | [`BlasScalar`]'s `geam_raw` |
+//! | the same `geam<T>`, called with raw pointers | [`geam`], over [`DeviceSlice`]s it checks; C never A or B (no in-place call) |
 //! | `kOne<T>`, `kZero<T>` (`core/constants`), the BLAS scalars one and zero by address | [`BlasScalar::ONE`] and [`BlasScalar::ZERO`], by value |
 //!
 //! As in wwr, the handle is a [`StreamBoundHandle`]: made from a shared
@@ -36,8 +38,8 @@
 //! method per routine, implemented for the four types the library computes
 //! in, each forwarding to its letter's C ABI call. It takes raw pointers
 //! and is `unsafe`, as the C ABI is; only this crate calls it. [`gemm`],
-//! [`gemm_strided_batched`], [`gemv`], [`dgmm`], [`trsm`] and [`syrk`] are
-//! the safe calls over it: their operands are [`DeviceSlice`]s, each extent
+//! [`gemm_strided_batched`], [`gemv`], [`dgmm`], [`trsm`], [`syrk`] and
+//! [`geam`] are the safe calls over it: their operands are [`DeviceSlice`]s, each extent
 //! the call will touch is checked against the slice's length before
 //! anything is enqueued, and a slice too short panics, as an index out of
 //! a slice's bounds does. That check is what makes it safe, so it is on in
@@ -52,7 +54,9 @@
 //! backwards) are refused, as nothing in the tree asks for them. Likewise [`trsm`]'s B and [`syrk`]'s
 //! C are memory of their own, apart from A: a caller whose operands are
 //! blocks of one matrix cuts it into disjoint parts first
-//! ([`split_at_mut`](crate::device_slice::split_at_mut)).
+//! ([`split_at_mut`](crate::device_slice::split_at_mut)). So is
+//! [`geam`]'s C, apart from A and B: the library's in-place forms (C over A
+//! or over B) are left out with `dgmm`'s.
 
 use std::ops::Deref;
 use std::panic::Location;
@@ -263,8 +267,8 @@ impl DeviceHandleStream for BlasHandle {
 /// A type the BLAS computes in: `f32`, `f64`, [`wwr_complex64`] and
 /// [`wwr_complex128`], wwr's `usual_fp`. Each method is the C ABI call of
 /// the type's letter. Sealed, since [`gemm`], [`gemm_strided_batched`],
-/// [`gemv`], [`dgmm`], [`trsm`] and [`syrk`] trust each method to be that
-/// call.
+/// [`gemv`], [`dgmm`], [`trsm`], [`syrk`] and [`geam`] trust each method to
+/// be that call.
 pub trait BlasScalar: Copy + sealed::Sealed {
     /// One (`1 + 0i` on a complex type), the `alpha` of a plain product:
     /// the C++ `kOne<T>`.
@@ -427,6 +431,34 @@ pub trait BlasScalar: Copy + sealed::Sealed {
         y: *mut Self,
         incy: i32,
     ) -> wwr_blas_status;
+
+    /// `wwrblas<t>geam`: `C = alpha op_a(A) + beta op_b(B)`, column-major,
+    /// C m × n, A stored m × n under `WWR_BLAS_OP_N` and n × m under `_T`
+    /// or `_C`, B likewise.
+    ///
+    /// # Safety
+    /// The library's: `handle` is live; A, B and C are device memory on its
+    /// device covering their extents at `lda`, `ldb` and `ldc`; C either
+    /// apart from A and B, or A (or B) itself at the same leading dimension
+    /// under `WWR_BLAS_OP_N`; `alpha` and `beta` read as the handle's
+    /// pointer mode says; all of it alive until the work enqueued on the
+    /// handle's stream has finished.
+    #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+    unsafe fn geam_raw(
+        handle: wwr_blas_handle,
+        op_a: wwr_blas_operation,
+        op_b: wwr_blas_operation,
+        m: i32,
+        n: i32,
+        alpha: *const Self,
+        a: *const Self,
+        lda: i32,
+        beta: *const Self,
+        b: *const Self,
+        ldb: i32,
+        c: *mut Self,
+        ldc: i32,
+    ) -> wwr_blas_status;
 }
 
 mod sealed {
@@ -435,7 +467,7 @@ mod sealed {
 
 macro_rules! blas_scalar {
     ($($t:ty => $gemm:ident, $batched:ident, $dgmm:ident, $trsm:ident, $syrk:ident,
-        $gemv:ident, $one:expr, $zero:expr);* $(;)?) => {$(
+        $gemv:ident, $geam:ident, $one:expr, $zero:expr);* $(;)?) => {$(
         impl sealed::Sealed for $t {}
 
         impl BlasScalar for $t {
@@ -565,20 +597,41 @@ macro_rules! blas_scalar {
                 // SAFETY: the caller's, which are the call's.
                 unsafe { wwr_sys::$gemv(handle, op, m, n, alpha, a, lda, x, incx, beta, y, incy) }
             }
+
+            unsafe fn geam_raw(
+                handle: wwr_blas_handle,
+                op_a: wwr_blas_operation,
+                op_b: wwr_blas_operation,
+                m: i32,
+                n: i32,
+                alpha: *const Self,
+                a: *const Self,
+                lda: i32,
+                beta: *const Self,
+                b: *const Self,
+                ldb: i32,
+                c: *mut Self,
+                ldc: i32,
+            ) -> wwr_blas_status {
+                // SAFETY: the caller's, which are the call's.
+                unsafe {
+                    wwr_sys::$geam(handle, op_a, op_b, m, n, alpha, a, lda, beta, b, ldb, c, ldc)
+                }
+            }
         }
     )*};
 }
 
 blas_scalar! {
     f32 => wwr_blas_sgemm, wwr_blas_sgemm_strided_batched, wwr_blas_sdgmm, wwr_blas_strsm,
-        wwr_blas_ssyrk, wwr_blas_sgemv, 1.0, 0.0;
+        wwr_blas_ssyrk, wwr_blas_sgemv, wwr_blas_sgeam, 1.0, 0.0;
     f64 => wwr_blas_dgemm, wwr_blas_dgemm_strided_batched, wwr_blas_ddgmm, wwr_blas_dtrsm,
-        wwr_blas_dsyrk, wwr_blas_dgemv, 1.0, 0.0;
+        wwr_blas_dsyrk, wwr_blas_dgemv, wwr_blas_dgeam, 1.0, 0.0;
     wwr_complex64 => wwr_blas_cgemm, wwr_blas_cgemm_strided_batched, wwr_blas_cdgmm,
-        wwr_blas_ctrsm, wwr_blas_csyrk, wwr_blas_cgemv,
+        wwr_blas_ctrsm, wwr_blas_csyrk, wwr_blas_cgemv, wwr_blas_cgeam,
         wwr_complex64 { re: 1.0, im: 0.0 }, wwr_complex64 { re: 0.0, im: 0.0 };
     wwr_complex128 => wwr_blas_zgemm, wwr_blas_zgemm_strided_batched, wwr_blas_zdgmm,
-        wwr_blas_ztrsm, wwr_blas_zsyrk, wwr_blas_zgemv,
+        wwr_blas_ztrsm, wwr_blas_zsyrk, wwr_blas_zgemv, wwr_blas_zgeam,
         wwr_complex128 { re: 1.0, im: 0.0 }, wwr_complex128 { re: 0.0, im: 0.0 };
 }
 
@@ -1119,6 +1172,80 @@ pub fn syrk<T: BlasScalar>(
             a.as_ptr(),
             lda,
             &beta,
+            c,
+            ldc,
+        )
+    })
+}
+
+/// `C = alpha op_a(A) + beta op_b(B)` on `handle`'s stream: column-major,
+/// C m × n at its leading dimension, A stored m × n under
+/// `WWR_BLAS_OP_N` and n × m under `_T` or `_C` (the same as `_T` on a real
+/// `T`), B likewise. wwr's `geam<T>`, with every matrix a slice it checks:
+/// a sum, a scale, a copy (`beta` zero) or a transpose of a matrix, in
+/// O(mn).
+///
+/// `alpha` and `beta` are host values, read in the handle's default pointer
+/// mode. With `beta` zero B is still a slice covering its extent, since
+/// the call is handed its pointer. The library also writes C over A or B;
+/// here C is a slice of its own, which the borrow checker keeps apart from
+/// both, so there is no in-place call.
+///
+/// # Errors
+/// The library's refusal, as a `GpuRuntime` error naming the status.
+///
+/// # Panics
+/// If m or n is negative, a leading dimension is less than its matrix's
+/// row count (or 1), or a slice is shorter than its matrix at its leading
+/// dimension; before anything is enqueued.
+#[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+#[track_caller]
+pub fn geam<T: BlasScalar>(
+    handle: &BlasHandle,
+    op_a: wwr_blas_operation,
+    op_b: wwr_blas_operation,
+    m: i32,
+    n: i32,
+    alpha: T,
+    a: &impl DeviceSlice<T>,
+    lda: i32,
+    beta: T,
+    b: &impl DeviceSlice<T>,
+    ldb: i32,
+    c: &mut impl DeviceSliceMut<T>,
+    ldc: i32,
+) -> Status {
+    assert!(m >= 0 && n >= 0, "geam: m and n are {m} and {n}");
+    let stored = |op| {
+        if op == wwr_blas_operation::WWR_BLAS_OP_N {
+            (m, n)
+        } else {
+            (n, m)
+        }
+    };
+    let ((a_rows, a_cols), (b_rows, b_cols)) = (stored(op_a), stored(op_b));
+    check_extent("geam", "A", a.len(), a_rows, a_cols, lda);
+    check_extent("geam", "B", b.len(), b_rows, b_cols, ldb);
+    check_extent("geam", "C", c.len(), m, n, ldc);
+    let c = c.as_mut_ptr();
+    // SAFETY: the handle is live; each slice is device memory covering its
+    // extent, checked above, and stays so until the enqueued work finishes
+    // (DeviceSlice's promise); C is its memory's only user
+    // (DeviceSliceMut's), so apart from A and B; the scalars are host
+    // values, the handle's default pointer mode.
+    gpu_status(unsafe {
+        T::geam_raw(
+            handle.get(),
+            op_a,
+            op_b,
+            m,
+            n,
+            &alpha,
+            a.as_ptr(),
+            lda,
+            &beta,
+            b.as_ptr(),
+            ldb,
             c,
             ldc,
         )
@@ -1888,5 +2015,80 @@ mod tests {
         let x = DeviceBytes::new(3 * size_of::<f64>());
         let mut c = DeviceBytes::new(12 * size_of::<f64>());
         let _ = dgmm::<f64>(&blas, LEFT, 4, 3, &a, 4, &x, 1, &mut c, 4);
+    }
+    /// Needs a GPU. `C = alpha op_a(A) + beta op_b(B)` at every pairing of
+    /// ops, a rectangular shape and every leading dimension padded: small
+    /// integers, so each element is exact, and C's padding rows are left as
+    /// they were.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn geam_reads_each_operand_at_its_op_and_leading_dimension() {
+        let (m, n) = (5, 3);
+        let owner = Rc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner.clone());
+        for (op_a, op_b) in [(OP_N, OP_N), (OP_N, OP_T), (OP_T, OP_N), (OP_T, OP_T)] {
+            let stored = |op| if op == OP_N { (m, n) } else { (n, m) };
+            let ((a_rows, a_cols), (b_rows, b_cols)) = (stored(op_a), stored(op_b));
+            let (lda, ldb, ldc) = (a_rows + 2, b_rows + 1, m + 3);
+            let (a, b, c) = (
+                matrix(lda, a_cols, 1),
+                matrix(ldb, b_cols, 2),
+                matrix(ldc, n, 3),
+            );
+            let at = |x: &[f64], ld: usize, op, i: usize, j: usize| {
+                if op == OP_N {
+                    x[i + j * ld]
+                } else {
+                    x[j + i * ld]
+                }
+            };
+            let mut want = c.clone();
+            for j in 0..n {
+                for i in 0..m {
+                    want[i + j * ldc] =
+                        -2.0 * at(&a, lda, op_a, i, j) + 3.0 * at(&b, ldb, op_b, i, j);
+                }
+            }
+            let (da, db, mut dc) = (
+                DeviceBytes::upload(&a, &owner),
+                DeviceBytes::upload(&b, &owner),
+                DeviceBytes::upload(&c, &owner),
+            );
+            let i = |x: usize| x as i32;
+            geam(
+                &blas,
+                op_a,
+                op_b,
+                i(m),
+                i(n),
+                -2.0,
+                &da,
+                i(lda),
+                3.0,
+                &db,
+                i(ldb),
+                &mut dc,
+                i(ldc),
+            )
+            .unwrap();
+            assert_eq!(download(&dc, &owner), want, "{op_a:?}, {op_b:?}");
+        }
+    }
+
+    /// Needs a GPU. Under `OP_T` B is stored n × m, so a B of 4 × 2 at
+    /// leading dimension 4 holds 8 elements and a slice of 7 is short: a
+    /// panic before anything is enqueued.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    #[should_panic(
+        expected = "geam: B is 4 x 2 at leading dimension 4, 8 elements, but its slice holds 7"
+    )]
+    fn geam_refuses_a_short_slice() {
+        let owner = Rc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner);
+        let a = DeviceBytes::new(8 * size_of::<f64>());
+        let b = DeviceBytes::new(7 * size_of::<f64>());
+        let mut c = DeviceBytes::new(8 * size_of::<f64>());
+        let _ = geam::<f64>(&blas, OP_N, OP_T, 2, 4, 1.0, &a, 2, 1.0, &b, 4, &mut c, 2);
     }
 }
