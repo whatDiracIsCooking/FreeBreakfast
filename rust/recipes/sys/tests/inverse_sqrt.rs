@@ -3,7 +3,10 @@
 //! The bar is bitwise, by analysis: the kernel's `1 / sqrt(x)` is a
 //! correctly rounded `sqrt` and a correctly rounded division in IEEE-754
 //! double on both vendors, as is the host's `1.0 / x.sqrt()`, so the two are
-//! the same bits. The elements cover each side of the floor (below it, at
+//! the same bits. On HIP that holds only with contraction off in the kernel:
+//! contracted, the AMDGPU back end folds `1 / sqrt` into a refined `rsq`,
+//! an ulp off on most of these elements (`inverse_sqrt.cu` has the pragma
+//! and why). The elements cover each side of the floor (below it, at
 //! it, one ulp above it, a negative value, both zeros) and ordinary values
 //! over the double range, repeated past three of the launch's blocks of
 //! four warps (128 or 256 threads), so a block boundary falls inside them;

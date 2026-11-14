@@ -401,7 +401,8 @@ come from LAPACK's eigenvalues, committed in
 the path graph's Laplacian of order 3, rank 2: its null mode dropped, `X S X`
 is the projector `I - J / 3` to `100 n ε`. The forked `fb_inverse_sqrt` is
 `recipes/sys/tests/inverse_sqrt.rs`, bitwise against the host's
-`1.0 / x.sqrt()` (both correctly rounded) on each side of the floor and
+`1.0 / x.sqrt()` (both correctly rounded; on HIP with contraction off in
+the kernel, which otherwise folds into an `rsq` an ulp off) on each side of the floor and
 across block boundaries, the elements past its count untouched.
 
 `doc_check/tests/section_citations.rs` checks that every section the
@@ -925,6 +926,8 @@ orthogonalized once each, `max |X S X - I|` `2.2e-15`, `9.2e-15` and
 `lwork` 1234 and an empty matrix refused; `fb_inverse_sqrt` bitwise
 against the host on each side of the floor, and a null array refused.
 Clippy (`-D warnings`, the changed crates with their tests), rustdoc
-(`-D warnings`) and `cargo fmt --check` are clean. Not run on the
-gfx1200; `devtools/cross-backend-check.sh --device-only` (HIP) passes,
-building `libfb_recipes_kernels.so` for HIP.
+(`-D warnings`) and `cargo fmt --check` are clean. Then on the gfx1200
+(HIP), the `hip` preset: the same gate passes, tier 3 204, tier 4 141, none
+skipped, `fb_inverse_sqrt` bitwise there too once its kernel turned
+contraction off (contracted, clang folds `1 / sqrt` into a refined `rsq`
+an ulp off).
