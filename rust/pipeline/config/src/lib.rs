@@ -577,7 +577,7 @@ fn refusal(kind: ErrorKind, path: &Path, text: &str, e: &toml::de::Error) -> Err
 /// orbital basis's spherical transform, that guess uploaded ([`add_guess_upload`]),
 /// `X = S^(-1/2)` ([`add_orthogonalize`], at the default floor) and the
 /// loop ([`add_scf`]); then [`add_write_npy`] of C to `c.npy` and of D to
-/// `d.npy`, and `download scf.json` (stream: ε into a pinned row) and
+/// `d.npy`, and `download epsilon` (stream: ε into a pinned row) and
 /// `write scf.json` (CPU: ε beside the last build's energy, residual and
 /// count).
 ///
