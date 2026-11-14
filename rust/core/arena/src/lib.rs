@@ -20,7 +20,8 @@
 //!   before the next one starts. [`Table::reads`] is what the data costs
 //!   it: each reader after its producer.
 //! - [`admit`] checks a table against its worker's cap, and refuses naming
-//!   the rows live at the peak.
+//!   every row larger than the cap on its own and the rows live at the
+//!   peak.
 //! - [`Block::new`] makes the table's one allocation, on the device or
 //!   pinned, filled with `0xFF`; it is freed when the block drops.
 //! - [`Block::partition`] is what a node is handed when it runs: a
@@ -61,7 +62,7 @@
 //! | `kOwnPoolBytes`, subtracted from the room by hand | A worker row ([`TableBuilder::worker`]), laid out like any other |
 //! | `DeviceResources`' workspace, carved by one routine at a time | Each node's scratch is a row of its own, aliased with every other node's dead scratch |
 //! | The 64 MiB fragmentation headroom | None: one allocation has nothing to fragment |
-//! | `check_plan`'s refusal naming the step at the peak | [`admit`]'s, naming the node and its live rows |
+//! | `check_plan`'s refusal naming the step at the peak | [`admit`]'s, naming the node and its live rows, and every row over the cap alone |
 //! | `kWorkspaceAlignment` | [`DEVICE_ALIGNMENT`], honoured by every row |
 //!
 //! # Not yet

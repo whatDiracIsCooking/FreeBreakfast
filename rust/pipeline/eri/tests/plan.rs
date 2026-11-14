@@ -35,8 +35,10 @@ fn plan_golden() {
 /// `naux²` doubles, so the block admission checks counts them: a budget
 /// one byte short of B, or of the block, is refused as `Allocation` before
 /// anything runs, naming the bytes and the rows live at the peak, and the
-/// block itself is admitted. Catches B or L built outside the table, which
-/// admission would never see.
+/// block itself is admitted. The peak is the three-center task's, where B
+/// is not yet live, so the budget short of B names it among the rows over
+/// the cap alone. Catches B or L built outside the table, which admission
+/// would never see.
 #[test]
 fn admission_counts_b_and_l() {
     let (molecule, basis) = common::water();
@@ -58,6 +60,18 @@ fn admission_counts_b_and_l() {
         );
         assert!(err.message.contains(&named), "{named} not in: {err}");
     }
+    let err = fb_core_arena::admit(table, b_bytes - 1, "gpu0").unwrap_err();
+    let alone = err
+        .message
+        .split_once("over the cap alone: ")
+        .and_then(|(_, rest)| rest.split_once("; its peak"))
+        .map(|(rows, _)| rows)
+        .unwrap_or_else(|| panic!("no rows over the cap alone in: {err}"));
+    let b = format!("B ({b_bytes} B)");
+    assert!(
+        alone.split(", ").any(|row| row == b),
+        "{b} not over the cap alone in: {err}"
+    );
     fb_core_arena::admit(table, table.total(), "gpu0").unwrap();
 }
 
