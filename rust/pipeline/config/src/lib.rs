@@ -46,7 +46,8 @@
 //! raise a cap. A floor is what lets a compiled-in size be relied on to
 //! fit without a search. [`admit_plan`] holds the plan to the caps after
 //! [`plan`] and before the blocks are made, a device cap bounded by the
-//! card's free memory at planning, so a plan that does not fit is refused
+//! card and less the device's measured reserve and the kernels' stack, so
+//! a plan that does not fit is refused
 //! naming its rows before the first launch (`docs/memory.md`,
 //! "Admission").
 //!
@@ -75,7 +76,7 @@
 //! | the density the C++ pipeline names `d.npy` | [`Calculation::Guess`], which always writes `d.npy` |
 //! | `write_overlap_npy`, after a stream sync inside the step | [`add_write_npy`]: a download node and a write node that feeds nothing |
 //! | `[memory] max_device_mem_per_gpu`, `max_pinned_mem_per_gpu`, `read_byte_size`, each off when unset | [`MemoryCaps`], the same keys and size strings, each defaulted at its floor |
-//! | `preflight`'s fold and `check_plan`, the pool capped at the cap less `kDeviceReserve`, the pre-warm against the card | [`admit_plan`]: [`fb_core_arena::admit`] on each table, the device's cap the smaller of the key and the card's free memory, less [`DEVICE_RESERVE`] |
+//! | `preflight`'s fold and `check_plan`, the pool capped at the cap less `kDeviceReserve`, the pre-warm against the card | [`admit_plan`]: [`fb_core_arena::admit`] on each table, the device's cap the smaller of the key and the card, less the reserve measured at planning (at least [`DEVICE_RESERVE`]) and the kernels' stack ([`KERNEL_STACK_BYTES`]) |
 //! | `check_pinned_node` against `/proc/meminfo`'s `MemAvailable`, under a pinned cap | the same check in [`admit_plan`], at every cap, the default's included |
 //! | `-o <output_dir>`, default `fbf_output` | [`Config::output`], the same default |
 //! | `-i <input_dir>` | nothing: paths are relative to the config file |
@@ -301,11 +302,12 @@ pub enum EriMode {
 #[serde(deny_unknown_fields, default)]
 pub struct MemoryCaps {
     /// `max_device_mem_per_gpu`: one GPU worker's device memory, bytes:
-    /// its block and the reserve the context and the handles hold beside
-    /// it ([`DEVICE_RESERVE`]). Bounded by the card: a block is admitted
-    /// against the smaller of this and the card's free memory at planning,
-    /// less the reserve. Default and floor `"8GiB"`, so a card with more
-    /// is used past 8 GiB only when a config says so.
+    /// its block, the reserve the context and the handles hold beside it,
+    /// and the kernels' stack. Bounded by the card: a block is admitted
+    /// against the smaller of this and the card's total memory, less the
+    /// reserve measured at planning (at least [`DEVICE_RESERVE`]) and the
+    /// stack ([`admit_plan`]). Default and floor `"8GiB"`, so a card with
+    /// more is used past 8 GiB only when a config says so.
     #[serde(deserialize_with = "byte_size")]
     pub max_device_mem_per_gpu: usize,
     /// `max_pinned_mem_per_gpu`: one GPU worker's pinned host block,
@@ -326,12 +328,24 @@ impl Default for MemoryCaps {
     }
 }
 
-/// What a card holds outside any block, bytes: the context, the library
-/// handles and the loaded modules, the C++ `kDeviceReserve` of 256 MiB.
-/// A device block is admitted against its cap less this. Measuring it per
-/// device at process start, with this its floor, and adding the kernels'
-/// stack are not built (`docs/memory.md`, "Admission").
+/// The floor of a device's reserve, bytes: the C++ `kDeviceReserve` of
+/// 256 MiB, what a card holds outside any block, the context, the library
+/// handles and the loaded modules, measured on the RTX 3080 and rounded
+/// up. The reserve [`admit_plan`] takes is measured per device, the card's
+/// total less its free memory once the worker's handles exist, and is
+/// never less than this: lazily loaded modules grow it after the reading
+/// (`docs/memory.md`, "Admission").
 pub const DEVICE_RESERVE: usize = 256 << 20;
+
+/// The largest per-thread stack of any kernel the tree launches, bytes:
+/// the C++ `kKernelStackBytes`, `potential_hessian<3,3>`'s 16,912, which
+/// [`admit_plan`]'s stack term is asked for
+/// ([`fb_core_wwr::runtime::stack_growth`]). It bounds the Rust kernels
+/// because each is a fork of a C++ tree kernel (`docs/gpu_layer.md`,
+/// "What the port changes"), and the C++ ctest `core_kernel_stack_bound`
+/// holds every one of those to it; nothing reads the bound off the Rust
+/// libraries themselves.
+pub const KERNEL_STACK_BYTES: usize = 16_912;
 
 /// A `[memory]` byte size, as the C++ `read_byte_size` reads one.
 fn byte_size<'de, D: Deserializer<'de>>(deserializer: D) -> std::result::Result<usize, D::Error> {
@@ -673,11 +687,15 @@ pub fn plan(
 ///    `mem_available`, the node's `MemAvailable` in bytes, since pinned
 ///    memory is not pageable (the C++ `check_pinned_node`).
 /// 2. Each worker's device table, [`admit`]ted against the smaller of
-///    [`MemoryCaps::max_device_mem_per_gpu`] and its card's free memory,
-///    less [`DEVICE_RESERVE`]: so a card smaller than the cap, or one
-///    another process holds part of, refuses the plan before the first
-///    launch. `device_free(worker)` is that card's free memory, in bytes;
-///    it is asked only of a worker whose device table holds a row, so a
+///    [`MemoryCaps::max_device_mem_per_gpu`] and its card's total memory,
+///    less the reserve and the stack: `block + reserve + stack <= cap`.
+///    `device_memory(worker)` is one reading of the card, `(free, total)`
+///    in bytes, made once the worker's handles exist; the reserve is
+///    `total - free`, at least [`DEVICE_RESERVE`]. So a cap past the card
+///    admits its free memory, and a card another process holds part of
+///    shows that part in the reserve, as a smaller cap. `stack_growth(worker)`
+///    is what the kernels' stack can still take, in bytes, read after it.
+///    Each is asked only of a worker whose device table holds a row, so a
 ///    plan with none touches no device.
 /// 3. Each worker's pinned table, against
 ///    [`MemoryCaps::max_pinned_mem_per_gpu`].
@@ -687,15 +705,17 @@ pub fn plan(
 /// # Errors
 /// - `InvalidConfig`, naming the key, the workers and `MemAvailable`: the
 ///   pinned caps together past it.
-/// - `device_free`'s error.
+/// - `device_memory`'s or `stack_growth`'s error.
 /// - [`admit`]'s refusal, `Allocation`, naming the worker (`gpu<w>`), the
 ///   kind, the bytes over, every row over the cap alone and the rows live
 ///   at the peak; then the cap's terms: the key, and for a device block
-///   the card's free memory and the reserve.
+///   the card's total, the reserve with its reading and its floor, and
+///   the stack.
 pub fn admit_plan(
     planned: &Planned<'_>,
     memory: &MemoryCaps,
-    device_free: impl Fn(usize) -> Result<usize>,
+    device_memory: impl Fn(usize) -> Result<(usize, usize)>,
+    stack_growth: impl Fn(usize) -> Result<usize>,
     mem_available: usize,
 ) -> Status {
     let workers = planned.n_workers();
@@ -717,13 +737,16 @@ pub fn admit_plan(
             "no device block".to_owned()
         } else {
             let cap = memory.max_device_mem_per_gpu;
-            let free = device_free(w)?;
-            let room = cap.min(free).saturating_sub(DEVICE_RESERVE);
+            let (free, total) = device_memory(w)?;
+            let reserve = total.saturating_sub(free).max(DEVICE_RESERVE);
+            let stack = stack_growth(w)?;
+            let room = cap.min(total).saturating_sub(reserve).saturating_sub(stack);
             admit(device, room, &worker).map_err(|mut e| {
                 e.message = format!(
                     "{}; the cap is the smaller of [memory] max_device_mem_per_gpu = {cap} bytes \
-                     and the card's {free} bytes free at planning, less the reserve of \
-                     {DEVICE_RESERVE} bytes",
+                     and the card's {total} bytes, less the reserve of {reserve} bytes (the card's \
+                     total less its {free} bytes free at planning, at least {DEVICE_RESERVE}) \
+                     and the kernels' stack of {stack} bytes",
                     e.message
                 );
                 e

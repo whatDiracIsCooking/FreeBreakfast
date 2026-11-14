@@ -21,8 +21,9 @@
 //!   it: each reader after its producer.
 //! - [`admit`] checks a table against its worker's cap, and refuses naming
 //!   every row larger than the cap on its own and the rows live at the
-//!   peak. With `device`, `device_free` reads a card's free memory at
-//!   planning, which bounds a device cap past the card.
+//!   peak. With `device`, `device_memory` reads a card's free and total
+//!   memory at planning: the card bounds a device cap, and the difference
+//!   is the device's measured reserve.
 //! - [`Block::new`] makes the table's one allocation, on the device or
 //!   pinned, filled with `0xFF`; it is freed when the block drops.
 //!   [`allocations`] counts them, for a test that a run allocates nothing.
@@ -99,7 +100,7 @@ mod tests;
 
 pub use admit::admit;
 #[cfg(feature = "device")]
-pub use admit::device_free;
+pub use admit::device_memory;
 pub use assign::{Assignment, Life, Row, assign};
 pub use block::{Block, allocations};
 #[cfg(feature = "device")]

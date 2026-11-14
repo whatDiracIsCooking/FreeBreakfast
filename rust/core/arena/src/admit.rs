@@ -1,6 +1,6 @@
 //! Admission's fit check, a table against its worker's cap, and with
-//! `device` the reading of a card's free memory that a device cap is
-//! bounded by.
+//! `device` the reading of a card's free and total memory that a device
+//! cap is bounded by and the device's reserve is measured from.
 
 use super::kind::Kind;
 use super::table::Table;
@@ -57,10 +57,12 @@ pub fn admit<K: Kind>(table: &Table<K>, cap: usize, worker: &str) -> Status {
     )))
 }
 
-/// Device `dev_idx`'s free memory, in bytes, read at planning: what a
-/// device cap past the card is bounded by (`docs/memory.md`, "Admission").
-/// Every tenant of the card is counted, so the reading moves with them;
-/// it is admission's, never a width's at run time.
+/// Device `dev_idx`'s free and total memory, in bytes, read at planning:
+/// one reading, from which admission takes the card's bound and the
+/// device's measured reserve, its total less its free memory
+/// (`docs/memory.md`, "Admission"). Every tenant of the card is counted,
+/// so the reading moves with them; it is admission's, never a width's at
+/// run time.
 ///
 /// # Errors
 /// The failed device switch or runtime call.
@@ -68,14 +70,14 @@ pub fn admit<K: Kind>(table: &Table<K>, cap: usize, worker: &str) -> Status {
 #[track_caller]
 #[allow(
     clippy::disallowed_methods,
-    reason = "admission bounds a device cap by the card's free memory at planning (docs/memory.md, \"Admission\"); nothing is sized from it at run time"
+    reason = "admission bounds a device cap by the card and measures the device's reserve at planning (docs/memory.md, \"Admission\"); nothing is sized from it at run time"
 )]
-pub fn device_free(dev_idx: i32) -> Result<usize> {
+pub fn device_memory(dev_idx: i32) -> Result<(usize, usize)> {
     let location = std::panic::Location::caller();
     let _device = fb_core_wwr::common::ScopedDeviceIndex::try_new(dev_idx)?;
     let (mut free, mut total) = (0, 0);
     // SAFETY: a plain runtime call writing two locals.
     let status = unsafe { wwr_sys::wwr_mem_get_info(&mut free, &mut total) };
     fb_core_wwr::gpu_status_at(status, location)?;
-    Ok(free)
+    Ok((free, total))
 }
