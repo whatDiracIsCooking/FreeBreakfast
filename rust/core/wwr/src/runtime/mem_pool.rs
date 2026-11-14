@@ -27,7 +27,9 @@ pub const LOCATION_DEVICE: i32 = 0x1;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MemLocation {
+    /// What `id` indexes: [`LOCATION_DEVICE`] for a device ordinal.
     pub kind: i32,
+    /// The device ordinal, under [`LOCATION_DEVICE`].
     pub id: i32,
 }
 
@@ -44,11 +46,18 @@ pub struct MemLocation {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct MemPoolProps {
+    /// `allocType`: [`ALLOCATION_PINNED`] for device memory.
     pub alloc_type: i32,
+    /// `handleTypes`: the export handles the pool allows;
+    /// [`HANDLE_TYPE_NONE`] for a pool no other process opens.
     pub handle_types: i32,
+    /// `location`: the device the pool's memory lives on.
     pub location: MemLocation,
+    /// `win32SecurityAttributes`: null off Windows.
     pub win32_security_attributes: *mut c_void,
+    /// `maxSize`: the pool's cap in bytes; 0 is none.
     pub max_size: usize,
+    /// The vendors' reserved bytes, zero.
     pub reserved: [u8; 56],
 }
 

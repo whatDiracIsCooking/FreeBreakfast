@@ -107,6 +107,11 @@ wwr-sys = { path = "../deps/WarpWraps/src/capi/wwr-sys", default-features = fals
     "runtime_api",
 ] }
 
+[workspace.lints.rust]
+# Every public item carries a doc comment (docs/documentation.md,
+# "Code: rustdoc"); -D warnings never reaches an allow-by-default lint.
+missing_docs = "deny"
+
 [workspace.lints.clippy]
 # clippy.toml's list: spawning is core::thread_pool's alone.
 disallowed_methods = "deny"
