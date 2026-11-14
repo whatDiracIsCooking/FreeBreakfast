@@ -40,10 +40,11 @@ pub struct ScfOutput {
 
 /// The DF-RHF of one molecule in one basis over one fitting set, from the
 /// SAD guess, planned once: the nuclei ([`add_nuclei`]), the records
-/// ([`add_records`]), S ([`add_overlap`]) and H ([`add_core_hamiltonian`])
-/// over one build of the records and one staging of the spherical
-/// transform, `X = S^(-1/2)` ([`add_orthogonalize`], at the default floor),
-/// the fitted integrals ([`add_df_eri`]), the SAD guess and its upload
+/// ([`add_records`]), S ([`add_overlap`]), H ([`add_core_hamiltonian`])
+/// and the fitted integrals ([`add_df_eri`]) over one build of the records
+/// and one staging of the orbital basis's spherical transform,
+/// `X = S^(-1/2)` ([`add_orthogonalize`], at the default floor), the SAD
+/// guess and its upload
 /// ([`add_sad_guess`], [`add_guess_upload`]), the loop ([`add_scf`]), and
 /// two tasks that bring the products to the host, `download` (stream: ε,
 /// C and D copied into pinned rows) and `collect` (CPU: the pinned rows
@@ -102,7 +103,7 @@ impl Run {
             s,
             ORTHOGONALIZE_EIGENVALUE_FLOOR,
         )?;
-        let eri = add_df_eri(&mut dag, 0, &molecule, &basis, &classes, aux_basis)?;
+        let eri = add_df_eri(&mut dag, 0, &molecule, &basis, &classes, &mut u, aux_basis)?;
         let guess = add_sad_guess(&mut dag, 0, &basis, molecule.atoms())?;
         let guess = add_guess_upload(&mut dag, 0, &basis, guess);
         let (scalars, [eps, c, d]) = add_scf(

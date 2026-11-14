@@ -302,7 +302,16 @@ fn a_guess_with_a_negative_eigenvalue_is_warned_of() {
         ORTHOGONALIZE_EIGENVALUE_FLOOR,
     )
     .unwrap();
-    let eri = add_df_eri(&mut dag, 0, &molecule, &basis, &classes, "cc-pvdz-jkfit").unwrap();
+    let eri = add_df_eri(
+        &mut dag,
+        0,
+        &molecule,
+        &basis,
+        &classes,
+        &mut u,
+        "cc-pvdz-jkfit",
+    )
+    .unwrap();
     let guess = add_loaded_guess(&mut dag, 0, &basis, path.clone()).unwrap();
     let guess = add_guess_upload(&mut dag, 0, &basis, guess);
     let step = ScfStep {
