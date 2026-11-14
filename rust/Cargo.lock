@@ -612,6 +612,7 @@ dependencies = [
  "fb-recipes-orthogonalize",
  "fb-sad",
  "fb-test-support",
+ "log",
  "serde",
  "serde_json",
  "toml",

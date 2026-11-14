@@ -1,7 +1,11 @@
-//! Admission's fit check: a table against its worker's cap.
+//! Admission's fit check, a table against its worker's cap, and with
+//! `device` the reading of a card's free memory that a device cap is
+//! bounded by.
 
 use super::kind::Kind;
 use super::table::Table;
+#[cfg(feature = "device")]
+use fb_core_error_handling::Result;
 use fb_core_error_handling::{Error, Status};
 
 /// Whether `table`'s block fits in `cap` bytes on the worker named
@@ -51,4 +55,27 @@ pub fn admit<K: Kind>(table: &Table<K>, cap: usize, worker: &str) -> Status {
         peak.bytes,
         live.join(", ")
     )))
+}
+
+/// Device `dev_idx`'s free memory, in bytes, read at planning: what a
+/// device cap past the card is bounded by (`docs/memory.md`, "Admission").
+/// Every tenant of the card is counted, so the reading moves with them;
+/// it is admission's, never a width's at run time.
+///
+/// # Errors
+/// The failed device switch or runtime call.
+#[cfg(feature = "device")]
+#[track_caller]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "admission bounds a device cap by the card's free memory at planning (docs/memory.md, \"Admission\"); nothing is sized from it at run time"
+)]
+pub fn device_free(dev_idx: i32) -> Result<usize> {
+    let location = std::panic::Location::caller();
+    let _device = fb_core_wwr::common::ScopedDeviceIndex::try_new(dev_idx)?;
+    let (mut free, mut total) = (0, 0);
+    // SAFETY: a plain runtime call writing two locals.
+    let status = unsafe { wwr_sys::wwr_mem_get_info(&mut free, &mut total) };
+    fb_core_wwr::gpu_status_at(status, location)?;
+    Ok(free)
 }

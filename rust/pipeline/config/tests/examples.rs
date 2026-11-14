@@ -95,6 +95,50 @@ fn overlap_example() {
     );
 }
 
+/// The example under raised `[memory]` caps through the binary: exit 0,
+/// its S against PySCF's at the overlap's bar, and its log naming worker
+/// 0's device and pinned blocks admitted, the pinned one against the
+/// example's 4 GiB: the binary admits every table before it runs. Needs a
+/// GPU.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn memory_example() {
+    let cwd = workdir("example_memory");
+    let config = example("memory.toml");
+    let out = free_breakfast(&cwd, &config);
+    assert_eq!(out.status.code(), Some(0), "the example exits 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("completed: 0 errors"), "{stdout}");
+    assert!(
+        stdout.contains("gpu0 admitted: a device block of"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("a pinned block of") && stdout.contains("against a cap of 4294967296"),
+        "{stdout}"
+    );
+
+    let s = fb_io_npy::read_npy(&cwd.join("memory/overlap.npy")).unwrap();
+    let want = fb_io_npy::read_npy(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/h2o_cc-pvdz.npy"),
+    )
+    .unwrap();
+    assert_eq!(s.shape, want.shape, "the AO count");
+    let scale = want.data.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+    let worst = s
+        .data
+        .iter()
+        .zip(&want.data)
+        .fold(0.0_f64, |m, (g, w)| m.max((g - w).abs()));
+    println!("max |S - S_ref| = {worst:e}, bar {:e}", BAR * scale);
+    assert!(worst <= BAR * scale, "max |S - S_ref| = {worst:e}");
+    check_timing(
+        &config,
+        &cwd.join("memory/timing.json"),
+        &["download overlap.npy", "write overlap.npy"],
+    );
+}
+
 /// The timing record `timing` read back, parsed as the timing record's
 /// type: every task of `config`'s plan timed, in rank order and then
 /// iteration; a loop's body node and decision once per iteration, 0 to the
@@ -477,5 +521,41 @@ fn a_guess_file_of_the_wrong_shape_is_refused() {
         &config,
         ErrorKind::InvalidConfig,
         &["[guess] from", &wrong.display().to_string(), "is not 7 x 7"],
+    );
+}
+
+/// The overlap of water in STO-3G, `memory` its `[memory]` table.
+fn capped(memory: &str) -> String {
+    format!(
+        "calculation = \"overlap\"\n\n[molecule]\nxyz = \"water.xyz\"\n\n[basis_set]\nbasis = \
+         \"sto-3g\"\n\n[memory]\n{memory}\n"
+    )
+}
+
+/// A device cap under its floor: `InvalidConfig`, naming the key and the
+/// value, before the output directory is made.
+#[test]
+fn a_cap_under_its_floor_is_refused() {
+    refused(
+        "refused_cap_under_floor",
+        &capped("max_device_mem_per_gpu = \"4GiB\""),
+        ErrorKind::InvalidConfig,
+        &[
+            "[memory] max_device_mem_per_gpu = 4294967296 bytes",
+            "under its floor",
+        ],
+    );
+}
+
+/// A pinned cap past the node's `MemAvailable`: the binary's admission
+/// refuses it, `InvalidConfig`, naming the key and `MemAvailable`, after
+/// planning and before the output directory is made or a block allocated.
+#[test]
+fn a_pinned_cap_past_the_node_is_refused() {
+    refused(
+        "refused_pinned_past_node",
+        &capped("max_pinned_mem_per_gpu = \"8000TiB\""),
+        ErrorKind::InvalidConfig,
+        &["max_pinned_mem_per_gpu", "MemAvailable"],
     );
 }

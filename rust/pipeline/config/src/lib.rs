@@ -2,7 +2,8 @@
 //! config, read from TOML, and the plan it asks for. The binary is this
 //! crate's `src/main.rs`: `free-breakfast <config.toml>` reads the config
 //! ([`read_config`]), plans it ([`plan`], syevd's work asked of device 0
-//! when the calculation diagonalizes), makes the output directory, runs
+//! when the calculation diagonalizes), admits every worker's tables against
+//! the `[memory]` caps ([`admit_plan`]), makes the output directory, runs
 //! the plan once on device 0, and writes `timing.json`, the run's
 //! [`Record`](fb_core_thread_pool::Record), beside the products. Its `main`
 //! is the one place an error is logged, exiting with
@@ -38,6 +39,17 @@
 //! already that format, so a product compares against a fixture with the
 //! reader the tree has.
 //!
+//! **Memory caps.** `[memory]` ([`MemoryCaps`]) caps each GPU worker's
+//! device and pinned blocks, the C++ keys with the C++ size strings. Each
+//! key's compiled-in default is also its floor: a config with no key runs
+//! at it, and one that sets a key under it is refused, so a key can only
+//! raise a cap. A floor is what lets a compiled-in size be relied on to
+//! fit without a search. [`admit_plan`] holds the plan to the caps after
+//! [`plan`] and before the blocks are made, a device cap bounded by the
+//! card's free memory at planning, so a plan that does not fit is refused
+//! naming its rows before the first launch (`docs/memory.md`,
+//! "Admission").
+//!
 //! **Paths.** The geometry and a basis path are relative to the config
 //! file's directory, which [`read_config`] joins; a compiled-in basis name
 //! is not a path and is never joined ([`fb_io_basis::is_builtin_basis`]).
@@ -62,6 +74,9 @@
 //! | `ScfStep::molden`, `scf.molden` | not ported |
 //! | the density the C++ pipeline names `d.npy` | [`Calculation::Guess`], which always writes `d.npy` |
 //! | `write_overlap_npy`, after a stream sync inside the step | [`add_write_npy`]: a download node and a write node that feeds nothing |
+//! | `[memory] max_device_mem_per_gpu`, `max_pinned_mem_per_gpu`, `read_byte_size`, each off when unset | [`MemoryCaps`], the same keys and size strings, each defaulted at its floor |
+//! | `preflight`'s fold and `check_plan`, the pool capped at the cap less `kDeviceReserve`, the pre-warm against the card | [`admit_plan`]: [`fb_core_arena::admit`] on each table, the device's cap the smaller of the key and the card's free memory, less [`DEVICE_RESERVE`] |
+//! | `check_pinned_node` against `/proc/meminfo`'s `MemAvailable`, under a pinned cap | the same check in [`admit_plan`], at every cap, the default's included |
 //! | `-o <output_dir>`, default `fbf_output` | [`Config::output`], the same default |
 //! | `-i <input_dir>` | nothing: paths are relative to the config file |
 //! | `main`, `print_products` | `src/main.rs`: the error logged once, the exit code, `timing.json` |
@@ -72,8 +87,8 @@ mod write;
 
 use std::path::{Path, PathBuf};
 
-use fb_core_arena::{Pinned, RowId};
-use fb_core_error_handling::{Error, ErrorKind, Result};
+use fb_core_arena::{Pinned, RowId, admit};
+use fb_core_error_handling::{Error, ErrorKind, Result, Status};
 use fb_core_planner::{Dag, Planned};
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
@@ -84,7 +99,7 @@ use fb_pipeline_eri::add_df_eri;
 use fb_pipeline_guess::{add_guess_upload, add_loaded_guess, add_sad_guess};
 use fb_pipeline_scf::{ScfStep, add_scf, occupied_orbitals};
 use fb_recipes_orthogonalize::{ORTHOGONALIZE_EIGENVALUE_FLOOR, add_orthogonalize};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 pub use write::{add_write_host_npy, add_write_npy};
 
@@ -133,6 +148,10 @@ pub struct Config {
     /// refused beside any other. Optional; default every key's default.
     #[serde(default)]
     pub scf: Option<ScfStep>,
+    /// `[memory]`: the caps on what each GPU worker's blocks may hold.
+    /// Optional; default every key's default, which is also its floor.
+    #[serde(default)]
+    pub memory: MemoryCaps,
 }
 
 /// `calculation`: what a run computes, and the products it writes into
@@ -259,6 +278,143 @@ pub enum EriMode {
     DensityFitting,
 }
 
+/// `[memory]`: the caps on each GPU worker's blocks, the keys of the C++
+/// tree's memory caps (its `src/pipeline/README.md`). Each key's default
+/// is also its floor: [`read_config`] refuses a value under it, naming the
+/// key and the value, so a key can only raise a cap. [`admit_plan`] holds
+/// the plan to them.
+///
+/// A value is a byte size: an integer of bytes, or a string of a number
+/// and a unit, `B`; `kB`, `MB`, `GB`, `TB`, powers of 1000; `KiB`, `MiB`,
+/// `GiB`, `TiB`, powers of 1024; rounded down to a whole byte. Anything
+/// else is refused, `<file>:<line>: ...`: a string with no unit or an
+/// unknown one, an exponent (`"1e9B"` reads as the unit `e9B`), a value
+/// below 1 byte or from 2^63 bytes up, a float or any other type. A cap
+/// is never guessed.
+///
+/// ```text
+/// [memory]
+/// max_device_mem_per_gpu = "10GiB"
+/// max_pinned_mem_per_gpu = "2GiB"
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct MemoryCaps {
+    /// `max_device_mem_per_gpu`: one GPU worker's device memory, bytes:
+    /// its block and the reserve the context and the handles hold beside
+    /// it ([`DEVICE_RESERVE`]). Bounded by the card: a block is admitted
+    /// against the smaller of this and the card's free memory at planning,
+    /// less the reserve. Default and floor `"8GiB"`, so a card with more
+    /// is used past 8 GiB only when a config says so.
+    #[serde(deserialize_with = "byte_size")]
+    pub max_device_mem_per_gpu: usize,
+    /// `max_pinned_mem_per_gpu`: one GPU worker's pinned host block,
+    /// bytes. The workers' caps together must fit the node's
+    /// `MemAvailable`: pinned memory is not pageable. Default and floor
+    /// `"2GiB"`.
+    #[serde(deserialize_with = "byte_size")]
+    pub max_pinned_mem_per_gpu: usize,
+}
+
+impl Default for MemoryCaps {
+    /// Each key at its floor: 8 GiB of device memory and 2 GiB pinned.
+    fn default() -> Self {
+        MemoryCaps {
+            max_device_mem_per_gpu: 8 << 30,
+            max_pinned_mem_per_gpu: 2 << 30,
+        }
+    }
+}
+
+/// What a card holds outside any block, bytes: the context, the library
+/// handles and the loaded modules, the C++ `kDeviceReserve` of 256 MiB.
+/// A device block is admitted against its cap less this. Measuring it per
+/// device at process start, with this its floor, and adding the kernels'
+/// stack are not built (`docs/memory.md`, "Admission").
+pub const DEVICE_RESERVE: usize = 256 << 20;
+
+/// A `[memory]` byte size, as the C++ `read_byte_size` reads one.
+fn byte_size<'de, D: Deserializer<'de>>(deserializer: D) -> std::result::Result<usize, D::Error> {
+    use serde::de::Visitor;
+
+    struct ByteSize;
+
+    impl Visitor<'_> for ByteSize {
+        type Value = usize;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(
+                "a byte size: an integer of bytes, or a string with a unit, such as \"10GiB\"",
+            )
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, count: i64) -> std::result::Result<usize, E> {
+            usize::try_from(count)
+                .ok()
+                .filter(|&b| b >= 1)
+                .ok_or_else(|| E::custom(format!("{count} is below 1 byte")))
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, count: u64) -> std::result::Result<usize, E> {
+            self.visit_i64(i64::try_from(count).unwrap_or(i64::MAX))
+        }
+
+        fn visit_str<E: serde::de::Error>(self, text: &str) -> std::result::Result<usize, E> {
+            // A sign, digits and a point: an exponent is not a byte size's
+            // spelling, so "1e9B" stops at 'e' and reads as an unknown unit.
+            let digits = text.strip_prefix('-').unwrap_or(text);
+            let end = text.len() - digits.len()
+                + digits
+                    .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+                    .unwrap_or(digits.len());
+            let (number, unit) = text.split_at(end);
+            let value = number
+                .parse::<f64>()
+                .map_err(|_| E::custom(format!("\"{text}\" is not a number and a unit")))?;
+            let unit = unit.trim_start_matches(' ');
+            if unit.is_empty() {
+                return Err(E::custom(format!(
+                    "\"{text}\" has no unit: bytes are an integer, and a string needs a unit, \
+                     such as \"10GiB\""
+                )));
+            }
+            let scale = match unit {
+                "B" => 1.0,
+                "kB" => 1e3,
+                "MB" => 1e6,
+                "GB" => 1e9,
+                "TB" => 1e12,
+                "KiB" => 2f64.powi(10),
+                "MiB" => 2f64.powi(20),
+                "GiB" => 2f64.powi(30),
+                "TiB" => 2f64.powi(40),
+                _ => {
+                    return Err(E::custom(format!(
+                        "\"{text}\" has no unit '{unit}' (B, kB, MB, GB, TB, KiB, MiB, GiB or TiB)"
+                    )));
+                }
+            };
+            let bytes = value * scale;
+            if bytes < 1.0 {
+                return Err(E::custom(format!("\"{text}\" is below 1 byte")));
+            }
+            // 2^63: past every machine's memory, and still exact in a double.
+            if bytes >= 2f64.powi(63) {
+                return Err(E::custom(format!("\"{text}\" is past 2^63 bytes")));
+            }
+            // In [1, 2^63): the cast rounds down to a whole byte.
+            Ok(bytes as usize)
+        }
+    }
+
+    deserializer.deserialize_any(ByteSize)
+}
+
+/// `bytes` in GiB, for a message.
+fn gib(bytes: usize) -> f64 {
+    bytes as f64 / f64::from(1u32 << 30)
+}
+
 fn default_output() -> PathBuf {
     PathBuf::from("fbf_output")
 }
@@ -272,12 +428,15 @@ fn default_output() -> PathBuf {
 /// - `InvalidConfig`, `<file>:<line>: ...` naming the key: a key or table
 ///   [`Config`] does not have, a required one missing, a value of the
 ///   wrong type, or a `calculation` or `[guess] type` that is not one.
+/// - `InvalidConfig`, `<file>:<line>: ...`: a `[memory]` value that is not
+///   a byte size ([`MemoryCaps`]).
 /// - `InvalidConfig`, `<file>: ...` naming the table or the key: a
 ///   `[guess]` beside [`Calculation::Overlap`], or one with both `type`
 ///   and `from`; an `[eri]` or an `[scf]` beside a calculation other than
 ///   [`Calculation::Rhf`], or no `[eri]` beside it; an `[eri] aux_basis`
 ///   that is not a compiled-in fitting set; an `[scf]` option out of range
-///   ([`ScfStep::check`]).
+///   ([`ScfStep::check`]); a `[memory]` key under its floor, its default,
+///   naming the value.
 pub fn read_config(path: &Path) -> Result<Config> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| Error::io(format!("cannot open '{}': {e}", path.display())))?;
@@ -317,6 +476,28 @@ pub fn read_config(path: &Path) -> Result<Config> {
         }
         scf.check()
             .map_err(|e| Error::config(format!("{file}: {}", e.message)))?;
+    }
+    let floor = MemoryCaps::default();
+    for (key, value, floor) in [
+        (
+            "max_device_mem_per_gpu",
+            config.memory.max_device_mem_per_gpu,
+            floor.max_device_mem_per_gpu,
+        ),
+        (
+            "max_pinned_mem_per_gpu",
+            config.memory.max_pinned_mem_per_gpu,
+            floor.max_pinned_mem_per_gpu,
+        ),
+    ] {
+        if value < floor {
+            return Err(Error::config(format!(
+                "{file}: [memory] {key} = {value} bytes ({:.3} GiB) is under its floor of \
+                 {floor} bytes ({} GiB), which is also its default: a key can only raise a cap",
+                gib(value),
+                gib(floor)
+            )));
+        }
     }
     let dir = path.parent().unwrap_or(Path::new(""));
     config.molecule.xyz = dir.join(&config.molecule.xyz);
@@ -482,6 +663,91 @@ pub fn plan(
         }
     }
     Ok(dag.plan())
+}
+
+/// Admit `planned` against `memory`'s caps, as the binary does after
+/// [`plan`] and before it makes the blocks (`docs/memory.md`,
+/// "Admission"). In order:
+///
+/// 1. The node: every GPU worker's pinned cap together must fit
+///    `mem_available`, the node's `MemAvailable` in bytes, since pinned
+///    memory is not pageable (the C++ `check_pinned_node`).
+/// 2. Each worker's device table, [`admit`]ted against the smaller of
+///    [`MemoryCaps::max_device_mem_per_gpu`] and its card's free memory,
+///    less [`DEVICE_RESERVE`]: so a card smaller than the cap, or one
+///    another process holds part of, refuses the plan before the first
+///    launch. `device_free(worker)` is that card's free memory, in bytes;
+///    it is asked only of a worker whose device table holds a row, so a
+///    plan with none touches no device.
+/// 3. Each worker's pinned table, against
+///    [`MemoryCaps::max_pinned_mem_per_gpu`].
+///
+/// Each worker admitted is logged at info, its blocks and their caps.
+///
+/// # Errors
+/// - `InvalidConfig`, naming the key, the workers and `MemAvailable`: the
+///   pinned caps together past it.
+/// - `device_free`'s error.
+/// - [`admit`]'s refusal, `Allocation`, naming the worker (`gpu<w>`), the
+///   kind, the bytes over, every row over the cap alone and the rows live
+///   at the peak; then the cap's terms: the key, and for a device block
+///   the card's free memory and the reserve.
+pub fn admit_plan(
+    planned: &Planned<'_>,
+    memory: &MemoryCaps,
+    device_free: impl Fn(usize) -> Result<usize>,
+    mem_available: usize,
+) -> Status {
+    let workers = planned.n_workers();
+    let pinned_cap = memory.max_pinned_mem_per_gpu;
+    // workers * cap > available, without the product's overflow.
+    if workers != 0 && pinned_cap > mem_available / workers {
+        return Err(Error::config(format!(
+            "{workers} GPU workers, each allowed [memory] max_pinned_mem_per_gpu = {pinned_cap} \
+             bytes ({:.3} GiB) of pinned memory, can pin more than the node's MemAvailable of \
+             {mem_available} bytes ({:.3} GiB); pinned memory is not pageable",
+            gib(pinned_cap),
+            gib(mem_available)
+        )));
+    }
+    for w in 0..workers {
+        let worker = format!("gpu{w}");
+        let device = planned.device_table(w);
+        let admitted = if device.total() == 0 {
+            "no device block".to_owned()
+        } else {
+            let cap = memory.max_device_mem_per_gpu;
+            let free = device_free(w)?;
+            let room = cap.min(free).saturating_sub(DEVICE_RESERVE);
+            admit(device, room, &worker).map_err(|mut e| {
+                e.message = format!(
+                    "{}; the cap is the smaller of [memory] max_device_mem_per_gpu = {cap} bytes \
+                     and the card's {free} bytes free at planning, less the reserve of \
+                     {DEVICE_RESERVE} bytes",
+                    e.message
+                );
+                e
+            })?;
+            format!(
+                "a device block of {} bytes against a cap of {room}",
+                device.total()
+            )
+        };
+        let host = planned.host_table(w);
+        admit(host, pinned_cap, &worker).map_err(|mut e| {
+            e.message = format!(
+                "{}; the cap is [memory] max_pinned_mem_per_gpu = {pinned_cap} bytes",
+                e.message
+            );
+            e
+        })?;
+        log::info!(
+            "{worker} admitted: {admitted}, a pinned block of {} bytes against a cap of \
+             {pinned_cap}",
+            host.total()
+        );
+    }
+    Ok(())
 }
 
 /// The guess [`Config::guess`] asks for, on GPU worker 0's host table:

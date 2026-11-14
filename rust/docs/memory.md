@@ -182,7 +182,7 @@ Per worker and per kind, the block must fit:
 | Kind | Must hold | Terms |
 |---|---|---|
 | Device | `block + reserve + stack <= cap` | `reserve`: the context, the handles and the loaded modules, outside any block; `stack`: the kernels' stack the driver takes back when the card has no free memory left for it (`kKernelStackBytes` per thread, up to 1.6 GiB on the RTX 3080) |
-| Pinned | `block <= pinned_cap`, and `sum over the node's workers <= MemAvailable - margin` | The per-GPU cap, and the C++ `check_pinned_node` carried over |
+| Pinned | `block <= pinned_cap`, and `sum over the node's workers <= MemAvailable` | The per-GPU cap, and the C++ `check_pinned_node` carried over, with no margin, as there |
 
 **No headroom and no eighth.** The 64 MiB fragmentation headroom and the HIP
 `ceil(P / 8)` reuse rounding are properties of a pool that reserves in chunks
@@ -196,13 +196,26 @@ start, after the devices' handles exist and before any block, each worker
 reads its device's free memory against its total; the difference is that
 device's reserve, and the C++ `kDeviceReserve` of 256 MiB is the least it may
 be taken as. A card another process holds part of shows up here, as a
-smaller cap, rather than at the first allocation.
+smaller cap, rather than at the first allocation. Not built yet: the reserve
+is the constant (`fb_pipeline_config::DEVICE_RESERVE`), and the stack is not
+counted.
 
-**Without a cap, the cap is the card.** A config with no `[memory]` table is
-admitted against the device's free memory at planning less the reserve and
-the stack, so an uncapped plan that does not fit is still refused before the
-first launch. Today an uncapped plan is checked against nothing but the
-device workspace.
+**Each cap's default is its floor.** The caps are the config's `[memory]`
+keys, the C++ ones with the C++ size strings: `max_device_mem_per_gpu`,
+default 8 GiB, and `max_pinned_mem_per_gpu`, default 2 GiB. Each key's one
+compiled-in value is both its default and its floor: a config with no key
+runs at it, and one that sets a key under it is refused, naming the key and
+the value, so a key can only raise a cap. A floor is what lets a compiled-in
+size, a streamed tensor's batch, be relied on to fit without a search; as the
+default it means a card with more than 8 GiB is used past that only when the
+config says so. The heap block's cap, `max_host_mem`, is not built.
+
+**Every cap is bounded by the card.** A device block is admitted against the
+smaller of its cap and the card's free memory at planning, less the reserve,
+so a card under its cap, or one another process holds part of, still refuses
+the plan before the first launch. The binary admits every worker's device and
+pinned table after planning and before it makes the blocks, and the node
+check before either (`fb_pipeline_config::admit_plan`).
 
 **Admission is a search over order.** The orchestrator's first job on one
 GPU is an order whose peak fits ([`programming_model.md`](programming_model.md),
