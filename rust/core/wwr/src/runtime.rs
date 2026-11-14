@@ -158,6 +158,10 @@ pub mod tests {
         /// The one copy, all `self.1` bytes from `src` to `dst`, one of them
         /// this buffer and the other host memory, on `stream`, drained
         /// before it returns.
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the test buffer's copy drains before it returns, so a test reads its result: the harness waits, not a task"
+        )]
         fn copy(
             &self,
             dst: *mut c_void,

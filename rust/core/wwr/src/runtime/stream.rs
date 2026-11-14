@@ -32,6 +32,10 @@ impl HandleKind for StreamKind {
         unsafe { wwr_sys::wwr_stream_create_with_flags(raw, NON_BLOCKING) }
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a destroy drains its stream first, as wwr's does: a drop, not a task"
+    )]
     unsafe fn destroy(raw: wwr_stream) -> wwr_status {
         // SAFETY: `raw` is a live stream.
         let drained = unsafe { wwr_sys::wwr_stream_synchronize(raw) };
@@ -115,6 +119,10 @@ impl Stream {
     }
 
     /// [`sync`] on this stream.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the wrapper the lint names: the executor's edges and the tests call it"
+    )]
     pub fn sync(&self) -> wwr_status {
         // SAFETY: the borrow keeps the stream alive.
         unsafe { sync(self.stream()) }
@@ -182,6 +190,10 @@ pub unsafe fn begin_capture(stream: wwr_stream, mode: wwr_stream_capture_mode) -
 ///
 /// # Safety
 /// `stream` is a live stream or null (the legacy default stream).
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the wrapper the lint names: the executor's edges and the tests call it"
+)]
 pub unsafe fn sync(stream: wwr_stream) -> wwr_status {
     // SAFETY: the caller's.
     unsafe { wwr_sys::wwr_stream_synchronize(stream) }
@@ -203,6 +215,10 @@ mod tests {
     /// Needs a GPU.
     #[test]
     #[ignore = "tier 4: needs a GPU"]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test reads its result back on the host: the harness waits, not a task"
+    )]
     fn the_default_stream_is_non_blocking() {
         let s = Stream::new(0);
         assert_eq!(s.dev_idx(), 0);

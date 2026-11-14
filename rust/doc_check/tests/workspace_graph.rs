@@ -17,7 +17,9 @@
 //!   not a member, or a `kernels/` directory under `rust/` is one the rule
 //!   does not cover or has no `-sys` crate wrapping it;
 //! - a member declares a direct dependency its sources never name
-//!   ([`check_unused`]), unless [`UNNAMED`] gives the reason.
+//!   ([`check_unused`]), unless [`UNNAMED`] gives the reason;
+//! - a member reaches a thread-pool crate ([`POOL_CRATES`]) through any
+//!   edge (`docs/programming_model.md`, "CPU workers").
 //!
 //! Tier 3: it reads text and runs `cargo metadata`, and links nothing.
 
@@ -1215,5 +1217,111 @@ fn unused_dependencies_fail_and_used_ones_pass() {
         failures[0].contains("move it to [dev-dependencies]"),
         "{}",
         failures[0]
+    );
+}
+
+/// The crates that bring a thread pool or an executor of their own, as
+/// `(package, why it is on the list)`. The orchestrator's workers are the
+/// standard library's scoped threads, and nothing else owns a thread
+/// (`docs/programming_model.md`, "CPU workers": "The standard library, and
+/// no pool crate"); clippy's spawn list cannot see a thread a dependency
+/// opens, so the graph holds it.
+const POOL_CRATES: &[(&str, &str)] = &[
+    (
+        "rayon",
+        "a work-stealing scheduler: stealing is placement, which is the orchestrator's",
+    ),
+    ("rayon-core", "rayon's pool itself"),
+    (
+        "tokio",
+        "an async runtime whose file I/O is a blocking thread pool underneath",
+    ),
+    (
+        "async-std",
+        "an async runtime with executor threads of its own",
+    ),
+    ("smol", "an async runtime with executor threads of its own"),
+    ("blocking", "smol's thread pool for blocking work"),
+    (
+        "async-executor",
+        "an executor a crate runs on threads of its own",
+    ),
+    (
+        "futures-executor",
+        "carries `ThreadPool`, a pool of its own threads",
+    ),
+    (
+        "threadpool",
+        "a pool whose `'static` job bound forces every edge buffer behind an `Arc`",
+    ),
+    (
+        "scoped_threadpool",
+        "a pool of its own threads, outside the plan's worker count",
+    ),
+    (
+        "crossbeam",
+        "carries the work-stealing deques and scoped spawns",
+    ),
+    (
+        "crossbeam-deque",
+        "the work-stealing deque a stealing scheduler is built on",
+    ),
+];
+
+/// Each member that reaches a [`POOL_CRATES`] package through any edge,
+/// with the chain.
+fn check_pools(g: &Graph) -> Vec<String> {
+    let mut failures = Vec::new();
+    for member in g.members.keys() {
+        for (pool, why) in POOL_CRATES {
+            if let Some(chain) = g.path(member, pool) {
+                failures.push(format!(
+                    "{member}: depends on the pool crate {pool} ({why}): {}; a run's \
+                     threads are the orchestrator's alone (docs/programming_model.md, \
+                     \"CPU workers\")",
+                    chain.join(" -> ")
+                ));
+            }
+        }
+    }
+    failures
+}
+
+#[test]
+fn no_member_depends_on_a_thread_pool_crate() {
+    let failures = check_pools(&read_graph(&rust_root()));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A pool reached directly, or through an external crate, fails with the
+/// chain; a member reaching none passes.
+#[test]
+fn a_pool_crate_anywhere_below_a_member_fails() {
+    let g = graph(
+        &[
+            ("fb-a", &["rayon"]),
+            ("fb-b", &["some-io"]),
+            ("fb-c", &["fb-core-log"]),
+            ("fb-core-log", &[]),
+            ("some-io", &["tokio"]),
+            ("rayon", &["rayon-core"]),
+            ("rayon-core", &[]),
+            ("tokio", &[]),
+        ],
+        &["rayon", "rayon-core", "some-io", "tokio"],
+    );
+    let failures = check_pools(&g);
+    assert_eq!(failures.len(), 3, "{failures:#?}");
+    assert!(
+        failures[0].starts_with("fb-a: depends on the pool crate rayon ("),
+        "{failures:#?}"
+    );
+    assert!(
+        failures[1].contains("fb-a -> rayon -> rayon-core"),
+        "{failures:#?}"
+    );
+    assert!(
+        failures[2].contains("fb-b -> some-io -> tokio"),
+        "{failures:#?}"
     );
 }

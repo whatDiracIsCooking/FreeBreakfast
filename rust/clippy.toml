@@ -6,6 +6,12 @@
 # through its kernel library's C wrapper, managed memory is not used, and
 # free memory is read only for admission and an allocation's refusal, never
 # to size work at run time. Each allowed site names its exception.
+#
+# The sync entries hold the task rule: a task has no internal host sync, so a
+# wait inside a computation is an edge (docs/programming_model.md,
+# "Granularity"). The executor's edges, a destroy, a block's fill at
+# instantiation and a test reading back are the allowed sites, each with its
+# reason.
 disallowed-methods = [
   { path = "std::thread::spawn", reason = "workers belong to the orchestrator (core::thread_pool)" },
   { path = "std::thread::scope", reason = "workers belong to the orchestrator (core::thread_pool)" },
@@ -15,4 +21,12 @@ disallowed-methods = [
   { path = "wwr_sys::wwr_malloc_managed", reason = "managed memory is not used (docs/memory.md, \"The two kinds\")" },
   { path = "wwr_sys::wwr_stream_attach_mem_async", reason = "managed memory is not used (docs/memory.md, \"The two kinds\")" },
   { path = "wwr_sys::wwr_mem_get_info", reason = "an adaptive width is chosen at planning, never from free memory at run time (docs/memory.md, \"Adaptive widths: one planner routine\")" },
+  { path = "fb_core_wwr::runtime::stream::Stream::sync", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },
+  { path = "fb_core_wwr::runtime::stream::sync", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },
+  { path = "fb_core_wwr::runtime::event::Event::sync", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },
+  { path = "fb_core_wwr::runtime::event::sync", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },
+  { path = "wwr_sys::wwr_stream_synchronize", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },
+  { path = "wwr_sys::wwr_event_synchronize", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },
+  { path = "wwr_sys::wwr_device_synchronize", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },
+  { path = "wwr_sys::wwr_memcpy", reason = "a blocking copy is a host sync, and a task has none: copy on the task's stream (fb_core_arena::memcpy_*) and wait at an edge (docs/programming_model.md, \"Granularity\")" },
 ]

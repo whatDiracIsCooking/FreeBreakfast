@@ -82,6 +82,10 @@ fn declared_equals_allocated() {
 /// debug build. The check that a row read before it is written fails.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
 fn blocks_are_filled() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let n = 1000;
@@ -162,6 +166,10 @@ fn an_allocation_the_card_cannot_hold_aborts() {
 /// differ is refused before anything is enqueued.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
 fn copies_round_trip_through_every_kind() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let n = 4097;

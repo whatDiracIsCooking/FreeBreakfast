@@ -116,7 +116,8 @@ wwr-sys = { path = "../deps/WarpWraps/src/capi/wwr-sys", default-features = fals
 missing_docs = "deny"
 
 [workspace.lints.clippy]
-# clippy.toml's list: spawning is core::thread_pool's alone.
+# clippy.toml's list: spawning is core::thread_pool's alone, and a task makes
+# no host sync.
 disallowed_methods = "deny"
 # Every unsafe block says why it holds, one operation at a time
 # (docs/programming_model.md, "Capabilities are enforced by lints").

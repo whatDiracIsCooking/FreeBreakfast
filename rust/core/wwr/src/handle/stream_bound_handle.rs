@@ -110,6 +110,10 @@ mod tests {
     /// while it lives, and lets go when it drops.
     #[test]
     #[ignore = "tier 4: needs a GPU"]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test reads its result back on the host: the harness waits, not a task"
+    )]
     fn binds_and_retains_the_owners_stream() {
         let owner = Rc::new(OwnedStream::new(0));
         let h = Bound::try_new(owner.clone()).unwrap();

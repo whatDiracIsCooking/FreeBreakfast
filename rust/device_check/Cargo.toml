@@ -1,6 +1,6 @@
 [package]
 name = "fb-device-check"
-description = "The launch wrappers only enqueue, and the -sys bindings match their C headers"
+description = "The launch wrappers only enqueue, the -sys bindings match their C headers, no launch shape crosses the C ABI, and the emitted units match the C++ tree's"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

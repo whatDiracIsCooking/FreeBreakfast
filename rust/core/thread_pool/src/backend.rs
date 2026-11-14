@@ -297,9 +297,17 @@ impl Backend for Device {
     fn wait(&self, lane: usize, node: NodeId) -> Status {
         gpu_status(self.streams[lane].wait_event(&self.events(node).1, 0))
     }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the executor's edge from a stream node to a CPU node (docs/programming_model.md, \"An edge declares\")"
+    )]
     fn host_wait(&self, node: NodeId) -> Status {
         gpu_status(self.events(node).1.sync())
     }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the executor drains a lane at the end of a run (docs/programming_model.md, \"The orchestrator derives\")"
+    )]
     fn sync(&self, lane: usize) -> Status {
         gpu_status(self.streams[lane].sync())
     }

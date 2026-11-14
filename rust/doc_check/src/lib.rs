@@ -11,13 +11,16 @@
 //! which reads the package graph (`cargo metadata`, over the manifests'
 //! text) and checks the reverse-dependents bar, that no crate is an
 //! umbrella, that a crate which only logs reaches no handle crate, that
-//! every direct dependency is named in its crate's sources, and the path
-//! rules of `devtools/test.py` against the layout; and
-//! `tests/source_rules.rs`, which scans the sources for six rules of the
-//! register: every `#[ignore]` is a device case's, no Markdown sits beside
-//! a module, doc examples carry their markers, nothing is exported to C,
-//! the safe wrappers link down to their bindings, and a test that trips a
-//! contract is debug-only. A crate of its own
+//! every direct dependency is named in its crate's sources, that no member
+//! reaches a thread-pool crate, and the path rules of `devtools/test.py`
+//! against the layout; `tests/source_rules.rs`, which scans the sources for
+//! six rules of the register: every `#[ignore]` is a device case's, no
+//! Markdown sits beside a module, doc examples carry their markers, nothing
+//! is exported to C, the safe wrappers link down to their bindings, and a
+//! test that trips a contract is debug-only; and `tests/code_rules.rs`,
+//! which checks that only the boundary logs an error, that no Rust source
+//! names a warp width or a launch shape, and that an `Allocation` error is
+//! made only at admission. A crate of its own
 //! so that it builds and runs without the wwr library. The checks are its tests; the
 //! library holds only what more than one of them reads.
 
@@ -35,9 +38,22 @@ use std::path::{Path, PathBuf};
 /// closing quote.
 #[must_use]
 pub fn code_only(source: &str) -> String {
+    blank(source, false)
+}
+
+/// `source` with every comment blanked to spaces, newlines kept, and its
+/// string and character literals kept: what a search for a name the code
+/// spells, in an identifier or a string it passes on, should see.
+#[must_use]
+pub fn without_comments(source: &str) -> String {
+    blank(source, true)
+}
+
+/// [`code_only`], keeping the literals when `keep_literals`.
+fn blank(source: &str, keep_literals: bool) -> String {
     let b = source.as_bytes();
     let mut out = b.to_vec();
-    let mut blank = |from: usize, to: usize| {
+    let mut clear = |from: usize, to: usize| {
         for c in &mut out[from..to.min(b.len())] {
             if *c != b'\n' {
                 *c = b' ';
@@ -90,7 +106,10 @@ pub fn code_only(source: &str) -> String {
                 continue;
             }
         };
-        blank(i, end);
+        let comment = b[i] == b'/';
+        if comment || !keep_literals {
+            clear(i, end);
+        }
         i = end;
     }
     // Only ASCII delimiters bound a blanked span, and every byte inside one
@@ -187,7 +206,7 @@ fn rust_files(dir: &Path, out: &mut BTreeSet<PathBuf>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{code_only, string_literals};
+    use super::{code_only, string_literals, without_comments};
 
     #[test]
     fn comments_and_literals_are_blanked_and_lines_kept() {
@@ -206,6 +225,17 @@ mod tests {
         assert_eq!(
             string_literals(r#"debug_requires(n > 0, "a \"b\" c")"#),
             ["a \"b\" c"]
+        );
+    }
+
+    #[test]
+    fn without_comments_keeps_the_literals() {
+        let src = "a // x \"q\"\n/* y */ b \"s // t\" r#\"q\"# 'c'\n";
+        let got = without_comments(src);
+        assert_eq!(got.len(), src.len());
+        assert_eq!(
+            got.split_whitespace().collect::<Vec<_>>(),
+            ["a", "b", "\"s", "//", "t\"", "r#\"q\"#", "'c'"]
         );
     }
 }

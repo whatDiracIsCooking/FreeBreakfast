@@ -1,6 +1,6 @@
 [package]
 name = "fb-doc-check"
-description = "Every section cited by name is a heading of the file cited, unsafe is where the docs say, contracts are written once, every check the rules register names exists, and the workspace graph keeps its shape"
+description = "Every section cited by name is a heading of the file cited, unsafe is where the docs say, contracts are written once, every check the rules register names exists, the workspace graph keeps its shape, and the sources keep the rules a scan can hold"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

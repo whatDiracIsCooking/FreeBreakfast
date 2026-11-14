@@ -28,6 +28,10 @@ fn ok(status: wwr_status) {
 /// it when freed.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
 fn allocations_come_from_the_pool() {
     let pool = MemPool::new(0);
     let s = Stream::new(0);
