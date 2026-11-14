@@ -1,0 +1,29 @@
+[package]
+name = "fb-integrals-one-electron-potential-en"
+description = "integrals/one_electron/potential_en: the AO nuclear-attraction matrix as tasks"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+contracts.workspace = true
+fb-basis.workspace = true
+fb-core-arena.workspace = true
+fb-core-error-handling.workspace = true
+fb-core-planner.workspace = true
+fb-core-thread-pool = { workspace = true, features = ["device"] }
+fb-core-wwr.workspace = true
+fb-integrals-mmd.workspace = true
+fb-integrals-sys.workspace = true
+fb-molecule-nuclei.workspace = true
+fb-recipes-matrix-ao.workspace = true
+wwr-sys.workspace = true
+
+[dev-dependencies]
+fb-io-basis.workspace = true
+fb-io-npy.workspace = true
+fb-io-xyz.workspace = true
+fb-test-support.workspace = true

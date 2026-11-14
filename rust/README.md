@@ -72,6 +72,7 @@ tree, not inputs to its build.
 | `fb_integrals_one_electron_kinetic` | `src/integrals/one_electron/kinetic`'s `kinetic` and its bridge's `kinetic_class` | `kinetic_classes`, the safe layer over `fb_kinetic_class`: every class's launch on one stream into a Cartesian matrix the caller zeroed, the launcher's requirements (`la <= lb <= FB_KINETIC_MAX_MOMENTUM`, records present, `n_cart²` within `i32` and the matrix that long) as `debug_requires`, callable by a task that launches several families into one matrix. `add_kinetic`: T of a `BasisSet` as tasks after the records, `kinetic` on the stream (the Cartesian matrix zeroed, then `kinetic_classes`, reading `ClassRows` as an edge), then `fb_recipes_matrix_ao`'s spherical transform, U's slot passed in. The plan text for each of the overlap's fixtures is the committed golden `integrals/one_electron/kinetic/tests/golden/plan_*.txt` |
 | `fb_pipeline_guess` | `src/pipeline/guess`, and `src/sad`'s task form | The Guess step as tasks of a `Dag`: `add_sad_guess`, one CPU node per distinct (Z, shells) stamp known from the basis at planning (`baked stamp <symbol>`, parsed by `fb-io-sad`, when the basis carries a name and the stamp is compiled in; `atomic scf <symbol>`, `fb-sad`'s SCF, otherwise, so a path-read basis runs every one), each into a host row, then `sad guess` on the CPU placing them into D, bitwise the serial `sad_density`; the first failing stamp in stamp order is the run's error. `add_loaded_guess`, the step's `load`: one CPU node reading D from a `.npy` file. Both generic over the host kind and stream, so their tier 3 runs on `Heap` rows and `HostOnly` workers; `add_guess_upload` copies D on the worker's stream into a device row. The plan text for formaldehyde in cc-pVDZ, by name and by path, is the committed golden `pipeline/guess/tests/golden/plan_*.txt` |
 | `fb_molecule_nuclei` | `src/molecule`, its device half (`Molecule`'s `upload`, `view`, `NucleiView`, `molecule_footprint`) | `add_nuclei`: a `Molecule`'s nuclei as two tasks of a `Dag`, `nuclei` on the CPU (each nucleus's charge and position, in atom order, into two pinned rows, `n` and `3 n` doubles) and `nuclei upload` on the stream (both copied into device rows), and `NucleiRows`, `n_nuc` and those two device rows, which a reader declares with `NucleiRows::read` and hands its launch wrapper as an `fb_nuclei_view` of their pointers. A crate beside `fb_molecule`, so that one links nothing. Every size is the molecule's, at planning; the plan text for H2O and CO is the committed golden `molecule/nuclei/tests/golden/plan_*.txt` |
+| `fb_integrals_one_electron_potential_en` | `src/integrals/one_electron/potential_en`'s `nuclear_attraction` / `add_nuclear_attraction` and its bridge's `potential_en_class` | `potential_en_classes`, the safe layer over `fb_potential_en_class`: every class's launch on one stream into a Cartesian matrix the caller zeroed, the wrapper's `fb_nuclei_view` formed from `fb_molecule_nuclei`'s `NucleiRows`, the launcher's requirements as `debug_requires`, callable by a task that launches several families into one matrix (after `kinetic_classes`, for T + V). `add_nuclear_attraction`: V of a `BasisSet` over the nuclei's rows as tasks after the records, `potential en` on the stream (the Cartesian matrix zeroed, then `potential_en_classes`, reading `ClassRows` and `NucleiRows` as edges), then `fb_recipes_matrix_ao`'s spherical transform, U's slot passed in; nuclei with no nucleus refused at planning as `InvalidConfig`, adding nothing. The plan text for each of the overlap's fixtures is the committed golden `integrals/one_electron/potential_en/tests/golden/plan_*.txt` |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -100,7 +101,9 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `recipes/matrix_ao` and what they stand on; `pipeline/guess` on `sad`,
 `io/sad`, `io/npy`, `basis`, `atom`, `planner`, `arena`, `thread_pool`,
 `wwr` and `error_handling`; and `molecule/nuclei` on `molecule`,
-`planner`, `arena`, `thread_pool`, `wwr` and `error_handling`.
+`planner`, `arena`, `thread_pool`, `wwr` and `error_handling`; and
+`integrals/one_electron/potential_en` on `integrals/mmd`,
+`molecule/nuclei`, `recipes/matrix_ao` and what they stand on.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -335,6 +338,16 @@ fixtures, run once and compared with PySCF's T at `max |T - T_ref| <=
 references are committed in `integrals/one_electron/kinetic/tests/data/`
 with the script that writes them, the overlap's with `int1e_kin`, and the
 same conventions.
+
+The nuclear attraction on a card is
+`integrals/one_electron/potential_en/tests/potential_en.rs`: the
+overlap's three fixtures, the nuclei uploaded by `fb_molecule_nuclei`, run
+once and compared with PySCF's V (`int1e_nuc`, point nuclei) at `max |V -
+V_ref| <= 1e-12 * max |V_ref|`, the C++ test's bar, two decades above the
+rounding of the sums over primitives and nuclei, the Boys evaluation and
+the two GEMMs. Its references are committed in
+`integrals/one_electron/potential_en/tests/data/` with the script that
+writes them, the overlap's with `int1e_nuc`, and the same conventions.
 
 `doc_check/tests/section_citations.rs` checks that every section the
 README, `docs/` and every member's Rust sources cite by name is a heading of
@@ -750,3 +763,15 @@ tables' and a host wait for every CPU task's GPU predecessor. Clippy (`-D
 warnings`, the two crates with their tests and device features too),
 rustdoc (`-D warnings`) and `cargo fmt --check` are clean. Not run on the
 RTX 3080.
+
+2026-11-14, `integrals/one_electron/potential_en` (V as tasks over the
+nuclei's rows, and the safe layer over `fb_potential_en_class`), on the RTX
+3080 (CUDA), holding the card, linking the libraries the `default` preset
+built: `devtools/test.py pr --only cargo --all` passes, tier 3 195 tests,
+none in the new crate, tier 4 110, the 3 new its plan goldens, its refusal
+of nuclei with no nucleus at planning (`InvalidConfig`, nothing added) and
+its PySCF comparison. Against PySCF's V, `max |V - V_ref|` is `4.8e-14`
+(H2O/STO-3G), `8.8e-14` (H2O/cc-pVDZ) and `3.7e-13` (CO/cc-pVTZ), the bar
+`1e-12 * max |V_ref|` about `6.2e-11`, `6.2e-11` and `6.4e-11`. Clippy (`-D
+warnings`, the new crate with its tests too), rustdoc (`-D warnings`) and
+`cargo fmt --check` are clean. Not run on the gfx1200.
