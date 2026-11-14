@@ -391,6 +391,8 @@ def test_push_by_hand_without_a_base_exits_2(
 # --no-default-features, `test` is tier 4: fb-core-wwr's one device case is
 # ignored unless --include-ignored.
 # `clippy` exits FAKE_CARGO_CLIPPY_RC, printing a lint error when non-zero.
+# A `test` recorded (--message-format=json-render-diagnostics) prints each
+# executable's compiler-artifact message first, and tier 3 then its cases.
 _FAKE_CARGO = """
 import json, os, sys
 args = sys.argv[1:]
@@ -407,6 +409,11 @@ if args[0] == "test":
     with open(os.environ["FAKE_CARGO_LOG"] + ".fast", "a") as f:
         f.write(os.environ.get("FREE_BREAKFAST_FAST_TESTS", "unset") + "\\n")
 ws = "/ws/rust"
+record = "--message-format=json-render-diagnostics" in args
+def artifact(exe, pkg):
+    if record:
+        print(json.dumps({"reason": "compiler-artifact", "executable": exe,
+                          "package_id": "path+file://" + ws + "/core/" + pkg}))
 if args[0] == "metadata":
     print(json.dumps({
         "packages": [
@@ -437,6 +444,7 @@ elif args[0] == "tree":
     if name == "fb-core-wwr":
         print("wwr-sys v1.0.0 (/x)")
 elif args[0] == "test" and "--no-default-features" not in args:
+    artifact("/t/deps/fb_core_wwr-0123abcd", "wwr#fb-core-wwr@0.1.0")
     print("     Running unittests src/lib.rs (/t/deps/fb_core_wwr-0123abcd)")
     print("test status::tests::names ... ok")
     if "--include-ignored" in args:
@@ -447,11 +455,20 @@ elif args[0] == "test" and "--no-default-features" not in args:
         print("test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured")
     sys.exit(int(os.environ.get("FAKE_CARGO_TIER4_RC", "0")))
 elif args[0] == "test":
+    artifact("/t/deps/fb_core_log-0123abcd", "log#fb-core-log@0.1.0")
+    artifact("/t/deps/empty-89abcdef", "log#fb-core-log@0.1.0")
     print("     Running unittests src/lib.rs (/t/deps/fb_core_log-0123abcd)")
+    if record:
+        for case in ("a", "b", "c"):
+            print(f"test tests::{case} ... ok")
+        print("test tests::slow ... ignored")
     print("test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out")
     print("     Running tests/empty.rs (/t/deps/empty-89abcdef)")
     print("test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out")
     print("   Doc-tests fb_core_log")
+    if record:
+        print("test core/log/src/lib.rs - Log (line 3) ... ok")
+        print("test core/log/src/lib.rs - Log (line 9) ... ok")
     print("test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out")
     sys.exit(int(os.environ.get("FAKE_CARGO_TEST_RC", "0")))
 """
@@ -933,20 +950,47 @@ def test_nightly_cargo_runs_the_slow_cases_in_both_tiers(
     Path(f"{fake_cargo}.fast").write_text("")
     capsys.readouterr()
     log = tmp_path / "night.log"
-    rc, counts = gates.nightly_cargo(
-        "nightly", {"GPU_HIP_PRESETS": "hip"}, "hip", "4", log
-    )
-    assert rc == 0
+    night = gates.nightly_cargo("nightly", {"GPU_HIP_PRESETS": "hip"}, "hip", "4", log)
+    assert night.rc == 0
     # Tier 3's 5 passed and 1 ignored, then tier 4's 2 passed.
-    assert counts == [7, 0, 1]
+    assert night.counts == [7, 0, 1]
+    assert night.skips == []
     assert Path(f"{fake_cargo}.fast").read_text() == "unset\nunset\n"
     calls = fake_cargo.read_text().splitlines()
     tests = [c for c in calls if c.startswith("test")]
+    # Each recorded, so its cases reach the night's record.
     assert tests == [
-        "test --locked -j 4 --no-default-features -p fb-core-log",
+        "test --locked -j 4 --no-default-features"
+        " --message-format=json-render-diagnostics -p fb-core-log",
         # Every crate's tier 4, as `pr --all`.
-        "test --locked -j 4 -p fb-core-wwr -- --test-threads=1 --include-ignored",
+        "test --locked -j 4 --message-format=json-render-diagnostics"
+        " -p fb-core-wwr -- --test-threads=1 --include-ignored",
     ]
+    by_name = {c["name"]: (c["binary"], c["status"]) for c in night.cases}
+    assert by_name == {
+        "fb-core-log src/lib.rs::tests::a": ("cargo fb-core-log src/lib.rs", "pass"),
+        "fb-core-log src/lib.rs::tests::b": ("cargo fb-core-log src/lib.rs", "pass"),
+        "fb-core-log src/lib.rs::tests::c": ("cargo fb-core-log src/lib.rs", "pass"),
+        "fb-core-log src/lib.rs::tests::slow": ("cargo fb-core-log src/lib.rs", "skip"),
+        "fb_core_log doc-tests::core/log/src/lib.rs - Log (line 3)": (
+            "cargo fb_core_log doc-tests",
+            "pass",
+        ),
+        "fb_core_log doc-tests::core/log/src/lib.rs - Log (line 9)": (
+            "cargo fb_core_log doc-tests",
+            "pass",
+        ),
+        "fb-core-wwr src/lib.rs::status::tests::names": (
+            "cargo fb-core-wwr src/lib.rs",
+            "pass",
+        ),
+        "fb-core-wwr src/lib.rs::runtime::stream::tests::syncs": (
+            "cargo fb-core-wwr src/lib.rs",
+            "pass",
+        ),
+    }
+    # libtest times no case: no number a timing series could misread.
+    assert all(c["seconds"] is None for c in night.cases)
     assert "clippy --locked -j 4 --all-targets -p fb-core-wwr -- -D warnings" in calls
     out = capsys.readouterr().out
     assert out.count("slow cases run (no FREE_BREAKFAST_FAST_TESTS)") == 2
@@ -966,8 +1010,58 @@ def test_a_failing_nightly_cargo_tier3_runs_no_tier4(
     monkeypatch.setattr(
         gates, "cargo_tier4", lambda *_a, **_k: pytest.fail("tier 4 ran")
     )
-    rc, _ = gates.nightly_cargo("nightly", {}, "hip", "4", tmp_path / "n.log")
-    assert rc == 101
+    night = gates.nightly_cargo("nightly", {}, "hip", "4", tmp_path / "n.log")
+    assert night.rc == 101
+
+
+def test_nightly_cargo_names_the_tier4_cases_that_did_not_run(
+    fake_cargo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # No device: tier 4's one device case is reported ignored.
+    _tier4(monkeypatch, tmp_path, devices=0)
+    monkeypatch.setattr(
+        gates, "device_probe", lambda _build: (0, "no device visible: why")
+    )
+    capsys.readouterr()
+    log = tmp_path / "night.log"
+    night = gates.nightly_cargo("nightly", {"GPU_HIP_PRESETS": "hip"}, "hip", "4", log)
+    assert night.rc == 0
+    skipped = (
+        "fb_core_wwr unittests src/lib.rs: runtime::stream::tests::syncs"
+        " -- tier 4: needs a GPU"
+    )
+    assert night.skips == [skipped]
+    syncs = "fb-core-wwr src/lib.rs::runtime::stream::tests::syncs"
+    assert {c["name"]: c["status"] for c in night.cases}[syncs] == "skip"
+    # The summary line's fields, and the list printed beside it.
+    capsys.readouterr()
+    fields = gates.cargo_summary(night, "nightly", log)
+    assert fields == "  cargo=6/0/2  cargo-skipped=1"
+    out = capsys.readouterr().out
+    assert "nightly: cargo tier 4 skipped: 1 case(s)" in out
+    assert f"nightly:   skipped {skipped}" in out
+    assert f"nightly:   skipped {skipped}" in log.read_text()
+
+
+def test_a_night_with_every_tier4_case_run_says_none_skipped(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    night = gates.CargoNight(0, [7, 0, 1], [], [])
+    assert gates.cargo_summary(night, "nightly", tmp_path / "n.log") == (
+        "  cargo=7/0/1  cargo-skipped=0"
+    )
+    assert "nightly: cargo tier 4 skipped: none" in capsys.readouterr().out
+
+
+def test_cargo_package_reads_every_package_id_spelling() -> None:
+    assert gates.cargo_package("path+file:///ws/rust/core/log#fb-core-log@0.1.0") == (
+        "fb-core-log"
+    )
+    assert gates.cargo_package("path+file:///ws/rust/fb-sad#0.1.0") == "fb-sad"
+    assert gates.cargo_package("fb-sad 0.1.0 (path+file:///ws/rust/sad)") == "fb-sad"
 
 
 def test_nightly_dry_run_lists_a_cargo_half_without_the_fast_switch(
@@ -991,6 +1085,7 @@ def test_testing_md_the_nightly_names_the_cargo_half() -> None:
     assert "cargo half" in night
     assert "nightly --dry-run`" in night
     assert "`cargo=`" in night
+    assert "`cargo-skipped=`" in night
 
 
 # --- the GPU batch split -----------------------------------------------------
