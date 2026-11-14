@@ -9,7 +9,7 @@ workspace is that rebuild. Its tree mirrors `src/`, one crate per module:
 
 ## What it depends on
 
-Outside `rust/`, the tree reads six things, and nothing under `src/`:
+Outside `rust/`, the tree reads seven things, and nothing under `src/`:
 
 - **`deps/WarpWraps`**: `wwr-sys`, its C ABI crate, and the sources
   `CMakeLists.txt` here builds `libwwr_capi_runtime_api.so` from.
@@ -17,6 +17,8 @@ Outside `rust/`, the tree reads six things, and nothing under `src/`:
   emitted kernel unit includes.
 - **`data/basis/`**: the BSE JSON `fb-io-basis` compiles in, and whose
   cc-pVDZ document `fb-pipeline-guess`'s tests also read by path.
+- **`data/aux_basis/`**: the density-fitting sets, BSE JSON too, that
+  `fb-io-basis` compiles in as a table of their own.
 - **`tools/emit/`**: the FelizJueves generators, run by hand with
   `--out-root` to emit the kernel units `integrals/kernels/` carries ("Build
   and test").
@@ -68,7 +70,7 @@ tree, not inputs to its build.
 | `fb_device_check` | nothing: a check on the kernel libraries | Tier-3 tests: no launch wrapper under `rust/` allocates, synchronizes, touches an event, copies, sets the device or opens a profiler range (a grep of every `.cu`), every `-sys` crate's committed bindings are what the script generates now, no header the bindings read names a block, grid or warp, and every emitted unit equals its C++ twin byte for byte |
 | `fb_kernel_abi` | nothing: what the kernel libraries share above their `-sys` crates | `check`, the load check's comparison: a library's ABI version and `fb_backend` against what its `-sys` crate expects, a mismatch of either refused naming both values. Each `-sys` crate's `check_library()` calls it. And `launch_status`, the one conversion of a launch wrapper's `fb_launch_status` to a `Status` (`docs/gpu_layer.md`, "Statuses"): a refusal as `Unsupported` or `InvalidConfig`, a positive `wwr_status` handed to the caller's `gpu_status_at`, any other value `GpuRuntime`, each naming the wrapper and the status. Every safe layer calls it (`fb_integrals_mmd::launch` for the integrals' class wrappers). It links nothing, so its tests are tier 3 |
 | `fb_io_xyz` | `src/io/xyz` | `parse_xyz` / `read_xyz`: a standard XYZ geometry into a `Molecule`, Angstrom to bohr by `BOHR_PER_ANGSTROM`, every refusal (too short, a bad count, a malformed line, an unknown symbol, a count the lines disagree with, a file that cannot be read) an `Io` error. A field must parse as a whole token, where the C++'s `operator>>` reads a prefix |
-| `fb_io_basis` | `src/io/basis`, its orbital sets | `parse_basis` / `read_basis`: a BSE JSON document into a `BasisStamp` (sp blocks and general contractions split, spherical shells only: one Cartesian or ambiguous shell refuses the document), over [`serde_json`](https://crates.io/crates/serde_json); `is_builtin_basis` and `resolve_basis`, a name (spelling folded) or else a path, over the eleven sets of `data/basis/` compiled in with `include_str!`, only that branch naming the stamp. The fitting sets of `data/aux_basis/` are not ported yet |
+| `fb_io_basis` | `src/io/basis` | `parse_basis` / `read_basis`: a BSE JSON document into a `BasisStamp` (sp blocks and general contractions split, spherical shells only: one Cartesian or ambiguous shell refuses the document), over [`serde_json`](https://crates.io/crates/serde_json); `is_builtin_basis` and `resolve_basis`, a name (spelling folded) or else a path, over the eleven sets of `data/basis/` compiled in with `include_str!`, only that branch naming the stamp; `is_builtin_aux_basis` and `resolve_aux_basis`, the same over the thirteen density-fitting sets of `data/aux_basis/`, a table of its own disjoint from the orbital one (about 16 MB, compiled in for the reason the orbital sets are: nothing is installed, so a name cannot be misplaced) |
 | `fb_integrals_mmd` | `src/integrals/mmd`'s `primitive_pair_classes` | `add_records`: the kernel library's load check (`check_library()`, a mismatch the planning's `GpuRuntime` error), then the records of a `BasisSet`, built once per plan and passed to every one-electron reader: the shell table and each class's shell pairs with their record prefixes formed on the host, a `fb_integrals_sys::RecordTables`, and handed to `fb_integrals_sys::add_record_tasks`, which adds `mmd tables` and `mmd records` and returns each class's `ClassRows`. No `unsafe` (`#![forbid(unsafe_code)]`). Every size is the basis's, at planning; the plan text for H2O/cc-pVDZ and CO/cc-pVTZ is the committed golden `integrals/mmd/tests/golden/plan_*.txt`. The mixed classes are not ported yet |
 | `fb_integrals_one_electron_overlap` | `src/integrals/one_electron/overlap`'s `overlap`, and the Overlap step's spherical transform (`MatrixAOPair::cartesian_to_spherical`) | The first whole run through the model. `add_overlap`: S of a `BasisSet` as tasks after the records, their `ClassRows` passed in, `overlap` on the stream (the Cartesian matrix zeroed, one `fb_integrals_sys::overlap_class` per class, reading `ClassRows` as an edge), then `fb_recipes_matrix_ao`'s spherical transform, U's slot passed in so a plan stages U once. `Run`: an XYZ file and a basis name planned once (the records and their load check, through `add_records`, among it), laid out in one arena per kind, run on one stream, returning S and the timing record. No `unsafe` (`#![forbid(unsafe_code)]`). The plan text for each fixture is the committed golden `integrals/one_electron/overlap/tests/golden/plan_*.txt` |
 | `fb_sad` | `src/sad`, its serial form | `sad_density`, the SAD guess: one spherically averaged, fractionally occupied atomic RHF per distinct (Z, shells) over closed-form one-center integrals, each density placed on its atoms' diagonal blocks, and `SadStampLookup`, the baked block that skips an element's SCF (checked by size). Every loop in the C++ order, so its stamps compare bitwise with the C++ generator's. `distinct_stamps` and `stamp_density` are public for the task form, which is `fb_pipeline_guess`'s |
@@ -550,7 +552,7 @@ config, in waves:
 | 3 | #1415 the core-Hamiltonian orbitals; #1422 the SAD guess from a config, through the binary, done |
 
 What follows is the DF-RHF energy from that guess: the auxiliary sets
-(#1384), the density-fitting kernels, the Cholesky factor, DIIS, and the
+(#1384, done), the density-fitting kernels, the Cholesky factor, DIIS, and the
 SCF's sub-DAG, replayed each iteration, over the guess and the orbitals
 step.
 
@@ -1051,3 +1053,14 @@ destination the source's bits and the rest untouched; the padding untouched
 throughout; a short slice a panic; and the wrappers' refusals, raw.
 `devtools/cross-backend-check.sh --device-only` compiles the fork for CUDA.
 Not run on a CUDA card.
+
+2026-11-14, `io/basis`'s fitting sets (`is_builtin_aux_basis`,
+`resolve_aux_basis`, the thirteen documents of `data/aux_basis/` compiled
+in), on the RTX 3080 (CUDA), the `default` preset: `devtools/test.py pr
+--only cargo --all` passes, tier 3 544 tests, `fb-io-basis` 29 unit tests
+(14 new: `test/io/basis_host.cpp`'s ten `IoBasisAux` cases,
+`test/gtest/io_basis_gpu.cpp`'s two, which need no device here, every
+fitting set resolved by name, and the table checked against
+`data/aux_basis/`) and 2 doctests; tier 4 191, none skipped. Clippy (`-D
+warnings`), rustdoc (`-D warnings`) and `cargo fmt --check` are clean. Not
+run on the gfx1200; the crate touches no device.
