@@ -20,9 +20,13 @@
 //! | `NucleiView` (`src/molecule`) | [`fb_nuclei_view`], `#[repr(C)]`, by pointer |
 //! | `potential_en_class(stream, cls, nuclei, n_ao, v)` | [`fb_potential_en_class`]`(stream, cls, nuclei, n_ao, v)`, the nuclei by pointer |
 //! | `kPairBoundMaxMomentum`, `kRecordBoundMaxMomentum`, the overlap, kinetic and nuclear-attraction launchers' `kMaxL` | [`FB_PAIR_BOUND_MAX_MOMENTUM`], [`FB_RECORD_BOUND_MAX_MOMENTUM`], [`FB_OVERLAP_MAX_MOMENTUM`], [`FB_KINETIC_MAX_MOMENTUM`], [`FB_POTENTIAL_EN_MAX_MOMENTUM`] |
+//! | `metric_class` (`src/integrals/eri/density_fitting/metric`) | [`fb_metric_class`], the records and pairs as field segments, as there |
+//! | `three_center_class`, `three_center_symmetrize` (`.../three_center`) | [`fb_three_center_class`], [`fb_three_center_symmetrize`]`(stream, n_ao, n_aux, input, output)`, overlapping arrays refused |
+//! | `kMetricMaxMomentum`, `kThreeCenterMaxMomentum`, `kThreeCenterAuxMaxMomentum` | [`FB_METRIC_MAX_MOMENTUM`], [`FB_THREE_CENTER_MAX_MOMENTUM`], [`FB_THREE_CENTER_AUX_MAX_MOMENTUM`] |
+//! | `kMetricRecordFields`, `kMetricPairFields`, `kThreeCenterBraFields`, `kThreeCenterAuxFields`, `kThreeCenterCellFields` | [`FB_METRIC_RECORD_FIELDS`], [`FB_METRIC_PAIR_FIELDS`], [`FB_THREE_CENTER_BRA_FIELDS`], [`FB_THREE_CENTER_AUX_FIELDS`], [`FB_THREE_CENTER_CELL_FIELDS`], for a safe layer to size its segments by |
 //! | `wwrErrorInvalidValue` for a refusal | [`FB_LAUNCH_INVALID_ARGUMENT`] (a count, a null pointer, a short workspace) or [`FB_LAUNCH_UNSUPPORTED`] (no kernel for the class) |
 //! | nothing: the C++ tree compiles its kernels into the binary | [`check_library`], the library's [`fb_integrals_abi_version`] and [`fb_integrals_backend`] against the bindings' |
-//! | the other one-electron families (the dipole, the mixed overlap, the derivatives), J, K and the rest | not forked yet |
+//! | the other one-electron families (the dipole, the mixed overlap, the derivatives), J, K, density fitting past the metric and (mn\|P), and the rest | not forked yet |
 //!
 //! **The safe layer.** What a caller uses (`docs/gpu_layer.md`, "The safe
 //! wrapper"), beside the generated bindings rather than in a crate of its
@@ -39,6 +43,10 @@
 //!   [`DeviceSliceMut`](fb_core_wwr::device_slice::DeviceSliceMut) whose
 //!   length is asserted in every build, the status a `Status` through
 //!   [`fb_kernel_abi::launch_status`].
+//!
+//! The density-fitting wrappers ([`fb_metric_class`],
+//! [`fb_three_center_class`], [`fb_three_center_symmetrize`]) have no safe
+//! call yet: the raw bindings alone, for the crate that ports the module.
 //!
 //! A class kernel writes at AO offsets held in device memory, so
 //! [`ClassRows`] is a type only [`add_record_tasks`] makes; its doc comment
