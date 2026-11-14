@@ -3,9 +3,7 @@
 // backends -- nvcc under CUDA, clang -x hip under HIP.
 //
 // Forked from src/recipes/symmetrize/symmetrize.cu: the two tile kernels are
-// unchanged but for two names the trimmed device headers do not carry (kHalf
-// is 0.5 here, and the block's thread count is checked against 1024, every
-// vendor's limit, rather than kMaxThreads). The launchers are rewritten as
+// unchanged. The launchers are rewritten as
 // symmetrize.h's extern "C", enqueue-only launch wrappers
 // (rust/docs/gpu_layer.md, "From bridge to C ABI"): the C++ module's argument
 // checks move into them as refusals, lda is the module's int32_t, widened
@@ -16,6 +14,7 @@
 // wwr headers below: under HIP the vendor runtime header they pull in must not
 // precede libc++ (primitives.h has why).
 #include "block_params.h"
+#include "constants.h"
 #include "primitives.h"
 
 #include "symmetrize/symmetrize.h"
@@ -44,14 +43,14 @@ namespace {
 constexpr int32_t kTile = 32;
 constexpr int32_t kTileRows = 8;
 static_assert((kTile * kTileRows) % kWarpSize == 0, "a block must be whole warps");
-static_assert(kTile * kTileRows <= 1024, "a block within every vendor's thread limit");
+static_assert(kTile * kTileRows <= kMaxThreads);
 
 // Block (bi, bj) of a T x T grid of tiles owns lower tile (bi, bj) and, off
 // the diagonal, its mirror (bj, bi); the blocks above the diagonal leave at
 // once. `lower[c][r]` is element (i0 + r, j0 + c), so a thread's x is a row
 // and a warp's loads and stores run down a column.
 //
-// (a + b) * 0.5 is the same bits as (b + a) * 0.5: IEEE addition is
+// (a + b) * kHalf is the same bits as (b + a) * kHalf: IEEE addition is
 // commutative, and a sum times a constant has no product to contract into an
 // FMA. So the two threads that write (i, j) and (j, i), adding the same pair
 // in opposite orders, write the same value.
@@ -83,15 +82,15 @@ __global__ void symmetrize_kernel(const int32_t n, double *__restrict__ a, const
   for (auto c = static_cast<int32_t>(threadIdx.y); c < kTile; c += kTileRows) {
     if (diagonal) {
       if (i0 + r < n && j0 + c < n) {
-        a[(i0 + r) + ((j0 + c) * lda)] = (lower[c][r] + lower[r][c]) * 0.5;
+        a[(i0 + r) + ((j0 + c) * lda)] = (lower[c][r] + lower[r][c]) * kHalf<double>;
       }
       continue;
     }
     if (i0 + r < n && j0 + c < n) {
-      a[(i0 + r) + ((j0 + c) * lda)] = (lower[c][r] + upper[r][c]) * 0.5;
+      a[(i0 + r) + ((j0 + c) * lda)] = (lower[c][r] + upper[r][c]) * kHalf<double>;
     }
     if (j0 + r < n && i0 + c < n) {
-      a[(j0 + r) + ((i0 + c) * lda)] = (upper[c][r] + lower[r][c]) * 0.5;
+      a[(j0 + r) + ((i0 + c) * lda)] = (upper[c][r] + lower[r][c]) * kHalf<double>;
     }
   }
 }
