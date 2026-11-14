@@ -24,7 +24,8 @@ push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   where only some are, the least-loaded live card among those, so a worktree
   whose `pr` gate built one backend never cold-builds the other on push.
   --all runs every fast case of the GPU binaries, the old smoke.
-  --dry-run prints the changed files and which halves would run.
+  --dry-run prints the changed files, which halves would run, and the
+  crates the cargo half's tier 4 would test.
   Cargo: tiers 1 to 3 of the Rust rebuild, `cargo test --no-default-features`
   in debug over the workspace members that build without any native library
   (found from `cargo tree`, not named), then `cargo doc` with warnings
@@ -1150,10 +1151,12 @@ TEST_IGNORED = re.compile(r"^test (.+?) \.\.\. ignored(?:, (.*))?$")
 # every kernel library's -sys crate (a member that declares `links`), since
 # one kernel library links another (libfb_integrals_kernels.so links the
 # recipes'); rust/docs/ is read by fb-doc-check
-# alone, and devtools/rust-bindings.py by fb-device-check. Any other file
-# outside every crate affects the whole workspace.
+# alone, rust/examples/ by fb-pipeline-config (whose tests run them through
+# the binary), and devtools/rust-bindings.py by fb-device-check. Any other
+# file outside every crate affects the whole workspace.
 KERNELS_PATH = re.compile(r"^rust/[^/]+/kernels/")
 DOC_PATHS = re.compile(r"^rust/docs/|^rust/README\.md$")
+EXAMPLES_PATH = re.compile(r"^rust/examples/")
 # The C ABI library, relative to rust/'s CMake build directory (capi_dir.rs).
 CAPI_LIB = "deps/WarpWraps/src/capi/libwwr_capi_runtime_api.so"
 # Run in a child, so the gate itself never opens the runtime: the status and
@@ -1197,6 +1200,8 @@ def affected_crates(files: list[str] | None, meta: dict) -> set[str]:
             f = "rust/device_check/"
         elif DOC_PATHS.match(f):
             f = "rust/doc_check/"
+        elif EXAMPLES_PATH.match(f):
+            f = "rust/pipeline/config/"
         owner = max((d for d in dirs if f.startswith(d)), key=len, default=None)
         if owner is None:
             return every
@@ -1213,6 +1218,14 @@ def affected_crates(files: list[str] | None, meta: dict) -> set[str]:
                 hit.add(user)
                 todo.append(user)
     return hit
+
+
+def tier4_crates(files: list[str] | None) -> list[str]:
+    """The crates tier 4 runs for a diff: the affected crates
+    (affected_crates) that link the library, sorted. Raises CargoError,
+    ValueError or KeyError when the workspace graph cannot be read."""
+    meta = json.loads(cargo_query("metadata", "--format-version", "1"))
+    return sorted(affected_crates(files, meta) - set(link_free_crates()[1]))
 
 
 def device_probe(build: Path) -> tuple[int, str]:
@@ -1277,12 +1290,10 @@ def cargo_tier4(
         say(f"{tag}: skipping tier 4 of the cargo half (no library to link)")
         return 0
     try:
-        meta = json.loads(cargo_query("metadata", "--format-version", "1"))
-        free = set(link_free_crates()[1])
+        crates = tier4_crates(files)
     except (CargoError, ValueError, KeyError) as e:
         say(f"{tag}: tier 4: cannot read the workspace graph: {e}", err=True)
         return 1
-    crates = sorted(affected_crates(files, meta) - free)
     if not crates:
         say(f"{tag}: tier 4: no affected crate links the library -- nothing to run")
         return 0
@@ -1671,6 +1682,13 @@ def cmd_push(args: argparse.Namespace, cfg: dict[str, str]) -> int:
     if args.dry_run:
         for f in files or []:
             say(f"push:   {f}")
+        if cargo:
+            try:
+                crates = tier4_crates(files)
+            except (CargoError, OSError, ValueError, KeyError) as e:
+                say(f"push: tier 4: cannot read the workspace graph: {e}")
+            else:
+                say(f"push: tier 4 crate(s): {' '.join(crates) or 'none'}")
         return 0
     failed = []
     rc = 0
