@@ -11,10 +11,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2h};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2h};
 use fb_core_error_handling::{Result, Status};
-use fb_core_planner::{Dag, Planned, Task};
-use fb_core_thread_pool::{DeviceStream, Lane, Record};
+use fb_core_planner::{CpuTask, Dag, GpuTask, Planned};
+use fb_core_thread_pool::{DeviceStream, Record};
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_integrals_one_electron_overlap::add_overlap;
@@ -109,9 +109,9 @@ impl CoreRun {
             ORTHOGONALIZE_EIGENVALUE_FLOOR,
         )?;
         let (eps, c) = add_solve_fock(&mut dag, 0, n_ao, lwork, h, x);
-        let pinned = dag.add("download", 0, Download { eps, c, n: n_ao });
+        let pinned = dag.add_gpu("download", 0, Download { eps, c, n: n_ao });
         let out = Arc::new(Mutex::new((Vec::new(), Vec::new())));
-        dag.add(
+        dag.add_cpu(
             "collect",
             0,
             Collect {
@@ -168,9 +168,8 @@ struct HostRows {
     c: RowId<Pinned, f64>,
 }
 
-impl Task for Download {
+impl GpuTask for Download {
     type Rows = HostRows;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> HostRows {
         device.read(self.eps);
@@ -185,12 +184,9 @@ impl Task for Download {
         &self,
         pinned: &HostRows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         for (src, dst) in [(self.eps, pinned.eps), (self.c, pinned.c)] {
             memcpy_d2p(host, dst, device.get(src), stream)?;
         }
@@ -205,22 +201,15 @@ struct Collect {
     out: Arc<Mutex<(Vec<f64>, Vec<f64>)>>,
 }
 
-impl Task for Collect {
+impl CpuTask for Collect {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) {
         host.read(self.pinned.eps);
         host.read(self.pinned.c);
     }
 
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
         *self.out.lock().unwrap_or_else(|e| e.into_inner()) = (
             memcpy_p2h(host, self.pinned.eps),
             memcpy_p2h(host, self.pinned.c),

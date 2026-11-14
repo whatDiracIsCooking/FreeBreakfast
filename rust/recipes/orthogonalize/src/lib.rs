@@ -40,10 +40,10 @@
 
 #![forbid(unsafe_code)]
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2d};
 use fb_core_error_handling::{Error, Result, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_recipes_blas::{T, gmmwich};
 use fb_recipes_diagonalize::add_diagonalize;
 use fb_recipes_sys::inverse_sqrt;
@@ -93,7 +93,7 @@ pub fn add_orthogonalize(
     }
     let (u, w) = add_diagonalize(dag, worker, name, n, lwork, s);
     Ok(dag
-        .add(
+        .add_gpu(
             "inverse root",
             worker,
             InverseRoot {
@@ -125,9 +125,8 @@ struct InverseRootRows {
     x: RowId<Device, f64>,
 }
 
-impl Task for InverseRoot {
+impl GpuTask for InverseRoot {
     type Rows = InverseRootRows;
-    const GPU: bool = true;
 
     fn layout(
         &self,
@@ -151,15 +150,12 @@ impl Task for InverseRoot {
         &self,
         rows: &InverseRootRows,
         device: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let mut lambda = device.take_mut(rows.lambda);
         memcpy_d2d(&lambda, device.get(self.w), worker)?;
-        inverse_sqrt(worker, self.n, &mut lambda, self.floor)?;
+        inverse_sqrt(worker, self.n, &mut lambda, self.floor, None)?;
         // add_diagonalize checked that n² fits an i32, so n does too.
         let n = self.n as i32;
 

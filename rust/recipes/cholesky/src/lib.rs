@@ -66,10 +66,12 @@
 #![forbid(unsafe_code)]
 
 use contracts::debug_requires;
-use fb_core_arena::{Bufs, Device, HostKind, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p};
+use fb_core_arena::{
+    Bufs, CopyOnly, Device, HostKind, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p,
+};
 use fb_core_error_handling::{Error, Result, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::{syrk, trsm};
 use fb_core_wwr::device_slice::split_at_mut;
 use fb_core_wwr::memset;
@@ -110,7 +112,7 @@ pub const CHOLESKY_BLOCK: usize = FB_CHOLESKY_TILE as usize;
 ///
 /// # Panics
 /// If `n` does not fit an `i32`, the BLAS's integer, or `a` is a row of
-/// another worker's table ([`Dag::add`]).
+/// another worker's table ([`Dag::add_gpu`]).
 #[debug_requires(n > 0, "a matrix of at least one row")]
 #[track_caller]
 pub fn add_cholesky(
@@ -129,7 +131,7 @@ pub fn add_cholesky(
     if let Err(e) = fb_recipes_sys::check_library() {
         return Err(Error::gpu(e));
     }
-    let rows = dag.add(
+    let rows = dag.add_gpu(
         "cholesky",
         worker,
         Factor {
@@ -138,7 +140,7 @@ pub fn add_cholesky(
             name: name.to_owned(),
         },
     );
-    let checked = dag.add(
+    let checked = dag.add_cpu(
         "cholesky check",
         worker,
         Check {
@@ -166,9 +168,8 @@ struct FactorRows {
     info: RowId<Pinned, i32>,
 }
 
-impl Task for Factor {
+impl GpuTask for Factor {
     type Rows = FactorRows;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> FactorRows {
         device.read(self.a);
@@ -189,12 +190,9 @@ impl Task for Factor {
         &self,
         rows: &FactorRows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let n = self.n;
         let mut l = device.take_mut(rows.l);
         memcpy_d2d(&l, device.get(self.a), worker)?;
@@ -263,22 +261,15 @@ struct Check<H: HostKind> {
     name: String,
 }
 
-impl<H: HostKind, S> Task<H, S> for Check<H> {
+impl<H: HostKind> CpuTask<H> for Check<H> {
     type Rows = RowId<H, i32>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, H>) -> RowId<H, i32> {
+    fn layout(&self, host: &mut Layout<'_, H>) -> RowId<H, i32> {
         host.read(self.info);
         host.output(&format!("{} checked", self.name), 1)
     }
 
-    fn run(
-        &self,
-        checked: &RowId<H, i32>,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, H>,
-        _: Lane<'_, S>,
-    ) -> Status {
+    fn run(&self, checked: &RowId<H, i32>, host: &Bufs<'_, H>) -> Status {
         // The kernel writes only first + k + 1, so the flag is 0 or a
         // positive 1-based minor.
         match host.get(self.info)[0] {
@@ -304,21 +295,14 @@ mod tests {
     /// CPU: a fixture's flag written into a host row.
     struct Flag(i32);
 
-    impl Task<Heap, ()> for Flag {
+    impl CpuTask<Heap> for Flag {
         type Rows = RowId<Heap, i32>;
-        const GPU: bool = false;
 
-        fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Heap>) -> Self::Rows {
+        fn layout(&self, host: &mut Layout<'_, Heap>) -> Self::Rows {
             host.output("info", 1)
         }
 
-        fn run(
-            &self,
-            info: &Self::Rows,
-            _: &Bufs<'_, Device>,
-            host: &Bufs<'_, Heap>,
-            _: Lane<'_, ()>,
-        ) -> Status {
+        fn run(&self, info: &Self::Rows, host: &Bufs<'_, Heap>) -> Status {
             host.take_mut(*info)[0] = self.0;
             Ok(())
         }
@@ -330,21 +314,14 @@ mod tests {
         seen: Arc<Mutex<Option<i32>>>,
     }
 
-    impl Task<Heap, ()> for Reader {
+    impl CpuTask<Heap> for Reader {
         type Rows = ();
-        const GPU: bool = false;
 
-        fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Heap>) {
+        fn layout(&self, host: &mut Layout<'_, Heap>) {
             host.read(self.checked);
         }
 
-        fn run(
-            &self,
-            _: &(),
-            _: &Bufs<'_, Device>,
-            host: &Bufs<'_, Heap>,
-            _: Lane<'_, ()>,
-        ) -> Status {
+        fn run(&self, _: &(), host: &Bufs<'_, Heap>) -> Status {
             *self.seen.lock().unwrap() = Some(host.get(self.checked)[0]);
             Ok(())
         }
@@ -355,8 +332,8 @@ mod tests {
     /// the reader saw if it ran.
     fn check(info: i32) -> (Status, Option<i32>) {
         let mut dag: Dag<'static, Heap, ()> = Dag::new();
-        let row = dag.add("flag", 0, Flag(info));
-        let checked = dag.add(
+        let row = dag.add_cpu("flag", 0, Flag(info));
+        let checked = dag.add_cpu(
             "cholesky check",
             0,
             Check {
@@ -365,7 +342,7 @@ mod tests {
             },
         );
         let seen = Arc::new(Mutex::new(None));
-        dag.add(
+        dag.add_cpu(
             "reader",
             0,
             Reader {

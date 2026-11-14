@@ -13,10 +13,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use fb_atom::{Atom, Element};
-use fb_core_arena::{Bufs, Device, Heap, Layout, RowId};
+use fb_core_arena::{Bufs, Heap, Layout, RowId};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{HostOnly, Lane};
+use fb_core_planner::{CpuTask, Dag};
+use fb_core_thread_pool::HostOnly;
 use fb_core_types::Double3;
 use fb_molecule::Molecule;
 use fb_pipeline_guess::add_sad_guess;
@@ -40,15 +40,14 @@ struct Probe {
     seen: Arc<Mutex<Option<usize>>>,
 }
 
-impl Task<Heap, ()> for Probe {
+impl CpuTask<Heap> for Probe {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Heap>) {
+    fn layout(&self, host: &mut Layout<'_, Heap>) {
         host.read(self.d);
     }
 
-    fn run(&self, _: &(), _: &Bufs<'_, Device>, _: &Bufs<'_, Heap>, _: Lane<'_, ()>) -> Status {
+    fn run(&self, _: &(), _: &Bufs<'_, Heap>) -> Status {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut now = threads();
         while now < self.expected && Instant::now() < deadline {
@@ -95,7 +94,7 @@ fn main() {
         let expected = 1 + n_cpu + n_streams;
         let mut dag: Dag<'static, Heap, ()> = Dag::new();
         let d = add_sad_guess(&mut dag, 0, &basis, &atoms).unwrap();
-        dag.add(
+        dag.add_cpu(
             "probe",
             0,
             Probe {

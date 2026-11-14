@@ -55,10 +55,10 @@
 
 use contracts::debug_requires;
 use fb_basis::BasisSet;
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2d};
 use fb_core_error_handling::{Error, Result, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_integrals_sys::{AuxTable, FB_METRIC_MAX_MOMENTUM, add_metric_tasks};
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 use fb_recipes_symmetrize::symmetrize;
@@ -86,7 +86,7 @@ use fb_recipes_symmetrize::symmetrize;
 /// `dag` on an error.
 ///
 /// # Panics
-/// If `u` holds a row of another worker's table ([`Dag::add`]).
+/// If `u` holds a row of another worker's table ([`Dag::add_gpu`]).
 #[debug_requires(aux.nshells() > 0, "an aux basis of at least one shell")]
 #[track_caller]
 pub fn add_metric(
@@ -134,7 +134,7 @@ pub fn add_metric(
     let cartesian = add_metric_tasks(dag, worker, &table);
     let spherical = add_cartesian_to_spherical(dag, worker, aux, u, "M spherical", cartesian);
     let n = aux.nao_sphe() as usize;
-    Ok(dag.add("metric average", worker, Average { spherical, n }))
+    Ok(dag.add_gpu("metric average", worker, Average { spherical, n }))
 }
 
 /// GPU: the spherical metric, `n²`, copied into M's row and averaged with
@@ -144,9 +144,8 @@ struct Average {
     n: usize,
 }
 
-impl Task for Average {
+impl GpuTask for Average {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.spherical);
@@ -157,12 +156,9 @@ impl Task for Average {
         &self,
         m: &Self::Rows,
         device: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let mut m = device.take_mut(*m);
         memcpy_d2d(&m, device.get(self.spherical), stream)?;
         symmetrize(stream, self.n, &mut m, self.n)

@@ -5,9 +5,9 @@
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
 use fb_core_error_handling::Status;
-use fb_core_thread_pool::{Backend, DeviceStream, Lane};
+use fb_core_thread_pool::{Backend, DeviceStream};
 use fb_core_wwr::blas::gemm;
 use fb_core_wwr::device_slice::DeviceSlice;
 use fb_test_support::panic_message;
@@ -38,21 +38,14 @@ fn product(a: &[f64], b: &[f64]) -> Vec<f64> {
 /// CPU: A and B into pinned rows.
 struct Fill(usize);
 
-impl Task for Fill {
+impl CpuTask for Fill {
     type Rows = (RowId<Pinned, f64>, RowId<Pinned, f64>);
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, h: &mut Layout<'_, Pinned>) -> Self::Rows {
         (h.output("A", N * N), h.output("B", N * N))
     }
 
-    fn run(
-        &self,
-        &(a, b): &Self::Rows,
-        _: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, &(a, b): &Self::Rows, h: &Bufs<'_, Pinned>) -> Status {
         h.take_mut(a).copy_from_slice(&operand(self.0));
         h.take_mut(b).copy_from_slice(&operand(self.0 + 3));
         Ok(())
@@ -63,14 +56,13 @@ impl Task for Fill {
 /// handle, C copied back to a pinned row.
 struct Gemm((RowId<Pinned, f64>, RowId<Pinned, f64>));
 
-impl Task for Gemm {
+impl GpuTask for Gemm {
     type Rows = (
         RowId<Device, f64>,
         RowId<Device, f64>,
         RowId<Device, f64>,
         RowId<Pinned, f64>,
     );
-    const GPU: bool = true;
 
     fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
         h.read(self.0.0);
@@ -87,15 +79,12 @@ impl Task for Gemm {
         &self,
         &(da, db, dc, c): &Self::Rows,
         d: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
-        let (da, db, mut dc) = (d.take_mut(da), d.take_mut(db), d.take_mut(dc));
-        memcpy_p2d(&da, h, self.0.0, stream)?;
-        memcpy_p2d(&db, h, self.0.1, stream)?;
+        let (mut da, mut db, mut dc) = (d.take_mut(da), d.take_mut(db), d.take_mut(dc));
+        memcpy_p2d(&mut da, h, self.0.0, stream)?;
+        memcpy_p2d(&mut db, h, self.0.1, stream)?;
         let n = N as i32;
         gemm(
             stream.blas(),
@@ -120,21 +109,14 @@ impl Task for Gemm {
 /// CPU: C out of its pinned row.
 struct Collect(RowId<Pinned, f64>, Arc<Mutex<Vec<f64>>>);
 
-impl Task for Collect {
+impl CpuTask for Collect {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) {
+    fn layout(&self, h: &mut Layout<'_, Pinned>) {
         h.read(self.0);
     }
 
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, _: &(), h: &Bufs<'_, Pinned>) -> Status {
         *self.1.lock().unwrap() = h.get(self.0).to_vec();
         Ok(())
     }
@@ -145,9 +127,9 @@ impl Task for Collect {
 fn gemm_instance(seed: usize, out: &Arc<Mutex<Vec<f64>>>) -> Instance<'static> {
     let mut dag = Dag::new();
     dag.blas_workspace(0);
-    let ab = dag.add("fill", 0, Fill(seed));
-    let (.., c) = dag.add("gemm", 0, Gemm(ab));
-    dag.add("collect", 0, Collect(c, Arc::clone(out)));
+    let ab = dag.add_cpu("fill", 0, Fill(seed));
+    let (.., c) = dag.add_gpu("gemm", 0, Gemm(ab));
+    dag.add_cpu("collect", 0, Collect(c, Arc::clone(out)));
     dag.plan().instantiate(&[0])
 }
 

@@ -3,10 +3,10 @@
 
 use std::ops::ControlFlow;
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
 use fb_core_error_handling::{Error, Result, Status};
-use fb_core_planner::{Dag, Decision, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, Decision, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::{dgmm, geam};
 use fb_core_wwr::copy;
 use fb_core_wwr::device_slice::split_at_mut;
@@ -125,8 +125,8 @@ impl ScfStep {
 /// and writes the floor, 1e-12 of the largest eigenvalue (0 if none is
 /// positive), to the pinned row `"guess floor"`, and warns of an eigenvalue
 /// below minus that floor, possible only for a guess loaded from a file,
-/// as in the C++; then **`guess factor`** (stream), which reads the floor
-/// as it enqueues: `C̃ = U diag((w/2)^(1/2))`, an eigenvalue at or under the
+/// as in the C++; then **`guess factor`** (stream), which copies the floor
+/// to the device and has the kernel read it there: `C̃ = U diag((w/2)^(1/2))`, an eigenvalue at or under the
 /// floor a zero column, so `D = 2 C̃ C̃ᵀ` to round-off and a negative part
 /// of D is left out of the first K, as in the C++. The guess's rank is
 /// about its minimal basis, above `nocc`, but the loop's factor row is
@@ -168,7 +168,7 @@ impl ScfStep {
 ///
 /// # Panics
 /// If `n²` does not fit an `i32`, the BLAS's integer, or as
-/// [`add_df_exchange`]; or as [`Dag::add`], if a row is of another worker's
+/// [`add_df_exchange`]; or as [`Dag::add_gpu`], if a row is of another worker's
 /// table.
 #[allow(
     clippy::too_many_arguments,
@@ -202,9 +202,9 @@ pub fn add_scf(
     // Before the loop: the guess's factor, the rest's K, DIIS's rings and
     // the decision's last energy.
     let (u, w) = add_diagonalize(dag, worker, "guess", n, lwork, guess);
-    let w_host = dag.add("guess w down", worker, GuessDown { w, n });
-    let floor = dag.add("guess check", worker, GuessCheck { w: w_host });
-    let factor = dag.add(
+    let w_host = dag.add_gpu("guess w down", worker, GuessDown { w, n });
+    let floor = dag.add_cpu("guess check", worker, GuessCheck { w: w_host });
+    let factor = dag.add_gpu(
         "guess factor",
         worker,
         GuessFactor {
@@ -228,14 +228,14 @@ pub fn add_scf(
         None => None,
     };
     let diis = add_diis(dag, worker, "DIIS F", n * n, step.diis_history)?;
-    let previous = dag.add("energy before", worker, EnergyBefore);
+    let previous = dag.add_cpu("energy before", worker, EnergyBefore);
 
     // The body: one iteration.
     let body = dag.len();
     let j = add_df_coulomb(dag, worker, n, naux, eri.b, guess);
     let mut k = add_df_exchange(dag, worker, n, naux, nocc, eri.b, factor.c_occ)?;
     if let Some(rest) = rest_k {
-        k = dag.add("guess exchange", worker, GuessExchange { k, rest, n });
+        k = dag.add_gpu("guess exchange", worker, GuessExchange { k, rest, n });
     }
     let (f, e, scalars) = add_fock(dag, worker, n, e_nuc, h, j, k, guess, s, x);
     let (f_star, singular) = diis.add_push(dag, f, e);
@@ -269,9 +269,8 @@ struct GuessDown {
     n: usize,
 }
 
-impl Task for GuessDown {
+impl GpuTask for GuessDown {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.w);
@@ -286,12 +285,9 @@ impl Task for GuessDown {
         &self,
         w_host: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         memcpy_d2p(host, *w_host, device.get(self.w), worker)
     }
 }
@@ -304,22 +300,15 @@ struct GuessCheck {
     w: RowId<Pinned, f64>,
 }
 
-impl Task for GuessCheck {
+impl CpuTask for GuessCheck {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.read(self.w);
         host.output("guess floor", 1)
     }
 
-    fn run(
-        &self,
-        floor_row: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, floor_row: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
         let w = host.get(self.w);
         let (smallest, largest) = (
             w.first().copied().unwrap_or(0.0),
@@ -360,9 +349,8 @@ struct GuessFactorRows {
     rest: Option<RowId<Device, f64>>,
 }
 
-impl Task for GuessFactor {
+impl GpuTask for GuessFactor {
     type Rows = GuessFactorRows;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.u);
@@ -387,19 +375,12 @@ impl Task for GuessFactor {
         &self,
         rows: &GuessFactorRows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let blas = worker.blas();
         // add_scf checked that n² fits an i32.
         let n = self.n as i32;
-        // `guess check` wrote it before this task enqueues: a CPU node's
-        // work is done when it returns. Halved, as the map is of w/2; the
-        // halving is exact, so the test is the C++'s `w <= floor`.
-        let floor = 0.5 * host.get(self.floor)[0];
         let (u, w) = (device.get(self.u), device.get(self.w));
         let (mut half, mut root, mut weights, mut factor, mut c_occ) = (
             device.take_mut(rows.half),
@@ -408,12 +389,20 @@ impl Task for GuessFactor {
             device.take_mut(rows.factor),
             device.take_mut(rows.c_occ),
         );
+        // The floor `guess check` wrote, copied on this stream into the
+        // first element of `weights`, which the kernel reads it from and the
+        // dgmm after it overwrites: a stream node does not read a pinned row
+        // on the host. Halved, as the map is of w/2, by the kernel's
+        // `0.5 * floor`; the halving is exact, so the test is the C++'s
+        // `w <= floor`.
+        let (mut floor, _) = split_at_mut(&mut weights, 1);
+        memcpy_p2d(&mut floor, host, self.floor, worker)?;
         // Each call follows the one before on the stream. (w/2)^(1/2) as
         // (w/2) (w/2)^(-1/2): the kernel maps an eigenvalue at or under the
         // floor, so a negative one too, to 0, and so drops its column.
         geam(blas, OP_N, OP_N, n, 1, 0.5, &w, n, 0.0, &w, n, &mut half, n)?;
         copy::d2d(&mut root, &half, worker)?;
-        inverse_sqrt(worker, self.n, &mut root, floor)?;
+        inverse_sqrt(worker, self.n, &mut root, 0.5, Some(&floor))?;
         dgmm(blas, LEFT, n, 1, &half, n, &root, 1, &mut weights, n)?;
         dgmm(blas, RIGHT, n, n, &u, n, &weights, 1, &mut factor, n)?;
         // Ascending: the largest eigenvalues are the last nocc columns.
@@ -434,9 +423,8 @@ struct GuessExchange {
     n: usize,
 }
 
-impl Task for GuessExchange {
+impl GpuTask for GuessExchange {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.k);
@@ -452,12 +440,9 @@ impl Task for GuessExchange {
         &self,
         total: &Self::Rows,
         device: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let n = self.n as i32;
         let k = device.get(self.k);
         let (mut rest, mut total) = (device.take_mut(self.rest), device.take_mut(*total));
@@ -485,21 +470,14 @@ impl Task for GuessExchange {
 /// energy 0.
 struct EnergyBefore;
 
-impl Task for EnergyBefore {
+impl CpuTask for EnergyBefore {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.output("last build", 3)
     }
 
-    fn run(
-        &self,
-        row: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, row: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
         host.take_mut(*row).fill(0.0);
         Ok(())
     }

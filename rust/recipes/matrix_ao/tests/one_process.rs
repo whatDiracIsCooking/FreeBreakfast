@@ -16,31 +16,24 @@
 use std::sync::{Arc, Mutex};
 
 use fb_core_arena::{
-    Bufs, Device, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p, memcpy_h2p, memcpy_p2d,
+    Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p, memcpy_h2p, memcpy_p2d,
 };
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_recipes_matrix_ao::{add_cartesian_to_spherical, add_harmonics};
 
 /// CPU: a fixed Cartesian matrix into a pinned row.
 struct Fill(Vec<f64>);
 
-impl Task for Fill {
+impl CpuTask for Fill {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.output("cartesian host", self.0.len())
     }
 
-    fn run(
-        &self,
-        row: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, row: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
         memcpy_h2p(host, *row, &self.0);
         Ok(())
     }
@@ -54,9 +47,8 @@ struct CopyRow {
     len: usize,
 }
 
-impl Task for CopyRow {
+impl GpuTask for CopyRow {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         if let Some(h) = self.host {
@@ -72,15 +64,12 @@ impl Task for CopyRow {
         &self,
         row: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
-        let dst = device.take_mut(*row);
+        let mut dst = device.take_mut(*row);
         match (self.host, self.device) {
-            (Some(h), _) => memcpy_p2d(&dst, host, h, stream),
+            (Some(h), _) => memcpy_p2d(&mut dst, host, h, stream),
             (_, Some(d)) => memcpy_d2d(&dst, device.get(d), stream),
             _ => unreachable!("a copy has a source"),
         }
@@ -90,9 +79,8 @@ impl Task for CopyRow {
 /// GPU, then CPU: every spherical matrix copied down and read out.
 struct Down(Vec<RowId<Device, f64>>, usize);
 
-impl Task for Down {
+impl GpuTask for Down {
     type Rows = Vec<RowId<Pinned, f64>>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         self.0
@@ -108,12 +96,9 @@ impl Task for Down {
         &self,
         rows: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         for (&m, &h) in self.0.iter().zip(rows) {
             memcpy_d2p(host, h, device.get(m), stream)?;
         }
@@ -124,23 +109,16 @@ impl Task for Down {
 /// CPU: the pinned copies read into `out`.
 struct Collect(Vec<RowId<Pinned, f64>>, Arc<Mutex<Vec<f64>>>);
 
-impl Task for Collect {
+impl CpuTask for Collect {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) {
         for &r in &self.0 {
             host.read(r);
         }
     }
 
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
         let mut out = self.1.lock().unwrap();
         for &r in &self.0 {
             out.extend_from_slice(host.get(r));
@@ -157,7 +135,7 @@ fn transformed(basis: &fb_basis::BasisSet, extended: bool) -> Vec<f64> {
     let mut u = None;
     let u_row = add_harmonics(&mut dag, 0, basis, &mut u);
     if extended {
-        dag.add(
+        dag.add_gpu(
             "unused",
             0,
             CopyRow {
@@ -173,8 +151,8 @@ fn transformed(basis: &fb_basis::BasisSet, extended: bool) -> Vec<f64> {
         let values = (0..n_cart * n_cart)
             .map(|i| (((i * 7919 + k * 104_729) % 1000) as f64 / 997.0).sin())
             .collect();
-        let host = dag.add("fill", 0, Fill(values));
-        let cartesian = dag.add(
+        let host = dag.add_cpu("fill", 0, Fill(values));
+        let cartesian = dag.add_gpu(
             "upload",
             0,
             CopyRow {
@@ -192,9 +170,9 @@ fn transformed(basis: &fb_basis::BasisSet, extended: bool) -> Vec<f64> {
             cartesian,
         ));
     }
-    let down = dag.add("download", 0, Down(spherical, n_sph * n_sph));
+    let down = dag.add_gpu("download", 0, Down(spherical, n_sph * n_sph));
     let out = Arc::new(Mutex::new(Vec::new()));
-    dag.add("collect", 0, Collect(down, Arc::clone(&out)));
+    dag.add_cpu("collect", 0, Collect(down, Arc::clone(&out)));
     dag.blas_workspace(0);
     let mut instance = dag.plan().instantiate(&[0]);
     let mut backend = instance.backend();

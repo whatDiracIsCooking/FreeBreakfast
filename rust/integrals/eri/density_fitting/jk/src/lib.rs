@@ -61,10 +61,10 @@
 #![forbid(unsafe_code)]
 
 use contracts::debug_requires;
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, Result, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::{gemm_strided_batched, gemv, syrk};
 use fb_recipes_symmetrize::symmetrize_from;
 use wwr_sys::{wwr_blas_fill_mode, wwr_blas_operation};
@@ -81,7 +81,7 @@ use wwr_sys::{wwr_blas_fill_mode, wwr_blas_operation};
 ///
 /// # Panics
 /// If `naux` or `nao²` does not fit an `i32`, the BLAS's integer, or a row
-/// is of another worker's table ([`Dag::add`]).
+/// is of another worker's table ([`Dag::add_gpu`]).
 #[debug_requires(naux > 0, "a fitting set of at least one function")]
 #[debug_requires(nao > 0, "an orbital basis of at least one function")]
 #[track_caller]
@@ -102,7 +102,7 @@ pub fn add_df_coulomb(
             .is_some_and(|pairs| i32::try_from(pairs).is_ok()),
         "add_df_coulomb: nao² = {nao}² does not fit the BLAS's i32"
     );
-    dag.add(
+    dag.add_gpu(
         "df coulomb",
         worker,
         Coulomb {
@@ -138,7 +138,7 @@ pub fn add_df_coulomb(
 ///
 /// # Panics
 /// If `nao`, `naux · nao` or `naux · nocc` does not fit an `i32`, the
-/// BLAS's integer, or a row is of another worker's table ([`Dag::add`]).
+/// BLAS's integer, or a row is of another worker's table ([`Dag::add_gpu`]).
 #[debug_requires(naux > 0, "a fitting set of at least one function")]
 #[debug_requires(nao > 0, "an orbital basis of at least one function")]
 #[debug_requires(nocc > 0, "a factor of at least one column")]
@@ -169,7 +169,7 @@ pub fn add_df_exchange(
         return Err(Error::gpu(e));
     }
     Ok(dag
-        .add(
+        .add_gpu(
             "df exchange",
             worker,
             Exchange {
@@ -198,9 +198,8 @@ struct CoulombRows {
     gamma: RowId<Device, f64>,
 }
 
-impl Task for Coulomb {
+impl GpuTask for Coulomb {
     type Rows = CoulombRows;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> CoulombRows {
         device.read(self.b);
@@ -219,12 +218,9 @@ impl Task for Coulomb {
         &self,
         rows: &CoulombRows,
         device: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let (mut gamma, mut j) = (device.take_mut(rows.gamma), device.take_mut(rows.j));
         let b = device.get(self.b);
         // add_df_coulomb checked that naux and nao² fit an i32; the handle
@@ -277,9 +273,8 @@ struct ExchangeRows {
     x: RowId<Device, f64>,
 }
 
-impl Task for Exchange {
+impl GpuTask for Exchange {
     type Rows = ExchangeRows;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> ExchangeRows {
         device.read(self.b);
@@ -298,12 +293,9 @@ impl Task for Exchange {
         &self,
         rows: &ExchangeRows,
         device: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let (mut x, mut k) = (device.take_mut(rows.x), device.take_mut(rows.k));
         // add_df_exchange checked that nao, naux · nao and naux · nocc fit
         // an i32 (so do naux and nocc); the handle is the worker's, bound to

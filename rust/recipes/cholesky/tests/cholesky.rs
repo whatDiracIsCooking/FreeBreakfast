@@ -27,10 +27,10 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
 use fb_core_error_handling::{ErrorKind, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_recipes_cholesky::add_cholesky;
 
 /// The SPD fixtures' orders: around the 64-column tile.
@@ -42,21 +42,14 @@ const MARGIN: f64 = 100.0;
 /// CPU: A written into a pinned row.
 struct Stage(Vec<f64>);
 
-impl Task for Stage {
+impl CpuTask for Stage {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.output("A", self.0.len())
     }
 
-    fn run(
-        &self,
-        a: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, a: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
         host.take_mut(*a).copy_from_slice(&self.0);
         Ok(())
     }
@@ -68,9 +61,8 @@ struct Upload {
     len: usize,
 }
 
-impl Task for Upload {
+impl GpuTask for Upload {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.read(self.staged);
@@ -81,13 +73,10 @@ impl Task for Upload {
         &self,
         a: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
-        memcpy_p2d(&device.take_mut(*a), host, self.staged, stream)
+        memcpy_p2d(&mut device.take_mut(*a), host, self.staged, stream)
     }
 }
 
@@ -99,9 +88,8 @@ struct Download {
     len: usize,
 }
 
-impl Task for Download {
+impl GpuTask for Download {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.l);
@@ -113,12 +101,9 @@ impl Task for Download {
         &self,
         down: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         memcpy_d2p(host, *down, device.get(self.l), stream)
     }
 }
@@ -129,21 +114,14 @@ struct Collect {
     out: Arc<Mutex<Option<Vec<f64>>>>,
 }
 
-impl Task for Collect {
+impl CpuTask for Collect {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) {
         host.read(self.l);
     }
 
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
         *self.out.lock().unwrap() = Some(host.get(self.l).to_vec());
         Ok(())
     }
@@ -165,10 +143,10 @@ fn fixture(stem: &str) -> (usize, Vec<f64>) {
 /// download after the check ran.
 fn factor(n: usize, a: Vec<f64>) -> (Status, Option<Vec<f64>>) {
     let mut dag = Dag::new();
-    let staged = dag.add("stage", 0, Stage(a));
-    let a = dag.add("upload", 0, Upload { staged, len: n * n });
+    let staged = dag.add_cpu("stage", 0, Stage(a));
+    let a = dag.add_gpu("upload", 0, Upload { staged, len: n * n });
     let (l, checked) = add_cholesky(&mut dag, 0, "L", n, a).unwrap();
-    let down = dag.add(
+    let down = dag.add_gpu(
         "download",
         0,
         Download {
@@ -178,7 +156,7 @@ fn factor(n: usize, a: Vec<f64>) -> (Status, Option<Vec<f64>>) {
         },
     );
     let out = Arc::new(Mutex::new(None));
-    dag.add(
+    dag.add_cpu(
         "collect",
         0,
         Collect {

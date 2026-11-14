@@ -5,11 +5,11 @@ use std::sync::Arc;
 
 use super::dag::{Planned, Work};
 use contracts::debug_requires;
-use fb_core_arena::{Block, Device, HostKind, Kind, Pinned, RowId};
+use fb_core_arena::{Block, CopyOnly, Device, HostKind, Kind, Pinned, RowId};
 #[cfg(feature = "device")]
 use fb_core_error_handling::check_or_abort;
 use fb_core_thread_pool::{
-    self as thread_pool, ArenaSize, Backend, DeviceStream, NodeId, Plan, Record,
+    self as thread_pool, ArenaSize, Backend, DeviceStream, Lane, NodeId, Plan, Record,
 };
 
 /// A planned DAG made real: each worker's two blocks, allocated once, and
@@ -63,9 +63,17 @@ impl<'a, H: HostKind, S: 'a> Planned<'a, H, S> {
             let preds: Vec<NodeId> = deps.iter().map(|&u| ids[u]).collect();
             let (device, host) = &blocks[node.worker];
             let (device, host) = (Arc::clone(device), Arc::clone(host));
+            let placement = node.placement();
             let id = match node.work {
-                Work::Task(run) => plan.add(node.name, node.placement, &preds, move |lane| {
-                    run(&device.partition(pos), &host.partition(pos), lane)
+                Work::Gpu(run) => plan.add(node.name, placement, &preds, move |lane| {
+                    let Lane::Stream { stream, .. } = lane else {
+                        unreachable!("a GPU task is placed on a stream")
+                    };
+                    let pinned = CopyOnly::from(host.partition(pos));
+                    run(&device.partition(pos), &pinned, stream)
+                }),
+                Work::Cpu(run) => plan.add(node.name, placement, &preds, move |_| {
+                    run(&host.partition(pos))
                 }),
                 Work::Decide {
                     body,
@@ -100,7 +108,8 @@ impl<'a, H: HostKind, S> Instance<'a, H, S> {
     /// Run every task once on `n_cpu` CPU workers and `backend`'s stream
     /// workers: [`thread_pool::run`], whose [`Record`] times each task under
     /// the name it was added with and the dimensions its
-    /// [`Task::dims`](super::Task::dims) gave, and whose nodes are numbered
+    /// [`GpuTask::dims`](super::GpuTask::dims) or
+    /// [`CpuTask::dims`](super::CpuTask::dims) gave, and whose nodes are numbered
     /// as the tasks' positions. The record's
     /// [`arena`](Record::arena) is the blocks: per worker, its device block
     /// and then its host block, each [`Table::total`] bytes.

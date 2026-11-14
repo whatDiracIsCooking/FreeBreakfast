@@ -33,7 +33,7 @@
 //! | `nuclear_attraction(res, classes, molecule, v)`: zeroed, then one launch per class, each on a stream forked from `res.stream()` | the `potential en` task of [`add_nuclear_attraction`]: zeroed, then [`potential_en_classes`] on the worker's one stream, the records' [`ClassRows`] passed in by the caller |
 //! | `add_nuclear_attraction(res, classes, molecule, m)`, V added into `m` unzeroed | [`potential_en_classes`], called by the task that zeroed the matrix |
 //! | `molecule.view()`, the `NucleiView` | [`NucleiRows`] from [`fb_molecule_nuclei::add_nuclei`], passed in; its rows handed to [`potential_en_class`] by [`potential_en_classes`] |
-//! | `check_nuclei`'s `InvalidConfig` for nuclei on another device | [`add_nuclear_attraction`]'s `InvalidConfig` at planning for [`NucleiRows`] with no nucleus (the wrapper's `n_nuc >= 1`), adding nothing; nuclei of another worker are another table's rows, which [`Dag::add`] refuses with a panic |
+//! | `check_nuclei`'s `InvalidConfig` for nuclei on another device | [`add_nuclear_attraction`]'s `InvalidConfig` at planning for [`NucleiRows`] with no nucleus (the wrapper's `n_nuc >= 1`), adding nothing; nuclei of another worker are another table's rows, which [`Dag::add_gpu`] refuses with a panic |
 //! | `check_one_electron_build`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | [`potential_en_class`]'s contract for the class, and its always-on `assert!` of the matrix's `n_cart²` and the `i32` bound; [`add_nuclear_attraction`] asserts the `i32` bound at planning too, and the records hold only `la <= lb` |
 //! | `upload_spherical_transform_matrix`, `MatrixAOPair::cartesian_to_spherical` | [`fb_recipes_matrix_ao::add_cartesian_to_spherical`], U's slot passed in by the caller |
 //! | `res.dev_idx()` made current for the call | nothing: a stream task runs with its worker's device current |
@@ -44,10 +44,10 @@
 
 use contracts::debug_requires;
 use fb_basis::BasisSet;
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, Result, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::device_slice::DeviceSliceMut;
 use fb_core_wwr::memset;
 use fb_core_wwr::runtime::Stream;
@@ -115,7 +115,7 @@ pub fn potential_en_classes(
 /// # Panics
 /// If `nao_cart²` does not fit an `i32` (the kernels index the matrix in
 /// 32 bits), or `classes` or `nuclei` are rows of another worker's or
-/// another plan's table ([`Dag::add`]).
+/// another plan's table ([`Dag::add_gpu`]).
 #[debug_requires(basis.nshells() > 0, "a basis of at least one shell")]
 #[track_caller]
 pub fn add_nuclear_attraction(
@@ -137,7 +137,7 @@ pub fn add_nuclear_attraction(
         i32::try_from(n_cart * n_cart).is_ok(),
         "add_nuclear_attraction: {n_cart}² Cartesian AOs do not fit the kernels' 32-bit index"
     );
-    let v_cart = dag.add(
+    let v_cart = dag.add_gpu(
         "potential en",
         worker,
         PotentialEn {
@@ -159,9 +159,8 @@ struct PotentialEn {
     n_cart: usize,
 }
 
-impl Task for PotentialEn {
+impl GpuTask for PotentialEn {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         for c in &self.classes {
@@ -175,12 +174,9 @@ impl Task for PotentialEn {
         &self,
         v: &Self::Rows,
         device: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let mut v = device.take_mut(*v);
         memset::zero(&mut v, stream)?;
         potential_en_classes(stream, device, &self.classes, &self.nuclei, &mut v)

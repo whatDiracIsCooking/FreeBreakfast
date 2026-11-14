@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 use fb_atom::{Atom, Element};
-use fb_core_arena::Heap;
+use fb_core_arena::{CopyOnly, Heap};
 use fb_core_thread_pool::HostOnly;
 use fb_core_types::Double3;
 use fb_test_support::golden;
@@ -75,16 +75,15 @@ struct Collect<H> {
     out: Read,
 }
 
-impl<H: HostKind, S> Task<H, S> for Collect<H> {
+impl<H: HostKind> CpuTask<H> for Collect<H> {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, H>) {
+    fn layout(&self, host: &mut Layout<'_, H>) {
         host.read(self.rows.0);
         host.read(self.rows.1);
     }
 
-    fn run(&self, _: &(), _: &Bufs<'_, Device>, host: &Bufs<'_, H>, _: Lane<'_, S>) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, H>) -> Status {
         let bits = |row| host.get(row).iter().map(|e: &f64| e.to_bits()).collect();
         *self.out.lock().unwrap() = (bits(self.rows.0), bits(self.rows.1));
         Ok(())
@@ -120,7 +119,7 @@ fn plan_goldens() {
 fn staged_rows_are_the_molecules_nuclei() {
     for (stem, molecule) in cases() {
         let mut dag: Dag<'_, Heap, ()> = Dag::new();
-        let staged = dag.add(
+        let staged = dag.add_cpu(
             "nuclei",
             0,
             Stage {
@@ -128,7 +127,7 @@ fn staged_rows_are_the_molecules_nuclei() {
             },
         );
         let out = Read::default();
-        dag.add(
+        dag.add_cpu(
             "collect",
             0,
             Collect {
@@ -145,9 +144,8 @@ fn staged_rows_are_the_molecules_nuclei() {
 /// GPU: the device rows copied down into two pinned rows on the stream.
 struct Download(NucleiRows);
 
-impl Task for Download {
+impl GpuTask for Download {
     type Rows = (RowId<Pinned, f64>, RowId<Pinned, f64>);
-    const GPU: bool = true;
 
     fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
         self.0.read(d);
@@ -159,12 +157,9 @@ impl Task for Download {
         &self,
         rows: &Self::Rows,
         d: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         for (src, dst) in [(self.0.z, rows.0), (self.0.c, rows.1)] {
             fb_core_arena::memcpy_d2p(h, dst, d.get(src), stream)?;
         }
@@ -181,9 +176,9 @@ fn device_rows_are_the_staged_rows() {
     for (stem, molecule) in cases() {
         let mut dag = Dag::new();
         let rows = add_nuclei(&mut dag, 0, &molecule);
-        let down = dag.add("download", 0, Download(rows));
+        let down = dag.add_gpu("download", 0, Download(rows));
         let out = Read::default();
-        dag.add(
+        dag.add_cpu(
             "collect",
             0,
             Collect {

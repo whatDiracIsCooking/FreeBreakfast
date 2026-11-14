@@ -55,10 +55,12 @@ use std::path::{Path, PathBuf};
 
 use fb_atom::{Atom, Element};
 use fb_basis::{BasisSet, Shell};
-use fb_core_arena::{Bufs, Device, HostKind, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d};
+use fb_core_arena::{
+    Bufs, CopyOnly, Device, HostKind, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d,
+};
 use fb_core_error_handling::{Error, Result, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_io_sad::{builtin_sad_density, carries_sad_stamp};
 use fb_sad::{AtomicDensityStamp, SadStampLookup, distinct_stamps, stamp_density};
 
@@ -95,7 +97,7 @@ pub fn add_sad_guess<'a, H: HostKind, S: 'a>(
             .iter()
             .map(|shell| shell.function_count_sphe() as usize)
             .sum();
-        let row = dag.add(
+        let row = dag.add_cpu(
             if baked {
                 format!("baked stamp {symbol}")
             } else {
@@ -117,7 +119,7 @@ pub fn add_sad_guess<'a, H: HostKind, S: 'a>(
             offsets: site.offsets,
         });
     }
-    Ok(dag.add(
+    Ok(dag.add_cpu(
         "sad guess",
         worker,
         Assemble {
@@ -153,7 +155,7 @@ pub fn add_loaded_guess<'a, H: HostKind, S: 'a>(
 ) -> Result<RowId<H, f64>> {
     let n = basis.nao_sphe() as usize;
     check_shape(&from, &fb_io_npy::read_npy_shape(&from)?, n)?;
-    Ok(dag.add("load guess", worker, Load { from, n }))
+    Ok(dag.add_cpu("load guess", worker, Load { from, n }))
 }
 
 /// `InvalidConfig` naming `from` unless `shape` is `n × n`.
@@ -173,7 +175,7 @@ fn check_shape(from: &Path, shape: &[usize], n: usize) -> Status {
 /// SCF to read.
 ///
 /// # Panics
-/// If `d` is a row of another worker's table ([`Dag::add`]).
+/// If `d` is a row of another worker's table ([`Dag::add_gpu`]).
 pub fn add_guess_upload(
     dag: &mut Dag<'_>,
     worker: usize,
@@ -181,7 +183,7 @@ pub fn add_guess_upload(
     d: RowId<Pinned, f64>,
 ) -> RowId<Device, f64> {
     let n = basis.nao_sphe() as usize;
-    dag.add("upload guess", worker, Upload { d, len: n * n })
+    dag.add_gpu("upload guess", worker, Upload { d, len: n * n })
 }
 
 /// CPU: one distinct (Z, shells)'s block, its SCF's or its baked one, into
@@ -199,21 +201,14 @@ struct Stamp {
     len: usize,
 }
 
-impl<H: HostKind, S> Task<H, S> for Stamp {
+impl<H: HostKind> CpuTask<H> for Stamp {
     type Rows = RowId<H, f64>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, H>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, H>) -> Self::Rows {
         host.output(&self.row, self.len)
     }
 
-    fn run(
-        &self,
-        row: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, H>,
-        _: Lane<'_, S>,
-    ) -> Status {
+    fn run(&self, row: &Self::Rows, host: &Bufs<'_, H>) -> Status {
         let stamp = AtomicDensityStamp {
             z: self.z,
             shells: &self.shells,
@@ -241,24 +236,17 @@ struct Assemble<H: HostKind> {
     n: usize,
 }
 
-impl<H: HostKind, S> Task<H, S> for Assemble<H> {
+impl<H: HostKind> CpuTask<H> for Assemble<H> {
     type Rows = RowId<H, f64>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, H>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, H>) -> Self::Rows {
         for site in &self.stamps {
             host.read(site.row);
         }
         host.output("D", self.n * self.n)
     }
 
-    fn run(
-        &self,
-        d: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, H>,
-        _: Lane<'_, S>,
-    ) -> Status {
+    fn run(&self, d: &Self::Rows, host: &Bufs<'_, H>) -> Status {
         let (n, d) = (self.n, host.take_mut(*d));
         d.fill(0.0);
         for site in &self.stamps {
@@ -280,21 +268,14 @@ struct Load {
     n: usize,
 }
 
-impl<H: HostKind, S> Task<H, S> for Load {
+impl<H: HostKind> CpuTask<H> for Load {
     type Rows = RowId<H, f64>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, H>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, H>) -> Self::Rows {
         host.output("D", self.n * self.n)
     }
 
-    fn run(
-        &self,
-        d: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, H>,
-        _: Lane<'_, S>,
-    ) -> Status {
+    fn run(&self, d: &Self::Rows, host: &Bufs<'_, H>) -> Status {
         // Checked at planning, and again for the file as it is now.
         let array = fb_io_npy::read_npy(&self.from)?;
         check_shape(&self.from, &array.shape, self.n)?;
@@ -309,9 +290,8 @@ struct Upload {
     len: usize,
 }
 
-impl Task for Upload {
+impl GpuTask for Upload {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.read(self.d);
@@ -322,12 +302,9 @@ impl Task for Upload {
         &self,
         d: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
-        memcpy_p2d(&device.take_mut(*d), host, self.d, stream)
+        memcpy_p2d(&mut device.take_mut(*d), host, self.d, stream)
     }
 }

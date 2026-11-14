@@ -24,10 +24,10 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::solver::SolverHandle;
 use fb_recipes_diagonalize::syevd_lwork;
@@ -39,21 +39,14 @@ const FIXTURES: [&str; 3] = ["h2o_sto-3g", "h2o_cc-pvdz", "co_cc-pvtz"];
 /// CPU: S written into a pinned row.
 struct Stage(Vec<f64>);
 
-impl Task for Stage {
+impl CpuTask for Stage {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.output("S", self.0.len())
     }
 
-    fn run(
-        &self,
-        s: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, s: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
         host.take_mut(*s).copy_from_slice(&self.0);
         Ok(())
     }
@@ -63,9 +56,8 @@ impl Task for Stage {
 /// output.
 struct Upload(RowId<Pinned, f64>, usize);
 
-impl Task for Upload {
+impl GpuTask for Upload {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.read(self.0);
@@ -76,22 +68,18 @@ impl Task for Upload {
         &self,
         s: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
-        memcpy_p2d(&device.take_mut(*s), host, self.0, stream)
+        memcpy_p2d(&mut device.take_mut(*s), host, self.0, stream)
     }
 }
 
 /// GPU: X copied down into a pinned output.
 struct Download(RowId<Device, f64>, usize);
 
-impl Task for Download {
+impl GpuTask for Download {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.0);
@@ -102,12 +90,9 @@ impl Task for Download {
         &self,
         x: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         memcpy_d2p(host, *x, device.get(self.0), stream)
     }
 }
@@ -118,21 +103,14 @@ struct Collect {
     out: Arc<Mutex<Vec<f64>>>,
 }
 
-impl Task for Collect {
+impl CpuTask for Collect {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) {
         host.read(self.x);
     }
 
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
         *self.out.lock().unwrap() = host.get(self.x).to_vec();
         Ok(())
     }
@@ -152,8 +130,8 @@ fn orthogonalize(n: usize, s: Vec<f64>) -> Vec<f64> {
         syevd_lwork(&solver, n).unwrap()
     };
     let mut dag = Dag::new();
-    let staged = dag.add("stage", 0, Stage(s));
-    let s = dag.add("upload", 0, Upload(staged, n * n));
+    let staged = dag.add_cpu("stage", 0, Stage(s));
+    let s = dag.add_gpu("upload", 0, Upload(staged, n * n));
     let x = add_orthogonalize(
         &mut dag,
         0,
@@ -164,9 +142,9 @@ fn orthogonalize(n: usize, s: Vec<f64>) -> Vec<f64> {
         ORTHOGONALIZE_EIGENVALUE_FLOOR,
     )
     .unwrap();
-    let x = dag.add("download", 0, Download(x, n * n));
+    let x = dag.add_gpu("download", 0, Download(x, n * n));
     let out = Arc::new(Mutex::new(Vec::new()));
-    dag.add(
+    dag.add_cpu(
         "collect",
         0,
         Collect {

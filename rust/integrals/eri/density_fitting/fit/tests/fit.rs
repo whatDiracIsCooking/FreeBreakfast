@@ -24,10 +24,10 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
 use fb_core_error_handling::{ErrorKind, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane, Record};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::{DeviceStream, Record};
 use fb_integrals_eri_density_fitting_fit::add_density_fit;
 
 /// The tensor's orbital count: b is naux × nao².
@@ -45,21 +45,14 @@ struct Stage {
     data: Vec<f64>,
 }
 
-impl Task for Stage {
+impl CpuTask for Stage {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.output(self.name, self.data.len())
     }
 
-    fn run(
-        &self,
-        row: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, row: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
         host.take_mut(*row).copy_from_slice(&self.data);
         Ok(())
     }
@@ -72,9 +65,8 @@ struct Upload {
     len: usize,
 }
 
-impl Task for Upload {
+impl GpuTask for Upload {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.read(self.staged);
@@ -85,13 +77,10 @@ impl Task for Upload {
         &self,
         row: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
-        memcpy_p2d(&device.take_mut(*row), host, self.staged, stream)
+        memcpy_p2d(&mut device.take_mut(*row), host, self.staged, stream)
     }
 }
 
@@ -103,9 +92,8 @@ struct Download {
     l_len: usize,
 }
 
-impl Task for Download {
+impl GpuTask for Download {
     type Rows = (RowId<Pinned, f64>, RowId<Pinned, f64>);
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.b);
@@ -120,12 +108,9 @@ impl Task for Download {
         &self,
         &(b, l): &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         memcpy_d2p(host, b, device.get(self.b), stream)?;
         memcpy_d2p(host, l, device.get(self.l), stream)
     }
@@ -143,22 +128,15 @@ struct Collect {
     out: Factors,
 }
 
-impl Task for Collect {
+impl CpuTask for Collect {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) {
         host.read(self.rows.0);
         host.read(self.rows.1);
     }
 
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
         *self.out.lock().unwrap() = Some((
             host.get(self.rows.0).to_vec(),
             host.get(self.rows.1).to_vec(),
@@ -180,9 +158,9 @@ fn fixture(stem: &str) -> (Vec<usize>, Vec<f64>) {
 fn fit(naux: usize, m: Vec<f64>, b: Vec<f64>) -> (Record, Fitted) {
     let b_len = b.len();
     let mut dag = Dag::new();
-    let staged_m = dag.add("stage M", 0, Stage { name: "M", data: m });
-    let staged_b = dag.add("stage b", 0, Stage { name: "b", data: b });
-    let metric = dag.add(
+    let staged_m = dag.add_cpu("stage M", 0, Stage { name: "M", data: m });
+    let staged_b = dag.add_cpu("stage b", 0, Stage { name: "b", data: b });
+    let metric = dag.add_gpu(
         "upload M",
         0,
         Upload {
@@ -191,7 +169,7 @@ fn fit(naux: usize, m: Vec<f64>, b: Vec<f64>) -> (Record, Fitted) {
             len: naux * naux,
         },
     );
-    let tensor = dag.add(
+    let tensor = dag.add_gpu(
         "upload b",
         0,
         Upload {
@@ -201,7 +179,7 @@ fn fit(naux: usize, m: Vec<f64>, b: Vec<f64>) -> (Record, Fitted) {
         },
     );
     let (b, l) = add_density_fit(&mut dag, 0, NAO, naux, metric, tensor).unwrap();
-    let rows = dag.add(
+    let rows = dag.add_gpu(
         "download",
         0,
         Download {
@@ -212,7 +190,7 @@ fn fit(naux: usize, m: Vec<f64>, b: Vec<f64>) -> (Record, Fitted) {
         },
     );
     let out = Arc::new(Mutex::new(None));
-    dag.add(
+    dag.add_cpu(
         "collect",
         0,
         Collect {

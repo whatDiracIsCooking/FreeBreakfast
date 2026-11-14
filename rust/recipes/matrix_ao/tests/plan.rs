@@ -4,10 +4,10 @@
 //! the tasks producing the Cartesian matrices declare a row and are never
 //! run.
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 
 /// GPU: a Cartesian matrix, declared and never computed.
@@ -16,9 +16,8 @@ struct Cartesian {
     len: usize,
 }
 
-impl Task for Cartesian {
+impl GpuTask for Cartesian {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.output(self.name, self.len)
@@ -28,8 +27,8 @@ impl Task for Cartesian {
         &self,
         _: &Self::Rows,
         _: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        _: &DeviceStream,
     ) -> Status {
         unreachable!("the plan is never run")
     }
@@ -54,7 +53,7 @@ fn two_matrices_share_one_device_u() {
 
     let mut dag = Dag::new();
     let mut u = None;
-    let t_cart = dag.add(
+    let t_cart = dag.add_gpu(
         "T cartesian",
         0,
         Cartesian {
@@ -67,7 +66,7 @@ fn two_matrices_share_one_device_u() {
         u.is_some(),
         "the first transform leaves U's row in the slot"
     );
-    let v_cart = dag.add(
+    let v_cart = dag.add_gpu(
         "V cartesian",
         0,
         Cartesian {

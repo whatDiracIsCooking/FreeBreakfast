@@ -20,7 +20,8 @@ use super::table::{Access, RowId};
 /// returned when the view drops.
 ///
 /// **A stream node does not touch a pinned row from the host.** It hands
-/// the row's pointer to a copy it enqueues, and that is all: the handoff
+/// the row's pointer to a copy it enqueues, and that is all, which is why
+/// it is handed its host rows as a [`CopyOnly`], not as this: the handoff
 /// from a stream node to the next one on the same stream adds no wait,
 /// because the stream orders the two nodes' device work, not a host write
 /// against an earlier copy still in flight. Reading or writing pinned bytes
@@ -146,6 +147,49 @@ impl<K: HostKind> Bufs<'_, K> {
         // SAFETY: as in `get`, and the borrow is exclusive: no other view
         // holds this row, and this one cannot ask for it again.
         unsafe { std::slice::from_raw_parts_mut(data, len) }
+    }
+}
+
+/// A stream node's view of its host rows: a [`Bufs`] that can only be
+/// handed to the copies it enqueues, `memcpy_p2d` and `memcpy_d2p` (with
+/// `device`), and never yields a slice. Made from the node's view, which it
+/// consumes.
+///
+/// This is the rule [`Bufs`] states, made a type: **a stream node does not
+/// touch a pinned row from the host**, so a GPU task's `run`, handed this,
+/// has no way to read or write one:
+///
+/// ```compile_fail,E0599
+/// use fb_core_arena::{CopyOnly, Pinned, RowId};
+///
+/// fn peek(pinned: &CopyOnly<'_, Pinned>, row: RowId<Pinned, f64>) -> f64 {
+///     pinned.get(row)[0]
+/// }
+/// ```
+///
+/// With the `test-support` feature, a view of the heap kind, the
+/// device-free tests' stand-in for pinned memory, hands back its [`Bufs`]
+/// (`CopyOnly::bufs`): their stream is `HostOnly`'s, which runs a node at
+/// once, so a host access there stands in for a copy that has finished.
+// Read only by the copies, which are `device`'s, and by the heap view.
+#[cfg_attr(
+    not(any(feature = "device", test, feature = "test-support")),
+    allow(dead_code, reason = "no copy takes it without a device")
+)]
+pub struct CopyOnly<'b, K: HostKind>(pub(super) Bufs<'b, K>);
+
+impl<'b, K: HostKind> From<Bufs<'b, K>> for CopyOnly<'b, K> {
+    fn from(bufs: Bufs<'b, K>) -> Self {
+        CopyOnly(bufs)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl<'b> CopyOnly<'b, super::kind::Heap> {
+    /// The heap view itself, whose rows a device-free test's stream node
+    /// reads and writes as a finished copy would.
+    pub fn bufs(&self) -> &Bufs<'b, super::kind::Heap> {
+        &self.0
     }
 }
 

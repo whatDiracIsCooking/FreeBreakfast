@@ -429,7 +429,9 @@ can name. In it:
   a host write.
 - `Block::<K>::partition(&self, node) -> Bufs`, called by the orchestrator
   once per node per run. A pinned row is a real `&[T]` or `&mut [T]`; a
-  device row is a pointer-and-length view with no `Deref`.
+  device row is a pointer-and-length view with no `Deref`. A stream node's
+  pinned view is wrapped in a `CopyOnly`, which yields no slice and which
+  only `memcpy_p2d` and `memcpy_d2p` take.
 
 **The view's checks are always on, not `debug_requires`.** Two nodes
 running at once both need rows of one block, so `partition` takes `&self`,
@@ -447,9 +449,15 @@ stream adds no wait, because the stream already orders their device work,
 but it does not order a host write against an earlier copy still in flight
 out of the same bytes. Host reads and writes of pinned rows are CPU nodes',
 which the executor starts only after the events of the stream nodes before
-them.
+them. The type holds it: a GPU task's `run` is handed its pinned rows as a
+`CopyOnly`, never as a `Bufs`, so a host read of one does not build.
 
-`run(bufs, stream)` receives the `Bufs` and nothing else that can allocate.
+**A CPU task holds no device row.** Its `layout` is handed the host
+`Layout` alone and its `run` the host `Bufs`, so a device row is not
+something it can declare or ask for.
+
+A GPU task's `run(device, pinned, stream)` and a CPU task's `run(pinned)`
+receive their views and nothing else that can allocate.
 
 ## What is checked
 

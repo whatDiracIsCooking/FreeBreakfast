@@ -7,10 +7,14 @@
 //! each row's position, each node's dependencies and each `partition` call
 //! by hand.
 //!
-//! - [`Task`]: `layout`, which declares every row the task holds or reads,
-//!   and `run`, which computes through them.
-//! - [`Dag`]: tasks added in plan order, each on a GPU worker, on its
-//!   stream or the CPU pool. [`Dag::add`] calls the layout at once and
+//! - [`GpuTask`] and [`CpuTask`], a task of each sort: `layout`, which
+//!   declares every row the task holds or reads, and `run`, which computes
+//!   through them. A GPU task declares device and pinned rows and runs on
+//!   its worker's stream, its pinned rows a [`CopyOnly`] only its copies
+//!   take; a CPU task declares host rows alone and runs on the CPU pool.
+//! - [`Dag`]: tasks added in plan order, each on a GPU worker, by
+//!   [`Dag::add_gpu`] or [`Dag::add_cpu`], the sort deciding where it runs.
+//!   Each calls the layout at once and
 //!   returns the task's rows, whose output ids the caller passes to the
 //!   tasks that read them. [`Dag::blas_workspace`] declares a worker's
 //!   BLAS workspace, a worker row no task can name. [`Dag::add_loop`]
@@ -36,6 +40,7 @@
 //!   hands each worker's BLAS handle its declared workspace, held for as
 //!   long as the backend lives.
 //!
+//! [`CopyOnly`]: fb_core_arena::CopyOnly
 //! [`Table::reads`]: fb_core_arena::Table::reads
 //! [`Table::handoffs`]: fb_core_arena::Table::handoffs
 //! [`thread_pool::Plan`]: fb_core_thread_pool::Plan
@@ -53,10 +58,10 @@
 //! across workers sound.
 //!
 //! ```
-//! use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+//! use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 //! use fb_core_error_handling::Status;
-//! use fb_core_planner::{Dag, Task};
-//! use fb_core_thread_pool::{DeviceStream, Lane};
+//! use fb_core_planner::{Dag, GpuTask};
+//! use fb_core_thread_pool::DeviceStream;
 //!
 //! /// Writes an `n`-element output, reading `input` if it has one.
 //! struct Step {
@@ -64,9 +69,8 @@
 //!     input: Option<RowId<Device, f64>>,
 //! }
 //!
-//! impl Task for Step {
+//! impl GpuTask for Step {
 //!     type Rows = RowId<Device, f64>;
-//!     const GPU: bool = true;
 //!     fn layout(&self, d: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
 //!         if let Some(input) = self.input {
 //!             d.read(input);
@@ -77,18 +81,18 @@
 //!         &self,
 //!         _: &Self::Rows,
 //!         _: &Bufs<'_, Device>,
-//!         _: &Bufs<'_, Pinned>,
-//!         _: Lane<'_, DeviceStream>,
+//!         _: &CopyOnly<'_, Pinned>,
+//!         _: &DeviceStream,
 //!     ) -> Status {
-//!         Ok(()) // enqueue on the lane's stream
+//!         Ok(()) // enqueue on the stream
 //!     }
 //! }
 //!
 //! let n = 24 * 24;
 //! let mut dag = Dag::new();
-//! let s = dag.add("S", 0, Step { n, input: None });
-//! let x = dag.add("X", 0, Step { n, input: Some(s) });
-//! let f = dag.add("F", 0, Step { n, input: Some(x) });
+//! let s = dag.add_gpu("S", 0, Step { n, input: None });
+//! let x = dag.add_gpu("X", 0, Step { n, input: Some(s) });
+//! let f = dag.add_gpu("F", 0, Step { n, input: Some(x) });
 //! let planned = dag.plan();
 //! // F takes S's bytes, which are dead once X has read them: the reads
 //! // order X after S and F after X, and the handoff F after S's users.
@@ -101,14 +105,13 @@
 //! # Not yet
 //!
 //! The caller places each task, on a worker and a lane, and the plan order
-//! is the order of [`Dag::add`]: no placement or schedule search. A task
+//! is the order of the adds: no placement or schedule search. A task
 //! reads only rows of its own worker; an edge between workers needs a
 //! transport row, which placement would add. No partition or reduce: every
 //! edge is one producer's output. No adaptive widths, no sub-DAG with
 //! dimensions of its own, and no loop in a loop's body. Every
 //! dependency is a row: an ordering with no buffer behind it has no way to
-//! be declared until a task needs one. That a stream task does not touch a
-//! pinned row from the host is a rule, not a type.
+//! be declared until a task needs one.
 
 #![forbid(unsafe_code)]
 
@@ -122,7 +125,7 @@ mod tests;
 
 pub use dag::{Dag, Planned};
 pub use instance::Instance;
-pub use task::{Decision, Task};
+pub use task::{CpuTask, Decision, GpuTask};
 
 /// The bytes of device memory each worker's BLAS handle is handed as its
 /// workspace ([`Dag::blas_workspace`]): 32 MiB, cuBLAS's own default on

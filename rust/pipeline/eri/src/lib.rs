@@ -114,7 +114,7 @@ pub struct DensityFitted {
 ///
 /// # Panics
 /// If `classes` are rows of another worker's or another plan's table
-/// ([`Dag::add`]).
+/// ([`Dag::add_gpu`]).
 #[track_caller]
 pub fn add_df_eri(
     dag: &mut Dag<'_>,

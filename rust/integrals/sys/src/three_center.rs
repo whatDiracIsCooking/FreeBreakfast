@@ -34,10 +34,10 @@
 use std::sync::Arc;
 
 use contracts::debug_requires;
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
 use fb_core_error_handling::{Error, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::{gemm, gemm_strided_batched};
 use fb_core_wwr::handle::DeviceHandleStream;
 use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N, WWR_BLAS_OP_T};
@@ -135,7 +135,7 @@ impl Staging {
 /// record index); `n_cart² aux.n_cart()` does not fit an `i32` (the kernels'
 /// index); `n_sph` is not in `1..=n_cart`, or `n_aux_sph` in
 /// `1..=aux.n_cart()`; a class's cell count does not fit an `i32`; a class,
-/// U or U_aux is of another worker's or plan's table ([`Dag::add`]); or, at
+/// U or U_aux is of another worker's or plan's table ([`Dag::add_gpu`]); or, at
 /// run time, U's row is shorter than `n_cart · n_sph` doubles or U_aux's
 /// than `aux.n_cart() · n_aux_sph` (`fb_core_wwr::blas`'s GEMMs).
 #[debug_requires(!classes.is_empty(), "an orbital basis of at least one shell")]
@@ -151,14 +151,14 @@ pub fn add_three_center_tasks(
     n_sph: [usize; 2],
 ) -> RowId<Device, f64> {
     let staging = Arc::new(staging(classes, n_pairs, aux, n_sph));
-    let downloaded = dag.add(
+    let downloaded = dag.add_gpu(
         "three-center download",
         worker,
         Download {
             classes: classes.to_vec(),
         },
     );
-    let tables = dag.add(
+    let tables = dag.add_cpu(
         "three-center tables",
         worker,
         Tables {
@@ -166,7 +166,7 @@ pub fn add_three_center_tasks(
             downloaded,
         },
     );
-    dag.add("three-center", worker, ThreeCenter { staging, tables, u })
+    dag.add_gpu("three-center", worker, ThreeCenter { staging, tables, u })
         .out
 }
 
@@ -289,9 +289,8 @@ struct Download {
     classes: Vec<ClassRows>,
 }
 
-impl Task for Download {
+impl GpuTask for Download {
     type Rows = Vec<Downloaded>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         self.classes
@@ -317,12 +316,9 @@ impl Task for Download {
         &self,
         rows: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         for (c, d) in self.classes.iter().zip(rows) {
             for (&src, &dst) in c.f64_rows().iter().zip(&d.fields) {
                 memcpy_d2p(host, dst, device.get(src), stream)?;
@@ -358,11 +354,10 @@ struct Tables {
     downloaded: Vec<Downloaded>,
 }
 
-impl Task for Tables {
+impl CpuTask for Tables {
     type Rows = TableRows<Pinned>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         for d in &self.downloaded {
             for &row in &d.fields {
                 host.read(row);
@@ -378,13 +373,7 @@ impl Task for Tables {
         }
     }
 
-    fn run(
-        &self,
-        rows: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, rows: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
         let s = &self.staging;
         let records = host.take_mut(rows.records);
         let cells = host.take_mut(rows.cells);
@@ -479,9 +468,8 @@ struct ThreeCenterRows {
     out: RowId<Device, f64>,
 }
 
-impl Task for ThreeCenter {
+impl GpuTask for ThreeCenter {
     type Rows = ThreeCenterRows;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.read(self.tables.records);
@@ -509,17 +497,14 @@ impl Task for ThreeCenter {
         &self,
         rows: &ThreeCenterRows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let s = &self.staging;
-        let records = device.take_mut(rows.tables.records);
-        memcpy_p2d(&records, host, self.tables.records, worker)?;
-        let cells = device.take_mut(rows.tables.cells);
-        memcpy_p2d(&cells, host, self.tables.cells, worker)?;
+        let mut records = device.take_mut(rows.tables.records);
+        memcpy_p2d(&mut records, host, self.tables.records, worker)?;
+        let mut cells = device.take_mut(rows.tables.cells);
+        memcpy_p2d(&mut cells, host, self.tables.cells, worker)?;
         let (u, u_aux) = (device.get(self.u[0]), device.get(self.u[1]));
         let mut cartesian = device.take_mut(rows.cartesian);
         let mut work = device.take_mut(rows.work);

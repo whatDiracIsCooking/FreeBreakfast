@@ -2,10 +2,10 @@
 //! eigenvectors transformed back.
 
 use contracts::debug_requires;
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::gemm;
 use fb_recipes_diagonalize::add_diagonalize;
 use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N as OP_N, WWR_BLAS_OP_T as OP_T};
@@ -27,7 +27,7 @@ use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N as OP_N, WWR_BLAS_OP_T as OP_T};
 ///
 /// # Panics
 /// As [`add_diagonalize`]: if `n²` or `lwork` does not fit an `i32`; or if
-/// `f` or `x` is a row of another worker's table ([`Dag::add`]).
+/// `f` or `x` is a row of another worker's table ([`Dag::add_gpu`]).
 #[debug_requires(n > 0, "a matrix of at least one row")]
 #[track_caller]
 pub fn add_solve_fock(
@@ -43,10 +43,10 @@ pub fn add_solve_fock(
         "add_solve_fock: n = {n}: n² does not fit BLAS's i32"
     );
     let f_prime = dag
-        .add("fock transform", worker, FockTransform { f, x, n })
+        .add_gpu("fock transform", worker, FockTransform { f, x, n })
         .f_prime;
     let (c_prime, eps) = add_diagonalize(dag, worker, "F'", n, lwork, f_prime);
-    let c = dag.add("back transform", worker, BackTransform { x, c_prime, n });
+    let c = dag.add_gpu("back transform", worker, BackTransform { x, c_prime, n });
     (eps, c)
 }
 
@@ -63,9 +63,8 @@ struct FockTransformRows {
     f_prime: RowId<Device, f64>,
 }
 
-impl Task for FockTransform {
+impl GpuTask for FockTransform {
     type Rows = FockTransformRows;
-    const GPU: bool = true;
 
     fn layout(
         &self,
@@ -88,12 +87,9 @@ impl Task for FockTransform {
         &self,
         rows: &FockTransformRows,
         device: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         // The worker's handle, bound to its stream when the backend was made.
         let handle = worker.blas();
         // add_solve_fock checked that n² fits an i32, so n does too.
@@ -130,9 +126,8 @@ struct BackTransform {
     n: usize,
 }
 
-impl Task for BackTransform {
+impl GpuTask for BackTransform {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.x);
@@ -148,12 +143,9 @@ impl Task for BackTransform {
         &self,
         c: &Self::Rows,
         device: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let (x, c_prime, mut c) = (
             device.get(self.x),
             device.get(self.c_prime),

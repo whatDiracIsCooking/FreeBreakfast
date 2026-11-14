@@ -29,7 +29,8 @@
 //! - [`Block::partition`] is what a node is handed when it runs: a
 //!   [`Bufs`] that gives it its own rows and no others, as `&[T]` /
 //!   `&mut [T]` on the host and [`DeviceRef`] / [`DeviceMut`] pointers on
-//!   the device. With `device`, `Block::hold` holds a worker row outside
+//!   the device. A stream node is handed its host rows as a [`CopyOnly`],
+//!   which only its copies can take. With `device`, `Block::hold` holds a worker row outside
 //!   any view, as a `HeldRow` that keeps the block alive: memory a library
 //!   keeps beyond a node, a BLAS handle's workspace.
 //! - [`memcpy_h2p`], [`memcpy_p2h`] and, with `device`, `memcpy_p2d`,
@@ -103,7 +104,7 @@ pub use assign::{Assignment, Life, Row, assign};
 pub use block::{Block, allocations};
 #[cfg(feature = "device")]
 pub use bufs::HeldRow;
-pub use bufs::{Bufs, DeviceMut, DeviceRef};
+pub use bufs::{Bufs, CopyOnly, DeviceMut, DeviceRef};
 #[cfg(any(test, feature = "test-support"))]
 pub use kind::Heap;
 pub use kind::{Device, Element, HostKind, Kind, Pinned};

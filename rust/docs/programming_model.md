@@ -45,7 +45,10 @@ disagreeing about the edge between them, and keeps each task's spec short.
 
 ### A task declares
 
-1. **Device.** CPU or GPU.
+1. **Device.** CPU or GPU, and the two are different sorts of task. A GPU
+   task holds device rows and pinned rows and runs on a stream, and reaches
+   a pinned row only through a copy it enqueues; a CPU task holds host rows
+   alone and runs on the CPU pool, so a CPU task holds no device row.
 2. **Layout.** Every buffer it will hold, as a function of its dimensions
    (`nbf`, `naux`, `nocc`, ...): each one's size, and whether it is scratch,
    freed when the task ends, or an output that outlives it. The footprint is
@@ -142,10 +145,15 @@ and reaches a buffer only through the layout it declared. The footprint is
 read off the layout by the orchestrator and never written by the author. The
 layout is what admission reads, what a tier-3 test checks with no device, and
 what the arena is built from. In the crate the two are `core::planner`'s
-`Task`: the task's value is its dimensions, so `dims` is `&self`, and
-`layout` declares through one `Layout` per memory kind, reading an earlier
-task's output by the row id that task's layout returned. `run` is handed
-those rows, one `Bufs` per kind, and the lane it runs on.
+`GpuTask` and `CpuTask`, one trait per sort: the task's value is its
+dimensions, so `dims` is `&self`, and `layout` declares through one
+`Layout` per memory kind the sort holds, reading an earlier task's output
+by the row id that task's layout returned. A GPU task's `layout` is handed
+a device and a pinned `Layout`, and its `run` its device rows as a `Bufs`,
+its pinned rows as a `CopyOnly` that only its stream's copies can take, and
+the stream. A CPU task's `layout` is handed a host `Layout` alone, and its
+`run` those rows as a `Bufs`. The sort decides the worker: `Dag::add_gpu`
+puts a task on its GPU worker's stream, `Dag::add_cpu` on the CPU pool.
 
 **Allocation is a capability, held by one module.** The raw allocation
 bindings in `wwr-sys` are `unsafe`, one arena module wraps them, and a

@@ -21,10 +21,10 @@ mod common;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_integrals_eri_density_fitting_jk::{add_df_coulomb, add_df_exchange};
 
 /// The bar's fraction of `max |ref|`.
@@ -36,21 +36,14 @@ struct Stage {
     data: Vec<f64>,
 }
 
-impl Task for Stage {
+impl CpuTask for Stage {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.output(self.name, self.data.len())
     }
 
-    fn run(
-        &self,
-        row: &Self::Rows,
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, row: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
         host.take_mut(*row).copy_from_slice(&self.data);
         Ok(())
     }
@@ -63,9 +56,8 @@ struct Upload {
     len: usize,
 }
 
-impl Task for Upload {
+impl GpuTask for Upload {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.read(self.staged);
@@ -76,13 +68,10 @@ impl Task for Upload {
         &self,
         row: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
-        memcpy_p2d(&device.take_mut(*row), host, self.staged, stream)
+        memcpy_p2d(&mut device.take_mut(*row), host, self.staged, stream)
     }
 }
 
@@ -93,9 +82,8 @@ struct Download {
     len: usize,
 }
 
-impl Task for Download {
+impl GpuTask for Download {
     type Rows = RowId<Pinned, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.row);
@@ -106,12 +94,9 @@ impl Task for Download {
         &self,
         down: &Self::Rows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         memcpy_d2p(host, *down, device.get(self.row), stream)
     }
 }
@@ -122,21 +107,14 @@ struct Collect {
     out: Arc<Mutex<Vec<f64>>>,
 }
 
-impl Task for Collect {
+impl CpuTask for Collect {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) {
+    fn layout(&self, host: &mut Layout<'_, Pinned>) {
         host.read(self.row);
     }
 
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, Pinned>) -> Status {
         *self.out.lock().unwrap() = host.get(self.row).to_vec();
         Ok(())
     }
@@ -187,8 +165,8 @@ fn j_and_k_over_b_match_pyscf_df() {
     let naux = fitted.aux.nao_sphe() as usize;
     let mut upload = |name, data: Vec<f64>| {
         let len = data.len();
-        let staged = dag.add(format!("stage {name}"), 0, Stage { name, data });
-        dag.add(format!("upload {name}"), 0, Upload { name, staged, len })
+        let staged = dag.add_cpu(format!("stage {name}"), 0, Stage { name, data });
+        dag.add_gpu(format!("upload {name}"), 0, Upload { name, staged, len })
     };
     let (d, c) = (upload("D", d), upload("C", c));
     let j = add_df_coulomb(&mut dag, 0, nao, naux, fitted.b, d);
@@ -196,7 +174,7 @@ fn j_and_k_over_b_match_pyscf_df() {
     let outs: Vec<_> = [("J host", j), ("K host", k)]
         .into_iter()
         .map(|(name, row)| {
-            let down = dag.add(
+            let down = dag.add_gpu(
                 format!("download {name}"),
                 0,
                 Download {
@@ -206,7 +184,7 @@ fn j_and_k_over_b_match_pyscf_df() {
                 },
             );
             let out = Arc::new(Mutex::new(Vec::new()));
-            dag.add(
+            dag.add_cpu(
                 format!("collect {name}"),
                 0,
                 Collect {

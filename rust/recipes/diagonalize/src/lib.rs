@@ -40,10 +40,12 @@
 #![forbid(unsafe_code)]
 
 use contracts::debug_requires;
-use fb_core_arena::{Bufs, Device, HostKind, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p};
+use fb_core_arena::{
+    Bufs, CopyOnly, Device, HostKind, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p,
+};
 use fb_core_error_handling::{Error, Result, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{CpuTask, Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::solver::{self, SolverHandle};
 use wwr_sys::{wwr_solver_eig_mode, wwr_solver_fill_mode};
 
@@ -93,7 +95,7 @@ pub fn syevd_lwork(solver: &SolverHandle, n: usize) -> Result<usize> {
 ///
 /// # Panics
 /// If `n²` or `lwork` does not fit an `i32`, or `a` is a row of another
-/// worker's table ([`Dag::add`]).
+/// worker's table ([`Dag::add_gpu`]).
 #[debug_requires(n > 0, "a matrix of at least one row")]
 #[track_caller]
 pub fn add_diagonalize(
@@ -112,7 +114,7 @@ pub fn add_diagonalize(
         i32::try_from(lwork).is_ok(),
         "add_diagonalize: lwork = {lwork} does not fit the solver's i32"
     );
-    let rows = dag.add(
+    let rows = dag.add_gpu(
         "syevd",
         worker,
         Syevd {
@@ -122,7 +124,7 @@ pub fn add_diagonalize(
             name: name.to_owned(),
         },
     );
-    dag.add("syevd check", worker, Check { info: rows.info });
+    dag.add_cpu("syevd check", worker, Check { info: rows.info });
     (rows.u, rows.w)
 }
 
@@ -144,9 +146,8 @@ struct SyevdRows {
     info: RowId<Pinned, i32>,
 }
 
-impl Task for Syevd {
+impl GpuTask for Syevd {
     type Rows = SyevdRows;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> SyevdRows {
         device.read(self.a);
@@ -167,12 +168,9 @@ impl Task for Syevd {
         &self,
         rows: &SyevdRows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        host: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let mut u = device.take_mut(rows.u);
         memcpy_d2d(&u, device.get(self.a), worker)?;
         let mut w = device.take_mut(rows.w);
@@ -202,15 +200,14 @@ struct Check<H: HostKind> {
     info: RowId<H, i32>,
 }
 
-impl<H: HostKind, S> Task<H, S> for Check<H> {
+impl<H: HostKind> CpuTask<H> for Check<H> {
     type Rows = ();
-    const GPU: bool = false;
 
-    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, H>) {
+    fn layout(&self, host: &mut Layout<'_, H>) {
         host.read(self.info);
     }
 
-    fn run(&self, _: &(), _: &Bufs<'_, Device>, host: &Bufs<'_, H>, _: Lane<'_, S>) -> Status {
+    fn run(&self, _: &(), host: &Bufs<'_, H>) -> Status {
         // info < 0 names a refused argument (a bug in the caller, not in A);
         // info > 0 is non-convergence, which is A's doing.
         match host.get(self.info)[0] {
@@ -236,21 +233,14 @@ mod tests {
     /// CPU: a fixture's flag written into a host row.
     struct Flag(i32);
 
-    impl Task<Heap, ()> for Flag {
+    impl CpuTask<Heap> for Flag {
         type Rows = RowId<Heap, i32>;
-        const GPU: bool = false;
 
-        fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Heap>) -> Self::Rows {
+        fn layout(&self, host: &mut Layout<'_, Heap>) -> Self::Rows {
             host.output("syevd info", 1)
         }
 
-        fn run(
-            &self,
-            info: &Self::Rows,
-            _: &Bufs<'_, Device>,
-            host: &Bufs<'_, Heap>,
-            _: Lane<'_, ()>,
-        ) -> Status {
+        fn run(&self, info: &Self::Rows, host: &Bufs<'_, Heap>) -> Status {
             host.take_mut(*info)[0] = self.0;
             Ok(())
         }
@@ -259,8 +249,8 @@ mod tests {
     /// The check of the flag `info`, run once on `Heap` rows and no device.
     fn check(info: i32) -> Status {
         let mut dag: Dag<'static, Heap, ()> = Dag::new();
-        let row = dag.add("flag", 0, Flag(info));
-        dag.add("syevd check", 0, Check { info: row });
+        let row = dag.add_cpu("flag", 0, Flag(info));
+        dag.add_cpu("syevd check", 0, Check { info: row });
         dag.plan()
             .instantiate(&[0])
             .run(&mut HostOnly::new(0), 1)

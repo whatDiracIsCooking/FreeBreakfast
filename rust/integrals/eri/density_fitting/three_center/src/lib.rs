@@ -104,7 +104,7 @@ use fb_recipes_matrix_ao::add_harmonics;
 ///
 /// # Panics
 /// If `classes`, or a row `u` or `u_aux` holds, are rows of another
-/// worker's or another plan's table ([`Dag::add`]).
+/// worker's or another plan's table ([`Dag::add_gpu`]).
 #[debug_requires(basis.nshells() > 0, "an orbital basis of at least one shell")]
 #[debug_requires(aux.nshells() > 0, "an aux basis of at least one shell")]
 #[debug_requires(are_records_of(classes, basis), "classes are the records of basis")]

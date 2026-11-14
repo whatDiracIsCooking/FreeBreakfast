@@ -12,7 +12,7 @@
 //! |---|---|
 //! | `merge_sort_passes(stream, n, keys, keys_alt, values, values_alt)` | [`fb_merge_sort`]`(stream, n, keys, values, workspace, workspace_bytes)` |
 //! | `keys_alt` and `values_alt`, "n elements" each | one workspace of [`fb_merge_sort_workspace_bytes`] bytes, partitioned at [`FB_DEVICE_ALIGNMENT`] |
-//! | `inverse_sqrt<T>(stream, count, data, floor)` (`src/recipes/orthogonalize`), through wwr's `parallel_for` | [`fb_inverse_sqrt`]`(stream, count, data, floor)`, `f64` only, its index-per-thread launch written out |
+//! | `inverse_sqrt<T>(stream, count, data, floor)` (`src/recipes/orthogonalize`), through wwr's `parallel_for` | [`fb_inverse_sqrt`]`(stream, count, data, floor, floor_scale)`, `f64` only, its index-per-thread launch written out, and the floor optionally scaled by a value on the device |
 //! | `symmetrize(stream, n, a, lda)` and `mirror_triangle(stream, from_lower, n, a, lda)` (`src/recipes/symmetrize`), `lda` an `int64_t` | [`fb_symmetrize`] and [`fb_mirror_triangle`], `lda` the module's `int32_t`, the module's argument checks moved in as refusals |
 //! | `cholesky_diagonal_block(stream, jb, first, a, lda, info)` (`src/recipes/cholesky`), `lda` an `int64_t`, `kCholeskyBlock` | [`fb_cholesky_diagonal`]`(stream, jb, first, a, lda, l11, info)`, `lda` the module's `int32_t`, the factored tile also written packed into `l11` for the panel's trsm, null pointers refused too; [`FB_CHOLESKY_TILE`] |
 //! | `diis_solve(stream, m, ld, newest, gram, coeff, singular_out)` (`src/recipes/diis`), `kDiisSolveMaxDim` | [`fb_diis_solve`], the C++ doc comment's bounds and null pointers refused; [`FB_DIIS_SOLVE_MAX_DIM`] |
@@ -92,9 +92,16 @@ fn count_u32(routine: &str, name: &str, count: usize) -> u32 {
 }
 
 /// Replaces each of the first `count` elements of `data` with `1 / sqrt(x)`,
-/// in place, on `stream`, except an element at or below `floor`, which
-/// becomes 0: [`fb_inverse_sqrt`], over a slice it checks. The rest of
+/// in place, on `stream`, except an element at or below the floor, which
+/// becomes 0: [`fb_inverse_sqrt`], over slices it checks. The rest of
 /// `data` is left as it was; a `count` of 0 enqueues nothing.
+///
+/// The floor is `floor`, or `floor` times the first element of
+/// `floor_scale` when one is given: a value on the device, such as one a
+/// copy enqueued before this on `stream` wrote, so a floor known only from
+/// earlier work is never read on the host. The product is one correctly
+/// rounded multiplication, the bits of the host's `floor * scale`; the
+/// floor should be non-negative.
 ///
 /// The floor test comes before the square root, so the result is never
 /// Inf, nor a NaN that was not one already.
@@ -104,8 +111,8 @@ fn count_u32(routine: &str, name: &str, count: usize) -> u32 {
 /// fault inside the kernel surfaces at the next synchronization.
 ///
 /// # Panics
-/// If `count` is more than `data` holds, or does not fit a `u32`; before
-/// anything is enqueued.
+/// If `count` is more than `data` holds, or does not fit a `u32`, or
+/// `floor_scale` is empty; before anything is enqueued.
 #[debug_requires(floor >= 0.0, "the floor is non-negative")]
 #[track_caller]
 pub fn inverse_sqrt(
@@ -113,18 +120,28 @@ pub fn inverse_sqrt(
     count: usize,
     data: &mut impl DeviceSliceMut<f64>,
     floor: f64,
+    floor_scale: Option<&dyn DeviceSlice<f64>>,
 ) -> Status {
     assert!(
         count <= data.len(),
         "inverse_sqrt: count is {count}, but data holds {}",
         data.len()
     );
+    let scale = match floor_scale {
+        Some(scale) => {
+            assert!(!scale.is_empty(), "inverse_sqrt: floor_scale is empty");
+            scale.as_ptr()
+        }
+        None => std::ptr::null(),
+    };
     let count = count_u32("inverse_sqrt", "count", count);
     let data = data.as_mut_ptr();
     // SAFETY: the stream is live; data is device memory of at least count
     // doubles, checked above, and stays so, with no other user, until the
-    // enqueued work finishes (DeviceSliceMut's promise).
-    let status = unsafe { fb_inverse_sqrt(stream.stream(), count, data, floor) };
+    // enqueued work finishes (DeviceSliceMut's promise); scale is null or
+    // device memory of at least one double, checked above, with no writer
+    // until then (DeviceSlice's promise).
+    let status = unsafe { fb_inverse_sqrt(stream.stream(), count, data, floor, scale) };
     launched("fb_inverse_sqrt", status)
 }
 

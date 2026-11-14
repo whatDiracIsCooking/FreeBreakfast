@@ -54,10 +54,10 @@
 #![forbid(unsafe_code)]
 
 use contracts::debug_requires;
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2d};
 use fb_core_error_handling::{Result, Status};
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_planner::{Dag, GpuTask};
+use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::trsm;
 use fb_recipes_cholesky::add_cholesky;
 use wwr_sys::{wwr_blas_diag_type, wwr_blas_fill_mode, wwr_blas_operation, wwr_blas_side_mode};
@@ -85,7 +85,7 @@ use wwr_sys::{wwr_blas_diag_type, wwr_blas_fill_mode, wwr_blas_operation, wwr_bl
 ///
 /// # Panics
 /// If `naux` or `nao²` does not fit an `i32`, the BLAS's integer, or a row
-/// is of another worker's table ([`Dag::add`]).
+/// is of another worker's table ([`Dag::add_gpu`]).
 #[debug_requires(naux > 0, "a fitting set of at least one function")]
 #[debug_requires(nao > 0, "an orbital basis of at least one function")]
 #[track_caller]
@@ -107,7 +107,7 @@ pub fn add_density_fit(
         "add_density_fit: nao² = {nao}² does not fit the BLAS's i32"
     );
     let (l, checked) = add_cholesky(dag, worker, "L", naux, metric)?;
-    let b = dag.add(
+    let b = dag.add_gpu(
         "density fit",
         worker,
         Fit {
@@ -131,9 +131,8 @@ struct Fit {
     naux: usize,
 }
 
-impl Task for Fit {
+impl GpuTask for Fit {
     type Rows = RowId<Device, f64>;
-    const GPU: bool = true;
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.tensor);
@@ -150,12 +149,9 @@ impl Task for Fit {
         &self,
         b: &Self::Rows,
         device: &Bufs<'_, Device>,
-        _: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
+        _: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
     ) -> Status {
-        let Lane::Stream { stream: worker, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
         let mut b = device.take_mut(*b);
         memcpy_d2d(&b, device.get(self.tensor), worker)?;
         // add_density_fit checked that naux and nao² fit an i32; the handle

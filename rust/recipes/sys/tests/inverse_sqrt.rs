@@ -10,9 +10,11 @@
 //! it, one ulp above it, a negative value, both zeros) and ordinary values
 //! over the double range, repeated past three of the launch's blocks of
 //! four warps (128 or 256 threads), so a block boundary falls inside them;
-//! elements past `count` must be untouched. The launch goes through the
-//! safe [`inverse_sqrt`]; the C wrapper's own refusal, which the safe call
-//! cannot reach, is called raw.
+//! elements past `count` must be untouched. The floor scaled by a value on
+//! the device is the same floor: `0.5 * (2 * FLOOR)` is `FLOOR` exactly, a
+//! product of a power of two, so that launch is held to the same bits. The
+//! launch goes through the safe [`inverse_sqrt`]; the C wrapper's own
+//! refusal, which the safe call cannot reach, is called raw.
 
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::runtime::tests::DeviceBytes;
@@ -51,25 +53,11 @@ fn elements() -> Vec<f64> {
     (0..COUNT + TAIL).map(|i| pool[i % pool.len()]).collect()
 }
 
-/// Needs a GPU. Every element as the host maps it, bit for bit; the tail
-/// as it was.
-#[test]
-#[ignore = "tier 4: needs a GPU"]
-fn maps_each_element_as_the_host_does() {
-    let stream = Stream::new(0);
-    let host = elements();
-    let mut device = DeviceBytes::upload(&host, &stream);
-    inverse_sqrt(&stream, COUNT, &mut device, FLOOR).unwrap();
-    let got: Vec<u64> = device
-        .read(&stream)
-        .as_chunks::<8>()
-        .0
-        .iter()
-        .map(|c| u64::from_ne_bytes(*c))
-        .collect();
-
+/// Every element of `host` after the launch, `got`, as the host maps it
+/// under [`FLOOR`], bit for bit; the tail as it was.
+fn check(host: &[f64], got: &[u64]) {
     let mut misses = Vec::new();
-    for (i, (&x, &bits)) in host.iter().zip(&got).enumerate() {
+    for (i, (&x, &bits)) in host.iter().zip(got).enumerate() {
         let expected = if i >= COUNT {
             x
         } else if x <= FLOOR {
@@ -87,6 +75,46 @@ fn maps_each_element_as_the_host_does() {
     assert!(misses.is_empty(), "differ:\n{}", misses.join("\n"));
 }
 
+/// `device`'s elements as bits.
+fn bits(device: &DeviceBytes, stream: &Stream) -> Vec<u64> {
+    device
+        .read(stream)
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| u64::from_ne_bytes(*c))
+        .collect()
+}
+
+/// Needs a GPU. Every element as the host maps it, bit for bit; the tail
+/// as it was.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn maps_each_element_as_the_host_does() {
+    let stream = Stream::new(0);
+    let host = elements();
+    let mut device = DeviceBytes::upload(&host, &stream);
+    inverse_sqrt(&stream, COUNT, &mut device, FLOOR, None).unwrap();
+    check(&host, &bits(&device, &stream));
+}
+
+/// Needs a GPU. The floor as `0.5` times `2 * FLOOR` read on the device
+/// maps every element as `FLOOR` passed by value does, bit for bit.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn a_scaled_floor_is_the_floor_by_value() {
+    let stream = Stream::new(0);
+    let host = elements();
+    let scale = DeviceBytes::upload(&[2.0 * FLOOR], &stream);
+    let mut scaled = DeviceBytes::upload(&host, &stream);
+    inverse_sqrt(&stream, COUNT, &mut scaled, 0.5, Some(&scale)).unwrap();
+    let mut by_value = DeviceBytes::upload(&host, &stream);
+    inverse_sqrt(&stream, COUNT, &mut by_value, FLOOR, None).unwrap();
+    let got = bits(&scaled, &stream);
+    assert_eq!(got, bits(&by_value, &stream));
+    check(&host, &got);
+}
+
 /// Needs a GPU. A count past the slice panics before anything is
 /// enqueued.
 #[test]
@@ -95,7 +123,7 @@ fn maps_each_element_as_the_host_does() {
 fn the_safe_call_refuses_a_count_past_the_slice() {
     let stream = Stream::new(0);
     let mut device = DeviceBytes::new(4 * size_of::<f64>());
-    let _ = inverse_sqrt(&stream, 5, &mut device, FLOOR);
+    let _ = inverse_sqrt(&stream, 5, &mut device, FLOOR, None);
 }
 
 /// The C wrapper's refusal: a null array is refused before any launch, and
@@ -104,7 +132,8 @@ fn the_safe_call_refuses_a_count_past_the_slice() {
 fn refuses_a_null_array() {
     let null = std::ptr::null_mut();
     // SAFETY: every call below returns before it reads a pointer.
-    let raw = |count: u32| unsafe { fb_inverse_sqrt(null, count, null.cast(), FLOOR) };
+    let raw =
+        |count: u32| unsafe { fb_inverse_sqrt(null, count, null.cast(), FLOOR, std::ptr::null()) };
     assert_eq!(raw(5), FB_LAUNCH_INVALID_ARGUMENT);
     assert_eq!(raw(0), FB_LAUNCH_SUCCESS);
 }
