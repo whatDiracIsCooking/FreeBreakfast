@@ -667,11 +667,13 @@ dependencies = [
  "fb-io-basis",
  "fb-io-npy",
  "fb-io-xyz",
+ "fb-molecule",
  "fb-molecule-nuclei",
  "fb-recipes-blas",
  "fb-recipes-diagonalize",
  "fb-recipes-orthogonalize",
  "fb-test-support",
+ "wwr-sys",
 ]
 
 [[package]]
