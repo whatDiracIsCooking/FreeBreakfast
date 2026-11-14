@@ -10,6 +10,10 @@
 //! | the same `gemm<T>`, called with raw pointers | [`gemm`], over [`DeviceSlice`]s it checks |
 //! | `dgmm<T>` over `wwrblas{S,D,C,Z}dgmm` | [`BlasScalar`]'s `dgmm_raw` |
 //! | the same `dgmm<T>`, called with raw pointers | [`dgmm`], over [`DeviceSlice`]s it checks; `incx` at least 1, and C never A (no in-place call) |
+//! | `gemmStridedBatched<T>` over `wwrblas{S,D,C,Z}gemmStridedBatched` | [`BlasScalar`]'s `gemm_strided_batched_raw` |
+//! | the same `gemmStridedBatched<T>`, called with raw pointers | [`gemm_strided_batched`], over [`DeviceSlice`]s it checks at every stride; C's matrices apart from one another |
+//! | `gemv<T>` over `wwrblas{S,D,C,Z}gemv` | [`BlasScalar`]'s `gemv_raw` |
+//! | the same `gemv<T>`, called with raw pointers | [`gemv`], over [`DeviceSlice`]s it checks; `incx` and `incy` at least 1 |
 //! | `trsm<T>` and `syrk<T>` over `wwrblas{S,D,C,Z}trsm` and `…syrk` | [`BlasScalar`]'s `trsm_raw` and `syrk_raw` |
 //! | the same `trsm<T>` and `syrk<T>`, called with raw pointers | [`trsm`] and [`syrk`], over [`DeviceSlice`]s they check; B and C never A (no in-place call) |
 //! | `kOne<T>`, `kZero<T>` (`core/constants`), the BLAS scalars one and zero by address | [`BlasScalar::ONE`] and [`BlasScalar::ZERO`], by value |
@@ -32,9 +36,8 @@
 //! method per routine, implemented for the four types the library computes
 //! in, each forwarding to its letter's C ABI call. It takes raw pointers
 //! and is `unsafe`, as the C ABI is; only this crate calls it. [`gemm`],
-//! [`dgmm`], [`trsm`] and [`syrk`] are the safe calls over it: their
-//! operands are
-//! [`DeviceSlice`]s, each extent
+//! [`gemm_strided_batched`], [`gemv`], [`dgmm`], [`trsm`] and [`syrk`] are
+//! the safe calls over it: their operands are [`DeviceSlice`]s, each extent
 //! the call will touch is checked against the slice's length before
 //! anything is enqueued, and a slice too short panics, as an index out of
 //! a slice's bounds does. That check is what makes it safe, so it is on in
@@ -44,9 +47,9 @@
 //! **What the safe calls leave out.** The library's `dgmm` may write C over
 //! A, but a slice cannot be borrowed shared and exclusive at once, so
 //! [`dgmm`] offers no in-place form: C is always memory of its own. Its
-//! stride `incx` is at least 1: the library's 0 (one scale for every
-//! row or column) and negative strides (x read backwards) are refused, as
-//! nothing in the tree asks for them. Likewise [`trsm`]'s B and [`syrk`]'s
+//! stride `incx` is at least 1, as [`gemv`]'s are: the library's 0 (one
+//! entry for every row or column) and negative strides (a vector read
+//! backwards) are refused, as nothing in the tree asks for them. Likewise [`trsm`]'s B and [`syrk`]'s
 //! C are memory of their own, apart from A: a caller whose operands are
 //! blocks of one matrix cuts it into disjoint parts first
 //! ([`split_at_mut`](crate::device_slice::split_at_mut)).
@@ -259,8 +262,9 @@ impl DeviceHandleStream for BlasHandle {
 
 /// A type the BLAS computes in: `f32`, `f64`, [`wwr_complex64`] and
 /// [`wwr_complex128`], wwr's `usual_fp`. Each method is the C ABI call of
-/// the type's letter. Sealed, since [`gemm`], [`dgmm`], [`trsm`] and
-/// [`syrk`] trust each method to be that call.
+/// the type's letter. Sealed, since [`gemm`], [`gemm_strided_batched`],
+/// [`gemv`], [`dgmm`], [`trsm`] and [`syrk`] trust each method to be that
+/// call.
 pub trait BlasScalar: Copy + sealed::Sealed {
     /// One (`1 + 0i` on a complex type), the `alpha` of a plain product:
     /// the C++ `kOne<T>`.
@@ -295,6 +299,36 @@ pub trait BlasScalar: Copy + sealed::Sealed {
         beta: *const Self,
         c: *mut Self,
         ldc: i32,
+    ) -> wwr_blas_status;
+
+    /// `wwrblas<t>gemmStridedBatched`: `batch` products
+    /// `C_i = alpha op_a(A_i) op_b(B_i) + beta C_i`, each as
+    /// [`BlasScalar::gemm_raw`]'s, operand `i` of each matrix `i` strides
+    /// past its first.
+    ///
+    /// # Safety
+    /// As [`BlasScalar::gemm_raw`], for every operand of every batch at its
+    /// stride; no two of the C's overlap.
+    #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+    unsafe fn gemm_strided_batched_raw(
+        handle: wwr_blas_handle,
+        op_a: wwr_blas_operation,
+        op_b: wwr_blas_operation,
+        m: i32,
+        n: i32,
+        k: i32,
+        alpha: *const Self,
+        a: *const Self,
+        lda: i32,
+        stride_a: i64,
+        b: *const Self,
+        ldb: i32,
+        stride_b: i64,
+        beta: *const Self,
+        c: *mut Self,
+        ldc: i32,
+        stride_c: i64,
+        batch: i32,
     ) -> wwr_blas_status;
 
     /// `wwrblas<t>dgmm`: `C = A diag(x)` (`WWR_BLAS_SIDE_RIGHT`, x of n
@@ -367,6 +401,32 @@ pub trait BlasScalar: Copy + sealed::Sealed {
         c: *mut Self,
         ldc: i32,
     ) -> wwr_blas_status;
+
+    /// `wwrblas<t>gemv`: `y = alpha op(A) x + beta y`, column-major, A
+    /// stored m × n, x of n entries and y of m under `WWR_BLAS_OP_N`, the
+    /// other way round under `_T`, each vector read at its stride.
+    ///
+    /// # Safety
+    /// The library's: `handle` is live; A, x and y are device memory on its
+    /// device covering their extents at `lda`, `incx` and `incy`; y apart
+    /// from A and x; `alpha` and `beta` read as the handle's pointer mode
+    /// says; all of it alive until the work enqueued on the handle's
+    /// stream has finished.
+    #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+    unsafe fn gemv_raw(
+        handle: wwr_blas_handle,
+        op: wwr_blas_operation,
+        m: i32,
+        n: i32,
+        alpha: *const Self,
+        a: *const Self,
+        lda: i32,
+        x: *const Self,
+        incx: i32,
+        beta: *const Self,
+        y: *mut Self,
+        incy: i32,
+    ) -> wwr_blas_status;
 }
 
 mod sealed {
@@ -374,7 +434,8 @@ mod sealed {
 }
 
 macro_rules! blas_scalar {
-    ($($t:ty => $gemm:ident, $dgmm:ident, $trsm:ident, $syrk:ident, $one:expr, $zero:expr);* $(;)?) => {$(
+    ($($t:ty => $gemm:ident, $batched:ident, $dgmm:ident, $trsm:ident, $syrk:ident,
+        $gemv:ident, $one:expr, $zero:expr);* $(;)?) => {$(
         impl sealed::Sealed for $t {}
 
         impl BlasScalar for $t {
@@ -401,6 +462,35 @@ macro_rules! blas_scalar {
                 unsafe {
                     wwr_sys::$gemm(
                         handle, op_a, op_b, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc,
+                    )
+                }
+            }
+
+            unsafe fn gemm_strided_batched_raw(
+                handle: wwr_blas_handle,
+                op_a: wwr_blas_operation,
+                op_b: wwr_blas_operation,
+                m: i32,
+                n: i32,
+                k: i32,
+                alpha: *const Self,
+                a: *const Self,
+                lda: i32,
+                stride_a: i64,
+                b: *const Self,
+                ldb: i32,
+                stride_b: i64,
+                beta: *const Self,
+                c: *mut Self,
+                ldc: i32,
+                stride_c: i64,
+                batch: i32,
+            ) -> wwr_blas_status {
+                // SAFETY: the caller's, which are the call's.
+                unsafe {
+                    wwr_sys::$batched(
+                        handle, op_a, op_b, m, n, k, alpha, a, lda, stride_a, b, ldb, stride_b,
+                        beta, c, ldc, stride_c, batch,
                     )
                 }
             }
@@ -457,16 +547,38 @@ macro_rules! blas_scalar {
                 // SAFETY: the caller's, which are the call's.
                 unsafe { wwr_sys::$syrk(handle, fill, op, n, k, alpha, a, lda, beta, c, ldc) }
             }
+
+            unsafe fn gemv_raw(
+                handle: wwr_blas_handle,
+                op: wwr_blas_operation,
+                m: i32,
+                n: i32,
+                alpha: *const Self,
+                a: *const Self,
+                lda: i32,
+                x: *const Self,
+                incx: i32,
+                beta: *const Self,
+                y: *mut Self,
+                incy: i32,
+            ) -> wwr_blas_status {
+                // SAFETY: the caller's, which are the call's.
+                unsafe { wwr_sys::$gemv(handle, op, m, n, alpha, a, lda, x, incx, beta, y, incy) }
+            }
         }
     )*};
 }
 
 blas_scalar! {
-    f32 => wwr_blas_sgemm, wwr_blas_sdgmm, wwr_blas_strsm, wwr_blas_ssyrk, 1.0, 0.0;
-    f64 => wwr_blas_dgemm, wwr_blas_ddgmm, wwr_blas_dtrsm, wwr_blas_dsyrk, 1.0, 0.0;
-    wwr_complex64 => wwr_blas_cgemm, wwr_blas_cdgmm, wwr_blas_ctrsm, wwr_blas_csyrk,
+    f32 => wwr_blas_sgemm, wwr_blas_sgemm_strided_batched, wwr_blas_sdgmm, wwr_blas_strsm,
+        wwr_blas_ssyrk, wwr_blas_sgemv, 1.0, 0.0;
+    f64 => wwr_blas_dgemm, wwr_blas_dgemm_strided_batched, wwr_blas_ddgmm, wwr_blas_dtrsm,
+        wwr_blas_dsyrk, wwr_blas_dgemv, 1.0, 0.0;
+    wwr_complex64 => wwr_blas_cgemm, wwr_blas_cgemm_strided_batched, wwr_blas_cdgmm,
+        wwr_blas_ctrsm, wwr_blas_csyrk, wwr_blas_cgemv,
         wwr_complex64 { re: 1.0, im: 0.0 }, wwr_complex64 { re: 0.0, im: 0.0 };
-    wwr_complex128 => wwr_blas_zgemm, wwr_blas_zdgmm, wwr_blas_ztrsm, wwr_blas_zsyrk,
+    wwr_complex128 => wwr_blas_zgemm, wwr_blas_zgemm_strided_batched, wwr_blas_zdgmm,
+        wwr_blas_ztrsm, wwr_blas_zsyrk, wwr_blas_zgemv,
         wwr_complex128 { re: 1.0, im: 0.0 }, wwr_complex128 { re: 0.0, im: 0.0 };
 }
 
@@ -583,6 +695,235 @@ pub fn gemm<T: BlasScalar>(
             &beta,
             c,
             ldc,
+        )
+    })
+}
+
+/// Panic unless `batch` column-major `rows` × `cols` matrices at leading
+/// dimension `ld`, the `i`-th `i · stride` elements past the first, fit in
+/// `len` elements: `stride` is non-negative, and, when `apart`, at least
+/// one matrix's extent, so no two of them overlap (an operand the call
+/// writes). An empty batch or matrix touches nothing.
+#[track_caller]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one matrix's extent and its batch"
+)]
+pub(crate) fn check_batch(
+    routine: &str,
+    name: &str,
+    len: usize,
+    rows: i32,
+    cols: i32,
+    ld: i32,
+    stride: i64,
+    batch: i32,
+    apart: bool,
+) {
+    assert!(
+        stride >= 0,
+        "{routine}: {name}'s stride {stride} is negative"
+    );
+    // An empty batch reads nothing; its leading dimension is still checked.
+    check_extent(
+        routine,
+        name,
+        len,
+        rows,
+        if batch == 0 { 0 } else { cols },
+        ld,
+    );
+    if batch == 0 || rows == 0 || cols == 0 {
+        return;
+    }
+    // In u64, where a product of two i32s cannot overflow.
+    let one = ld as u64 * (cols as u64 - 1) + rows as u64;
+    assert!(
+        !apart || batch == 1 || stride as u64 >= one,
+        "{routine}: {name}'s stride {stride} is less than one matrix's {one} elements, so two \
+         of the batch overlap"
+    );
+    let need = (stride as u64)
+        .checked_mul(batch as u64 - 1)
+        .and_then(|last| last.checked_add(one));
+    assert!(
+        need.is_some_and(|need| need <= len as u64),
+        "{routine}: {name} is {batch} matrices {rows} x {cols} at leading dimension {ld} and \
+         stride {stride}, but its slice holds {len} elements"
+    );
+}
+
+/// `batch` products `C_i = alpha op_a(A_i) op_b(B_i) + beta C_i` on
+/// `handle`'s stream, each as [`gemm`]'s, operand `i` of A, B and C
+/// `i · stride` elements past its first. wwr's `gemmStridedBatched<T>`,
+/// with every operand a slice it checks.
+///
+/// A stride of 0 for A or B shares one matrix with every product (the
+/// transform of each block by one U); C's stride is at least one C's
+/// extent, so no two products write the same element. With `beta` zero, C
+/// need not be initialised. The borrow checker keeps C apart from A and B.
+///
+/// # Errors
+/// The library's refusal, as a `GpuRuntime` error naming the status.
+///
+/// # Panics
+/// If m, n, k or `batch` is negative, a leading dimension is less than its
+/// matrix's row count (or 1), a stride is negative, C's stride is less than
+/// one C's extent (with more than one product), or a slice is shorter than
+/// its last matrix at its stride; before anything is enqueued.
+#[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+#[track_caller]
+pub fn gemm_strided_batched<T: BlasScalar>(
+    handle: &BlasHandle,
+    op_a: wwr_blas_operation,
+    op_b: wwr_blas_operation,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha: T,
+    a: &impl DeviceSlice<T>,
+    lda: i32,
+    stride_a: i64,
+    b: &impl DeviceSlice<T>,
+    ldb: i32,
+    stride_b: i64,
+    beta: T,
+    c: &mut impl DeviceSliceMut<T>,
+    ldc: i32,
+    stride_c: i64,
+    batch: i32,
+) -> Status {
+    const ROUTINE: &str = "gemm_strided_batched";
+    assert!(
+        m >= 0 && n >= 0 && k >= 0 && batch >= 0,
+        "{ROUTINE}: m, n, k and batch are {m}, {n}, {k} and {batch}"
+    );
+    let stored = |op, rows, cols| {
+        if op == wwr_blas_operation::WWR_BLAS_OP_N {
+            (rows, cols)
+        } else {
+            (cols, rows)
+        }
+    };
+    let (a_rows, a_cols) = stored(op_a, m, k);
+    let (b_rows, b_cols) = stored(op_b, k, n);
+    check_batch(
+        ROUTINE,
+        "A",
+        a.len(),
+        a_rows,
+        a_cols,
+        lda,
+        stride_a,
+        batch,
+        false,
+    );
+    check_batch(
+        ROUTINE,
+        "B",
+        b.len(),
+        b_rows,
+        b_cols,
+        ldb,
+        stride_b,
+        batch,
+        false,
+    );
+    check_batch(ROUTINE, "C", c.len(), m, n, ldc, stride_c, batch, true);
+    let c = c.as_mut_ptr();
+    // SAFETY: the handle is live; each slice is device memory covering every
+    // matrix of the batch at its stride, checked above, and stays so until
+    // the enqueued work finishes (DeviceSlice's promise); C is its memory's
+    // only user (DeviceSliceMut's), so apart from A and B, and its matrices
+    // are apart from one another (checked above); the scalars are host
+    // values, the handle's default pointer mode.
+    gpu_status(unsafe {
+        T::gemm_strided_batched_raw(
+            handle.get(),
+            op_a,
+            op_b,
+            m,
+            n,
+            k,
+            &alpha,
+            a.as_ptr(),
+            lda,
+            stride_a,
+            b.as_ptr(),
+            ldb,
+            stride_b,
+            &beta,
+            c,
+            ldc,
+            stride_c,
+            batch,
+        )
+    })
+}
+
+/// `y = alpha op(A) x + beta y` on `handle`'s stream: column-major, A
+/// stored m × n at its leading dimension, x of n entries and y of m under
+/// `WWR_BLAS_OP_N`, x of m and y of n under `_T` or `_C` (the same as `_T`
+/// on a real `T`), each vector at its stride. wwr's `gemv<T>`, with every
+/// operand a slice it checks.
+///
+/// `alpha` and `beta` are host values, read in the handle's default pointer
+/// mode. With `beta` zero, y need not be initialised. The borrow checker
+/// keeps y apart from A and x. The strides are at least 1: the library's 0
+/// and negative ones are refused.
+///
+/// # Errors
+/// The library's refusal, as a `GpuRuntime` error naming the status.
+///
+/// # Panics
+/// If m or n is negative, A's leading dimension is less than m (or 1), a
+/// stride is less than 1, or a slice is shorter than its operand's extent;
+/// before anything is enqueued.
+#[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+#[track_caller]
+pub fn gemv<T: BlasScalar>(
+    handle: &BlasHandle,
+    op: wwr_blas_operation,
+    m: i32,
+    n: i32,
+    alpha: T,
+    a: &impl DeviceSlice<T>,
+    lda: i32,
+    x: &impl DeviceSlice<T>,
+    incx: i32,
+    beta: T,
+    y: &mut impl DeviceSliceMut<T>,
+    incy: i32,
+) -> Status {
+    assert!(m >= 0 && n >= 0, "gemv: m and n are {m} and {n}");
+    let (x_count, y_count) = if op == wwr_blas_operation::WWR_BLAS_OP_N {
+        (n, m)
+    } else {
+        (m, n)
+    };
+    check_extent("gemv", "A", a.len(), m, n, lda);
+    check_vector("gemv", "x", x.len(), x_count, incx);
+    check_vector("gemv", "y", y.len(), y_count, incy);
+    let y = y.as_mut_ptr();
+    // SAFETY: the handle is live; each slice is device memory covering its
+    // extent, checked above, and stays so until the enqueued work finishes
+    // (DeviceSlice's promise); y is its memory's only user
+    // (DeviceSliceMut's), so apart from A and x; the scalars are host
+    // values, the handle's default pointer mode.
+    gpu_status(unsafe {
+        T::gemv_raw(
+            handle.get(),
+            op,
+            m,
+            n,
+            &alpha,
+            a.as_ptr(),
+            lda,
+            x.as_ptr(),
+            incx,
+            &beta,
+            y,
+            incy,
         )
     })
 }
@@ -1017,6 +1358,181 @@ mod tests {
         let _ = gemm(
             &blas, OP_N, OP_N, 4, 4, 4, 1.0, &a, 4, &a, 4, 0.0, &mut c, 4,
         );
+    }
+
+    /// Needs a GPU. Three products of transposed A's at a padded stride
+    /// against one shared B (stride 0), into C's at a stride past their
+    /// extent, beta non-zero: each product exact, and the elements between
+    /// the C's left as they were.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn gemm_strided_batched_strides_each_operand_and_shares_a_zero_stride() {
+        let (m, n, k, batch) = (4, 3, 5, 3);
+        let (lda, ldb, ldc) = (k + 1, k + 2, m + 1);
+        // A_i is stored k × m (op T) at stride lda m + 3; B, k × n, shared.
+        let (stride_a, stride_c) = (lda * m + 3, ldc * n + 2);
+        let a = matrix(stride_a * batch, 1, 4);
+        let b = matrix(ldb, n, 5);
+        let c = matrix(stride_c * batch, 1, 6);
+        let mut want = c.clone();
+        for i in 0..batch {
+            let block = host_gemm(
+                true,
+                false,
+                (m, n, k),
+                2.0,
+                (&a[i * stride_a..], lda),
+                (&b, ldb),
+                -1.0,
+                (&c[i * stride_c..i * stride_c + ldc * n], ldc),
+            );
+            want[i * stride_c..i * stride_c + ldc * n].copy_from_slice(&block);
+        }
+        let owner = Rc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner.clone());
+        let (da, db, mut dc) = (
+            DeviceBytes::upload(&a, &owner),
+            DeviceBytes::upload(&b, &owner),
+            DeviceBytes::upload(&c, &owner),
+        );
+        let i = |x: usize| x as i32;
+        let l = |x: usize| x as i64;
+        gemm_strided_batched(
+            &blas,
+            OP_T,
+            OP_N,
+            i(m),
+            i(n),
+            i(k),
+            2.0,
+            &da,
+            i(lda),
+            l(stride_a),
+            &db,
+            i(ldb),
+            0,
+            -1.0,
+            &mut dc,
+            i(ldc),
+            l(stride_c),
+            i(batch),
+        )
+        .unwrap();
+        assert_eq!(download(&dc, &owner), want);
+    }
+
+    /// The last matrix of a batch ends inside its slice, and one more
+    /// element is past it.
+    #[test]
+    fn a_batch_fits_to_its_last_matrix() {
+        // Three 2 × 2 at ld 3 and stride 7: the last starts at 14, ends at 19.
+        check_batch("t", "C", 19, 2, 2, 3, 7, 3, true);
+        check_batch("t", "B", 5, 2, 2, 3, 0, 3, false);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "t: C is 3 matrices 2 x 2 at leading dimension 3 and stride 7, but its slice \
+                    holds 18 elements"
+    )]
+    fn a_batch_one_past_the_slice_panics() {
+        check_batch("t", "C", 18, 2, 2, 3, 7, 3, true);
+    }
+
+    /// Two products writing the same element: a C stride under one
+    /// matrix's extent.
+    #[test]
+    #[should_panic(expected = "t: C's stride 4 is less than one matrix's 5 elements")]
+    fn a_written_batch_that_overlaps_panics() {
+        check_batch("t", "C", 100, 2, 2, 3, 4, 3, true);
+    }
+
+    #[test]
+    #[should_panic(expected = "t: A's stride -1 is negative")]
+    fn a_negative_batch_stride_panics() {
+        check_batch("t", "A", 100, 2, 2, 3, -1, 3, false);
+    }
+
+    /// One gemv on a card, `y = -2 op(A) x + 3 y`, A's leading dimension
+    /// padded and both vectors at stride 2: y's entries are the host's,
+    /// exact on small integers, and the entries between them come back as
+    /// they were.
+    fn check_gemv(op: wwr_blas_operation) {
+        let (m, n) = (5, 3);
+        let lda = m + 2;
+        let (x_count, y_count) = if op == OP_N { (n, m) } else { (m, n) };
+        let (incx, incy) = (2, 2);
+        let a = matrix(lda, n, 1);
+        let x = matrix(1 + (x_count - 1) * incx, 1, 2);
+        let y = matrix(1 + (y_count - 1) * incy, 1, 3);
+        let mut want = y.clone();
+        for r in 0..y_count {
+            let dot: f64 = (0..x_count)
+                .map(|l| {
+                    let at = if op == OP_N {
+                        a[r + l * lda]
+                    } else {
+                        a[l + r * lda]
+                    };
+                    at * x[l * incx]
+                })
+                .sum();
+            want[r * incy] = -2.0 * dot + 3.0 * y[r * incy];
+        }
+        let owner = Rc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner.clone());
+        let (da, dx, mut dy) = (
+            DeviceBytes::upload(&a, &owner),
+            DeviceBytes::upload(&x, &owner),
+            DeviceBytes::upload(&y, &owner),
+        );
+        let i = |v: usize| v as i32;
+        gemv::<f64>(
+            &blas,
+            op,
+            i(m),
+            i(n),
+            -2.0,
+            &da,
+            i(lda),
+            &dx,
+            i(incx),
+            3.0,
+            &mut dy,
+            i(incy),
+        )
+        .unwrap();
+        assert_eq!(download(&dy, &owner), want);
+    }
+
+    /// Needs a GPU. `y = A x`, the fitted factor contracted with a density.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn gemv_multiplies_by_a() {
+        check_gemv(OP_N);
+    }
+
+    /// Needs a GPU. `y = Aᵀ x`: x has m entries and y n.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn gemv_multiplies_by_the_transpose() {
+        check_gemv(OP_T);
+    }
+
+    /// Needs a GPU. Under `OP_T` y has n entries, so a y of n - 1 is short
+    /// and panics before anything is enqueued.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    #[should_panic(
+        expected = "gemv: y is 3 entries at stride 1, 3 elements, but its slice holds 2"
+    )]
+    fn gemv_refuses_a_short_slice() {
+        let owner = Rc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner);
+        let a = DeviceBytes::new(15 * size_of::<f64>());
+        let x = DeviceBytes::new(5 * size_of::<f64>());
+        let mut y = DeviceBytes::new(2 * size_of::<f64>());
+        let _ = gemv::<f64>(&blas, OP_T, 5, 3, 1.0, &a, 5, &x, 1, 0.0, &mut y, 1);
     }
 
     use wwr_blas_diag_type::WWR_BLAS_DIAG_NON_UNIT as NON_UNIT;
