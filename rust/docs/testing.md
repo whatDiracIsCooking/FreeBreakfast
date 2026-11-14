@@ -307,7 +307,8 @@ decision is written down here:
   module ([`README.md`](../README.md), "What is here").
 - **No umbrella crate.** No prelude, no crate that re-exports the tree. `core`
   is split so that a crate which only logs does not depend on the handle
-  types. An edge that exists for convenience costs every PR that touches its
+  types, and no crate that depends on them re-exports the logging macros,
+  which would offer it as a way to log. An edge that exists for convenience costs every PR that touches its
   target, forever.
 - **The graph is tested.** A tier-3 test reads the package graph with
   [`guppy`](https://crates.io/crates/guppy) and fails when a crate's reverse

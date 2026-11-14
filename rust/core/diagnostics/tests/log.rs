@@ -10,9 +10,10 @@
 use std::panic::Location;
 use std::process::Command;
 
-use fb_core_diagnostics::{critical, debug, error, gpu_must, info, trace, warn};
+use ::log::{debug, error, info, trace, warn};
+use fb_core_diagnostics::gpu_must;
 use fb_core_error_handling::{Error, check_or_abort};
-use fb_core_log::{self as log, LogLevel};
+use fb_core_log::{self as log, LogLevel, critical};
 use fb_core_wwr::gpu_log_error_at;
 use wwr_sys::wwr_status;
 

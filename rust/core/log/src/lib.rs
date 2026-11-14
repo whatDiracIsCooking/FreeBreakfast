@@ -1,9 +1,9 @@
 //! `src/core/log` (module `free_breakfast.core.log`): the logger behind the
 //! [`log`](https://crates.io/crates/log) facade.
 //!
-//! Call sites use `log`'s macros (`log::info!`, `log::warn!`, ...), or the
-//! same macros through `fb_core_diagnostics`, which adds
-//! [`critical!`](crate::critical). This module is the one backend they
+//! Call sites use `log`'s macros (`log::info!`, `log::warn!`, ...) and this
+//! crate's [`critical!`](crate::critical), each imported from where it is
+//! defined: no other crate re-exports them. This module is the one backend they
 //! reach, as spdlog is the one backend behind the C++ module, and nothing
 //! outside it names how a line is written.
 //!
