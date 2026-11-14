@@ -74,7 +74,8 @@
 //!
 //! A loop is a sub-DAG replayed between host decisions
 //! (`docs/programming_model.md`, "Plan once, run many"). Its decision is a
-//! CPU node after every body node, so a CPU worker has waited on the host
+//! CPU node after every body node, and after any node before the body it
+//! is given, so a CPU worker has waited on the host
 //! for every GPU body node's work before it runs: the body is quiescent,
 //! its events complete, when the decision readies it again. The replay
 //! happens under the run's one lock, in the same scope, on the same

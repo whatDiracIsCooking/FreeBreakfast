@@ -360,8 +360,8 @@ reaching a minimum) whose output is read on the host.
 
 **The executor replays the body in the run it is in.** In
 `fb_core_thread_pool`, a loop is its body, the nodes added after a given
-one, and a decision node `Plan::add_loop` adds after the body's sinks, so
-after every body node. The decision is a CPU node, so a worker has waited
+one, and a decision node `Plan::add_loop` adds after the body's sinks and
+any node before the body it is given, so after every body node. The decision is a CPU node, so a worker has waited
 on the host for every GPU body node before it runs: the body's work has
 completed, and its rows and events are free to be used again, when the
 decision returns. Its `Continue` readies the body again, under the run's
@@ -373,6 +373,15 @@ planning beside the dimensions: a decision that would start one iteration
 past it fails the run with `MaxIterationsExceeded`, and a failed body node
 ends the loop and skips what follows it, as any failure skips its
 descendants. A loop in a loop's body is not built.
+
+**The planner closes a loop the same way.** `fb_core_planner::Dag::add_loop`
+takes the position of the body's first task, its bound and a `Decision`: a
+CPU node that declares host rows as a task does, reads what the body copied
+to the host for it, and returns `Continue` or `Break`. The body's rows are a
+table laid out once, in a region of each worker's tables the parent holds
+while the loop runs, and the rows it carries between iterations are the
+parent's ([`memory.md`](memory.md), "Nested plans"), so a replay is
+admitted with the plan and allocates nothing.
 
 **DAGs nest.** A node may be a sub-DAG with dimensions of its own. The
 pipeline is a DAG of steps; a step is a DAG of tasks; the RHF step's body is a

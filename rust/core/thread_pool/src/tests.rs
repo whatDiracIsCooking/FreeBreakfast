@@ -488,7 +488,7 @@ fn fixed_point_plan<'a>(
         it.x = next;
         Ok(())
     });
-    let decision = plan.add_loop("converged", ax, max_iterations, |_| {
+    let decision = plan.add_loop("converged", ax, &[], max_iterations, |_| {
         Ok(if it.lock().unwrap().moved <= TOL {
             ControlFlow::Break(())
         } else {
@@ -607,13 +607,40 @@ fn a_failed_body_node_ends_the_loop_and_the_run() {
     assert!(iterations_of(&record, "report").is_empty());
 }
 
+/// Tier 2: a decision runs after the predecessors it is given as well as
+/// its body: a node before the body that no body node follows has finished
+/// before the first decision, and is not run again by a replay.
+#[test]
+fn a_decision_runs_after_its_own_predecessors() {
+    let before = AtomicUsize::new(0);
+    let mut plan: Plan<'_, ()> = Plan::new();
+    let slow = plan.add("slow", Placement::Cpu, &[], |_| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        before.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    });
+    let body = plan.add("body", Placement::Cpu, &[], |_| Ok(()));
+    let decision = plan.add_loop("decide", body, &[slow], 3, |i| {
+        assert_eq!(before.load(Ordering::SeqCst), 1, "iteration {i}");
+        Ok(if i + 1 < 3 {
+            ControlFlow::Continue(())
+        } else {
+            ControlFlow::Break(())
+        })
+    });
+    let record = run(&mut plan, &mut HostOnly::new(0), 2);
+    record.result.unwrap();
+    assert_eq!(record.iterations, BTreeMap::from([(decision, 3)]));
+    assert_eq!(before.load(Ordering::SeqCst), 1);
+}
+
 #[test]
 #[cfg(debug_assertions)] // the contract is compiled out of release
 #[should_panic(expected = "no predecessor is in a closed loop's body")]
 fn a_node_after_a_loop_cannot_read_its_body() {
     let mut plan: Plan<'_, ()> = Plan::new();
     let body = plan.add("body", Placement::Cpu, &[], |_| Ok(()));
-    plan.add_loop("decide", body, 2, |_| Ok(ControlFlow::Break(())));
+    plan.add_loop("decide", body, &[], 2, |_| Ok(ControlFlow::Break(())));
     plan.add("after", Placement::Cpu, &[body], |_| Ok(()));
 }
 
@@ -817,7 +844,7 @@ fn device_loop_reads_each_iterations_stream_scope() {
         host_ran.fetch_add(1, Ordering::SeqCst);
         Ok(())
     });
-    let decision = plan.add_loop("decide", copies, ITERATIONS, |i| {
+    let decision = plan.add_loop("decide", copies, &[], ITERATIONS, |i| {
         Ok(if i + 1 < ITERATIONS {
             ControlFlow::Continue(())
         } else {

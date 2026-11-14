@@ -3,16 +3,23 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::ops::ControlFlow;
 
 use super::BLAS_WORKSPACE_BYTES;
-use super::task::Task;
+use super::task::{Decision, Task};
+use contracts::debug_requires;
 use fb_core_arena::{Bufs, Device, Element, HostKind, Pinned, RowId, Table, TableBuilder};
-use fb_core_error_handling::Status;
+use fb_core_error_handling::{Result, Status};
 use fb_core_thread_pool::{DeviceStream, Lane, Placement};
 
 /// A task's `run` with its rows bound: what the executor's node calls.
 pub(super) type Run<'a, H, S> =
     Box<dyn Fn(&Bufs<'_, Device>, &Bufs<'_, H>, Lane<'_, S>) -> Status + Send + Sync + 'a>;
+
+/// A decision's `decide` with its rows bound: what the executor's
+/// decision node calls with the iteration's index.
+pub(super) type Decide<'a, H> =
+    Box<dyn Fn(&Bufs<'_, H>, usize) -> Result<ControlFlow<()>> + Send + Sync + 'a>;
 
 /// Bind the closure's signature where it is written: a closure passed
 /// straight to `Box::new` does not take its higher-ranked signature from
@@ -24,14 +31,34 @@ where
     Box::new(f)
 }
 
+/// As [`erase`], for a decision.
+fn erase_decide<'a, H: HostKind, F>(f: F) -> Decide<'a, H>
+where
+    F: Fn(&Bufs<'_, H>, usize) -> Result<ControlFlow<()>> + Send + Sync + 'a,
+{
+    Box::new(f)
+}
+
+/// What a node runs: a task, or a loop's decision.
+pub(super) enum Work<'a, H: HostKind, S> {
+    Task(Run<'a, H, S>),
+    /// The decision of the loop over the tasks from `body` to the one
+    /// before it, replayed at most `max_iterations` times.
+    Decide {
+        body: usize,
+        max_iterations: usize,
+        decide: Decide<'a, H>,
+    },
+}
+
 /// A node as declared: its name, its worker, where it runs, its
-/// dimensions, and its run.
+/// dimensions, and its work.
 pub(super) struct Declared<'a, H: HostKind, S> {
     pub(super) name: String,
     pub(super) dims: Vec<(&'static str, usize)>,
     pub(super) worker: usize,
     pub(super) placement: Placement,
-    pub(super) run: Run<'a, H, S>,
+    pub(super) work: Work<'a, H, S>,
 }
 
 /// One GPU worker's rows, of both kinds, and its BLAS workspace row if
@@ -44,12 +71,15 @@ struct Worker<H> {
 
 /// Tasks declared in plan order, each on a GPU worker: the planner's input.
 ///
-/// A task's position is the number added before it, so the order of
-/// [`Dag::add`] is the plan's rank order, which is a topological order: a
-/// task can only read what an earlier one produced.
+/// A task's position is the number added before it ([`Dag::len`]), so the
+/// order of [`Dag::add`] is the plan's rank order, which is a topological
+/// order: a task can only read what an earlier one produced. A loop
+/// ([`Dag::add_loop`]) is a run of them replayed between host decisions.
 pub struct Dag<'a, H: HostKind = Pinned, S = DeviceStream> {
     workers: Vec<Worker<H>>,
     nodes: Vec<Declared<'a, H, S>>,
+    /// Each loop's positions, its body's first to its decision.
+    loops: Vec<(usize, usize)>,
 }
 
 impl<H: HostKind, S> Default for Dag<'_, H, S> {
@@ -64,7 +94,20 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         Dag {
             workers: Vec::new(),
             nodes: Vec::new(),
+            loops: Vec::new(),
         }
+    }
+
+    /// The number of nodes added so far, loops' decisions included: the
+    /// position the next one will have, which is how a loop's body is
+    /// named to [`Dag::add_loop`].
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Whether nothing has been added.
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
     }
 
     /// Add `task` on GPU worker `worker`, call its layout, and return its
@@ -104,8 +147,69 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
             } else {
                 Placement::Cpu
             },
-            run: erase(move |d, h, lane| task.run(&kept, d, h, lane)),
+            work: Work::Task(erase(move |d, h, lane| task.run(&kept, d, h, lane))),
         });
+        rows
+    }
+
+    /// Close a loop: the tasks from position `body` to the last one added
+    /// are its body, replayed in the same run, on the same workers, until
+    /// `decision`, a CPU node added after them on GPU worker `worker`'s
+    /// host table, says `Break`, at most `max_iterations` times
+    /// (`docs/programming_model.md`, "Plan once, run many";
+    /// `fb_core_thread_pool::Plan::add_loop`, which runs it). Calls the
+    /// decision's layout, and returns its rows.
+    ///
+    /// The body's own rows, those every user of which is in the loop, are
+    /// laid out in each worker's table as a table of their own, in a region
+    /// the rest of the table holds while the loop runs, sized to the body's
+    /// peak once (`docs/memory.md`, "Nested plans"): a replay allocates
+    /// nothing and is admitted with the plan. Every other row the body
+    /// uses, S read every iteration or the loop's output read after it, is
+    /// the parent's, live for the whole loop. A row the loop carries from
+    /// one iteration to the next, a density or a DIIS history, is produced
+    /// before the loop, read in the body, and written by its last user
+    /// there ([`Layout::write`](fb_core_arena::Layout::write)).
+    ///
+    /// A task after the loop that reads a row the body wrote runs after the
+    /// decision's `Break`, never after a single iteration.
+    ///
+    /// # Panics
+    /// If the decision's layout reads a row of another worker's table, or
+    /// one the table refuses, as [`Dag::add`].
+    #[debug_requires(body < self.nodes.len(), "the body has a task")]
+    #[debug_requires(
+        self.loops.last().is_none_or(|&(_, decision)| decision < body),
+        "a body holds no loop"
+    )]
+    #[debug_requires(max_iterations > 0, "the bound admits an iteration")]
+    pub fn add_loop<D>(
+        &mut self,
+        name: impl Into<String>,
+        worker: usize,
+        body: usize,
+        max_iterations: usize,
+        decision: D,
+    ) -> D::Rows
+    where
+        D: Decision<H> + 'a,
+        D::Rows: 'a,
+    {
+        let pos = self.nodes.len();
+        let rows = decision.layout(&mut self.worker(worker).host.node(pos));
+        let kept = rows.clone();
+        self.nodes.push(Declared {
+            name: name.into(),
+            dims: Vec::new(),
+            worker,
+            placement: Placement::Cpu,
+            work: Work::Decide {
+                body,
+                max_iterations,
+                decide: erase_decide(move |h, iteration| decision.decide(&kept, h, iteration)),
+            },
+        });
+        self.loops.push((body, pos));
         rows
     }
 
@@ -152,17 +256,30 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         self.worker(worker).host.worker(name, len)
     }
 
-    /// Lay every worker's two tables out, and derive each task's
-    /// dependencies: the producer of every row it reads, and every handoff
-    /// into it. Pure: no device.
+    /// Lay every worker's two tables out, each loop's body in its region,
+    /// and derive each task's dependencies: the producer of every row it
+    /// reads, the writer a loop's carried row is ordered against, and
+    /// every handoff into it; a loop's decision also runs after every task
+    /// of its body. Pure: no device. The rows a loop carries are held to
+    /// the tables' contracts ([`TableBuilder::build`]).
     pub fn plan(self) -> Planned<'a, H, S> {
         let blas_workspaces = self.workers.iter().map(|w| w.blas_workspace).collect();
+        let loops = &self.loops;
         let tables: Vec<(Table<Device>, Table<H>)> = self
             .workers
             .into_iter()
-            .map(|w| (w.device.build(), w.host.build()))
+            .map(|mut w| {
+                for &(body, decision) in loops {
+                    w.device.add_loop(body..=decision);
+                    w.host.add_loop(body..=decision);
+                }
+                (w.device.build(), w.host.build())
+            })
             .collect();
         let mut deps = vec![BTreeSet::new(); self.nodes.len()];
+        for &(body, decision) in loops {
+            deps[decision].extend(body..decision);
+        }
         for (device, host) in &tables {
             let pairs = [
                 device.reads(),
@@ -205,7 +322,8 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
 /// the blocks.
 ///
 /// Its text ([`fmt::Display`]) is the plan's golden: each task's worker,
-/// lane and dependencies, then every non-empty table.
+/// lane and dependencies, each loop's span and bound on its decision's
+/// line, then every non-empty table, a loop's region and body in it.
 pub struct Planned<'a, H: HostKind = Pinned, S = DeviceStream> {
     pub(super) tables: Vec<(Table<Device>, Table<H>)>,
     /// Per worker, its BLAS workspace row, if declared.
@@ -270,12 +388,22 @@ impl<H: HostKind, S> fmt::Display for Planned<'_, H, S> {
                 Placement::Cpu => "cpu",
             };
             write!(f, "{pos:>5}  {:>6}  {lane:<6}  {}", node.worker, node.name)?;
-            if deps.is_empty() {
-                writeln!(f)?;
-            } else {
+            if !deps.is_empty() {
                 let deps: Vec<String> = deps.iter().map(usize::to_string).collect();
-                writeln!(f, ": after {}", deps.join(" "))?;
+                write!(f, ": after {}", deps.join(" "))?;
             }
+            if let Work::Decide {
+                body,
+                max_iterations,
+                ..
+            } = node.work
+            {
+                write!(
+                    f,
+                    "; decides loop {body}-{pos}, at most {max_iterations} iterations"
+                )?;
+            }
+            writeln!(f)?;
         }
         for (w, (device, host)) in self.tables.iter().enumerate() {
             if device.n_rows() > 0 {
