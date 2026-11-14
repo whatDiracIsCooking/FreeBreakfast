@@ -15,16 +15,17 @@
 //! | `inverse_sqrt<T>(stream, count, data, floor)` (`src/recipes/orthogonalize`), through wwr's `parallel_for` | [`fb_inverse_sqrt`]`(stream, count, data, floor)`, `f64` only, its index-per-thread launch written out |
 //! | `symmetrize(stream, n, a, lda)` and `mirror_triangle(stream, from_lower, n, a, lda)` (`src/recipes/symmetrize`), `lda` an `int64_t` | [`fb_symmetrize`] and [`fb_mirror_triangle`], `lda` the module's `int32_t`, the module's argument checks moved in as refusals |
 //! | `cholesky_diagonal_block(stream, jb, first, a, lda, info)` (`src/recipes/cholesky`), `lda` an `int64_t`, `kCholeskyBlock` | [`fb_cholesky_diagonal`]`(stream, jb, first, a, lda, l11, info)`, `lda` the module's `int32_t`, the factored tile also written packed into `l11` for the panel's trsm, null pointers refused too; [`FB_CHOLESKY_TILE`] |
+//! | `diis_solve(stream, m, ld, newest, gram, coeff, singular_out)` (`src/recipes/diis`), `kDiisSolveMaxDim` | [`fb_diis_solve`], the C++ doc comment's bounds and null pointers refused; [`FB_DIIS_SOLVE_MAX_DIM`] |
 //! | `wwrError_t` | [`fb_launch_status`]: 0, a positive `wwr_status`, or a negative refusal ([`FB_LAUNCH_INVALID_ARGUMENT`]) |
 //! | nothing: the C++ tree compiles its kernels into the binary | [`check_library`], the library's [`fb_recipes_abi_version`] and [`fb_recipes_backend`] against the bindings' |
 //! | `gather_columns` and every other recipe | not forked yet |
 //!
 //! **The safe calls.** [`inverse_sqrt`], [`merge_sort`], [`merge_sort_keys`],
-//! [`merge_sort_workspace_bytes`], [`symmetrize`], [`mirror_triangle`] and
-//! [`cholesky_diagonal`] are what a caller uses
+//! [`merge_sort_workspace_bytes`], [`symmetrize`], [`mirror_triangle`],
+//! [`cholesky_diagonal`] and [`diis_solve`] are what a caller uses
 //! (`docs/gpu_layer.md`, "The safe wrapper"), as `fb_core_wwr::blas::gemm`
 //! is over the BLAS: device memory as
-//! [`DeviceSlice`](fb_core_wwr::device_slice::DeviceSlice)s, which the
+//! [`DeviceSlice`]s, which the
 //! arena's rows implement, each length the launch trusts asserted against
 //! them in every build, and the launch status a [`Status`] through
 //! [`fb_kernel_abi::launch_status`]. They live beside the generated
@@ -41,7 +42,7 @@ pub use bindings::*;
 use contracts::debug_requires;
 use fb_core_error_handling::Status;
 use fb_core_wwr::common::wwr_status_from_code;
-use fb_core_wwr::device_slice::DeviceSliceMut;
+use fb_core_wwr::device_slice::{DeviceSlice, DeviceSliceMut};
 use fb_core_wwr::gpu_status_at;
 use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::runtime::Stream;
@@ -387,4 +388,83 @@ pub fn cholesky_diagonal(
     let status =
         unsafe { fb_cholesky_diagonal(stream.stream(), jb as i32, first32, a, lda32, l11, info) };
     launched("fb_cholesky_diagonal", status)
+}
+
+/// Solves the bordered DIIS system for the `m` extrapolation coefficients
+/// on `stream`, in one block: [`fb_diis_solve`], over slices it checks.
+///
+/// ```text
+/// [ <e_i|e_j>  -1 ] [ c ]   [ 0  ]
+/// [   -1^T      0 ] [ l ] = [ -1 ]
+/// ```
+///
+/// `gram` is the residual Gram, column-indexed at leading dimension `ld`;
+/// only its upper triangle over the first `m` columns, `gram[a ld + c]` for
+/// `a <= c < m`, is read. The first `m` entries of `coeff` are written. A
+/// pivot below `1e-14` makes the subspace singular: `coeff` is then the unit
+/// selector at `newest`, so an extrapolation over it is the newest iterate,
+/// and `singular[0]` is 1; otherwise 0.
+///
+/// # Errors
+/// The launch's failure, as [`fb_kernel_abi::launch_status`] maps it. A
+/// fault inside the kernel surfaces at the next synchronization.
+///
+/// # Panics
+/// If `gram` is shorter than the triangle it reads, `ld (m - 1) + m`
+/// elements, `coeff` shorter than `m`, or `singular` empty; before
+/// anything is enqueued.
+#[debug_requires(m >= 1, "a subspace of at least one pair")]
+#[debug_requires(m <= ld, "the leading dimension covers the subspace")]
+#[debug_requires(
+    ld < FB_DIIS_SOLVE_MAX_DIM as usize,
+    "the bordered system within the kernel's shared memory"
+)]
+#[debug_requires(newest < m, "the newest pair is in the subspace")]
+#[track_caller]
+pub fn diis_solve(
+    stream: &Stream,
+    m: usize,
+    ld: usize,
+    newest: usize,
+    gram: &impl DeviceSlice<f64>,
+    coeff: &mut impl DeviceSliceMut<f64>,
+    singular: &mut impl DeviceSliceMut<i32>,
+) -> Status {
+    // Past the system's largest order the launcher refuses before reading
+    // anything; clamped here only so the extents below cannot overflow, and
+    // so each fits the C ABI's i32.
+    let bound = FB_DIIS_SOLVE_MAX_DIM as usize;
+    let (m, ld, newest) = (m.min(bound), ld.min(bound), newest.min(bound));
+    // The last element the kernel reads is (m - 1, m - 1), at
+    // ld (m - 1) + m - 1; with ld below m the launcher refuses first.
+    let need = if m == 0 { 0 } else { ld * (m - 1) + m };
+    assert!(
+        gram.len() >= need,
+        "diis_solve: the Gram of {m} columns at ld {ld} needs {need} elements, but gram holds {}",
+        gram.len()
+    );
+    assert!(
+        coeff.len() >= m,
+        "diis_solve: coeff holds {}, short of the {m} coefficients",
+        coeff.len()
+    );
+    assert!(!singular.is_empty(), "diis_solve: singular is empty");
+    let (coeff, singular) = (coeff.as_mut_ptr(), singular.as_mut_ptr());
+    // SAFETY: the stream is live; gram covers the triangle the kernel
+    // reads, coeff m doubles and singular one flag, each checked above,
+    // and each stays so until the enqueued work finishes (DeviceSlice's
+    // and DeviceSliceMut's promises), the two written ones apart from
+    // everything else. m, ld and newest are at most the bound, an i32.
+    let status = unsafe {
+        fb_diis_solve(
+            stream.stream(),
+            m as i32,
+            ld as i32,
+            newest as i32,
+            gram.as_ptr(),
+            coeff,
+            singular,
+        )
+    };
+    launched("fb_diis_solve", status)
 }
