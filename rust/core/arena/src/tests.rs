@@ -226,6 +226,172 @@ proptest! {
     }
 }
 
+/// A row as the loop property draws it: its producer, a mask of later
+/// nodes that read it, its bytes, what it is (0 scratch, 1 output, 2 an
+/// output the loop carries when produced before it), and a pick of the
+/// carrying writer.
+type DrawnLoopRow = (usize, u16, usize, u8, usize);
+
+proptest! {
+    /// A loop's body in its parent's table: every body row lies inside the
+    /// loop's region, and none shares a byte with a parent row live across
+    /// the loop. And every reuse is ordered across iterations: with the
+    /// body unrolled `iterations` times, each iteration after the decision
+    /// of the one before and before its own, and the table's reads and
+    /// handoffs (plus some edges of the plan's own) as edges, any order the
+    /// run may take keeps two rows that share bytes apart in time. A body
+    /// row is live once per iteration; any other row from its first use to
+    /// its last over every iteration. No pair runs from a body node to a
+    /// node after the loop but from the decision, which the executor's
+    /// contract asks.
+    #[test]
+    fn loop_bodies_lie_in_their_regions(
+        n in 2usize..12,
+        start in 0usize..12,
+        len in 0usize..12,
+        drawn in prop::collection::vec(
+            (0usize..64, any::<u16>(), 0usize..1024, 0u8..3, 0usize..12),
+            0..24,
+        ),
+        extra in prop::collection::vec((0usize..64, 0usize..64), 0..16),
+        iterations in 1usize..4,
+        seed in any::<u64>(),
+    ) {
+        let first = start % n;
+        let last = first + len % (n - first);
+        let mut b = TableBuilder::<Device>::new();
+        for &(p, mask, bytes, what, pick) in &drawn as &[DrawnLoopRow] {
+            let p = p % n;
+            if what == 0 {
+                let _ = b.scratch::<u8>(p, "s", bytes);
+                continue;
+            }
+            let carried = what == 2 && p < first;
+            let writer = first + pick % (last - first + 1);
+            let id = b.output::<u8>(p, "o", bytes);
+            for r in (p + 1)..n {
+                let after_writer = carried && writer <= r && r <= last;
+                if mask & (1 << (r % 16)) != 0 && !after_writer {
+                    b.read(r, id);
+                }
+            }
+            if carried {
+                b.write(writer, id);
+            }
+        }
+        b.add_loop(first..=last);
+        let table = b.build();
+        let in_loop = |p: usize| first <= p && p <= last;
+
+        let g = &table.regions[0];
+        for i in 0..table.rows.len() {
+            if table.body[i].is_none() || table.rows[i].bytes == 0 {
+                continue;
+            }
+            let (o, bytes) = (table.offsets[i], table.rows[i].bytes);
+            prop_assert!(g.offset <= o && o + bytes <= g.offset + g.bytes);
+            for j in 0..table.rows.len() {
+                let across = matches!(table.lives[j], Life::Span { first: f, last: l } if f <= last && first <= l);
+                if table.body[j].is_some() || !across || table.rows[j].bytes == 0 {
+                    continue;
+                }
+                let p = table.offsets[j];
+                prop_assert!(
+                    o + bytes <= p || p + table.rows[j].bytes <= o,
+                    "body row {} overlaps row {}, live across the loop", i, j
+                );
+            }
+        }
+
+        let mut deps = table.reads();
+        deps.extend(table.handoffs());
+        for &(u, v) in &deps {
+            prop_assert!(u < v, "{}->{} points backward", u, v);
+            prop_assert!(
+                !(in_loop(u) && v > last) || u == last,
+                "{}->{} leaves the body from a body node", u, v
+            );
+        }
+        deps.extend(
+            extra
+                .iter()
+                .map(|&(u, v)| (u % n, v % n))
+                .filter(|(u, v)| u < v && !(in_loop(*u) && *v > last && *u != last)),
+        );
+
+        // The unrolled plan: the nodes before the loop, the body once per
+        // iteration, the nodes after it.
+        let pre = first;
+        let id = |p: usize, it: usize| {
+            if p < first {
+                p
+            } else if p <= last {
+                pre + it * (last - first + 1) + (p - first)
+            } else {
+                pre + iterations * (last - first + 1) + (p - last - 1)
+            }
+        };
+        let total_nodes = n + (iterations - 1) * (last - first + 1);
+        let mut edges = Vec::new();
+        for &(u, v) in &deps {
+            match (in_loop(u), in_loop(v)) {
+                (true, true) => edges.extend((0..iterations).map(|it| (id(u, it), id(v, it)))),
+                (false, true) => edges.push((id(u, 0), id(v, 0))),
+                (true, false) => edges.push((id(u, iterations - 1), id(v, 0))),
+                (false, false) => edges.push((id(u, 0), id(v, 0))),
+            }
+        }
+        for it in 0..iterations {
+            for p in first..last {
+                edges.push((id(p, it), id(last, it)));
+                if it + 1 < iterations {
+                    edges.push((id(last, it), id(p, it + 1)));
+                }
+            }
+            if it + 1 < iterations {
+                edges.push((id(last, it), id(last, it + 1)));
+            }
+        }
+        let time = &random_order(total_nodes, &edges, seed);
+
+        // Each row's intervals in time: a body row's per iteration, any
+        // other's over every iteration.
+        let intervals = |i: usize| -> Vec<(usize, usize)> {
+            let users = &table.rows[i].users;
+            let span = |ts: Vec<usize>| (*ts.iter().min().unwrap(), *ts.iter().max().unwrap());
+            if table.body[i].is_some() {
+                (0..iterations)
+                    .map(|it| span(users.iter().map(|&(p, _)| time[id(p, it)]).collect()))
+                    .collect()
+            } else {
+                let ts = users.iter().flat_map(|&(p, _)| {
+                    let its = if in_loop(p) { 0..iterations } else { 0..1 };
+                    its.map(move |it| time[id(p, it)])
+                });
+                vec![span(ts.collect())]
+            }
+        };
+        for i in 0..table.rows.len() {
+            for j in (i + 1)..table.rows.len() {
+                let (a, c) = (&table.rows[i], &table.rows[j]);
+                let (oa, oc) = (table.offsets[i], table.offsets[j]);
+                if a.bytes == 0 || c.bytes == 0 || oa >= oc + c.bytes || oc >= oa + a.bytes {
+                    continue;
+                }
+                for &(a0, a1) in &intervals(i) {
+                    for &(c0, c1) in &intervals(j) {
+                        prop_assert!(
+                            a1 < c0 || c1 < a0,
+                            "rows {} and {} share bytes and run at times {}..{} and {}..{}",
+                            i, j, a0, a1, c0, c1
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// An SCF iteration's table at `nbf`: S, H, X, D, F and C as outputs, J and
 /// the eigensolver's workspace as scratch, the solver's `info` flag as the
 /// worker's.
@@ -296,6 +462,145 @@ fn reads_and_layouts() {
     assert_eq!(l1.used(), 2);
     assert_eq!(b.build().reads(), vec![(0, 1)]);
 }
+/// The SCF iteration of [`scf_fixture`] as a loop's body (positions 4 to 8,
+/// the decision last, holding no device row), inside a parent holding S, H
+/// and X, the solver's flag, and the guess's D, which the body carries: the
+/// Fock build and the residual read it, the density writes it. The residual
+/// reads S, so all three of the parent's matrices are live across the loop.
+/// Returns the table and the body's rows' bytes, laid out alone.
+///
+/// The orthogonalizer's eigensolver workspace is left out of the parent:
+/// the greedy assigner places it, larger, below X, and the gap it leaves
+/// dead is too small for the region, which goes past it (44168 bytes, not
+/// 38280). That is the assigner's quality, not the loop's layout.
+fn scf_loop_fixture(nbf: usize) -> (Table<Device>, usize) {
+    let n2 = nbf * nbf;
+    let lwork = 1 + 6 * nbf + 2 * n2;
+    let mut b = TableBuilder::<Device>::new();
+    let _info = b.worker::<i32>("solver info", 1);
+    let s = b.output::<f64>(0, "S", n2);
+    let h = b.output::<f64>(1, "H", n2);
+    b.read(2, s);
+    let x = b.output::<f64>(2, "X", n2);
+    b.read(3, h);
+    b.read(3, x);
+    let d = b.output::<f64>(3, "D", n2);
+    // The body: Fock, residual, diagonalize, density; then the decision.
+    b.read(4, h);
+    b.read(4, d);
+    let _j = b.scratch::<f64>(4, "J", n2);
+    let f = b.output::<f64>(4, "F", n2);
+    b.read(5, f);
+    b.read(5, d);
+    b.read(5, s);
+    b.read(5, x);
+    let _e = b.output::<f64>(5, "e", n2);
+    b.read(6, f);
+    b.read(6, x);
+    let c = b.output::<f64>(6, "C", n2);
+    let _w = b.scratch::<f64>(6, "syevd work (F)", lwork);
+    b.read(7, c);
+    b.write(7, d);
+    b.add_loop(4..=8);
+    // Laid out alone: F, C and the eigensolver's workspace at 6, the
+    // body's peak, with no gap (n² doubles is a multiple of 256 at 24).
+    let body = 2 * n2 * 8 + lwork * 8;
+    (b.build(), body)
+}
+
+/// A loop's body in its parent's block (`docs/memory.md`, "Nested
+/// plans"): the block is the parent's rows live across the loop plus the
+/// body's peak, from the rows' sizes; every body row lies in the region,
+/// apart from those rows; the carried D is live across the loop and
+/// ordered within it, its readers before its writer; and admission counts
+/// the region once, by name. The text is the committed golden.
+#[test]
+fn scf_loop_golden() {
+    let nbf = 24;
+    let n2 = nbf * nbf;
+    let (table, body) = scf_loop_fixture(nbf);
+    // The flag, padded to the alignment, and S, H, X and D.
+    let across = DEVICE_ALIGNMENT + 4 * n2 * 8;
+    assert_eq!(table.regions.len(), 1);
+    let region = &table.regions[0];
+    assert_eq!(region.bytes, body, "the region is the body's peak, once");
+    assert_eq!(table.total(), across + body);
+    let peak = table.peak();
+    assert_eq!(peak.position, Some(4));
+    assert_eq!(peak.bytes, 4 + 4 * n2 * 8 + body);
+    assert!(peak.rows.contains(&("loop 4-8", body)), "{peak:?}");
+
+    let names = |b: Option<usize>| -> Vec<&str> {
+        (0..table.rows.len())
+            .filter(|&i| table.body[i] == b)
+            .map(|i| table.rows[i].name.as_str())
+            .collect()
+    };
+    assert_eq!(names(Some(0)), ["J", "F", "e", "C", "syevd work (F)"]);
+    for i in (0..table.rows.len()).filter(|&i| table.body[i] == Some(0)) {
+        let o = table.offsets[i];
+        assert!(region.offset <= o && o + table.rows[i].bytes <= region.offset + region.bytes);
+    }
+    let d = table.rows.iter().position(|r| r.name == "D").unwrap();
+    assert_eq!(table.lives[d], span(3, 8));
+    let reads = table.reads();
+    for pair in [(3, 4), (3, 5), (3, 7), (4, 7), (5, 7)] {
+        assert!(reads.contains(&pair), "{pair:?} not in {reads:?}");
+    }
+
+    let e = admit(&table, table.total() - 1, "stream0").unwrap_err();
+    assert!(
+        e.message.contains(&format!("loop 4-8 ({body} B)")),
+        "{}",
+        e.message
+    );
+    golden(
+        env!("CARGO_MANIFEST_DIR"),
+        "arena_scf_loop.txt",
+        &table.to_string(),
+    );
+}
+
+/// A carried row is refused where a loop cannot carry it: written outside
+/// any loop, produced inside the loop that writes it, or read in the loop
+/// after its writer, which would read the iteration's own value in one
+/// iteration and the last one's in the next.
+#[test]
+#[cfg(debug_assertions)] // the contracts are compiled out of release
+fn a_carried_row_is_refused_where_no_loop_carries_it() {
+    let build = |produce: usize, read: usize, write: usize| {
+        panic_message(move || {
+            let mut b = TableBuilder::<Device>::new();
+            let r = b.output::<f64>(produce, "D", 1);
+            b.read(read, r);
+            b.write(write, r);
+            b.add_loop(2..=4);
+            let _ = b.build();
+        })
+    };
+    let m = build(0, 1, 5);
+    assert!(
+        m.contains("a row is written again only inside a loop"),
+        "{m}"
+    );
+    let m = build(2, 3, 4);
+    assert!(
+        m.contains("a carried row is produced before its loop"),
+        "{m}"
+    );
+    let m = build(0, 4, 3);
+    assert!(
+        m.contains("a carried row's writer is its last user in the loop"),
+        "{m}"
+    );
+    let m = panic_message(|| {
+        let mut b = TableBuilder::<Device>::new();
+        let r = b.scratch::<f64>(0, "W", 1);
+        b.write(1, r);
+    });
+    assert!(m.contains("only an output is carried"), "{m}");
+}
+
 /// Admission is exact: the total fits a cap of the total, one byte less is
 /// an `Allocation` error naming the worker, the kind, the peak node and the
 /// rows live at it.

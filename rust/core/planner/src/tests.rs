@@ -1,6 +1,7 @@
 //! The planner's device-free tests: tasks over the heap kind, run on
 //! [`HostOnly`] workers (tier 3).
 
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -8,7 +9,7 @@ use proptest::prelude::*;
 
 use super::*;
 use fb_core_arena::{Bufs, Device, Heap, Layout, RowId};
-use fb_core_error_handling::{Error, ErrorKind, Status};
+use fb_core_error_handling::{Error, ErrorKind, Result, Status};
 use fb_core_thread_pool::{HostOnly, Lane, Placement};
 use fb_test_support::{golden, panic_message};
 
@@ -16,6 +17,8 @@ use fb_test_support::{golden, panic_message};
 #[derive(Clone, Copy)]
 enum Decl {
     Read(RowId<Device, f64>),
+    /// A loop's carried row, written by its last user in the body.
+    Write(RowId<Device, f64>),
     Out(&'static str, usize),
     Scratch(&'static str, usize),
 }
@@ -34,6 +37,9 @@ impl<const GPU: bool> Task<Heap, ()> for Declares<GPU> {
             match decl {
                 Decl::Read(r) => {
                     d.read(r);
+                }
+                Decl::Write(r) => {
+                    d.write(r);
                 }
                 Decl::Out(name, len) => made.push(d.output(name, len)),
                 Decl::Scratch(name, len) => made.push(d.scratch(name, len)),
@@ -115,6 +121,274 @@ fn scf_plan_golden() {
         "planner_scf.txt",
         &planned.to_string(),
     );
+}
+
+/// A decision that holds no row and ends the loop after its first
+/// iteration. For planning tests.
+struct Stops;
+
+impl Decision<Heap> for Stops {
+    type Rows = ();
+
+    fn layout(&self, _: &mut Layout<'_, Heap>) {}
+
+    fn decide(&self, _: &(), _: &Bufs<'_, Heap>, _: usize) -> Result<ControlFlow<()>> {
+        Ok(ControlFlow::Break(()))
+    }
+}
+
+/// `arena::tests::scf_loop_fixture` declared as tasks: the SCF iteration's
+/// tasks as a loop's body, after the tasks that make S, H, X and the guess,
+/// the density writing the D the Fock build reads.
+fn scf_loop_dag(nbf: usize) -> Dag<'static, Heap, ()> {
+    use Decl::*;
+    let n2 = nbf * nbf;
+    let lwork = 1 + 6 * nbf + 2 * n2;
+    let mut dag = Dag::new();
+    let _info = dag.device_worker_row::<i32>(0, "solver info", 1);
+    let s = dag.add("overlap", 0, Declares::<true>(vec![Out("S", n2)]))[0];
+    let h = dag.add("core", 0, Declares::<true>(vec![Out("H", n2)]))[0];
+    let x = dag.add(
+        "orthogonalizer",
+        0,
+        Declares::<true>(vec![Read(s), Out("X", n2)]),
+    )[0];
+    let d = dag.add(
+        "guess",
+        0,
+        Declares::<true>(vec![Read(h), Read(x), Out("D", n2)]),
+    )[0];
+    let body = dag.len();
+    let f = dag.add(
+        "fock",
+        0,
+        Declares::<true>(vec![Read(h), Read(d), Scratch("J", n2), Out("F", n2)]),
+    )[1];
+    dag.add(
+        "residual",
+        0,
+        Declares::<true>(vec![Read(f), Read(d), Read(s), Read(x), Out("e", n2)]),
+    );
+    let c = dag.add(
+        "diagonalize",
+        0,
+        Declares::<true>(vec![
+            Read(f),
+            Read(x),
+            Out("C", n2),
+            Scratch("syevd work (F)", lwork),
+        ]),
+    )[0];
+    dag.add("density", 0, Declares::<true>(vec![Read(c), Write(d)]));
+    dag.add_loop("converged", 0, body, 50, Stops);
+    dag
+}
+
+/// The loop's tables are the arena's loop golden byte for byte, its body
+/// in the region; the decision runs after every body task; and the whole
+/// plan, the loop on its decision's line, is a golden of its own.
+#[test]
+fn scf_loop_plan_golden() {
+    let planned = scf_loop_dag(24).plan();
+    assert_eq!(
+        planned.device_table(0).to_string(),
+        include_str!("../../arena/tests/golden/arena_scf_loop.txt")
+    );
+    assert_eq!(planned.predecessors(8), &[4, 5, 6, 7]);
+    assert_eq!(planned.predecessors(7), &[3, 4, 5, 6]);
+    assert_eq!(planned.placement(8), Placement::Cpu);
+    golden(
+        env!("CARGO_MANIFEST_DIR"),
+        "planner_scf_loop.txt",
+        &planned.to_string(),
+    );
+}
+
+/// The iterate `x <- x / 2 + 1` from 0, a loop's body over heap rows: the
+/// step reads the carried `x` and writes `next`, a body row; the carry
+/// writes `next` back into `x`; the decision compares `next` with `prev`,
+/// a row it carries itself, and stops when they agree to `1e-12`. The
+/// `k`-th iteration moves `2^(1-k)`, so the 41st is the first to stop.
+struct Iterate;
+
+#[derive(Clone, Copy)]
+struct IterateRows {
+    x: RowId<Heap, f64>,
+    prev: RowId<Heap, f64>,
+}
+
+impl Task<Heap, ()> for Iterate {
+    type Rows = IterateRows;
+    const GPU: bool = false;
+
+    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) -> IterateRows {
+        IterateRows {
+            x: h.output("x", 1),
+            prev: h.output("prev", 1),
+        }
+    }
+
+    fn run(
+        &self,
+        r: &IterateRows,
+        _: &Bufs<'_, Device>,
+        h: &Bufs<'_, Heap>,
+        _: Lane<'_, ()>,
+    ) -> Status {
+        h.take_mut(r.x)[0] = 0.0;
+        h.take_mut(r.prev)[0] = 0.0;
+        Ok(())
+    }
+}
+
+/// `next = x / 2 + 1`, on the stream.
+struct Step(RowId<Heap, f64>);
+
+impl Task<Heap, ()> for Step {
+    type Rows = RowId<Heap, f64>;
+    const GPU: bool = true;
+
+    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) -> Self::Rows {
+        h.read(self.0);
+        h.output("next", 1)
+    }
+
+    fn run(
+        &self,
+        &next: &Self::Rows,
+        _: &Bufs<'_, Device>,
+        h: &Bufs<'_, Heap>,
+        _: Lane<'_, ()>,
+    ) -> Status {
+        h.take_mut(next)[0] = h.get(self.0)[0] / 2.0 + 1.0;
+        Ok(())
+    }
+}
+
+/// `x = next`: the carried row's writer.
+struct Carry {
+    next: RowId<Heap, f64>,
+    x: RowId<Heap, f64>,
+}
+
+impl Task<Heap, ()> for Carry {
+    type Rows = ();
+    const GPU: bool = false;
+
+    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) {
+        h.read(self.next);
+        h.write(self.x);
+    }
+
+    fn run(&self, _: &(), _: &Bufs<'_, Device>, h: &Bufs<'_, Heap>, _: Lane<'_, ()>) -> Status {
+        h.take_mut(self.x)[0] = h.get(self.next)[0];
+        Ok(())
+    }
+}
+
+/// Stops when `next` and the `prev` it carries agree to `1e-12`.
+struct Converged {
+    next: RowId<Heap, f64>,
+    prev: RowId<Heap, f64>,
+}
+
+impl Decision<Heap> for Converged {
+    type Rows = ();
+
+    fn layout(&self, h: &mut Layout<'_, Heap>) {
+        h.read(self.next);
+        h.write(self.prev);
+    }
+
+    fn decide(&self, _: &(), h: &Bufs<'_, Heap>, _: usize) -> Result<ControlFlow<()>> {
+        let next = h.get(self.next)[0];
+        let prev = h.take_mut(self.prev);
+        let moved = (next - prev[0]).abs();
+        prev[0] = next;
+        Ok(if moved > 1e-12 {
+            ControlFlow::Continue(())
+        } else {
+            ControlFlow::Break(())
+        })
+    }
+}
+
+/// Reads `x` after the loop.
+struct Report(RowId<Heap, f64>, Arc<std::sync::Mutex<f64>>);
+
+impl Task<Heap, ()> for Report {
+    type Rows = ();
+    const GPU: bool = false;
+
+    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Heap>) {
+        h.read(self.0);
+    }
+
+    fn run(&self, _: &(), _: &Bufs<'_, Device>, h: &Bufs<'_, Heap>, _: Lane<'_, ()>) -> Status {
+        *self.1.lock().unwrap() = h.get(self.0)[0];
+        Ok(())
+    }
+}
+
+/// A loop through the planner and the executor: the body's rows in the
+/// region, `x` and `prev` carried, one by a task and one by the decision,
+/// and `x` read after the loop through the decision. The fixed point is 2,
+/// reached to `2^-40` in 41 iterations; the instance runs twice over the
+/// same blocks, each run from the start, with no borrow ever contended.
+#[test]
+fn a_loop_carries_its_rows_to_the_fixed_point() {
+    let out = Arc::new(std::sync::Mutex::new(0.0));
+    let mut dag = Dag::<Heap, ()>::new();
+    let IterateRows { x, prev } = dag.add("init", 0, Iterate);
+    let body = dag.len();
+    let next = dag.add("step", 0, Step(x));
+    dag.add("carry", 0, Carry { next, x });
+    dag.add_loop("converged", 0, body, 100, Converged { next, prev });
+    dag.add("report", 0, Report(x, Arc::clone(&out)));
+    let planned = dag.plan();
+    assert_eq!(
+        planned.predecessors(2),
+        &[0, 1],
+        "the carry after the step's read of x"
+    );
+    assert_eq!(planned.predecessors(3), &[0, 1, 2]);
+    assert_eq!(
+        planned.predecessors(4),
+        &[0, 3],
+        "x after the loop through its decision"
+    );
+    let text = planned.to_string();
+    assert!(text.contains("loop 1-3: region of"), "{text}");
+    assert!(
+        text.contains("decides loop 1-3, at most 100 iterations"),
+        "{text}"
+    );
+
+    let mut instance = planned.instantiate(&[0]);
+    for _ in 0..2 {
+        let record = instance.run(&mut HostOnly::new(1), 2);
+        record.result.unwrap();
+        let decision = record
+            .iterations
+            .iter()
+            .map(|(&node, &n)| (node.index(), n))
+            .collect::<Vec<_>>();
+        assert_eq!(decision, [(3, 41)]);
+        let got = *out.lock().unwrap();
+        assert!((got - 2.0).abs() <= 1e-12, "{got}");
+    }
+}
+
+/// A loop inside a loop's body is refused when it is added.
+#[test]
+#[cfg(debug_assertions)] // the contract is compiled out of release
+#[should_panic(expected = "a body holds no loop")]
+fn a_body_holds_no_loop() {
+    let mut dag = Dag::<Heap, ()>::new();
+    let body = dag.len();
+    dag.add("inner", 0, Declares::<false>(vec![]));
+    dag.add_loop("inner loop", 0, body, 2, Stops);
+    dag.add_loop("outer loop", 0, body, 2, Stops);
 }
 
 /// A node that checks every row it reads against the reference and writes

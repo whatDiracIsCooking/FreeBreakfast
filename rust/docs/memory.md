@@ -271,6 +271,32 @@ rule each:
 Concurrent sub-DAGs do not share a region: the width the planner admits is
 how many regions the parent holds at once, each at the sub-DAG's peak.
 
+**A loop is the nested plan the SCF has.** Its body is one iteration's
+tasks and its decision the CPU node after them, and the body's table is the
+rows every user of which is in the loop: laid out alone, from the region's
+first byte, while the region is one row of the parent's table, live from the
+body's first position to the decision, of the body's laid-out total. Every
+other row the loop uses, S read every iteration or the energy read after
+the loop, is the parent's and live for the whole loop, so no body row takes
+its bytes, and admission counts the region once, at each of the loop's
+positions, by the name `loop first-last`. Within an iteration the body's
+rows share bytes as any table's do, ordered by their handoffs. Across the
+iteration edge nothing needs ordering: the decision is after every body
+node and the replay after the decision. A dependency from a body node to a
+node after the loop is taken from the decision instead, since a body node
+runs once per iteration and the decision's `Break` once.
+
+**A carried row is the parent's.** The density, the occupied factor and
+DIIS's history pass from one iteration to the next. Such a row is produced
+before the loop (the guess, a zero fill), read in the body, and written by
+its last user there, so each iteration reads what the one before wrote, or
+the producer's value in the first. The table orders every other user
+against that writer: the body's readers before it, a node after the loop
+after the decision. It is live across the whole loop, so no handoff crosses
+the iteration edge. A decision that keeps something from one iteration to
+the next, the last energy, keeps it the same way, as a host row it carries:
+nothing outside the rows survives the run.
+
 ## The two kinds
 
 | | Device | Pinned host |
@@ -337,6 +363,8 @@ can name. In it:
   one node's declarations with its position bound, which is what a task's
   `layout` is handed. `core::planner` calls each task's layout in plan
   order, builds the tables, and adds the reads and handoffs to the plan.
+  `TableBuilder::add_loop(positions)` marks a loop and `Layout::write(row)`
+  a row it carries ("Nested plans").
 - `Block<K>`, with `K` one of two uninhabited markers, `Device` and
   `Pinned`. It holds the raw pointer, the table and one atomic borrow flag
   per row, allocates in `new` and frees in `Drop`, and the kind is in the
@@ -376,6 +404,8 @@ them.
 | Admission refuses what does not fit | A cap one byte under the peak refused naming the rows live at it; one byte over admitted, as the C++ nested cases pin the room to the byte | 3 |
 | A task reaches only its rows | The view's borrow flags and layout check, always on | 2 |
 | Reusing bytes is ordered | Random DAGs run in random orders consistent with their edges and handoffs, no two rows sharing bytes live at once | 3 |
+| A loop's body lies in its region, apart from every parent row live across the loop | Random bodies laid out, then unrolled over iterations and run in random orders consistent with the reads and handoffs, no two rows sharing bytes live at once | 3 |
+| Replay allocates nothing | Free memory read by a device loop's decision, the same at the last iteration as at the first | 4 |
 | Declared equals allocated | Free memory before and after instantiation differs by the block, under the reserve's growth | 4 |
 | No library allocates behind the arena | The same measurement across a run: free memory unchanged from the first launch to the last sync | 4 |
 | A kernel assumes no more scratch than it asked | The wrapper handed exactly its query's bytes under `memcheck` ([`testing.md`](testing.md), "The C++ boundary") | 4 |

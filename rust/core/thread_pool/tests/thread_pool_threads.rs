@@ -139,7 +139,7 @@ fn replayed_on_the_runs_threads() {
         body_seen.lock().unwrap().push(threads());
         Ok(())
     });
-    plan.add_loop("decide", gpu, ITERATIONS, |i| {
+    plan.add_loop("decide", gpu, &[], ITERATIONS, |i| {
         if i + 1 < ITERATIONS {
             return Ok(ControlFlow::Continue(()));
         }

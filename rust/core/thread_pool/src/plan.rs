@@ -146,10 +146,12 @@ impl<'a, S> Plan<'a, S> {
     /// Returns the decision node, which is what a node after the loop
     /// depends on to read the loop's outcome.
     ///
-    /// The decision is a CPU node after every node of the body: it runs once
-    /// per iteration, when the whole body has finished and every GPU body
-    /// node's work has completed, and is handed the iteration's index from
-    /// 0. Its `Continue` readies the body again, inside the same run, with
+    /// The decision is a CPU node after every node of the body and after
+    /// `deps`, which may name nodes before the body that no body node
+    /// follows (a row the decision reads, or whose bytes it takes over): it
+    /// runs once per iteration, when the whole body has finished and every
+    /// GPU body node's work has completed, and is handed the iteration's
+    /// index from 0. Its `Continue` readies the body again, inside the same run, with
     /// nothing spawned and nothing allocated by the executor; its `Break`
     /// readies the nodes after the loop. A body node's predecessors before
     /// the body are satisfied once, by their single run.
@@ -176,7 +178,7 @@ impl<'a, S> Plan<'a, S> {
     ///     *x = (next, (next - x.0).abs());
     ///     Ok(())
     /// });
-    /// let done = plan.add_loop("converged", step, 100, |_iteration| {
+    /// let done = plan.add_loop("converged", step, &[], 100, |_iteration| {
     ///     let moved = x.lock().unwrap().1;
     ///     Ok(if moved > 1e-12 { ControlFlow::Continue(()) } else { ControlFlow::Break(()) })
     /// });
@@ -192,10 +194,15 @@ impl<'a, S> Plan<'a, S> {
         "a body holds no loop"
     )]
     #[debug_requires(max_iterations > 0, "the bound admits an iteration")]
+    #[debug_requires(
+        deps.iter().all(|d| d.0 < self.nodes.len()),
+        "every predecessor is in the plan"
+    )]
     pub fn add_loop(
         &mut self,
         name: impl Into<String>,
         body: NodeId,
+        deps: &[NodeId],
         max_iterations: usize,
         decide: impl Fn(usize) -> Result<ControlFlow<()>> + Sync + 'a,
     ) -> NodeId {
@@ -203,12 +210,13 @@ impl<'a, S> Plan<'a, S> {
         let index = self.loops.len();
         // The body's sinks: every body node is one or an ancestor of one,
         // so after them is after the whole body.
-        let sinks: Vec<NodeId> = body
+        let mut preds: Vec<NodeId> = body
             .clone()
             .filter(|&n| self.succs[n].is_empty())
             .map(NodeId)
             .collect();
-        let decision = self.add(name, Placement::Cpu, &sinks, |_| Ok(()));
+        preds.extend_from_slice(deps);
+        let decision = self.add(name, Placement::Cpu, &preds, |_| Ok(()));
         self.nodes[decision.0].work = Work::Decide(index, Box::new(decide));
         for n in body.start..=decision.0 {
             self.nodes[n].in_loop = Some(index);

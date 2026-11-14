@@ -6,6 +6,11 @@
 //!   outputs and who reads them, and the worker's own rows. Lifetimes are
 //!   derived from the users and never written. [`TableBuilder::node`] is
 //!   one node's [`Layout`], what a task declares through.
+//!   [`TableBuilder::add_loop`] marks a loop's positions, whose body's
+//!   rows are a table of their own laid out in a region the rest of the
+//!   table holds for the loop; [`TableBuilder::write`] is a row the loop
+//!   carries from one iteration to the next (`docs/memory.md`, "Nested
+//!   plans").
 //! - [`TableBuilder::build`] lays them out with [`assign`], the pure offset
 //!   assigner, into a [`Table`]: an offset per row and the block's total,
 //!   which is the plan's peak for that worker and kind. Its text is the
@@ -62,8 +67,9 @@
 //! # Not yet
 //!
 //! One stream worker per table: lifetimes are positions in the plan's rank
-//! order, and reuse across streams, transport rows and nested regions wait
-//! for placement. Declaring rows from tasks, and turning the table's
+//! order, and reuse across streams and transport rows wait for placement.
+//! A loop's region holds one body; the max over several inner shapes, the
+//! semi-numerical Hessian's, and a loop in a loop's body are not built. Declaring rows from tasks, and turning the table's
 //! [`reads`](Table::reads) and [`handoffs`](Table::handoffs) into a plan's
 //! dependencies, is `fb_core_planner`'s. A block is
 //! allocated on the thread that makes it, not its worker's: a block lives

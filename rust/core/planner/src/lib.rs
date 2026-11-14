@@ -13,7 +13,12 @@
 //!   stream or the CPU pool. [`Dag::add`] calls the layout at once and
 //!   returns the task's rows, whose output ids the caller passes to the
 //!   tasks that read them. [`Dag::blas_workspace`] declares a worker's
-//!   BLAS workspace, a worker row no task can name.
+//!   BLAS workspace, a worker row no task can name. [`Dag::add_loop`]
+//!   closes a loop over the tasks from a position on, with a [`Decision`]
+//!   after them: the body replayed in one run until the decision says
+//!   `Break`, its rows laid out once in a region of each worker's tables,
+//!   the rows it carries between iterations and its outputs the parent's
+//!   (`docs/memory.md`, "Nested plans").
 //! - [`Planned`] ([`Dag::plan`]): each worker's device and host tables laid
 //!   out, and each task's dependencies derived, all pure. A task runs after
 //!   the producer of every row it reads ([`Table::reads`]) and after every
@@ -99,8 +104,8 @@
 //! is the order of [`Dag::add`]: no placement or schedule search. A task
 //! reads only rows of its own worker; an edge between workers needs a
 //! transport row, which placement would add. No partition or reduce: every
-//! edge is one producer's output. No adaptive widths, nested plans, or
-//! replaying a sub-DAG between host decisions. Every
+//! edge is one producer's output. No adaptive widths, no sub-DAG with
+//! dimensions of its own, and no loop in a loop's body. Every
 //! dependency is a row: an ordering with no buffer behind it has no way to
 //! be declared until a task needs one. That a stream task does not touch a
 //! pinned row from the host is a rule, not a type.
@@ -117,7 +122,7 @@ mod tests;
 
 pub use dag::{Dag, Planned};
 pub use instance::Instance;
-pub use task::Task;
+pub use task::{Decision, Task};
 
 /// The bytes of device memory each worker's BLAS handle is handed as its
 /// workspace ([`Dag::blas_workspace`]): 32 MiB, cuBLAS's own default on

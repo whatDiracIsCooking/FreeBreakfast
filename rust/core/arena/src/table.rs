@@ -5,7 +5,10 @@ use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::marker::PhantomData;
+use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use contracts::debug_requires;
 
 use super::DEVICE_ALIGNMENT;
 use super::assign::{Life, Row, assign};
@@ -39,7 +42,8 @@ pub(super) struct RowInfo {
     pub(super) len: usize,
     pub(super) bytes: usize,
     /// `(position, access)` in the order declared. The producer's is first,
-    /// and the positions after it are larger. Empty for a worker row.
+    /// and the positions after it are larger. A later `Write` is a loop's
+    /// carrying writer ([`TableBuilder::write`]). Empty for a worker row.
     pub(super) users: Vec<(usize, Access)>,
 }
 
@@ -116,6 +120,8 @@ static NEXT_TABLE: AtomicU64 = AtomicU64::new(0);
 pub struct TableBuilder<K> {
     id: u64,
     rows: Vec<RowInfo>,
+    /// Each loop's positions, in plan order ([`TableBuilder::add_loop`]).
+    loops: Vec<RangeInclusive<usize>>,
     marker: PhantomData<fn() -> K>,
 }
 
@@ -131,6 +137,7 @@ impl<K: Kind> TableBuilder<K> {
         TableBuilder {
             id: NEXT_TABLE.fetch_add(1, Ordering::Relaxed),
             rows: Vec::new(),
+            loops: Vec::new(),
             marker: PhantomData,
         }
     }
@@ -186,6 +193,53 @@ impl<K: Kind> TableBuilder<K> {
         info.users.push((pos, Access::Read));
     }
 
+    /// Node `pos` writes the output `row`, which a node before its loop
+    /// produced: the row is carried from one iteration of the loop `pos` is
+    /// in to the next (`docs/memory.md`, "Nested plans"). The body reads
+    /// it before this write, and this node is its last user in the loop,
+    /// so a body node reads, in each iteration, the value the iteration
+    /// before wrote, or the producer's in the first. The row is live
+    /// across the whole loop: no handoff crosses the iteration edge, and
+    /// no body row takes its bytes.
+    ///
+    /// The plan must order every other user of the row against the write:
+    /// [`Table::reads`] returns those pairs.
+    #[debug_requires(row.table == self.id, "a row of this table")]
+    #[debug_requires(
+        self.rows.get(row.index).is_some_and(|r| r.owner == Owner::Edge),
+        "only an output is carried"
+    )]
+    #[debug_requires(
+        self.rows.get(row.index).is_some_and(|r| r.users[0].0 < pos),
+        "a carried row is written after its producer"
+    )]
+    #[debug_requires(
+        self.rows
+            .get(row.index)
+            .is_some_and(|r| r.users.iter().all(|&(p, _)| p != pos)),
+        "a node uses a row once"
+    )]
+    pub fn write<T: Element>(&mut self, pos: usize, row: RowId<K, T>) {
+        self.rows[row.index].users.push((pos, Access::Write));
+    }
+
+    /// A loop of the plan over `positions`: its body's nodes and, last, its
+    /// decision, the whole replayed once per iteration
+    /// (`docs/memory.md`, "Nested plans"). A row all of whose users lie in
+    /// it is the body's: the body's rows are laid out as a table of their
+    /// own, in a region the rest of the table holds for the loop's whole
+    /// span, sized to the body's peak once. Every other row used in the
+    /// loop, or live across it, is live for the whole loop, so no body row
+    /// takes its bytes.
+    #[debug_requires(positions.start() <= positions.end(), "a loop has a position")]
+    #[debug_requires(
+        self.loops.last().is_none_or(|l| l.end() < positions.start()),
+        "loops are added in plan order, and none holds another"
+    )]
+    pub fn add_loop(&mut self, positions: RangeInclusive<usize>) {
+        self.loops.push(positions);
+    }
+
     /// Node `pos`'s rows: the same declarations with the position bound,
     /// which is what a task's `layout` is handed.
     pub fn node(&mut self, pos: usize) -> Layout<'_, K> {
@@ -196,25 +250,129 @@ impl<K: Kind> TableBuilder<K> {
         }
     }
 
-    /// Lay the rows out.
+    /// Lay the rows out: each loop's body rows in a table of their own, at
+    /// offsets inside the loop's region, and the rest, the regions among
+    /// them, with [`assign`].
+    #[debug_requires(
+        self.carried().all(|(_, _, l)| l.is_some()),
+        "a row is written again only inside a loop"
+    )]
+    #[debug_requires(
+        self.carried()
+            .all(|(r, _, l)| l.is_none_or(|l| r.users[0].0 < *l.start())),
+        "a carried row is produced before its loop"
+    )]
+    #[debug_requires(
+        self.carried().all(|(r, w, l)| l.is_none_or(|l| {
+            r.users.iter().all(|&(p, _)| !l.contains(&p) || p <= w)
+        })),
+        "a carried row's writer is its last user in the loop"
+    )]
     pub fn build(self) -> Table<K> {
-        let rows: Vec<Row> = self
+        let body: Vec<Option<usize>> = self
             .rows
             .iter()
-            .map(|r| Row {
-                bytes: r.bytes,
-                align: DEVICE_ALIGNMENT,
-                life: r.life(),
+            .map(|r| match r.owner {
+                Owner::Worker => None,
+                Owner::Task | Owner::Edge => self
+                    .loops
+                    .iter()
+                    .position(|l| r.users.iter().all(|(p, _)| l.contains(p))),
             })
             .collect();
+        let lives: Vec<Life> = self
+            .rows
+            .iter()
+            .zip(&body)
+            .map(|(r, b)| match (r.life(), b) {
+                (
+                    Life::Span {
+                        mut first,
+                        mut last,
+                    },
+                    None,
+                ) => {
+                    for l in &self.loops {
+                        if first <= *l.end() && *l.start() <= last {
+                            first = first.min(*l.start());
+                            last = last.max(*l.end());
+                        }
+                    }
+                    Life::Span { first, last }
+                }
+                (life, _) => life,
+            })
+            .collect();
+        let as_row = |i: usize| Row {
+            bytes: self.rows[i].bytes,
+            align: DEVICE_ALIGNMENT,
+            life: lives[i],
+        };
+        // Each body laid out alone, from offset 0 of its region.
+        let mut offsets = vec![0; self.rows.len()];
+        let mut regions = Vec::with_capacity(self.loops.len());
+        for (index, l) in self.loops.iter().enumerate() {
+            let members: Vec<usize> = (0..self.rows.len())
+                .filter(|&i| body[i] == Some(index))
+                .collect();
+            let local = assign(&members.iter().map(|&i| as_row(i)).collect::<Vec<_>>());
+            for (&i, &o) in members.iter().zip(&local.offsets) {
+                offsets[i] = o;
+            }
+            regions.push(Region {
+                name: format!("loop {}-{}", l.start(), l.end()),
+                positions: l.clone(),
+                offset: 0,
+                bytes: local.total,
+            });
+        }
+        // The rest, each region a row live for its loop's span.
+        let parent: Vec<usize> = (0..self.rows.len())
+            .filter(|&i| body[i].is_none())
+            .collect();
+        let mut rows: Vec<Row> = parent.iter().map(|&i| as_row(i)).collect();
+        rows.extend(regions.iter().map(|g| Row {
+            bytes: g.bytes,
+            align: DEVICE_ALIGNMENT,
+            life: Life::Span {
+                first: *g.positions.start(),
+                last: *g.positions.end(),
+            },
+        }));
         let assignment = assign(&rows);
+        for (&i, &o) in parent.iter().zip(&assignment.offsets) {
+            offsets[i] = o;
+        }
+        for (g, &o) in regions.iter_mut().zip(&assignment.offsets[parent.len()..]) {
+            g.offset = o;
+        }
+        for (i, b) in body.iter().enumerate() {
+            if let Some(b) = *b {
+                offsets[i] += regions[b].offset;
+            }
+        }
         Table {
             id: self.id,
             rows: self.rows,
-            offsets: assignment.offsets,
+            offsets,
             total: assignment.total,
+            lives,
+            body,
+            regions,
             marker: PhantomData,
         }
+    }
+
+    /// Every write after a row's producer: the row, the writer's position,
+    /// and the loop the write is in, if any.
+    fn carried(&self) -> impl Iterator<Item = (&RowInfo, usize, Option<&RangeInclusive<usize>>)> {
+        self.rows.iter().flat_map(move |r| {
+            r.users
+                .iter()
+                .skip(1)
+                .filter(|&&(_, a)| a == Access::Write)
+                .map(move |&(w, _)| (r, w, self.loops.iter().find(|l| l.contains(&w))))
+        })
     }
 
     fn push<T: Element>(
@@ -274,6 +432,16 @@ impl<K: Kind> Layout<'_, K> {
         self.builder.output(self.pos, name, len)
     }
 
+    /// This node writes the output `row`, which a node before its loop
+    /// produced, as the row's last user in the loop: the value carried to
+    /// the next iteration. Returns `row`. [`TableBuilder::write`]'s
+    /// contracts hold here too.
+    pub fn write<T: Element>(&mut self, row: RowId<K, T>) -> RowId<K, T> {
+        self.used += 1;
+        self.builder.write(self.pos, row);
+        row
+    }
+
     /// This node reads the output `row`, which an earlier node produced.
     /// Returns `row`, so a task's rows can be written `h: l.read(self.h)`.
     ///
@@ -299,9 +467,28 @@ impl<K: Kind> Layout<'_, K> {
 pub struct Table<K> {
     id: u64,
     pub(super) rows: Vec<RowInfo>,
+    /// Per row, its offset in the block: a body row's inside its region.
     pub(super) offsets: Vec<usize>,
     total: usize,
+    /// Per row, the span its bytes are held: a body row's within its
+    /// loop, any other row used in or across a loop spanning it whole.
+    pub(super) lives: Vec<Life>,
+    /// Per row, the loop whose body it is, by index into `regions`.
+    pub(super) body: Vec<Option<usize>>,
+    /// Per loop, its region.
+    pub(super) regions: Vec<Region>,
     marker: PhantomData<fn() -> K>,
+}
+
+/// A loop's region: the bytes the table holds for the loop's whole span,
+/// in which its body's rows are laid out.
+pub(super) struct Region {
+    /// `loop first-last`, as admission names it.
+    pub(super) name: String,
+    pub(super) positions: RangeInclusive<usize>,
+    pub(super) offset: usize,
+    /// The body's own total: its peak, laid out.
+    pub(super) bytes: usize,
 }
 
 /// The instant a table's live rows are largest: [`Table::peak`].
@@ -311,7 +498,8 @@ pub struct Peak<'t> {
     pub position: Option<usize>,
     /// The bytes live there.
     pub bytes: usize,
-    /// The rows live there, by name and bytes, in declaration order.
+    /// The rows live there, by name and bytes, in declaration order, then
+    /// each loop's region live there, named `loop first-last`.
     pub rows: Vec<(&'t str, usize)>,
 }
 
@@ -357,6 +545,13 @@ impl<K: Kind> Table<K> {
     /// edge of the plan, or implied by its edges: the previous owner of an
     /// offset is a predecessor of the next (`docs/memory.md`,
     /// "Lifetimes").
+    ///
+    /// Two rows of one loop's body share bytes within an iteration, and the
+    /// pair orders them there; the next iteration starts after the loop's
+    /// decision, which is after every body node, so nothing crosses the
+    /// iteration edge. A pair from a body node to a node after the loop is
+    /// returned from the loop's decision instead, which a node after a
+    /// loop may follow and a body node, replayed, may not.
     pub fn handoffs(&self) -> Vec<(usize, usize)> {
         let mut pairs = BTreeSet::new();
         for (i, a) in self.rows.iter().enumerate() {
@@ -369,52 +564,88 @@ impl<K: Kind> Table<K> {
                     continue;
                 }
                 let (Life::Span { last: la, .. }, Life::Span { first: fb, .. }) =
-                    (a.life(), b.life())
+                    (self.lives[i], self.lives[j])
                 else {
                     unreachable!("a plan-long row shares bytes with no row")
                 };
                 let (earlier, later) = if la < fb { (a, b) } else { (b, a) };
                 let next = later.users[0].0;
-                pairs.extend(earlier.users.iter().map(|&(u, _)| (u, next)));
+                pairs.extend(earlier.users.iter().map(|&(u, _)| self.after_loop(u, next)));
             }
         }
         pairs.into_iter().collect()
     }
 
+    /// The pair `(u, v)` as a plan may hold it: from the decision of the
+    /// loop `u` is in when `v` is after that loop, else as it is.
+    fn after_loop(&self, u: usize, v: usize) -> (usize, usize) {
+        match self.regions.iter().find(|g| g.positions.contains(&u)) {
+            Some(g) if v > *g.positions.end() => (*g.positions.end(), v),
+            _ => (u, v),
+        }
+    }
+
     /// The orderings the data needs: `(producer, reader)` for every reader
-    /// of every output. Sorted, without repeats. With
-    /// [`handoffs`](Table::handoffs), every dependency the table asks of a
-    /// plan.
+    /// of every output, and for a row a loop carries
+    /// ([`TableBuilder::write`]) every other user ordered against its
+    /// writer, before it if lower in rank and after it if higher. A pair
+    /// from a body node to a node after its loop is returned from the
+    /// loop's decision, as in [`handoffs`](Table::handoffs). Sorted,
+    /// without repeats. With the handoffs, every dependency the table asks
+    /// of a plan.
     pub fn reads(&self) -> Vec<(usize, usize)> {
-        let pairs: BTreeSet<(usize, usize)> = self
-            .rows
-            .iter()
-            .filter(|r| r.owner == Owner::Edge)
-            .flat_map(|r| {
-                let producer = r.users[0].0;
-                r.users[1..].iter().map(move |&(p, _)| (producer, p))
-            })
-            .collect();
+        let mut pairs = BTreeSet::new();
+        for r in self.rows.iter().filter(|r| r.owner == Owner::Edge) {
+            let producer = r.users[0].0;
+            for &(p, _) in &r.users[1..] {
+                pairs.insert(self.after_loop(producer, p));
+            }
+            for &(w, _) in r.users[1..].iter().filter(|&&(_, a)| a == Access::Write) {
+                for &(u, _) in &r.users[1..] {
+                    if u < w {
+                        pairs.insert(self.after_loop(u, w));
+                    } else if u > w {
+                        pairs.insert(self.after_loop(w, u));
+                    }
+                }
+            }
+        }
         pairs.into_iter().collect()
     }
 
     /// The position at which the live rows' bytes are largest, the lowest
-    /// on a tie. The total is at least this; alignment and the greedy
-    /// layout's gaps are the difference.
+    /// on a tie, a loop's region counted whole, once, at each of its
+    /// positions, and its body's rows not again. The total is at least
+    /// this; alignment and the greedy layout's gaps are the difference.
     pub fn peak(&self) -> Peak<'_> {
         let positions: BTreeSet<usize> = self
             .rows
             .iter()
             .flat_map(|r| r.users.iter().map(|&(p, _)| p))
             .collect();
-        let live_at = |pos: Option<usize>| {
-            self.rows.iter().filter(move |r| match (r.life(), pos) {
+        // What the block holds outside the regions, then each region.
+        let held = self
+            .rows
+            .iter()
+            .zip(&self.lives)
+            .zip(&self.body)
+            .filter(|(_, b)| b.is_none())
+            .map(|((r, &life), _)| (r.name.as_str(), r.bytes, life))
+            .chain(self.regions.iter().map(|g| {
+                let life = Life::Span {
+                    first: *g.positions.start(),
+                    last: *g.positions.end(),
+                };
+                (g.name.as_str(), g.bytes, life)
+            }));
+        let live_at = move |pos: Option<usize>| {
+            held.clone().filter(move |&(_, _, life)| match (life, pos) {
                 (Life::Plan, _) => true,
                 (Life::Span { first, last }, Some(p)) => first <= p && p <= last,
                 (Life::Span { .. }, None) => false,
             })
         };
-        let bytes_at = |pos| live_at(pos).map(|r| r.bytes).sum::<usize>();
+        let bytes_at = |pos| live_at(pos).map(|(_, bytes, _)| bytes).sum::<usize>();
         // The largest bytes, and on a tie the lowest position.
         let position = positions
             .into_iter()
@@ -423,8 +654,42 @@ impl<K: Kind> Table<K> {
             position,
             bytes: bytes_at(position),
             rows: live_at(position)
-                .map(|r| (r.name.as_str(), r.bytes))
+                .map(|(name, bytes, _)| (name, bytes))
                 .collect(),
+        }
+    }
+}
+
+impl<K> Table<K> {
+    /// Row `i`'s line of the text.
+    fn fmt_row(&self, f: &mut fmt::Formatter<'_>, i: usize) -> fmt::Result {
+        let (row, offset) = (&self.rows[i], self.offsets[i]);
+        let owner = match row.owner {
+            Owner::Task => "task",
+            Owner::Edge => "edge",
+            Owner::Worker => "worker",
+        };
+        let life = match self.lives[i] {
+            Life::Plan => "plan".to_owned(),
+            Life::Span { first, last } => format!("{first}-{last}"),
+        };
+        let users: Vec<String> = row
+            .users
+            .iter()
+            .map(|&(p, a)| match a {
+                Access::Read => format!("{p}r"),
+                Access::Write => format!("{p}w"),
+            })
+            .collect();
+        write!(
+            f,
+            "{offset:>10} {:>10}  {owner:<6}  {life:<7}  {}",
+            row.bytes, row.name
+        )?;
+        if users.is_empty() {
+            writeln!(f)
+        } else {
+            writeln!(f, ": {}", users.join(" "))
         }
     }
 }
@@ -448,33 +713,19 @@ impl<K: Kind> fmt::Display for Table<K> {
             "{:>10} {:>10}  {:<6}  {:<7}  name: users (w writes, r reads)",
             "offset", "bytes", "owner", "life"
         )?;
-        for (row, offset) in self.rows.iter().zip(&self.offsets) {
-            let owner = match row.owner {
-                Owner::Task => "task",
-                Owner::Edge => "edge",
-                Owner::Worker => "worker",
-            };
-            let life = match row.life() {
-                Life::Plan => "plan".to_owned(),
-                Life::Span { first, last } => format!("{first}-{last}"),
-            };
-            let users: Vec<String> = row
-                .users
-                .iter()
-                .map(|&(p, a)| match a {
-                    Access::Read => format!("{p}r"),
-                    Access::Write => format!("{p}w"),
-                })
-                .collect();
-            write!(
+        let in_body =
+            |body: Option<usize>| (0..self.rows.len()).filter(move |&i| self.body[i] == body);
+        for i in in_body(None) {
+            self.fmt_row(f, i)?;
+        }
+        for (index, g) in self.regions.iter().enumerate() {
+            writeln!(
                 f,
-                "{offset:>10} {:>10}  {owner:<6}  {life:<7}  {}",
-                row.bytes, row.name
+                "{}: region of {} bytes at {}, its body's rows:",
+                g.name, g.bytes, g.offset
             )?;
-            if users.is_empty() {
-                writeln!(f)?;
-            } else {
-                writeln!(f, ": {}", users.join(" "))?;
+            for i in in_body(Some(index)) {
+                self.fmt_row(f, i)?;
             }
         }
         let handoffs: Vec<String> = self

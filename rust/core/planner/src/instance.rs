@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use super::dag::Planned;
+use super::dag::{Planned, Work};
 use contracts::debug_requires;
 use fb_core_arena::{Block, Device, HostKind, Kind, Pinned, RowId};
 #[cfg(feature = "device")]
@@ -37,8 +37,11 @@ type WorkerBlocks<H> = (Arc<Block<Device>>, Arc<Block<H>>);
 impl<'a, H: HostKind, S: 'a> Planned<'a, H, S> {
     /// Allocate each worker's blocks, worker `w`'s on device `devices[w]`,
     /// and build the executor's plan: a node per task in rank order, after
-    /// its [`predecessors`](Planned::predecessors). A table of zero bytes
-    /// allocates nothing, so a DAG with no device rows touches no device.
+    /// its [`predecessors`](Planned::predecessors), and for each loop its
+    /// decision, closing it over its body ([`Plan::add_loop`]). A table of
+    /// zero bytes allocates nothing, so a DAG with no device rows touches
+    /// no device. A loop's body is replayed on these blocks: nothing is
+    /// allocated per iteration.
     ///
     /// Aborts, as [`Block::new`] does, if a block cannot be allocated.
     #[debug_requires(
@@ -60,10 +63,18 @@ impl<'a, H: HostKind, S: 'a> Planned<'a, H, S> {
             let preds: Vec<NodeId> = deps.iter().map(|&u| ids[u]).collect();
             let (device, host) = &blocks[node.worker];
             let (device, host) = (Arc::clone(device), Arc::clone(host));
-            let run = node.run;
-            let id = plan.add(node.name, node.placement, &preds, move |lane| {
-                run(&device.partition(pos), &host.partition(pos), lane)
-            });
+            let id = match node.work {
+                Work::Task(run) => plan.add(node.name, node.placement, &preds, move |lane| {
+                    run(&device.partition(pos), &host.partition(pos), lane)
+                }),
+                Work::Decide {
+                    body,
+                    max_iterations,
+                    decide,
+                } => plan.add_loop(node.name, ids[body], &preds, max_iterations, move |i| {
+                    decide(&host.partition(pos), i)
+                }),
+            };
             plan.set_dims(id, &node.dims);
             ids.push(id);
         }
