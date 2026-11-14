@@ -1,0 +1,29 @@
+[package]
+name = "fb-pipeline-scf"
+description = "pipeline/scf: the Roothaan step F C = S C ε through X as tasks, and the core Hamiltonian's orbitals as a whole run"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-core-arena.workspace = true
+fb-core-error-handling.workspace = true
+fb-core-planner.workspace = true
+fb-core-thread-pool = { workspace = true, features = ["device"] }
+fb-core-wwr.workspace = true
+fb-integrals-one-electron-core-hamiltonian.workspace = true
+fb-integrals-one-electron-overlap.workspace = true
+fb-io-basis.workspace = true
+fb-io-xyz.workspace = true
+fb-molecule-nuclei.workspace = true
+fb-recipes-diagonalize.workspace = true
+fb-recipes-orthogonalize.workspace = true
+# BLAS for the step's three gemms, beside the runtime.
+wwr-sys = { workspace = true, features = ["blas"] }
+
+[dev-dependencies]
+fb-io-npy.workspace = true
+fb-test-support.workspace = true

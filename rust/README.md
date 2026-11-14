@@ -82,6 +82,7 @@ tree, not inputs to its build.
 | `fb_tools_sad`, the `free-breakfast-sad-stamps` binary | `tools/sad` | The generator of `data/sad/`: `free-breakfast-sad-stamps <repo>/data (<basis>... \| --all)` resolves each named set through `fb-io-basis`'s compiled-in table (a set the binary does not carry refused `InvalidConfig`; `--all`, every `<data>/basis/*.json` by its document's BSE `name`), runs `fb-sad`'s atomic SCF for each element alone at the origin, one CPU node of a `thread_pool::Plan` per element on `HostOnly`, and writes `<data>/sad/<basis>/<Z>.npy` through `fb-io-npy` after removing each regenerated set's directory (every one under `--all`); an atom too large for the SCF (`Unsupported`) is skipped, any other failure exits with its kind's code before anything is removed. It links `fb-sad`, never `fb-io-sad`, so it is not linked against its own output. Its STO-3G output is the committed `data/sad/STO-3G/` byte for byte, `tests/stamps.rs` |
 | `fb_recipes_diagonalize` | `src/recipes/diagonalize` | `add_diagonalize`: the eigendecomposition `A = U diag(w) Uᵀ` of a symmetric device row as two tasks of a `Dag`, `syevd` on the stream (A copied into the output row U, then the legacy `wwr_solver_dn_dsyevd` on the stream worker's solver handle, lower triangle, eigenvectors over U, ascending eigenvalues into w, its work a scratch row of exactly `lwork` doubles, its flag a device scratch row copied into a pinned row) and `syevd check` on the CPU (a positive flag `Numerical`, a negative one `GpuRuntime`). `syevd_lwork`, the solver's query on a `SolverHandle`, which a run calls before planning and hands `add_diagonalize` as a number. `f64` only. The plan text at `n = 24` is the committed golden `recipes/diagonalize/tests/golden/plan_n24.txt` |
 | `fb_recipes_orthogonalize` | `src/recipes/orthogonalize`'s `orthogonalize` | `add_orthogonalize`: the symmetric orthogonalizer `X = S^(-1/2) = U Λ^(-1/2) Uᵀ` of a symmetric device row as tasks of a `Dag`, after `fb-recipes-sys`'s load check at planning: `fb_recipes_diagonalize`'s two (S copied into U, S left as it was), then `inverse root` on the stream (w copied into a scratch row Λ, `fb_inverse_sqrt` over it, 0 at or below the floor, then `M = U diag(Λ)` by `dgmm` into scratch M and `X = M Uᵀ` by `gemm` into the output row X, on the stream worker's BLAS handle). `ORTHOGONALIZE_EIGENVALUE_FLOOR`, the C++ `kOrthogonalizeEigenvalueFloor` (1e-10). `f64` only; cond(S) is not logged, and `orthonormalize` is not ported. The plan text at `n = 24` is the committed golden `recipes/orthogonalize/tests/golden/plan_n24.txt` |
+| `fb_pipeline_scf` | `src/pipeline/scf`'s `solve_fock` (the Roothaan step, without the density) | `add_solve_fock`: `F C = S C ε` through `X = S^(-1/2)` for the rows of a symmetric operator F and of X, as tasks of a `Dag`: `fock transform` on the stream (`F' = X F X`, two gemms through a scratch row), `fb_recipes_diagonalize`'s two on F', and `back transform` on the stream (`C = X C'`), ε and C output rows, so the SCF's Fock matrix takes the core Hamiltonian's place later with no change. `Run`, the core Hamiltonian's orbitals: an XYZ file and a basis name planned once (the nuclei, S and H over one staging of U, X, the step with H for F, a download and a collect), syevd's `lwork` asked through a closure at the AO count, run on one stream, returning ε, C and the timing record. The plan text for each of the overlap's fixtures is the committed golden `pipeline/scf/tests/golden/plan_*.txt` |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -121,7 +122,9 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `atom`, `types`, `thread_pool` (without `device`) and `error_handling`;
 and `recipes/diagonalize` on `planner`, `arena`, `thread_pool`, `wwr` and
 `error_handling`; and `recipes/orthogonalize` on `recipes/diagonalize`,
-`recipes/sys`, `kernel_abi` and what they stand on.
+`recipes/sys`, `kernel_abi` and what they stand on; and `pipeline/scf` on
+`integrals/one_electron/overlap`, `integrals/one_electron/core_hamiltonian`,
+`recipes/orthogonalize` and what they stand on.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -230,7 +233,7 @@ built. Only the `runtime_api`, `blas` and `solver` surfaces of `wwr-sys`
 are linked: `blas` and `solver` are asked for by `fb-core-wwr` (each stream
 worker's BLAS and dense-solver handles, made by the `Device` backend), and
 by `fb-recipes-matrix-ao` (its GEMMs), `fb-recipes-diagonalize` (its
-syevd) and `fb-recipes-orthogonalize` (its dgmm and gemm), and a workspace build unifies features, so every crate linking
+syevd), `fb-recipes-orthogonalize` (its dgmm and gemm) and `fb-pipeline-scf` (the Roothaan step's gemms), and a workspace build unifies features, so every crate linking
 `wwr-sys` in it links against `libwwr_capi_blas.so` and
 `libwwr_capi_solver.so` (only a binary that calls one keeps it under
 `NEEDED`).
@@ -257,8 +260,8 @@ the thread pool turn their defaults off, so nothing turns them on by
 accident. Only `fb-core-wwr`, `fb-core-diagnostics`, `fb-recipes-sys`,
 `fb-integrals-sys`, `fb-integrals-mmd`,
 `fb-integrals-one-electron-overlap`, `fb-recipes-matrix-ao`,
-`fb-molecule-nuclei`, `fb-pipeline-config`, `fb-recipes-diagonalize` and
-`fb-recipes-orthogonalize` always link; the records' layout asks
+`fb-molecule-nuclei`, `fb-pipeline-config`, `fb-recipes-diagonalize`,
+`fb-recipes-orthogonalize` and `fb-pipeline-scf` always link; the records' layout asks
 the kernel library for the sort's workspace at planning, so even the
 overlap's and the transform's device-free tests (the host tables, the plan
 goldens) need the library built. `fb-molecule-nuclei` links wwr alone,
@@ -404,6 +407,19 @@ is the projector `I - J / 3` to `100 n ε`. The forked `fb_inverse_sqrt` is
 `1.0 / x.sqrt()` (both correctly rounded; on HIP with contraction off in
 the kernel, which otherwise folds into an `rsq` an ulp off) on each side of the floor and
 across block boundaries, the elements past its count untouched.
+
+The core Hamiltonian's orbitals on a card are
+`pipeline/scf/tests/core_orbitals.rs`: the overlap's three fixtures, each
+planned by `fb_pipeline_scf::Run` with `syevd_lwork` asked of a solver
+handle on the device and run once, at `max_i |ε_i - ε_ref,i| <= 100 n ε
+κ₂(S) ‖H‖₂` (the generalized problem's eigenvalue sensitivity through
+`S^(-1/2)`, two decades of margin), `max |Cᵀ S C - I| <= 100 n ε κ₂(S)` and
+`max |H C - S C diag(ε)| <= 100 n ε κ₂(S) ‖H‖₂`, the last two with PySCF's
+S and H, which the run's own meet decades under those bars. The reference
+energies are LAPACK's `scipy.linalg.eigh(H, S)` of the committed S and H,
+with κ₂(S) and ‖H‖₂ beside them, in `pipeline/scf/tests/data/` with the
+script that writes them. The run's timing record has an entry per task, a
+stream scope on each stream task's.
 
 `doc_check/tests/section_citations.rs` checks that every section the
 README, `docs/` and every member's Rust sources cite by name is a heading of
@@ -931,3 +947,19 @@ Clippy (`-D warnings`, the changed crates with their tests), rustdoc
 skipped, `fb_inverse_sqrt` bitwise there too once its kernel turned
 contraction off (contracted, clang folds `1 / sqrt` into a refined `rsq`
 an ulp off).
+
+2026-11-14, `pipeline/scf` (the Roothaan step `F C = S C ε` through X as
+tasks, `fock transform`, the eigensolver's two and `back transform`, and
+`Run`, the core Hamiltonian's orbitals from an XYZ file and a basis name),
+on the RTX 3080 (CUDA), the `default` preset: `devtools/test.py pr --only
+cargo --all` passes, tier 3 204 tests; tier 4 144, none skipped, 3 new: the
+three plan goldens at `lwork` 1234 and the refused inputs; and H2O/STO-3G,
+H2O/cc-pVDZ and CO/cc-pVTZ run once each, `max |ε - ε_ref|` `1.4e-13`,
+`1.5e-12` and `2.1e-11` against `100 n ε κ₂(S) ‖H‖₂` (`3.1e-11`, `5.2e-9`,
+`1.8e-7`), `max |Cᵀ S C - I|` `2.0e-15`, `1.0e-14` and `1.7e-13` against
+`100 n ε κ₂(S)` (`8.8e-13`, `1.3e-10`, `2.9e-9`), `max |H C - S C ε|`
+`6.8e-14`, `3.2e-13` and `1.7e-12` against the first bar; each run's timing
+record has an entry for each of its 20 tasks, a stream scope on each of the
+13 stream tasks'. Clippy (`-D warnings`, the new crate with its tests),
+rustdoc (`-D warnings`) and `cargo fmt --check` are clean. Not run on the
+gfx1200.

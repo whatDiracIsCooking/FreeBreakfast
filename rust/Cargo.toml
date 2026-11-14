@@ -40,6 +40,7 @@ members = [
     "tools/sad",
     "recipes/diagonalize",
     "recipes/orthogonalize",
+    "pipeline/scf",
 ]
 
 [workspace.package]
@@ -84,6 +85,7 @@ fb-pipeline-config = { path = "pipeline/config" }
 fb-tools-sad = { path = "tools/sad" }
 fb-recipes-diagonalize = { path = "recipes/diagonalize" }
 fb-recipes-orthogonalize = { path = "recipes/orthogonalize" }
+fb-pipeline-scf = { path = "pipeline/scf" }
 
 contracts = "0.6.11"
 # core::log: the line's local time, and the OS thread id (std has none).
