@@ -41,7 +41,9 @@ set_target_properties(
 )
 
 # free_breakfast::sad is sad_host.cpp's: each compiled-in stamp is held to the
-# atomic SCF it stands in for, which runs on the host.
+# atomic SCF it stands in for, which runs on the host. So is
+# free_breakfast::tools::sad: the sets the stamps' generator regenerates are
+# held to the names they are compiled in under, over the real data/basis.
 target_link_libraries(
   free_breakfast_io_tests_host
   PRIVATE free_breakfast::core
@@ -50,8 +52,16 @@ target_link_libraries(
           free_breakfast::sad
           free_breakfast::io
           free_breakfast::test::support
+          free_breakfast::tools::sad
           GTest::gtest
           GTest::gtest_main
+)
+
+# data/basis, for sad_host.cpp's naming case. An absolute path, so a test
+# finds it whatever directory ctest runs it from.
+target_compile_definitions(
+  free_breakfast_io_tests_host
+  PRIVATE FBF_DATA_DIR="${PROJECT_SOURCE_DIR}/data"
 )
 
 gtest_discover_tests(

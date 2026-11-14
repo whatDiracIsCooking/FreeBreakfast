@@ -21,6 +21,11 @@ import free_breakfast.basis;
 import free_breakfast.io.basis;
 import free_breakfast.io.sad;
 import free_breakfast.sad;
+import free_breakfast.tools.sad;
+import free_breakfast.io.base;
+import free_breakfast.core.nontransferrable;
+
+#include "scratch_dir.h"
 
 namespace {
 
@@ -89,6 +94,42 @@ TEST(IoSad, EveryElementOfEveryCompiledInSetIsBaked) {
       EXPECT_EQ(baked->size(), n * n) << name << " Z=" << z;
     }
   }
+}
+
+TEST(IoSad, StampSetsNameEachDocumentAsItIsCompiledIn) {
+  // tools/sad's --all over the real data/basis: each document by its BSE name,
+  // never its file stem, which resolve_basis does not always fold to the name
+  // (6-31gstar.json is 6-31G*, and "6-31gstar" resolves to nothing; #1446).
+  const auto sets = fb::sad_stamp_sets(std::filesystem::path{FBF_DATA_DIR} / "basis");
+  ASSERT_TRUE(sets) << sets.error().message;
+  // File-name order: 6-31g, 6-31gstar, 6-31gstarstar, aug-cc-pVDZ, ...
+  const std::vector<std::string> expected{"6-31G",       "6-31G*",  "6-31G**", "aug-cc-pVDZ",
+                                          "aug-cc-pVTZ", "cc-pVDZ", "cc-pVTZ", "def2-SVP",
+                                          "def2-TZVP",   "MINAO",   "STO-3G"};
+  EXPECT_EQ(*sets, expected);
+  for (const std::string &name : *sets) {
+    EXPECT_TRUE(std::ranges::contains(kCompiledInSets, name)) << name;
+    const auto stamp = fb::resolve_basis(name);
+    ASSERT_TRUE(stamp) << name << ": " << stamp.error().message;
+    EXPECT_EQ(stamp->name(), name);
+  }
+  EXPECT_FALSE(fb::is_builtin_basis("6-31gstar"));
+}
+
+TEST(IoSad, StampSetsRefuseADocumentWithNoName) {
+  const fb::test::ScratchDir dir("io-sad-sets");
+  ASSERT_TRUE(fb::write_file(dir / "a.json", R"({"name": "A"})").has_value());
+  ASSERT_TRUE(fb::write_file(dir / "b.json", R"({"elements": {}})").has_value());
+  ASSERT_TRUE(fb::write_file(dir / "README.md", "not a set").has_value());
+  const auto sets = fb::sad_stamp_sets(dir.path());
+  ASSERT_FALSE(sets);
+  EXPECT_EQ(sets.error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_NE(sets.error().message.find("b.json"), std::string::npos) << sets.error().message;
+
+  std::filesystem::remove(dir / "b.json");
+  const auto one = fb::sad_stamp_sets(dir.path());
+  ASSERT_TRUE(one) << one.error().message;
+  EXPECT_EQ(*one, std::vector<std::string>{"A"});
 }
 
 TEST(IoSad, NothingElseIsBaked) {

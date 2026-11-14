@@ -70,10 +70,10 @@ cargo run --release --manifest-path rust/Cargo.toml --bin free-breakfast-sad-sta
 cargo run --release --manifest-path rust/Cargo.toml --bin free-breakfast-sad-stamps -- data --all
 ```
 
-Its `--all` takes each `data/basis` document by its BSE `name`, not its file
-name, since a file name is not always a spelling `resolve_basis` folds to
-(`6-31gstar.json` is `6-31G*`). It runs one SCF per element on as many
-threads as the process may use; `taskset` bounds them.
+Both generators' `--all` take each `data/basis` document by its BSE `name`,
+not its file name, since a file name is not always a spelling `resolve_basis`
+folds to (`6-31gstar.json` is `6-31G*`). The Rust one runs one SCF per element
+on as many threads as the process may use; `taskset` bounds them.
 
 A set is named as `resolve_basis` takes it, so `cc-pvdz` is `cc-pVDZ`. Naming
 none is a usage error rather than a quiet `--all`: the full run is the
