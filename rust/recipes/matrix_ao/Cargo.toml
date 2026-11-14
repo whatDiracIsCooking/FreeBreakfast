@@ -16,7 +16,6 @@ fb-core-error-handling.workspace = true
 fb-core-planner.workspace = true
 fb-core-thread-pool = { workspace = true, features = ["device"] }
 fb-recipes-blas.workspace = true
-log.workspace = true
 
 [dev-dependencies]
 fb-io-basis.workspace = true

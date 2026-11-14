@@ -10,8 +10,9 @@
 //! the register `docs/rules.md` names exists; and `tests/workspace_graph.rs`,
 //! which reads the package graph (`cargo metadata`, over the manifests'
 //! text) and checks the reverse-dependents bar, that no crate is an
-//! umbrella, that a crate which only logs reaches no handle crate, and the
-//! path rules of `devtools/test.py` against the layout. A crate of its own
+//! umbrella, that a crate which only logs reaches no handle crate, that
+//! every direct dependency is named in its crate's sources, and the path
+//! rules of `devtools/test.py` against the layout. A crate of its own
 //! so that it builds and runs without the wwr library. The checks are its tests; the
 //! library holds only what more than one of them reads.
 
