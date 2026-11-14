@@ -1333,3 +1333,15 @@ sync points were the decision's on the download and the lanes' exits. On
 the RTX 3080 (CUDA), the `default` preset: `devtools/test.py pr --only
 cargo --all` passed, tiers 1 to 3 342 tests, tier 4 365, none skipped,
 and no plan golden moved. HIP not run.
+
+2026-11-14, ancestor cgroup limits and a settled reclaimable term
+(#1622): `host_available` walks from the process's cgroup up to the
+mount's root and takes the smallest headroom, stopping without an error
+at a directory it cannot list. A cgroup's reclaimable memory is half its
+file LRU page cache and half its reclaimable slab, rounded up: the
+kernel's `si_mem_available` rule with the low watermark at its cap of
+half. A synthetic tree pins the walk: an ancestor's lower limit wins,
+`max` everywhere leaves `MemAvailable`, and an unlistable parent and the
+mount's root stop the walk. On the RTX 3080 (CUDA), the `default`
+preset: `devtools/test.py pr --only cargo --all` passed, tiers 1 to 3
+343 tests, tier 4 366, none skipped. HIP not run.

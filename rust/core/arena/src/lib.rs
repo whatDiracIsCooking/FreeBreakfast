@@ -26,7 +26,7 @@
 //!   every row larger than the cap on its own and the rows live at the
 //!   peak; [`admit_host`] a node's pinned blocks and the plan's heap block
 //!   together against [`host_available`], the node's available memory
-//!   within its cgroup's limit. With `device`, `device_memory` reads a card's free and total
+//!   within its cgroups' limits. With `device`, `device_memory` reads a card's free and total
 //!   memory at planning: the card bounds a device cap, and the difference
 //!   is the device's measured reserve.
 //! - [`Block::new`] makes the table's one allocation, on the device,

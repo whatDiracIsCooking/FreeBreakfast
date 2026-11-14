@@ -224,7 +224,11 @@ work, a pinned row up to the device or a device row down to a pinned one,
 is a copy node the planner adds: <code>Dag::upload</code> and <code>Dag::download</code>, one
 line for the caller, each returning the new row, named after it
 (<code>upload &lt;row&gt;</code>, <code>download &lt;row&gt;</code>), and timed, admitted and ordered like
-any other node. Its rows are ordinary rows, the source read and the
+any other node. Rows that one reader waits for together come down in one
+node, <code>Dag::download_rows</code>, the rows of one element type each named by
+the caller and the node by a label (<code>download &lt;label&gt;</code>): one event and
+one wait for them all, where a node per row costs an event and a wait
+each. Its rows are ordinary rows, the source read and the
 destination an output, so admission counts them and the edges order them.
 A task never writes such a copy by hand; a copy inside a task's larger
 work, a solver's <code>info</code> flag down beside its launch, stays the task's.
@@ -421,14 +425,27 @@ new kind.</p>
 </tr>
 </tbody>
 </table></div>
-<p><strong>The available memory is the cgroup's too.</strong> <code>available</code> is the node's
-<code>MemAvailable</code>, which inside a container is the host's, so under a cgroup
-v2 memory limit it is the smaller of that and what the limit leaves:
-<code>memory.max</code> less <code>memory.current</code>, the cgroup's inactive page cache
-(<code>inactive_file</code> in <code>memory.stat</code>) counted free, as <code>MemAvailable</code> counts
-the node's (<code>fb_core_arena::host_available</code>). The limit read is the
-process's own cgroup's; an ancestor's lower limit is not read (#1622). A limit of
-<code>max</code>, or none, leaves <code>MemAvailable</code>.</p>
+<p><strong>The available memory is the cgroups' too.</strong> <code>available</code> is the node's
+<code>MemAvailable</code>, which inside a container is the host's, so under cgroup v2
+memory limits it is the smallest of that and what each limit leaves:
+<code>memory.max</code> less the cgroup's usage, <code>memory.current</code> less what it could
+reclaim (<code>fb_core_arena::host_available</code>). Every cgroup from the process's
+own up to the root of the mount is read, so a lower limit on an ancestor,
+such as a systemd slice above a container's cgroup, wins. A limit of <code>max</code>,
+or none, leaves <code>MemAvailable</code>. The walk stops at a directory it cannot list,
+and at the mount's root: a cgroup namespace hides the parents above it, and
+a limit there is not read, the one gap left.</p>
+<p><strong>Reclaimable is half the cache and half the slab.</strong> The kernel's own
+<code>MemAvailable</code> estimate, <code>si_mem_available</code> in <code>mm/show_mem.c</code>, counts the
+page cache on the file LRU lists (<code>active_file</code> plus <code>inactive_file</code>) and the
+reclaimable slab as available, each less the smaller of half of it and the
+node's low watermark. The same terms are in a cgroup's <code>memory.stat</code>
+(<code>Documentation/admin-guide/cgroup-v2.rst</code>): <code>active_file</code>, <code>inactive_file</code>
+and <code>slab_reclaimable</code>; shmem sits on the anon lists and counts used. A cgroup
+has no low watermark of its own, so each term is counted at half, rounded up:
+what the kernel counts when the watermark is at least that half, and less than
+it counts otherwise. A cgroup's figure is then never more hopeful than the
+node's rule, and errs, when it errs, by at most half its cache and slab.</p>
 <p><strong>No headroom and no eighth.</strong> The 64 MiB fragmentation headroom and the HIP
 <code>ceil(P / 8)</code> reuse rounding are properties of a pool that reserves in chunks
 and serves a request from a larger freed block. One plain allocation has
@@ -731,6 +748,24 @@ read and written by its one body node, which runs after itself in the
 iteration before, so the batches add in order; an output read after the
 loop is its producer's in the last iteration. <code>TableBuilder::build</code>
 refuses any other.</p>
+<p><strong>Regions nest: a counted loop in a decision loop's body has its region
+in that body's table.</strong> The one nesting built is a counted loop in a
+decision loop's body (<a href="programming_model.html"><code>programming_model.md</code></a>,
+&quot;Plan once, run many&quot;), J and K over a streamed B every SCF iteration. A
+row is the body of the innermost loop that holds all its users. The
+counted loop's body is laid out alone, as at the top level, its region of
+<code>R</code> copies is one row of the decision loop's body table, live over the
+counted loop's span, and that body is laid out alone around it, its region
+a row of the parent. A row's lifetime is extended over every loop it
+overlaps that is not its own or one holding its own: a row of the decision
+loop's body used before and after the counted loop is live across the
+whole of it, so no copy takes its bytes, and a row outside both is live
+across the decision loop. Admission counts the outer region alone, the
+inner inside it. A handoff or read leaving the decision loop is taken from
+its decision; one leaving only the counted loop, to a later node of the
+decision loop's body, from the writer's last trip. The accumulator above
+may be a row of the decision loop's body: K zeroed in the SCF's body before the batches, written by the counted
+loop's one user, and read after it, every iteration.</p>
 <p><strong>A carried row is the parent's.</strong> The density, the occupied factor and
 DIIS's history pass from one iteration to the next. Such a row is produced
 before the loop (the guess, a zero fill, <code>add_diis</code>'s <code>diis history</code> task),
@@ -893,9 +928,9 @@ once per node per run. A pinned row is a real <code>&amp;[T]</code> or <code>&am
 device row is a pointer-and-length view with no <code>Deref</code>. A stream node's
 pinned view is wrapped in a <code>CopyOnly</code>, which yields no slice and which
 only <code>memcpy_p2d</code> and <code>memcpy_d2p</code> take.</li>
-<li><code>core::planner</code>'s <code>Dag::upload</code> and <code>Dag::download</code>, the copy nodes
-(&quot;The table&quot;): the only <code>GpuTask</code>s whose <code>run</code> is a copy between kinds
-alone, so a pinned-to-device or device-to-pinned move is one line at
+<li><code>core::planner</code>'s <code>Dag::upload</code>, <code>Dag::download</code> and
+<code>Dag::download_rows</code>, the copy nodes (&quot;The table&quot;): the only <code>GpuTask</code>s
+whose <code>run</code> is a copy between kinds alone, so a pinned-to-device or device-to-pinned move is one line at
 its caller, on whichever lane of the worker the caller names.</li>
 </ul>
 <p><strong>The view's checks are always on, not <code>debug_requires</code>.</strong> Two nodes

@@ -1273,9 +1273,10 @@ fn admission_counts_pinned_and_heap_together() {
 }
 
 /// The host's available memory is `MemAvailable`, or under a cgroup limit
-/// the smaller of it and what the limit leaves, the cgroup's inactive page
-/// cache counted free; `max` or no limit is `MemAvailable`, and a file
-/// that cannot be parsed is an `Io` error.
+/// the smaller of it and what the limit leaves, half of the cgroup's file
+/// LRU page cache and half of its reclaimable slab, each rounded up,
+/// counted free (`admit::available`'s analysis); `max` or no limit is
+/// `MemAvailable`, and a file that cannot be parsed is an `Io` error.
 #[test]
 fn host_memory_is_the_smaller_of_the_node_and_its_cgroup() {
     use super::admit::available;
@@ -1285,10 +1286,13 @@ fn host_memory_is_the_smaller_of_the_node_and_its_cgroup() {
         available(meminfo, Some("max\n"), Some("5\n"), None).unwrap(),
         1_024_000
     );
-    let stat = "anon 1\ninactive_file 300\nactive_file 7\n";
+    // The file LRU, 300 + 7, counts 154; the reclaimable slab, 51, counts
+    // 26; anon, shmem and the rest count used: 1000 - (500 - 180).
+    let stat = "anon 1\nshmem 40\ninactive_file 300\nactive_file 7\nslab_reclaimable 51\n\
+                slab_unreclaimable 9\n";
     assert_eq!(
         available(meminfo, Some("1000\n"), Some("500\n"), Some(stat)).unwrap(),
-        800
+        680
     );
     assert_eq!(
         available(meminfo, Some("100\n"), Some("500\n"), None).unwrap(),
@@ -1311,4 +1315,82 @@ fn host_memory_is_the_smaller_of_the_node_and_its_cgroup() {
             e.message
         );
     }
+}
+
+/// The host's available memory is the smallest over every cgroup from the
+/// process's own up to the root of the mount: an ancestor's lower limit
+/// wins, a cgroup with no `memory.max` is passed over, `max` at every
+/// level leaves `MemAvailable`, and the walk stops without an error at a
+/// directory it cannot list, or at the mount, above which a cgroup
+/// namespace hides the parents.
+#[test]
+fn host_memory_is_the_least_over_the_cgroups_ancestors() {
+    use super::admit::available_under;
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("fb-core-arena-cgroup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let put = |dir: &str, files: &[(&str, &str)]| {
+        let dir = root.join(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, text) in files {
+            std::fs::write(dir.join(name), text).unwrap();
+        }
+    };
+    let meminfo = "MemAvailable: 1000 kB\n";
+    let node = 1_024_000;
+    // Above the mount: a host's slice the namespace would hide.
+    put(
+        "host",
+        &[("memory.max", "100\n"), ("memory.current", "0\n")],
+    );
+    // The mount's root, which has no memory.max, as a real root.
+    put("host/ns", &[("cgroup.procs", "")]);
+    // 5000 - (1000 - (501 + 50)): the file LRU 1001 counts 501, the slab 99
+    // counts 50.
+    put(
+        "host/ns/slice",
+        &[
+            ("memory.max", "5000\n"),
+            ("memory.current", "1000\n"),
+            (
+                "memory.stat",
+                "active_file 400\ninactive_file 601\nslab_reclaimable 99\n",
+            ),
+        ],
+    );
+    put("host/ns/slice/ctr", &[("cgroup.procs", "")]);
+    put(
+        "host/ns/slice/ctr/leaf",
+        &[("memory.max", "20000\n"), ("memory.current", "1000\n")],
+    );
+    let mount = root.join("host/ns");
+    let own = Some("0::/slice/ctr/leaf\n");
+    assert_eq!(available_under(meminfo, &mount, own).unwrap(), 4551);
+    // No cgroup of the process, or a path that leaves the mount: the walk is
+    // the mount's root alone, and the host's 100 above it is not read.
+    for own in [None, Some("0::/../..\n"), Some("0::/gone\n")] {
+        assert_eq!(
+            available_under(meminfo, &mount, own).unwrap(),
+            node,
+            "{own:?}"
+        );
+    }
+    // A parent it cannot list stops the walk: the slice's lower limit is not
+    // read, the leaf's is.
+    let slice = root.join("host/ns/slice");
+    std::fs::set_permissions(&slice, std::fs::Permissions::from_mode(0o311)).unwrap();
+    let listed = std::fs::read_dir(&slice).is_ok();
+    let stopped = available_under(meminfo, &mount, own);
+    std::fs::set_permissions(&slice, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(
+        !listed,
+        "a directory of mode 0311 is listed: the case cannot run as root"
+    );
+    assert_eq!(stopped.unwrap(), 19_000);
+    // `max` at every level leaves MemAvailable.
+    for dir in ["host/ns/slice", "host/ns/slice/ctr/leaf"] {
+        put(dir, &[("memory.max", "max\n")]);
+    }
+    assert_eq!(available_under(meminfo, &mount, own).unwrap(), node);
+    std::fs::remove_dir_all(&root).unwrap();
 }
