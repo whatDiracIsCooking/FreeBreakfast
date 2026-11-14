@@ -127,6 +127,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LIB = REPO_ROOT / "devtools" / "lib.sh"
@@ -1092,7 +1093,12 @@ def slow_line(fast: bool) -> str:
 
 
 def cargo_half(
-    tag: str, jobs: str, log: Path, fast: bool = True, counts: list[int] | None = None
+    tag: str,
+    jobs: str,
+    log: Path,
+    fast: bool = True,
+    counts: list[int] | None = None,
+    cases: list[dict] | None = None,
 ) -> int:
     """The cargo half of the gates, tiers 1 to 3 (rust/docs/testing.md, "What
     runs when"): `cargo test --no-default-features` over link_free_crates'
@@ -1107,7 +1113,9 @@ def cargo_half(
     goes to `log`; the test counts, one line per binary that ran a case, to
     stdout too. `fast` sets FREE_BREAKFAST_FAST_TESTS, so the slow cases
     return at once (rust/docs/testing.md, "Slow cases"); the nightly clears
-    it. With `counts`, the [passed, failed, ignored] totals are added to it."""
+    it. With `counts`, the [passed, failed, ignored] totals are added to it;
+    with `cases`, the cargo test passes CARGO_RECORD_FLAG and every case it
+    ran is appended to it (cargo_cases), for the nightly's record."""
     if shutil.which("cargo") is None:
         say(f"{tag}: cargo not found -- the Rust toolchain lives in the container")
         say(f"{tag}: skipping the cargo half")
@@ -1124,6 +1132,7 @@ def cargo_half(
         (
             "cargo test",
             cargo_cmd("test", *jflag, "--no-default-features")
+            + ([CARGO_RECORD_FLAG] if cases is not None else [])
             + [a for c in tested for a in ("-p", c)],
             # The slow cases return at once (rust/docs/testing.md, "Slow
             # cases"), as FBF_SKIP_IF_FAST_TESTS() skips in the C++ half.
@@ -1173,6 +1182,8 @@ def cargo_half(
             )
             if counts is not None:
                 counts[:] = [c + t for c, t in zip(counts, totals, strict=True)]
+            if cases is not None:
+                cases += cargo_cases(lines)
         if proc.returncode != 0:
             say(f"{tag}: cargo half FAILED: {name} exited {proc.returncode}", err=True)
             for line in lines[-25:]:
@@ -1189,6 +1200,12 @@ def cargo_half(
 # `cargo test` lists it as ignored, with that reason; tier 4 runs it with
 # --include-ignored, and only once wwr itself has seen a device.
 TEST_IGNORED = re.compile(r"^test (.+?) \.\.\. ignored(?:, (.*))?$")
+# One case's outcome in libtest's human output.
+TEST_OUTCOME = re.compile(r"^test (.+?) \.\.\. (ok|FAILED|ignored)(?:, .*)?$")
+# What a recorded cargo test passes beside its arguments: each test
+# executable's compiler-artifact message on stdout, which names its package,
+# and the diagnostics rendered as cargo prints them anyway.
+CARGO_RECORD_FLAG = "--message-format=json-render-diagnostics"
 # Files that lie in no crate but belong to one, determinator's path rules
 # (rust/docs/testing.md, "Selection"): a module's forked kernels belong to
 # every kernel library's -sys crate (a member that declares `links`), since
@@ -1310,6 +1327,63 @@ def cargo_skips(lines: list[str]) -> list[str]:
     return skips
 
 
+def cargo_package(package_id: str) -> str:
+    """The package name in a cargo package id, in any of its spellings:
+    `path+file:///…/dir#name@0.1.0`, `path+file:///…/name#0.1.0` (the
+    name the directory's), or the old `name 0.1.0 (path+file:///…)`."""
+    if "#" not in package_id:
+        return package_id.split(" ", 1)[0]
+    url, frag = package_id.split("#", 1)
+    return frag.split("@", 1)[0] if "@" in frag else url.rstrip("/").rsplit("/", 1)[-1]
+
+
+def cargo_cases(lines: list[str]) -> list[dict]:
+    """Every case a recorded cargo test ran (CARGO_RECORD_FLAG among its
+    arguments), as a metrics record's case: `binary` the package and the
+    target's source (`cargo fb-core-arena tests/plan.rs`; a doc-test's
+    `cargo <crate> doc-tests`), `name` that and the case, `status` from
+    libtest's outcome (an ignored case is `skip`), and `seconds` null:
+    libtest's stable output times no case. The package comes from the
+    compiler-artifact message that names the binary's executable; an
+    executable no message names is `?`."""
+    packages: dict[str, str] = {}
+    for line in lines:
+        if not line.startswith("{"):
+            continue
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        if msg.get("reason") == "compiler-artifact" and msg.get("executable"):
+            packages[Path(msg["executable"]).name] = cargo_package(
+                msg.get("package_id", "")
+            )
+    cases: list[dict] = []
+    binary = None
+    for line in lines:
+        if m := CARGO_RUNNING.match(line):
+            what = m.group(2).strip()
+            if m.group(1) == "Doc-tests":
+                binary = f"cargo {what} doc-tests"
+                continue
+            exe = re.search(r"\(([^()]*)\)$", what)
+            src = (what[: exe.start()] if exe else what).strip()
+            package = packages.get(Path(exe.group(1)).name, "?") if exe else "?"
+            binary = f"cargo {package} {src.removeprefix('unittests ')}"
+        elif binary and (m := TEST_OUTCOME.match(line)):
+            cases.append(
+                {
+                    "name": f"{binary.removeprefix('cargo ')}::{m.group(1)}",
+                    "binary": binary,
+                    "status": {"ok": "pass", "FAILED": "fail", "ignored": "skip"}[
+                        m.group(2)
+                    ],
+                    "seconds": None,
+                }
+            )
+    return cases
+
+
 def cargo_tier4(
     tag: str,
     cfg: dict[str, str],
@@ -1319,6 +1393,8 @@ def cargo_tier4(
     log: Path,
     fast: bool = True,
     counts: list[int] | None = None,
+    cases: list[dict] | None = None,
+    skips: list[str] | None = None,
 ) -> int:
     """Tier 4 of the cargo half (rust/docs/testing.md, "What runs when"):
     every test of the affected crates (affected_crates) that link the
@@ -1333,7 +1409,8 @@ def cargo_tier4(
     when wwr sees a device under the card lock; otherwise it is reported
     ignored, and every ignored case is printed in one list with its
     reason. Skips, exit 0, where cmake is absent: the libraries cannot be
-    built. `fast` and `counts` as cargo_half's."""
+    built. `fast`, `counts` and `cases` as cargo_half's; with `skips`, every
+    case the test run reported ignored is appended to it (cargo_skips)."""
     backend = backend_of_preset(preset, cfg)
     if why := toolchain_unavailable():
         say(f"{tag}: {why}")
@@ -1402,7 +1479,8 @@ def cargo_tier4(
             say(f"{tag}:   {line}", err=True)
         return proc.returncode
     say(f"{tag}:   tier 4 clippy: ok ({time.monotonic() - start:.0f}s)", log=log)
-    cmd = cargo_cmd("test", *jflag, *selected, "--", "--test-threads=1")
+    record = [CARGO_RECORD_FLAG] if cases is not None else []
+    cmd = cargo_cmd("test", *jflag, *record, *selected, "--", "--test-threads=1")
     with Card(backend, cfg):
         count, seen = device_probe(build)
         say(f"{tag}:   {seen}")
@@ -1433,10 +1511,14 @@ def cargo_tier4(
     )
     if counts is not None:
         counts[:] = [c + t for c, t in zip(counts, totals, strict=True)]
-    skips = cargo_skips(lines)
-    if skips:
-        say(f"{tag}: tier 4 skipped {len(skips)} case(s) ({seen}):", log=log)
-        for s in skips:
+    if cases is not None:
+        cases += cargo_cases(lines)
+    ignored_cases = cargo_skips(lines)
+    if skips is not None:
+        skips += ignored_cases
+    if ignored_cases:
+        say(f"{tag}: tier 4 skipped {len(ignored_cases)} case(s) ({seen}):", log=log)
+        for s in ignored_cases:
             say(f"{tag}:   skipped {s}", log=log)
     else:
         say(f"{tag}: tier 4 skipped: none", log=log)
@@ -2508,20 +2590,62 @@ def cmd_nightly(
     return subprocess.run(cmd, cwd=worktree, check=False).returncode
 
 
+class CargoNight(NamedTuple):
+    """What the nightly's cargo half brings back for the summary and the
+    record."""
+
+    rc: int
+    # [passed, failed, ignored] over both cargo test runs.
+    counts: list[int]
+    # Every case either run reported, as cargo_cases records it.
+    cases: list[dict]
+    # The tier-4 cases reported ignored, as cargo_skips names them.
+    skips: list[str]
+
+
+def cargo_summary(cargo: CargoNight, tag: str, log: Path) -> str:
+    """The cargo half's fields of the night's summary line, `cargo=P/F/I`
+    (passed, failed and ignored over both cargo test runs) and
+    `cargo-skipped=N` (the tier-4 cases that did not run), after printing
+    the tier-4 skip list, each case with its reason, to stdout and `log`
+    beside the summary."""
+    say(
+        f"{tag}: cargo tier 4 skipped: "
+        + (f"{len(cargo.skips)} case(s)" if cargo.skips else "none"),
+        log=log,
+    )
+    for skip in cargo.skips:
+        say(f"{tag}:   skipped {skip}", log=log)
+    return (
+        f"  cargo={'/'.join(map(str, cargo.counts))}  cargo-skipped={len(cargo.skips)}"
+    )
+
+
 def nightly_cargo(
     tag: str, cfg: dict[str, str], preset: str, jobs: str, log: Path
-) -> tuple[int, list[int]]:
+) -> CargoNight:
     """The nightly's cargo half: `pr --only cargo --all`'s, tiers 1 to 3 and
     then every crate's tier 4 on `preset`'s card under its lock, with no
-    FREE_BREAKFAST_FAST_TESTS, so the slow cases run. Returns the status and
-    the [passed, failed, ignored] totals of both cargo test runs."""
-    counts = [0, 0, 0]
-    rc = cargo_half(tag, jobs, log, fast=False, counts=counts)
+    FREE_BREAKFAST_FAST_TESTS, so the slow cases run, each cargo test
+    recorded (cargo_cases)."""
+    counts, cases, skips = [0, 0, 0], [], []
+    rc = cargo_half(tag, jobs, log, fast=False, counts=counts, cases=cases)
     if rc == 0:
-        rc = cargo_tier4(tag, cfg, preset, None, jobs, log, fast=False, counts=counts)
+        rc = cargo_tier4(
+            tag,
+            cfg,
+            preset,
+            None,
+            jobs,
+            log,
+            fast=False,
+            counts=counts,
+            cases=cases,
+            skips=skips,
+        )
     else:
         say(f"{tag}: tier 4 not run -- tiers 1 to 3 failed", log=log)
-    return rc, counts
+    return CargoNight(rc, counts, cases, skips)
 
 
 def nightly_plan(args: argparse.Namespace, cfg: dict[str, str]) -> list[str]:
@@ -2563,7 +2687,7 @@ def nightly_run(
     tag = mode
     reduced = bool(passthrough)
     failed: list[str] = []
-    cargo_totals: list[int] | None = None
+    cargo: CargoNight | None = None
     preset = args.preset or "default"
     backend = backend_of_preset(preset, cfg)
     jobs = args.jobs or cfg["BUILD_JOBS"]
@@ -2643,9 +2767,10 @@ def nightly_run(
         # itself, and nothing else of the night's is on it then.
         if reduced:
             say(f"{tag}: a reduced run -- the cargo half does not run", log=log)
-            grc, cargo_totals = 0, None
+            cargo = None
         else:
-            grc, cargo_totals = nightly_cargo(tag, cfg, preset, jobs, log)
+            cargo = nightly_cargo(tag, cfg, preset, jobs, log)
+        grc = cargo.rc if cargo else 0
         rc = crc or prc or grc
         if crc:
             failed.append(f"C++ tests: ctest or a GPU batch (rc={crc})")
@@ -2679,9 +2804,8 @@ def nightly_run(
         f"test.py nightly {verdict}  rev={rev}  preset={preset}  mode={mode}"
         f"  stamp={stamp}{run_fields(args, passthrough)}"
     )
-    if cargo_totals is not None:
-        # passed/failed/ignored, over tier 3's and tier 4's cargo test.
-        summary += f"  cargo={'/'.join(map(str, cargo_totals))}"
+    if cargo is not None:
+        summary += cargo_summary(cargo, tag, log)
     try:
         gpu, tools = metrics.probe(build_dir, backend)
         record = metrics.make_record(
@@ -2695,7 +2819,7 @@ def nightly_run(
             gpu=gpu,
             toolchain=tools,
             build=metrics.build_info(**build),
-            cases=run_cases(metrics, results),
+            cases=run_cases(metrics, results) + (cargo.cases if cargo else []),
             result="pass" if rc == 0 else "fail",
         )
         root = Path(cfg["PRIMARY_ROOT"] or REPO_ROOT)

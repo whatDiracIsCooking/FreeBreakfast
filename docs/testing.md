@@ -455,9 +455,11 @@ timer, `devtools/systemd/free-breakfast-nightly@.timer`.
    tier 4 (its clippy, then its tests on the preset's card, which take the
    card lock again by themselves).
    Its counts, per test binary and in total, go to the log beside a
-   `slow cases run` line for each `cargo test`, and its totals onto the
-   summary line; its failure fails the night. Its cases are not yet in the
-   record.
+   `slow cases run` line for each `cargo test`; its totals and the count of
+   tier-4 cases that did not run go onto the summary line, those cases each
+   named with its reason just above it; and every case either `cargo test`
+   reported goes into the record (see "Metrics"). Its failure fails the
+   night.
 6. **Run `devtools/cross-backend-check.sh`**, outside the card, after the
    tests. Its exit 2 (it could not run) fails the night, with a line saying so:
    it is never a pass.
@@ -474,11 +476,13 @@ series noisy.
 
 It logs to `<primary>/.slow-tier-reports/<mode>-<stamp>-<rev>-default.log`,
 with the per-case reports in `<log>.results/`, and appends
-`test.py nightly PASS  rev=…  preset=default  mode=nightly  stamp=…  cargo=P/F/I  metrics=…  slow-rule=N/M`
+`test.py nightly PASS  rev=…  preset=default  mode=nightly  stamp=…  cargo=P/F/I  cargo-skipped=N  metrics=…  slow-rule=N/M`
 to `summary.log`, with `issue=…` after it when the night filed one. `cargo=`
 is the cargo half's passed, failed and ignored over both its `cargo test`
 runs (libtest counts a slow case as passed either way; the `slow cases run`
-lines say it ran). The exit status is the first failing phase's.
+lines say it ran). `cargo-skipped=` is how many tier-4 cases did not run,
+which is 0 unless wwr saw no device; the `cargo tier 4 skipped:` lines
+printed just above the summary name each. The exit status is the first failing phase's.
 `devtools/test.py nightly --dry-run` prints the phases and what each runs,
 and fetches, builds and runs nothing.
 
@@ -741,7 +745,7 @@ A record, schema version 1:
 | `gpu` | `name`, `driver` (version), `vram_mib`; `null` where the vendor tool cannot say |
 | `toolchain` | `clang`, `cmake`, and `nvcc` or `hipcc`: versions, the compilers' read from the build directory's own configure |
 | `build` | `mode` (`warm` or `clean`), `launcher` (`on` or `off`: whether the configure found sccache), `jobs` (`BUILD_JOBS`), `seconds` (configure and build wall time), and for a clean build `files`, each output's `file` and `seconds` from `.ninja_log`; `null` when the run built nothing |
-| `cases` | per test case: `name` (`Suite.Case`, or the pytest node id), `binary` (the gtest binary's name, or `pytest`), `status` (`pass`, `fail`, `skip`), `seconds`, and for a gtest case `slow` (whether it reached `FBF_SKIP_IF_FAST_TESTS()`, which a fast run skips; #987, absent before it, and for a ctest-run case before #1016). From gtest's `--gtest_output=json`, ctest's `--output-junit` with each entry's gtest XML, and pytest's JUnit XML |
+| `cases` | per test case: `name` (`Suite.Case`, the pytest node id, or for a cargo case its binary's package and source and the libtest path, `fb-core-arena tests/plan.rs::case`), `binary` (the gtest binary's name, `pytest`, or `cargo <package> <source>`, a doc-test's `cargo <crate> doc-tests`), `status` (`pass`, `fail`, `skip`; a cargo case reported ignored is `skip`), `seconds` (`null` for a cargo case: libtest's stable output times no case), and for a gtest case `slow` (whether it reached `FBF_SKIP_IF_FAST_TESTS()`, which a fast run skips; #987, absent before it, and for a ctest-run case before #1016). From gtest's `--gtest_output=json`, ctest's `--output-junit` with each entry's gtest XML, pytest's JUnit XML, and the nightly's cargo tests (libtest's output, each binary's package from the compiler-artifact messages of `--message-format=json-render-diagnostics`) |
 | `result` | `pass` or `fail` |
 
 **Only this box's nightly and weekly records form the timing series.** Times
