@@ -154,6 +154,27 @@ starts after the copy into `l` that is the pair's last read, on the same
 stream, so B takes the pair's bytes with no wait at all. The step's README
 calls that sync a departure from the no-wait ideal; here it is gone.
 
+**No row is modified in place.** A task writes only the rows it produces,
+and a loop's last user the row it carries ("Nested plans"); a row it reads
+is read-only to it. The C++ fit overwrites the metric with L and the
+tensor with B, so here the Cholesky copies M into L and the fit copies
+(mn|P) into B, and while each runs both are live. A read-write row, a task
+that takes a row and hands it on under a new name, was weighed and
+declined (#1536), because it never lowers a peak. On the ERI step's water
+fixture (cc-pVDZ, cc-pVDZ-JKFIT, `nao` 24, `naux` 116), with each row
+padded to the alignment and beside the 32 MiB BLAS workspace, the
+three-center task holds 2,133,248 bytes; the Cholesky 783,104, 675,328
+with L in M's bytes; and the fit 1,176,832, 642,304 with B in the
+tensor's. The plan's peak is 35,687,088 bytes at the three-center task
+either way. The order is structural: the three-center task holds the
+Cartesian tensor, its half-transformed copy and the spherical output at
+once, three tensor-sized rows, and the fit two and L, whose `naux²` is
+less than `naux · nao²` whenever `naux < nao²`. The question is worth
+reopening only when the three-center task stops being the peak, a
+transform in place or in auxiliary blocks; the row to build then is
+`Layout::write` with its loop contract relaxed to "no later user", not a
+new kind.
+
 ## Admission
 
 Per worker and per kind, the block must fit:
