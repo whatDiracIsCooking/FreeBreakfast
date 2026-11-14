@@ -17,7 +17,7 @@
 //!   node** (`docs/memory.md`, "The table"): an `impl GpuTask` whose `run`
 //!   calls `memcpy_p2d` or `memcpy_d2p` and no other free function, its
 //!   other calls the views' and iterators' methods, is in [`COPY_TASKS`]:
-//!   the planner's own two and the ones not moved yet.
+//!   the planner's own two and the three-center download (#1617).
 //!
 //! Every member's `.rs` is read, and the two at `rust/`'s top that the
 //! `build.rs` files include. Tier 3: it reads files and nothing else.
@@ -135,14 +135,9 @@ const COPY_TASKS: &[(&str, usize, &str)] = &[
         "the planner's copy nodes themselves, `Dag::upload` and `Dag::download`",
     ),
     (
-        "integrals/one_electron/overlap/src/run.rs",
-        1,
-        "the overlap run's download of S, not moved yet (#1611)",
-    ),
-    (
         "integrals/sys/src/three_center.rs",
         1,
-        "`three-center download`, each class's bra fields and offsets, not moved yet (#1611)",
+        "`three-center download`, each class's bra fields and offsets: a node per row cost the water plan +16-21% (#1617)",
     ),
 ];
 
