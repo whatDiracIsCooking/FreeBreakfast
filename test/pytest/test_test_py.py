@@ -415,9 +415,13 @@ def test_push_runs_the_cargo_half_and_prints_its_counts(
     calls = fake_cargo.read_text().splitlines()
     test = next(c for c in calls if c.startswith("test"))
     assert test == "test -j 4 --no-default-features -p fb-core-log"
-    assert next(c for c in calls if c.startswith("doc")).endswith(
-        "--no-deps -p fb-core-log"
-    )
+    # Documented in both feature sets, as clippy lints them: a device
+    # feature's docs must resolve without it (#1404).
+    docs = [c for c in calls if c.startswith("doc")]
+    assert docs == [
+        "doc -j 4 --no-deps --no-default-features -p fb-core-log",
+        "doc -j 4 --no-deps -p fb-core-log",
+    ]
 
 
 def test_a_failing_cargo_half_fails_the_push_and_is_named(

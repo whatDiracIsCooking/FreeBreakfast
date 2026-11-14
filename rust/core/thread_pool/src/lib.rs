@@ -11,11 +11,11 @@
 //!   plan cannot have a cycle.
 //! - [`Backend`]: the device side of a run: the stream workers' streams, the
 //!   events at the edges that leave one, and the syncs. [`HostOnly`] has no
-//!   device and is what the device-free tests run on; [`Device`] is the real
-//!   one, over [`fb_core_wwr::runtime`]: each stream worker's stream and its
-//!   library handles ([`DeviceStream`], a BLAS and a dense-solver handle),
-//!   made with the backend before any run and reached by a GPU node through
-//!   its [`Lane`].
+//!   device and is what the device-free tests run on; `Device` (the
+//!   `device` feature) is the real one, over `fb_core_wwr::runtime`: each
+//!   stream worker's stream and its library handles ([`DeviceStream`], a
+//!   BLAS and a dense-solver handle), made with the backend before any run
+//!   and reached by a GPU node through its [`Lane`].
 //! - [`run`]: open one [`std::thread::scope`] with `n_cpu` CPU workers and
 //!   one thread per stream worker, run every node once, join, and return
 //!   the [`Record`]: the result, a [`TaskTime`] per node that ran and a

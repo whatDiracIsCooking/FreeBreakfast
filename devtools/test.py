@@ -27,8 +27,10 @@ push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   --dry-run prints the changed files and which halves would run.
   Cargo: tiers 1 to 3 of the Rust rebuild, `cargo test --no-default-features`
   in debug over the workspace members that build without any native library
-  (found from `cargo tree`, not named), then `cargo doc` over them with
-  warnings denied, in rust/target/nodef; it prints each test binary's counts.
+  (found from `cargo tree`, not named), then `cargo doc` with warnings
+  denied in each feature set that builds without the library, as
+  cargo-lint's clippy, in rust/target/nodef; it prints each test binary's
+  counts.
   It needs no card and skips itself, exit 0, where cargo is absent. Then
   tier 4, once those pass: rust/'s CMake project built for the preset's
   backend (rust/build-<backend>), and under that card's lock every test of
@@ -1059,14 +1061,16 @@ def cargo_counts(lines: list[str]) -> tuple[list[str], list[int]]:
 def cargo_half(tag: str, jobs: str, log: Path) -> int:
     """The cargo half of the gates, tiers 1 to 3 (rust/docs/testing.md, "What
     runs when"): `cargo test --no-default-features` over link_free_crates'
-    first set, in debug so every contract is on, then `cargo doc` over its
-    second with warnings denied: the members whose default features build
-    without the library, the features their docs are written for (a device
-    feature's crate links items --no-default-features compiles out, so its
-    docs need the library). Needs neither card nor library, so it never
-    takes the card lock; skips, exit 0, where cargo is absent, as the C++ half
-    does without its toolchain. Every line goes to `log`; the test counts,
-    one line per binary that ran a case, to stdout."""
+    first set, in debug so every contract is on, then `cargo doc` with
+    warnings denied in each feature set that builds without the library, as
+    cargo-lint's clippy is run: --no-default-features over the first set,
+    and the defaults over the second. So a device feature's crate
+    (`thread_pool`, `planner`) is documented without its feature, and its
+    docs must not link an item that feature compiles in. Needs neither
+    card nor library, so it never takes the card lock; skips, exit 0, where
+    cargo is absent, as the C++ half does without its toolchain. Every line
+    goes to `log`; the test counts, one line per binary that ran a case, to
+    stdout."""
     if shutil.which("cargo") is None:
         say(f"{tag}: cargo not found -- the Rust toolchain lives in the container")
         say(f"{tag}: skipping the cargo half")
@@ -1085,6 +1089,12 @@ def cargo_half(tag: str, jobs: str, log: Path) -> int:
             ["cargo", "test", *jflag, "--no-default-features"]
             + [a for c in tested for a in ("-p", c)],
             {},
+        ),
+        (
+            "cargo doc --no-default-features",
+            ["cargo", "doc", *jflag, "--no-deps", "--no-default-features"]
+            + [a for c in tested for a in ("-p", c)],
+            {"RUSTDOCFLAGS": "-D warnings"},
         ),
         (
             "cargo doc",

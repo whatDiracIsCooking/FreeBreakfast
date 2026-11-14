@@ -13,8 +13,9 @@ use fb_core_thread_pool::{
 /// the [`thread_pool::Plan`] whose nodes hand each task its rows of them.
 /// Run any number of times; a run allocates nothing.
 ///
-/// The executor's plan is what a [`thread_pool::Device`] backend is built
-/// over ([`Instance::plan`]), since it makes one event per GPU node, once.
+/// The executor's plan is what a `thread_pool::Device` backend (the
+/// `device` feature) is built over ([`Instance::plan`]), since it makes one
+/// event per GPU node, once.
 pub struct Instance<'a, H: HostKind = Pinned, S = DeviceStream> {
     plan: Plan<'a, S>,
     blocks: Vec<Arc<(Block<Device>, Block<H>)>>,

@@ -62,13 +62,14 @@ too, beside the Python half, since `fb-device-check` runs it). The cargo half
 is tiers 1 to 3 of `rust/docs/testing.md`, "What runs when", and needs no
 card: `cargo test --no-default-features`, in debug so every contract is on,
 over the workspace members that build without any native library, then
-`cargo doc` with warnings denied over the members whose *default* features
-build without one. Neither list is written down: a member qualifies when no
-package in its own `cargo tree` (normal, dev and build edges, under that
-feature set) declares `links`, which `wwr-sys` and every kernel library's
-`-sys` crate do. So `arena`, `thread_pool` and `planner` are tested without
-their `device` feature, and their docs, which link device items, wait for the
-library. It builds in `rust/target/nodef`, prints each test binary's counts,
+`cargo doc` with warnings denied in each feature set: over those members
+with `--no-default-features`, and over the members whose *default* features
+build without one with their defaults. Neither list is written down: a
+member qualifies when no package in its own `cargo tree` (normal, dev and
+build edges, under that feature set) declares `links`, which `wwr-sys` and
+every kernel library's `-sys` crate do. So `arena`, `thread_pool` and
+`planner` are tested and documented without their `device` feature, and
+their docs name a device item in plain code rather than link it. It builds in `rust/target/nodef`, prints each test binary's counts,
 and skips, exit 0, where cargo is absent.
 
 **Tier 4, the tests on a card, follows once tiers 1 to 3 pass.** It builds
