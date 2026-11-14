@@ -1,7 +1,7 @@
-//! `src/io/basis` (module `free_breakfast.io.basis`), its orbital sets: a
-//! Basis Set Exchange (BSE) JSON document read into a geometry-free
-//! [`BasisStamp`], and the sets of `data/basis/` compiled in and resolved by
-//! name.
+//! `src/io/basis` (module `free_breakfast.io.basis`): a Basis Set Exchange
+//! (BSE) JSON document read into a geometry-free [`BasisStamp`], and the
+//! orbital sets of `data/basis/` and the density-fitting sets of
+//! `data/aux_basis/` compiled in and resolved by name.
 //!
 //! The document's shape:
 //!
@@ -35,8 +35,9 @@
 //! | `is_builtin_basis` | [`is_builtin_basis`] |
 //! | `resolve_basis` | [`resolve_basis`] |
 //! | `parse_and_assign_basis(text, molecule)` | nothing: `parse_basis(text)?.place(&molecule)` |
-//! | `resolve_aux_basis`, `is_builtin_aux_basis`, the `data/aux_basis/` table | not ported yet: nothing in `rust/` fits a density yet |
-//! | `builtin_basis.cpp.in` and its CMake generation | the table `BUILTIN`, each document `include_str!`'d from `data/basis/` |
+//! | `is_builtin_aux_basis` | [`is_builtin_aux_basis`] |
+//! | `resolve_aux_basis` | [`resolve_aux_basis`] |
+//! | `builtin_basis.cpp.in` and its CMake generation | the tables `BUILTIN` and `BUILTIN_AUX`, each document `include_str!`'d from `data/basis/` or `data/aux_basis/` |
 //! | `io/base`'s `read_file`, `io/json`'s `parse_json` | [`std::fs::read_to_string`] and [`serde_json`] |
 //!
 //! **Errors.** JSON that does not parse, and a file that cannot be read,
@@ -58,11 +59,22 @@
 //! `from_chars` refuses and `str::parse` would take, is refused, and so is
 //! one on an element key.
 //!
-//! **The table names its sets, and a test pins them to the documents.** The
-//! C++ build reads each document's `name` into its table; here the names are
-//! written beside the `include_str!`, and a unit test checks each
-//! against its document's `name` and that every `data/basis/*.json` is in
-//! the table.
+//! **The tables name their sets, and a test pins them to the documents.**
+//! The C++ build reads each document's `name` into its table; here the names
+//! are written beside the `include_str!`, and a unit test checks each
+//! against its document's `name` and that every `data/basis/*.json` and
+//! `data/aux_basis/*.json` is in its table.
+//!
+//! **The fitting sets are a table of their own, and compiled in.** Every
+//! orbital set is one the SAD guess carries stamps for (`data/sad/`), and a
+//! SAD density in a fitting basis means nothing, so [`resolve_basis`] never
+//! sees a fitting set and [`resolve_aux_basis`] never sees an orbital one.
+//! They are compiled in, about 16 MB of them, for the reason the orbital
+//! sets are and the C++ gives: this tree installs nothing, so a data
+//! directory read at run time would need an install rule and a search path
+//! that can work on one machine and not the next, while a name that resolves
+//! inside the binary cannot be misplaced. The path form keeps a set the
+//! build does not carry a file away, with no rebuild.
 
 #![forbid(unsafe_code)]
 
@@ -113,6 +125,64 @@ const BUILTIN: [(&str, &str); 11] = [
     ),
     ("MINAO", include_str!("../../../../data/basis/minao.json")),
     ("STO-3G", include_str!("../../../../data/basis/sto-3g.json")),
+];
+
+/// The density-fitting (auxiliary) basis sets compiled into this crate,
+/// from `data/aux_basis/`, in [`BUILTIN`]'s shape: `kBuiltinAuxBases`.
+/// Reached through [`resolve_aux_basis`] alone; disjoint from [`BUILTIN`].
+const BUILTIN_AUX: [(&str, &str); 13] = [
+    (
+        "6-31G**-acCD-6-6",
+        include_str!("../../../../data/aux_basis/6-31gstarstar-acCD-6-6.json"),
+    ),
+    (
+        "aug-cc-pVDZ-JKFIT",
+        include_str!("../../../../data/aux_basis/aug-cc-pVDZ-JKFIT.json"),
+    ),
+    (
+        "aug-cc-pVDZ-acCD-6-6",
+        include_str!("../../../../data/aux_basis/aug-cc-pVDZ-acCD-6-6.json"),
+    ),
+    (
+        "aug-cc-pVTZ-JKFIT",
+        include_str!("../../../../data/aux_basis/aug-cc-pVTZ-JKFIT.json"),
+    ),
+    (
+        "aug-cc-pVTZ-acCD-6-6",
+        include_str!("../../../../data/aux_basis/aug-cc-pVTZ-acCD-6-6.json"),
+    ),
+    (
+        "cc-pVDZ-JKFIT",
+        include_str!("../../../../data/aux_basis/cc-pVDZ-JKFIT.json"),
+    ),
+    (
+        "cc-pVDZ-acCD",
+        include_str!("../../../../data/aux_basis/cc-pVDZ-acCD.json"),
+    ),
+    (
+        "cc-pVDZ-acCD-6-6",
+        include_str!("../../../../data/aux_basis/cc-pVDZ-acCD-6-6.json"),
+    ),
+    (
+        "cc-pVTZ-JKFIT",
+        include_str!("../../../../data/aux_basis/cc-pVTZ-JKFIT.json"),
+    ),
+    (
+        "cc-pVTZ-acCD-6-6",
+        include_str!("../../../../data/aux_basis/cc-pVTZ-acCD-6-6.json"),
+    ),
+    (
+        "def2-SVP-acCD-6-6",
+        include_str!("../../../../data/aux_basis/def2-SVP-acCD-6-6.json"),
+    ),
+    (
+        "def2-TZVP-acCD-6-6",
+        include_str!("../../../../data/aux_basis/def2-TZVP-acCD-6-6.json"),
+    ),
+    (
+        "def2-universal-JKFIT",
+        include_str!("../../../../data/aux_basis/def2-universal-JKFIT.json"),
+    ),
 ];
 
 /// Parse the BSE JSON document `text` into a geometry-free [`BasisStamp`],
@@ -176,7 +246,8 @@ pub fn read_basis(path: &Path) -> Result<BasisStamp> {
     parse_basis(&text)
 }
 
-/// Whether `spec` names a set compiled into this crate: `is_builtin_basis`.
+/// Whether `spec` names an orbital set compiled into this crate, never a
+/// fitting one: `is_builtin_basis`.
 ///
 /// The spelling is folded first, lowercased with `-`, `_` and spaces
 /// dropped, so `STO-3G`, `sto3g` and `STO_3G` are one name, and `6-31G*`
@@ -184,7 +255,7 @@ pub fn read_basis(path: &Path) -> Result<BasisStamp> {
 /// relative path, since a name must not be joined to a config file's
 /// directory; [`resolve_basis`] asks it again itself.
 pub fn is_builtin_basis(spec: &str) -> bool {
-    find_builtin(spec).is_some()
+    find_builtin(&BUILTIN, spec).is_some()
 }
 
 /// The basis `spec` asks for, by compiled-in name or else by path:
@@ -198,13 +269,58 @@ pub fn is_builtin_basis(spec: &str) -> bool {
 /// [`ErrorKind::Io`] error, its origin kept, with the compiled-in names
 /// appended, since a misspelt name is the likelier mistake.
 pub fn resolve_basis(spec: &str) -> Result<BasisStamp> {
-    if let Some((name, json)) = find_builtin(spec) {
+    resolve_from(&BUILTIN, spec)
+}
+
+/// Whether `spec` names a density-fitting set compiled into this crate:
+/// `is_builtin_aux_basis`. [`is_builtin_basis`] over the fitting sets of
+/// `data/aux_basis/` instead of the orbital ones, the spelling folded the
+/// same way; the question a front end asks before it resolves a relative
+/// aux-basis path.
+///
+/// ```
+/// use fb_io_basis::{is_builtin_aux_basis, is_builtin_basis};
+///
+/// assert!(is_builtin_aux_basis("cc_pvdz_jkfit"));
+/// assert!(!is_builtin_aux_basis("cc-pvdz"));
+/// assert!(!is_builtin_basis("cc-pvdz-jkfit"));
+/// ```
+pub fn is_builtin_aux_basis(spec: &str) -> bool {
+    find_builtin(&BUILTIN_AUX, spec).is_some()
+}
+
+/// The density-fitting (auxiliary) basis `spec` asks for, by compiled-in
+/// name or else by path: `resolve_aux_basis`.
+///
+/// [`resolve_basis`]'s rules exactly (name first, spelling folded, a path
+/// otherwise, only a compiled-in set named, [`ErrorKind::Io`] for neither,
+/// with the fitting sets' names appended) over the sets of
+/// `data/aux_basis/`. The caller places the stamp over the orbital basis's
+/// molecule, `stamp.primitive_normalized().place(&molecule)`, where an
+/// element the set lacks is [`ErrorKind::InvalidConfig`] naming its Z.
+/// Fitting sets run past the orbital ceiling (cc-pVTZ-JKFIT has g on O, the
+/// acCD-6-6 sets reach i); holding those shells is supported, and a kernel
+/// that cannot take one refuses it itself.
+///
+/// ```
+/// let stamp = fb_io_basis::resolve_aux_basis("ccpvdzjkfit").unwrap();
+/// assert_eq!(stamp.name(), "cc-pVDZ-JKFIT");
+/// assert!(stamp.shells_for(8).is_some());
+/// ```
+pub fn resolve_aux_basis(spec: &str) -> Result<BasisStamp> {
+    resolve_from(&BUILTIN_AUX, spec)
+}
+
+/// `spec` from `table` by name, else read from disk as a path:
+/// `resolve_from`, what [`resolve_basis`] and [`resolve_aux_basis`] share.
+fn resolve_from(table: &[(&'static str, &'static str)], spec: &str) -> Result<BasisStamp> {
+    if let Some((name, json)) = find_builtin(table, spec) {
         let stamp = parse_basis(json)?;
         return Ok(BasisStamp::new(stamp.element_shells().clone(), name));
     }
     read_basis(Path::new(spec)).map_err(|mut error| {
         if error.kind == ErrorKind::Io {
-            let names: Vec<&str> = BUILTIN.iter().map(|(name, _)| *name).collect();
+            let names: Vec<&str> = table.iter().map(|(name, _)| *name).collect();
             error.message += &format!(" (and not a compiled-in basis: {})", names.join(", "));
         }
         error
@@ -220,10 +336,13 @@ fn normalized(spec: &str) -> String {
         .collect()
 }
 
-/// The entry of [`BUILTIN`] that `spec` names: `find_builtin_basis`.
-fn find_builtin(spec: &str) -> Option<(&'static str, &'static str)> {
+/// The entry of `table` that `spec` names: `find_builtin_basis`.
+fn find_builtin(
+    table: &[(&'static str, &'static str)],
+    spec: &str,
+) -> Option<(&'static str, &'static str)> {
     let key = normalized(spec);
-    BUILTIN
+    table
         .iter()
         .copied()
         .find(|(name, _)| normalized(name) == key)
