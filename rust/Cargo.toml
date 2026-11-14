@@ -44,6 +44,7 @@ members = [
     "pipeline/scf",
     "recipes/symmetrize",
     "recipes/cholesky",
+    "integrals/eri/density_fitting/metric",
 ]
 
 [workspace.package]
@@ -92,6 +93,7 @@ fb-recipes-orthogonalize = { path = "recipes/orthogonalize" }
 fb-pipeline-scf = { path = "pipeline/scf" }
 fb-recipes-symmetrize = { path = "recipes/symmetrize" }
 fb-recipes-cholesky = { path = "recipes/cholesky" }
+fb-integrals-eri-density-fitting-metric = { path = "integrals/eri/density_fitting/metric" }
 
 contracts = "0.6.11"
 # core::log: the line's local time, and the OS thread id (std has none).
