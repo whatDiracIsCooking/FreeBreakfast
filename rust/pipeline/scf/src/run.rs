@@ -108,9 +108,9 @@ impl Run {
     /// `n_ao²` doubles column-major, column `j` the orbital of `ε[j]`; both
     /// empty unless the result is `Ok`.
     pub fn run(self, device: i32) -> (Record, (Vec<f64>, Vec<f64>)) {
-        let instance = self.planned.instantiate(&[device]);
-        let backend = thread_pool::Device::new(&[device], instance.plan());
-        let record = instance.run(&backend, 1);
+        let mut instance = self.planned.instantiate(&[device]);
+        let mut backend = thread_pool::Device::new(&[device], instance.plan());
+        let record = instance.run(&mut backend, 1);
         let out = if record.result.is_ok() {
             std::mem::take(&mut *self.out.lock().unwrap_or_else(|e| e.into_inner()))
         } else {

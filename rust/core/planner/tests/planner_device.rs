@@ -184,9 +184,9 @@ fn a_round_trip_through_the_planner() {
         .collect();
     assert_eq!(waits, [(3, 2)]);
 
-    let instance = planned.instantiate(&[0]);
-    let backend = thread_pool::Device::new(&[0], instance.plan());
-    let record = instance.run(&backend, 1);
+    let mut instance = planned.instantiate(&[0]);
+    let mut backend = thread_pool::Device::new(&[0], instance.plan());
+    let record = instance.run(&mut backend, 1);
     record.result.unwrap();
     let arena: Vec<_> = record
         .arena
@@ -203,7 +203,7 @@ fn a_round_trip_through_the_planner() {
         assert!(sync.host >= Duration::ZERO, "{sync:?}");
     }
     let between = free_bytes();
-    instance.run(&backend, 1).result.unwrap();
+    instance.run(&mut backend, 1).result.unwrap();
     assert_eq!(free_bytes(), between, "a run allocated device memory");
 }
 
@@ -257,9 +257,9 @@ fn every_gpu_task_has_a_stream_scope() {
     for i in 1..6 {
         row = dag.add(format!("stage{i}"), 0, Stage(Some(row)));
     }
-    let instance = dag.plan().instantiate(&[0]);
-    let backend = thread_pool::Device::new(&[0], instance.plan());
-    let record = instance.run(&backend, 1);
+    let mut instance = dag.plan().instantiate(&[0]);
+    let mut backend = thread_pool::Device::new(&[0], instance.plan());
+    let record = instance.run(&mut backend, 1);
     record.result.unwrap();
     let names: Vec<_> = record
         .tasks

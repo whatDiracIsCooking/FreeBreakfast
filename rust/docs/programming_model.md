@@ -338,6 +338,18 @@ makes that a first-class split:
 - **Running** moves data through the planned DAG. It happens any number of
   times, and nothing is re-admitted.
 
+**One run at a time, enforced by types.** `Instance::run` takes the
+instance and the backend by `&mut`, as `fb_core_thread_pool::run` takes
+the plan and the backend, so neither is ever in two runs at once. The run
+model needs exactly that: a block's row borrow flags are host-side and a
+GPU task's rows are returned while its device work may still be in flight,
+and a `Device` backend's events are one plan's nodes' and its streams and
+library handles one run's workers'. The concurrency the model does have
+keeps working. Within a run the workers share the instance's plan and the
+backend by reference, which is why a `Backend` is `Sync`; independent
+(instance, backend) pairs run on threads of their own; and several GPUs
+are one run, a `Device` spanning its stream workers' devices.
+
 Stream capture into a replayed graph is the same split one level down, which
 is a sign the split is real rather than imposed. A loop is therefore not a
 special node: it is a planned sub-DAG run repeatedly, with a host decision
@@ -520,7 +532,8 @@ list is in three tiers:
 The core crates hold the wrappers: `fb-core-wwr` over the `wwr-sys`
 bindings, the arena over the raw allocation and copy bindings, the two
 `libc` calls in `core::log`, and the one `unsafe impl Sync` on
-`core::thread_pool`'s `Device` backend. The binding crates declare a kernel
+`core::thread_pool`'s `Device` backend, which rests on a run borrowing the
+backend exclusively ("Plan once, run many"). The binding crates declare a kernel
 library's `extern "C"` functions and check its version at load. A method
 crate's `unsafe` is a direct call into its kernels' launchers, the BLAS or
 the solver, each block with a `// SAFETY:` comment

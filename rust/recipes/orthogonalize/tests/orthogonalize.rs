@@ -174,9 +174,9 @@ fn orthogonalize(n: usize, s: Vec<f64>) -> Vec<f64> {
             out: Arc::clone(&out),
         },
     );
-    let instance = dag.plan().instantiate(&[0]);
-    let backend = thread_pool::Device::new(&[0], instance.plan());
-    instance.run(&backend, 1).result.unwrap();
+    let mut instance = dag.plan().instantiate(&[0]);
+    let mut backend = thread_pool::Device::new(&[0], instance.plan());
+    instance.run(&mut backend, 1).result.unwrap();
     std::mem::take(&mut *out.lock().unwrap())
 }
 

@@ -268,9 +268,9 @@ fn a_dag_through_the_executor() {
         planned.device_table(0).total(),
         planned.host_table(0).total(),
     ];
-    let instance = planned.instantiate(&[0]);
+    let mut instance = planned.instantiate(&[0]);
     for _ in 0..2 {
-        let record = instance.run(&HostOnly::new(1), 2);
+        let record = instance.run(&mut HostOnly::new(1), 2);
         record.result.unwrap();
         let arena: Vec<_> = record
             .arena
@@ -325,9 +325,9 @@ proptest! {
     fn every_dag_reads_what_was_written(spec in arb_spec()) {
         let ran = Arc::new(AtomicUsize::new(0));
         let (dag, _) = spec.dag(&ran);
-        let instance = dag.plan().instantiate(&[0, 0]);
+        let mut instance = dag.plan().instantiate(&[0, 0]);
         for _ in 0..2 {
-            prop_assert_eq!(instance.run(&HostOnly::new(2), 3).result, Ok(()));
+            prop_assert_eq!(instance.run(&mut HostOnly::new(2), 3).result, Ok(()));
         }
         prop_assert_eq!(ran.load(Ordering::Relaxed), 2 * spec.nodes.len());
     }
@@ -374,7 +374,7 @@ fn a_failure_skips_its_readers() {
             ran: Arc::clone(&ran),
         },
     );
-    let record = dag.plan().instantiate(&[0]).run(&HostOnly::new(1), 1);
+    let record = dag.plan().instantiate(&[0]).run(&mut HostOnly::new(1), 1);
     let names: Vec<_> = record.tasks.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
         names,
@@ -430,9 +430,9 @@ fn refusals() {
     };
     let (mut dag, outs) = spec.dag(&ran);
     dag.add("sneaky", 0, Sneaky(outs[0]));
-    let instance = dag.plan().instantiate(&[0]);
+    let mut instance = dag.plan().instantiate(&[0]);
     let m = panic_message(|| {
-        let _ = instance.run(&HostOnly::new(0), 1);
+        let _ = instance.run(&mut HostOnly::new(0), 1);
     });
     assert!(m.contains("node 1: out is not in its layout"), "{m}");
 }
@@ -474,7 +474,7 @@ fn two_workers_are_independent() {
     }
     planned
         .instantiate(&[0, 0])
-        .run(&HostOnly::new(2), 1)
+        .run(&mut HostOnly::new(2), 1)
         .result
         .unwrap();
     assert_eq!(ran.load(Ordering::Relaxed), 6);

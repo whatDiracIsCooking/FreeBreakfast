@@ -141,9 +141,9 @@ fn trace_of_d_s_is_the_nuclear_charge_and_the_upload_moves_bytes() {
                 out: Arc::clone(&out),
             },
         );
-        let instance = dag.plan().instantiate(&[0]);
-        let backend = thread_pool::Device::new(&[0], instance.plan());
-        instance.run(&backend, 2).result.unwrap();
+        let mut instance = dag.plan().instantiate(&[0]);
+        let mut backend = thread_pool::Device::new(&[0], instance.plan());
+        instance.run(&mut backend, 2).result.unwrap();
         let out = std::mem::take(&mut *out.lock().unwrap());
         let [d, d_back, s] = &out[..] else {
             panic!("{stem}: collect ran")
