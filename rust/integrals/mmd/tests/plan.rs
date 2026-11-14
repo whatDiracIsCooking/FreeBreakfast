@@ -17,8 +17,8 @@ fn plan_goldens() {
         let classes = add_records(&mut dag, 0, &basis).unwrap();
         let planned = dag.plan();
         // Every class is non-empty, ascending, la <= lb.
-        assert!(classes.iter().all(|c| c.n_rec > 0 && c.la <= c.lb));
-        assert!(classes.is_sorted_by_key(|c| (c.la, c.lb)));
+        assert!(classes.iter().all(|c| c.n_rec() > 0 && c.la() <= c.lb()));
+        assert!(classes.is_sorted_by_key(|c| (c.la(), c.lb())));
         // The table's text ends an empty handoffs line in a space, which the
         // trailing-whitespace hook strips from the committed file.
         let text: String = planned

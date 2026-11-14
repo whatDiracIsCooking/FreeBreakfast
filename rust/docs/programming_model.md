@@ -520,25 +520,24 @@ per crate: a crate on the list below leaves it at its default, and every
 other crate forbids it with `#![forbid(unsafe_code)]` at its root. That is
 an attribute rather than a manifest line because Cargo refuses a member that
 inherits `[workspace.lints]` and adds a `[lints.rust]` table of its own. The
-list is in three tiers:
+list is in two tiers:
 
 - **Core:** `fb-core-wwr`, `fb-core-arena`, `fb-core-log`,
   `fb-core-thread-pool`.
 - **Bindings:** `fb-integrals-sys`, `fb-recipes-sys`.
-- **Method crates:** `fb-integrals-mmd`,
-  `fb-integrals-one-electron-overlap`, `fb-integrals-one-electron-kinetic`,
-  `fb-integrals-one-electron-potential-en`.
 
 The core crates hold the wrappers: `fb-core-wwr` over the `wwr-sys`
 bindings, the arena over the raw allocation and copy bindings, the two
 `libc` calls in `core::log`, and the one `unsafe impl Sync` on
 `core::thread_pool`'s `Device` backend, which rests on a run borrowing the
 backend exclusively ("Plan once, run many"). The binding crates declare a kernel
-library's `extern "C"` functions and check its version at load. A method
-crate's `unsafe` is a direct call into its kernels' launchers, the BLAS or
-the solver, each block with a `// SAFETY:` comment
-saying why its pointers and lengths hold; those calls could later be wrapped
-safely in the core and binding crates, which would empty the third tier.
+library's `extern "C"` functions, check its version at load, and wrap its
+launches safely beside the bindings (`fb-integrals-sys` its records tasks
+too, since the class launchers trust records only those tasks write). There
+was a third tier, the method crates, whose `unsafe` was a direct call into
+their kernels' launchers, the BLAS or the solver; each such call has moved
+into a safe wrapper in the core and binding crates, and a method crate that
+needs a new one adds it there rather than joining the list.
 `fb-doc-check`'s `tests/unsafe_code.rs` reads this list: a crate root that
 neither forbids `unsafe_code` nor is listed fails it, and so does a listed
 crate with no `unsafe` left, so the list only shrinks.
@@ -562,16 +561,19 @@ itself, as the arena's `memcpy_*` do for the copies. A kernel library's
 launch is wrapped the same way in its binding crate, beside the generated
 bindings: `fb_recipes_sys::inverse_sqrt`, `merge_sort` and
 `merge_sort_keys` take `DeviceSlice`s and map the launch status through
-`fb_kernel_abi::launch_status`. That is the shape for the rest. The BLAS
+`fb_kernel_abi::launch_status`, and `fb-integrals-sys`'s `overlap_class`,
+`kinetic_class` and `potential_en_class` take the output as a
+`DeviceSliceMut` whose `n_cart²` they assert, and the records as a
+`ClassRows`, a type only its own records tasks make, since the AO offsets
+the kernels write at are device data no host check can read. That is the
+shape for the rest. The BLAS
 workspace, which the library keeps beyond any borrow, is handed over by
 value instead: `BlasHandle::bind_workspace` owns an arena `HeldRow` until
 the handle is destroyed or rebound ([`gpu_layer.md`](gpu_layer.md),
-"Layering"). `fb-pipeline-scf`, `fb-recipes-diagonalize`,
-`fb-recipes-orthogonalize`, `fb-integrals-one-electron-core-hamiltonian`
-and `fb-recipes-matrix-ao` have nothing left to call raw and forbid
-`unsafe`; the other integrals method crates call `fb-integrals-sys`'s
-launchers directly, so they do not yet, and each call moves behind a
-checked wrapper of its own.
+"Layering"). Every crate above the core and binding crates now has nothing
+left to call raw and forbids `unsafe`: `fb-pipeline-scf`, the recipe
+crates, `fb-integrals-mmd` and the four `fb-integrals-one-electron-*`
+crates among them.
 
 ```toml
 [workspace.lints.clippy]            # every member: [lints] workspace = true

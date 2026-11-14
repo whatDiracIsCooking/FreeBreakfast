@@ -483,6 +483,14 @@ correctness rests on is a contract.
   write past the buffer, so it is an always-on `assert!`, named in the
   wrapper's `# Panics`, as is an extent that must fit the kernel's 32-bit
   index (`n²` for an `n × n` matrix).
+- **What the kernel trusts in device data travels as a type.** A class
+  launcher writes at the AO offsets its records hold, which are in device
+  memory, written by the records kernel, so no host check can read them.
+  The launcher takes them only as `fb_integrals_sys::ClassRows`, whose
+  fields are private and which only `add_record_tasks` makes, beside the
+  tasks that write its rows from tables checked on the host; its doc
+  comment has the argument. A raw `fb_primitive_pair_class_view`, which
+  anyone can fill with any pointers, never reaches a safe call.
 - **Non-overlap is checked from offsets.** "No array may overlap another" is
   decidable from arena offsets at tier 2.
 - **Correctness-only rules are `debug_requires`.** `la <= lb` for a basis's
@@ -500,6 +508,9 @@ the usual split of a `-sys` crate from its safe one buys nothing.
 `fb_recipes_sys::inverse_sqrt`, `merge_sort` and `merge_sort_keys` are the
 first, on the shape of `fb_core_wwr::blas::gemm`: `DeviceSlice`s in, the
 launch status out through `fb_kernel_abi::launch_status`.
+`fb_integrals_sys::overlap_class`, `kinetic_class` and `potential_en_class`
+follow, over a `ClassRows`; the records tasks that make one live there too,
+since a type is unforgeable only inside the crate that defines it.
 
 ## Build
 

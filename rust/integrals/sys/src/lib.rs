@@ -23,13 +23,41 @@
 //! | `wwrErrorInvalidValue` for a refusal | [`FB_LAUNCH_INVALID_ARGUMENT`] (a count, a null pointer, a short workspace) or [`FB_LAUNCH_UNSUPPORTED`] (no kernel for the class) |
 //! | nothing: the C++ tree compiles its kernels into the binary | [`check_library`], the library's [`fb_integrals_abi_version`] and [`fb_integrals_backend`] against the bindings' |
 //! | the other one-electron families (the dipole, the mixed overlap, the derivatives), J, K and the rest | not forked yet |
+//!
+//! **The safe layer.** What a caller uses (`docs/gpu_layer.md`, "The safe
+//! wrapper"), beside the generated bindings rather than in a crate of its
+//! own, since this crate is already where the library's `unsafe` lives:
+//!
+//! - [`RecordTables`], a basis's shell table ([`ShellTable`]) and class
+//!   pairs ([`ClassPairs`]) with every index the kernels follow checked
+//!   when it is made, and [`add_record_tasks`], the two tasks that form
+//!   every class's records from it on a stream (`fb_mmd_order`,
+//!   `fb_mmd_records`, `fb_mmd_bound`, `fb_ordered_pair_bound`), returning
+//!   one [`ClassRows`] per class.
+//! - [`overlap_class`], [`kinetic_class`] and [`potential_en_class`], over
+//!   a [`ClassRows`] and an output
+//!   [`DeviceSliceMut`](fb_core_wwr::device_slice::DeviceSliceMut) whose
+//!   length is asserted in every build, the status a `Status` through
+//!   [`fb_kernel_abi::launch_status`].
+//!
+//! A class kernel writes at AO offsets held in device memory, so
+//! [`ClassRows`] is a type only [`add_record_tasks`] makes; its doc comment
+//! has why a launcher may trust it.
 
 #![allow(non_camel_case_types, reason = "the C header's names, kept as written")]
 
 #[rustfmt::skip]
 mod bindings;
+mod classes;
+mod records;
 
 pub use bindings::*;
+pub use classes::{kinetic_class, overlap_class, potential_en_class};
+pub use records::{ClassPairs, ClassRows, RecordTables, ShellTable, add_record_tasks};
+
+use fb_core_error_handling::Status;
+use fb_core_wwr::common::wwr_status_from_code;
+use fb_core_wwr::gpu_status_at;
 
 /// Checks that the `libfb_integrals_kernels.so` this process loaded is the one
 /// these bindings describe: its [`fb_integrals_abi_version`] against
@@ -80,3 +108,13 @@ const _: () = {
     assert!(offset_of!(fb_nuclei_view, z) == 8);
     assert!(offset_of!(fb_nuclei_view, c) == 16);
 };
+
+/// A launch status as a [`Status`] naming the wrapper and the class: a
+/// launch error by its `wwr_status` name, at the safe call's caller.
+#[track_caller]
+fn launched(what: &str, class: &ClassRows, status: fb_launch_status) -> Status {
+    let what = format!("{what} ({}, {})", class.la(), class.lb());
+    fb_kernel_abi::launch_status(&what, status, |code, at| {
+        Some(gpu_status_at(wwr_status_from_code(code)?, at))
+    })
+}

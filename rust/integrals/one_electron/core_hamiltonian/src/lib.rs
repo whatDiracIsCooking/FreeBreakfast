@@ -27,7 +27,7 @@
 //! | C++ | Here |
 //! |---|---|
 //! | `core_hamiltonian(res, classes, molecule, h.cartesian())`: `kinetic` (zeroed, then one launch per class) and `add_nuclear_attraction` on top, each class on a stream forked from `res.stream()` and joined back | the `core hamiltonian` task of [`add_core_hamiltonian`]: zeroed, then [`kinetic_classes`] and [`potential_en_classes`] on the worker's one stream, so every V launch follows every T launch by stream order; the records' [`ClassRows`] passed in by the caller |
-//! | `check_one_electron_build`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | the two safe layers' `debug_requires`; [`add_core_hamiltonian`] asserts the `i32` bound at planning, and the records hold only `la <= lb` |
+//! | `check_one_electron_build`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | `fb-integrals-sys`'s launchers: a contract for the class, an always-on `assert!` of the matrix's `n_cart²` and the `i32` bound; [`add_core_hamiltonian`] asserts the `i32` bound at planning, and the records hold only `la <= lb` |
 //! | `check_nuclei`'s `InvalidConfig`, before anything launches | [`add_core_hamiltonian`]'s `InvalidConfig` at planning for [`NucleiRows`] with no nucleus, adding nothing; nuclei of another worker are another table's rows, which [`Dag::add`] refuses with a panic |
 //! | `molecule.view()`, the `NucleiView` | [`NucleiRows`] from [`fb_molecule_nuclei::add_nuclei`], passed in, so one upload serves every reader of the plan |
 //! | `upload_spherical_transform_matrix`, `MatrixAOPair::cartesian_to_spherical` | [`fb_recipes_matrix_ao::add_cartesian_to_spherical`], U's slot passed in by the caller |
@@ -45,9 +45,9 @@ use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::memset;
-use fb_integrals_mmd::ClassRows;
 use fb_integrals_one_electron_kinetic::kinetic_classes;
 use fb_integrals_one_electron_potential_en::potential_en_classes;
+use fb_integrals_sys::ClassRows;
 use fb_molecule_nuclei::NucleiRows;
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 
@@ -149,7 +149,7 @@ impl Task for CoreHamiltonian {
         memset::zero(&mut h, stream)?;
         // Both on the one stream: every V launch follows every T launch, and
         // each adds into `h` in turn.
-        kinetic_classes(stream, device, &self.classes, self.n_cart, &h)?;
-        potential_en_classes(stream, device, &self.classes, &self.nuclei, self.n_cart, &h)
+        kinetic_classes(stream, device, &self.classes, &mut h)?;
+        potential_en_classes(stream, device, &self.classes, &self.nuclei, &mut h)
     }
 }
