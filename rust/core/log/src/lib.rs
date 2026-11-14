@@ -15,6 +15,7 @@
 //! | `set_level` / `should_log` / `flush` | [`set_level`] / [`should_log`] / [`flush`] |
 //! | `add_file_sink` | [`add_file_sink`], which returns the open's failure |
 //! | `warning_count` / `reset_warning_count` | [`warning_count`] / [`reset_warning_count`] |
+//! | nothing: the C++ `DestroyPolicy` logs a failed destroy and counts nothing | [`error_count`] |
 //! | `get_logger()`'s first-use construction | [`init`], or any function here |
 //!
 //! Output goes to stdout, formatted
@@ -49,6 +50,13 @@
 //! the backend, and `log::warn!` never reaches the backend when warn is
 //! filtered out. That is how the C++ `FBF_LOG_WARN` counts. A bare C++
 //! `log::warn` call counts even when filtered; there is no such call here.
+//!
+//! **The error counter counts error lines that were written,** the same way:
+//! a failed destroy or free, which is logged and not raised
+//! (`docs/diagnostics.md`, "`Drop` cannot fail"), and the boundary's own
+//! line for the run's error. Nothing else writes at error, so a binary's
+//! `completed: N errors` is [`error_count`]. A critical line is not counted:
+//! the abort it precedes prints no summary.
 //!
 //! **A line written inside a task names it.** While a [`TaskScope`] is open on
 //! a thread, every line that thread writes carries `[task@worker]` after its
@@ -208,6 +216,7 @@ struct Sinks {
 struct Logger {
     level: AtomicI32,
     warnings: AtomicU64,
+    errors: AtomicU64,
     sinks: Mutex<Sinks>,
 }
 
@@ -217,9 +226,11 @@ impl Logger {
     }
 
     fn write(&self, level: LogLevel, file: &str, line: u32, args: &fmt::Arguments<'_>) {
-        if level == LogLevel::Warn {
-            self.warnings.fetch_add(1, Ordering::Relaxed);
-        }
+        match level {
+            LogLevel::Warn => self.warnings.fetch_add(1, Ordering::Relaxed),
+            LogLevel::Error => self.errors.fetch_add(1, Ordering::Relaxed),
+            _ => 0,
+        };
         let time = jiff::Zoned::now().strftime("%Y-%m-%d %H:%M:%S%.3f");
         // SAFETY: gettid has no preconditions and cannot fail.
         let tid = unsafe { libc::gettid() };
@@ -323,6 +334,7 @@ fn installed() -> &'static Logger {
         Logger {
             level: AtomicI32::new(LogLevel::Info as i32),
             warnings: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
             sinks: Mutex::new(Sinks {
                 stdout: BufWriter::new(io::stdout()),
                 colour: io::stdout().is_terminal(),
@@ -483,6 +495,14 @@ pub fn warning_count() -> u64 {
 /// `reset_warning_count`.
 pub fn reset_warning_count() {
     installed().warnings.store(0, Ordering::Relaxed);
+}
+
+/// Error lines written so far this process: a failed destroy or free each
+/// (`docs/diagnostics.md`, "`Drop` cannot fail"), and the boundary's line
+/// for the run's error. An error filtered out by [`set_level`] is not
+/// written, so it does not count; a critical line does not count either.
+pub fn error_count() -> u64 {
+    installed().errors.load(Ordering::Relaxed)
 }
 
 /// Log at critical, located at the call: `FBF_LOG_CRITICAL`. Formats only
