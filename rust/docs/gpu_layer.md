@@ -458,16 +458,25 @@ A `.cuh` that is C++ only (templates, device functions, `block_params.h`,
 
 The `-sys` crate's functions are `unsafe` because the C side trusts its
 pointers and lengths. The safe wrapper above it is where the bridges' doc
-comments become checks:
+comments become checks, and which kind of check each becomes follows
+[`testing.md`](testing.md), "Contracts are part of the spec": what the
+launch's memory safety rests on is checked in every build, and what only its
+correctness rests on is a contract.
 
-- **Buffers are typed slices with lengths.** A device buffer carved from the
-  arena knows its length and element type, so "`bound` is `n_rec` long,
-  written whole" is a `debug_requires` on the length, not a sentence.
+- **Buffers are typed slices with lengths, and the lengths are asserted.** A
+  device buffer carved from the arena knows its length and element type, so
+  "`bound` is `n_rec` long, written whole" is a check on the length, not a
+  sentence. A release build that skipped it would let the kernel read or
+  write past the buffer, so it is an always-on `assert!`, named in the
+  wrapper's `# Panics`, as is an extent that must fit the kernel's 32-bit
+  index (`n²` for an `n × n` matrix).
 - **Non-overlap is checked from offsets.** "No array may overlap another" is
   decidable from arena offsets at tier 2.
-- **Ordering rules are checked.** `la <= lb` for a basis's own class, a
-  momentum within the exported table limit, a count positive.
-- **The stream's device is current**, in debug builds.
+- **Correctness-only rules are `debug_requires`.** `la <= lb` for a basis's
+  own class, a momentum within the exported table limit (the launcher
+  refuses one outside it with a status, so it is never memory-unsafe), a
+  count positive.
+- **The stream's device is current**, a `debug_requires` too.
 
 Nothing the safe wrapper checks costs a device call, and every check it makes
 is one the C++ caller today makes by reading the header.

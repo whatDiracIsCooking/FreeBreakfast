@@ -150,6 +150,10 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
                 host.handoffs(),
             ];
             for (u, v) in pairs.into_iter().flatten() {
+                // INVARIANT: the tables number nodes by rank, a row's
+                // producer is added before its readers, and a handoff
+                // points forward in rank (the arena's property test), so
+                // no caller can make this fail.
                 debug_assert!(u < v, "a dependency {u} -> {v} against rank");
                 deps[v].insert(u);
             }

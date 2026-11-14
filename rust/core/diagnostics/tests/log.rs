@@ -64,6 +64,7 @@ fn levels_format_counter_and_file_sink() {
     assert_eq!(lines.len(), 6, "{text}");
 
     // [YYYY-MM-DD HH:MM:SS.mmm] [tid] [level] [file:line] message
+    // SAFETY: gettid takes nothing and cannot fail.
     let tid = unsafe { libc::gettid() }.to_string();
     let expect = [
         (

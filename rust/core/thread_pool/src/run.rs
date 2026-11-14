@@ -144,6 +144,10 @@ impl Record {
     }
 
     /// The record as the `timing.json` text: the schema above, indented.
+    ///
+    /// # Panics
+    /// Never in practice: a record is plain data, which `serde_json` always
+    /// writes.
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).expect("a record is plain data")
     }

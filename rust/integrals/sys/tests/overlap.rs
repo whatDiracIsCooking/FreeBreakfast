@@ -137,39 +137,37 @@ fn one_ss_record_is_the_closed_form_overlap() {
 fn overlap_refuses_a_class_with_no_kernel() {
     let dangling = std::ptr::NonNull::<f64>::dangling().as_ptr();
     let max = FB_OVERLAP_MAX_MOMENTUM;
-    // SAFETY: each call is refused before it reads a device pointer.
-    unsafe {
-        for (la, lb) in [
-            (1, 0),
-            (max, max - 1),
-            (0, max + 1),
-            (max + 1, max + 1),
-            (-1, 0),
-        ] {
-            let view = empty_view(la, lb, 1);
-            assert_eq!(
-                fb_overlap_class(null_mut(), &view, 4, dangling),
-                FB_LAUNCH_UNSUPPORTED,
-                "({la}, {lb})"
-            );
-        }
+    // SAFETY: every call below is refused before it reads a device pointer.
+    let overlap = |cls: *const fb_primitive_pair_class_view, n_ao: i32, s: *mut f64| unsafe {
+        fb_overlap_class(null_mut(), cls, n_ao, s)
+    };
+    for (la, lb) in [
+        (1, 0),
+        (max, max - 1),
+        (0, max + 1),
+        (max + 1, max + 1),
+        (-1, 0),
+    ] {
+        let view = empty_view(la, lb, 1);
         assert_eq!(
-            fb_overlap_class(null_mut(), &empty_view(0, 0, 0), 4, dangling),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        assert_eq!(
-            fb_overlap_class(null_mut(), &empty_view(0, 0, 1), 0, dangling),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        assert_eq!(
-            fb_overlap_class(null_mut(), null(), 4, dangling),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        assert_eq!(
-            fb_overlap_class(null_mut(), &empty_view(0, 0, 1), 4, null_mut()),
-            FB_LAUNCH_INVALID_ARGUMENT
+            overlap(&view, 4, dangling),
+            FB_LAUNCH_UNSUPPORTED,
+            "({la}, {lb})"
         );
     }
+    assert_eq!(
+        overlap(&empty_view(0, 0, 0), 4, dangling),
+        FB_LAUNCH_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        overlap(&empty_view(0, 0, 1), 0, dangling),
+        FB_LAUNCH_INVALID_ARGUMENT
+    );
+    assert_eq!(overlap(null(), 4, dangling), FB_LAUNCH_INVALID_ARGUMENT);
+    assert_eq!(
+        overlap(&empty_view(0, 0, 1), 4, null_mut()),
+        FB_LAUNCH_INVALID_ARGUMENT
+    );
 }
 
 /// The bounds' tables refuse as the overlap's does: the undressed bound
@@ -181,79 +179,70 @@ fn mmd_wrappers_refuse_before_launching() {
     let dangling = std::ptr::NonNull::<f64>::dangling().as_ptr();
     let pb = FB_PAIR_BOUND_MAX_MOMENTUM;
     let rb = FB_RECORD_BOUND_MAX_MOMENTUM;
-    // SAFETY: each call is refused before it reads a device pointer.
-    unsafe {
-        for (la, lb) in [(1, 0), (0, pb + 1), (-1, 0)] {
-            assert_eq!(
-                fb_mmd_bound(null_mut(), la, lb, 1, dangling, dangling),
-                FB_LAUNCH_UNSUPPORTED,
-                "({la}, {lb})"
-            );
-        }
+    // SAFETY: every call below, through this closure and the next two, is
+    // refused before it reads a device pointer.
+    let bound = |la: i32, lb: i32, n_rec: i32| unsafe {
+        fb_mmd_bound(null_mut(), la, lb, n_rec, dangling, dangling)
+    };
+    // SAFETY: as above.
+    let ordered = |cls: *const fb_primitive_pair_class_view| unsafe {
+        fb_ordered_pair_bound(null_mut(), cls, dangling)
+    };
+    for (la, lb) in [(1, 0), (0, pb + 1), (-1, 0)] {
+        assert_eq!(bound(la, lb, 1), FB_LAUNCH_UNSUPPORTED, "({la}, {lb})");
+    }
+    assert_eq!(bound(0, 0, 0), FB_LAUNCH_INVALID_ARGUMENT);
+    for (la, lb) in [(rb + 1, 0), (0, rb + 1), (-1, 0)] {
         assert_eq!(
-            fb_mmd_bound(null_mut(), 0, 0, 0, dangling, dangling),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        for (la, lb) in [(rb + 1, 0), (0, rb + 1), (-1, 0)] {
-            assert_eq!(
-                fb_ordered_pair_bound(null_mut(), &empty_view(la, lb, 1), dangling),
-                FB_LAUNCH_UNSUPPORTED,
-                "({la}, {lb})"
-            );
-        }
-        assert_eq!(
-            fb_ordered_pair_bound(null_mut(), &empty_view(0, 0, 0), dangling),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-
-        let src = fb_primitive_pair_source {
-            n_pairs: 1,
-            bra: null(),
-            ket: null(),
-            rec_begin: null(),
-            prim_begin: null(),
-            exponent: null(),
-            coefficient: null(),
-            c_x: null(),
-            c_y: null(),
-            c_z: null(),
-            ao_offset: null(),
-            rank: null(),
-        };
-        let perm = std::ptr::NonNull::<u32>::dangling().as_ptr();
-        assert_eq!(
-            fb_mmd_order(null_mut(), 0, &src, dangling, perm, null_mut(), 0),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        assert_eq!(
-            fb_mmd_order(null_mut(), 5, null(), dangling, perm, null_mut(), 0),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        let bytes = fb_mmd_order_workspace_bytes(5000);
-        assert_eq!(
-            fb_mmd_order(
-                null_mut(),
-                5000,
-                &src,
-                dangling,
-                perm,
-                dangling.cast(),
-                bytes - 1
-            ),
-            FB_LAUNCH_INVALID_ARGUMENT
-        );
-        let no_pairs = fb_primitive_pair_source { n_pairs: 0, ..src };
-        assert_eq!(
-            fb_mmd_records(
-                null_mut(),
-                5,
-                &no_pairs,
-                perm,
-                null::<fb_primitive_pair_records>()
-            ),
-            FB_LAUNCH_INVALID_ARGUMENT
+            ordered(&empty_view(la, lb, 1)),
+            FB_LAUNCH_UNSUPPORTED,
+            "({la}, {lb})"
         );
     }
+    assert_eq!(ordered(&empty_view(0, 0, 0)), FB_LAUNCH_INVALID_ARGUMENT);
+
+    let src = fb_primitive_pair_source {
+        n_pairs: 1,
+        bra: null(),
+        ket: null(),
+        rec_begin: null(),
+        prim_begin: null(),
+        exponent: null(),
+        coefficient: null(),
+        c_x: null(),
+        c_y: null(),
+        c_z: null(),
+        ao_offset: null(),
+        rank: null(),
+    };
+    let perm = std::ptr::NonNull::<u32>::dangling().as_ptr();
+    // SAFETY: as above.
+    let order = |n_rec: i32,
+                 src: *const fb_primitive_pair_source,
+                 workspace: *mut core::ffi::c_void,
+                 bytes: usize| unsafe {
+        fb_mmd_order(null_mut(), n_rec, src, dangling, perm, workspace, bytes)
+    };
+    assert_eq!(order(0, &src, null_mut(), 0), FB_LAUNCH_INVALID_ARGUMENT);
+    assert_eq!(order(5, null(), null_mut(), 0), FB_LAUNCH_INVALID_ARGUMENT);
+    // SAFETY: a host function of its argument alone.
+    let bytes = unsafe { fb_mmd_order_workspace_bytes(5000) };
+    assert_eq!(
+        order(5000, &src, dangling.cast(), bytes - 1),
+        FB_LAUNCH_INVALID_ARGUMENT
+    );
+    let no_pairs = fb_primitive_pair_source { n_pairs: 0, ..src };
+    // SAFETY: as the closures above.
+    let records = unsafe {
+        fb_mmd_records(
+            null_mut(),
+            5,
+            &no_pairs,
+            perm,
+            null::<fb_primitive_pair_records>(),
+        )
+    };
+    assert_eq!(records, FB_LAUNCH_INVALID_ARGUMENT);
 }
 
 /// The order's workspace is the merge sort's with values: nothing up to a
@@ -262,13 +251,12 @@ fn mmd_wrappers_refuse_before_launching() {
 #[test]
 fn mmd_order_workspace_is_the_sort_with_values() {
     // SAFETY: a host function of its argument alone.
-    unsafe {
-        assert_eq!(fb_mmd_order_workspace_bytes(-1), 0);
-        assert_eq!(fb_mmd_order_workspace_bytes(0), 0);
-        assert_eq!(fb_mmd_order_workspace_bytes(2816), 0);
-        // 2817 keys are 22536 bytes, 22784 at 256; the values 11268 more.
-        assert_eq!(fb_mmd_order_workspace_bytes(2817), 22784 + 11268);
-    }
+    let bytes = |n_rec| unsafe { fb_mmd_order_workspace_bytes(n_rec) };
+    assert_eq!(bytes(-1), 0);
+    assert_eq!(bytes(0), 0);
+    assert_eq!(bytes(2816), 0);
+    // 2817 keys are 22536 bytes, 22784 at 256; the values 11268 more.
+    assert_eq!(bytes(2817), 22784 + 11268);
 }
 
 /// The library this binary loaded is the one the bindings describe: the

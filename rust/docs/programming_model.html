@@ -738,12 +738,11 @@ catches what a lint cannot see: a linked host library opening a pool of its
 own at load, as a host BLAS does. If one is ever linked, its thread count is
 set to one at initialization, and this test is what notices when that slips.</p>
 <h3 id="capabilities-are-enforced-by-lints">Capabilities are enforced by lints</h3>
-<p>Three things a task may not do are each held by one module or one crate:
-allocating is the arena's (&quot;Memory: layouts and arenas&quot;), spawning is the
-worker module's, and <code>unsafe</code> is the wrappers'. Each is a lint in the
-manifest's <code>[lints]</code> table that
-<a href="documentation.md"><code>documentation.md</code></a> (&quot;Code: rustdoc&quot;) already uses for
-<code>missing_docs</code>, so a violation is a build failure in every invocation, the
+<p>Three things a task may not do are each held by named code: allocating is
+the arena's (&quot;Memory: layouts and arenas&quot;), spawning is the worker module's,
+and <code>unsafe</code> is a listed few crates'. Each is a lint, in the manifest's
+<code>[lints]</code> table that <a href="documentation.md"><code>documentation.md</code></a> (&quot;Code:
+rustdoc&quot;) already uses for <code>missing_docs</code> or at a crate's root, so a violation is a build failure in every invocation, the
 gates and an editor alike, and not a convention a review has to remember.</p>
 <p><strong>Spawning.</strong> <code>std::thread</code> cannot be removed from the standard library, but
 clippy's <code>disallowed_methods</code> makes calling it a compile error everywhere but
@@ -759,29 +758,63 @@ disallowed-methods = [
 <p>The manifest does the rest: rayon and tokio are not dependencies, and a pool
 crate arriving later is a <code>Cargo.toml</code> diff a review sees.</p>
 <p><strong><code>unsafe</code>.</strong> The rebuild's <code>unsafe</code> is the FFI into <code>wwr-sys</code> and the
-libraries behind it, the arena over the raw allocation bindings, the two
+kernel libraries, and the code that wraps it. <code>unsafe_code</code> is rustc's own
+lint, and <code>forbid</code> is the level that cannot be allowed back, so it is set
+per crate: a crate on the list below leaves it at its default, and every
+other crate forbids it with <code>#![forbid(unsafe_code)]</code> at its root. That is
+an attribute rather than a manifest line because Cargo refuses a member that
+inherits <code>[workspace.lints]</code> and adds a <code>[lints.rust]</code> table of its own. The
+list is in three tiers:</p>
+<ul>
+<li><strong>Core:</strong> <code>fb-core-wwr</code>, <code>fb-core-arena</code>, <code>fb-core-log</code>,
+<code>fb-core-thread-pool</code>.</li>
+<li><strong>Bindings:</strong> <code>fb-integrals-sys</code>, <code>fb-recipes-sys</code>.</li>
+<li><strong>Method crates:</strong> <code>fb-integrals-mmd</code>,
+<code>fb-integrals-one-electron-overlap</code>, <code>fb-integrals-one-electron-kinetic</code>,
+<code>fb-integrals-one-electron-potential-en</code>,
+<code>fb-integrals-one-electron-core-hamiltonian</code>, <code>fb-recipes-matrix-ao</code>,
+<code>fb-recipes-diagonalize</code>, <code>fb-recipes-orthogonalize</code>.</li>
+</ul>
+<p>The core crates hold the wrappers: <code>fb-core-wwr</code> over the <code>wwr-sys</code>
+bindings, the arena over the raw allocation and copy bindings, the two
 <code>libc</code> calls in <code>core::log</code>, and the one <code>unsafe impl Sync</code> on
-<code>core::thread_pool</code>'s <code>Device</code> backend. Nothing else needs it, and the lints
-keep it there. <code>unsafe_code</code> is rustc's own lint, and <code>forbid</code> is the level
-that cannot be allowed back, so it is set per crate: the four crates that
-hold <code>unsafe</code> (<code>fb-core-wwr</code>, <code>fb-core-arena</code>, <code>fb-core-log</code> and
-<code>fb-core-thread-pool</code>) leave it at its default, and every other crate
-forbids it with <code>#![forbid(unsafe_code)]</code> at its root. That is an attribute
-rather than a manifest line because Cargo refuses a member that inherits
-<code>[workspace.lints]</code> and adds a <code>[lints.rust]</code> table of its own. Where <code>unsafe</code> is
+<code>core::thread_pool</code>'s <code>Device</code> backend. The binding crates declare a kernel
+library's <code>extern &quot;C&quot;</code> functions and check its version at load. A method
+crate's <code>unsafe</code> is a direct call into its kernels' launchers, the BLAS or
+the solver, or <code>wwr_memset_async</code>, each block with a <code>// SAFETY:</code> comment
+saying why its pointers and lengths hold; those calls could later be wrapped
+safely in the core and binding crates, which would empty the third tier.
+<code>fb-doc-check</code>'s <code>tests/unsafe_code.rs</code> reads this list: a crate root that
+neither forbids <code>unsafe_code</code> nor is listed fails it, and so does a listed
+crate with no <code>unsafe</code> left, so the list only shrinks.</p>
+<p>Where <code>unsafe</code> is
 allowed, clippy's <code>undocumented_unsafe_blocks</code> requires a <code>// SAFETY:</code>
 comment on every block, which turns the comment the crate already writes into
 a rule and names the blocks that lack one, and
 <code>multiple_unsafe_ops_per_block</code> keeps each block to one operation so the
 comment justifies exactly one thing. Miri covers what a lint cannot
 (<a href="testing.md"><code>testing.md</code></a>, &quot;Sanitizers&quot;).</p>
+<p>A library call reaches the crates above <code>core</code> through a safe wrapper, not
+<code>wwr-sys</code>: <code>fb_core_wwr::blas::gemm</code> takes its matrices as <code>DeviceSlice</code>s
+(device memory with its length, which the arena's rows implement) and
+checks each extent against them in every build, and <code>fb-recipes-blas</code>, its
+packed shorthand, forbids <code>unsafe</code> itself, as the arena's <code>memcpy_*</code> do for
+the copies. That is the shape for the rest. <code>fb-pipeline-scf</code> has nothing
+left to call raw and forbids <code>unsafe</code>; the recipe crates still call
+<code>wwr-sys</code> or a kernel library directly (<code>dgmm</code>, <code>syevd</code>, the BLAS
+workspace, their kernels), so they do not yet, and each call moves behind
+a checked wrapper of its own.</p>
 <pre><code class="language-toml">[workspace.lints.clippy]            # every member: [lints] workspace = true
 disallowed_methods = &quot;deny&quot;
 undocumented_unsafe_blocks = &quot;deny&quot;
 multiple_unsafe_ops_per_block = &quot;deny&quot;
+missing_panics_doc = &quot;deny&quot;
 </code></pre>
-<p><code>disallowed_methods</code> is on today; the two <code>unsafe</code> lints wait for a PR of
-their own, since turning them on asks for code changes.</p>
+<p>All four are on. <code>missing_panics_doc</code> holds the other half of the
+<code>unsafe</code> rule: the length an <code>unsafe</code> call trusts is an always-on
+<code>assert!</code>, and the lint fails a public function that can panic and whose
+doc has no <code># Panics</code> naming it (<a href="testing.md"><code>testing.md</code></a>, &quot;Contracts are
+part of the spec&quot;).</p>
 <h2 id="reproducibility-across-placements">Reproducibility across placements</h2>
 <p>The same planned DAG must give the same answer, to a declared tolerance,
 under every placement. Where every reduce is ordered, that tolerance is zero

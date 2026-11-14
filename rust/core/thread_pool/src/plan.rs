@@ -83,8 +83,6 @@ impl<'a, S> Plan<'a, S> {
     /// Add a node after its predecessors `deps`, which must already be in
     /// the plan; that is what makes the plan acyclic and the ids a
     /// topological order.
-    ///
-    /// Requires, checked in debug builds: every predecessor is in this plan.
     #[debug_requires(
         deps.iter().all(|d| d.0 < self.nodes.len()),
         "every predecessor is in the plan"

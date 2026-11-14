@@ -13,6 +13,7 @@
 
 #![forbid(unsafe_code)]
 
+use fb_doc_check::{code_only, is_ident};
 use std::path::{Path, PathBuf};
 
 /// The document holding the list, relative to the workspace root.
@@ -96,67 +97,11 @@ fn check(crates: &[Crate], allowed: &[String]) -> Vec<String> {
 }
 
 /// Whether `source` holds the keyword `unsafe` in code: comments, string and
-/// character literals are skipped.
+/// character literals are skipped ([`code_only`]).
 fn holds_unsafe(source: &str) -> bool {
-    let b = source.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'/' if b.get(i + 1) == Some(&b'/') => {
-                while i < b.len() && b[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'/' if b.get(i + 1) == Some(&b'*') => {
-                i = source[i + 2..]
-                    .find("*/")
-                    .map_or(b.len(), |e| i + 2 + e + 2);
-            }
-            b'r' if matches!(b.get(i + 1), Some(b'"' | b'#'))
-                && (i == 0 || !is_ident(b[i - 1])) =>
-            {
-                let hashes = b[i + 1..].iter().take_while(|&&c| c == b'#').count();
-                if b.get(i + 1 + hashes) != Some(&b'"') {
-                    i += 1;
-                    continue;
-                }
-                let close = format!("\"{}", "#".repeat(hashes));
-                let start = i + 2 + hashes;
-                i = source[start..]
-                    .find(&close)
-                    .map_or(b.len(), |e| start + e + close.len());
-            }
-            b'"' => {
-                i += 1;
-                while i < b.len() && b[i] != b'"' {
-                    i += if b[i] == b'\\' { 2 } else { 1 };
-                }
-                i += 1;
-            }
-            // A character literal; a lifetime has no closing quote.
-            b'\'' if b.get(i + 1) == Some(&b'\\') => {
-                i = source[i + 2..]
-                    .find('\'')
-                    .map_or(b.len(), |e| i + 2 + e + 1);
-            }
-            b'\'' if b.get(i + 2) == Some(&b'\'') => i += 3,
-            c if is_ident(c) => {
-                let start = i;
-                while i < b.len() && is_ident(b[i]) {
-                    i += 1;
-                }
-                if &source[start..i] == "unsafe" {
-                    return true;
-                }
-            }
-            _ => i += 1,
-        }
-    }
-    false
-}
-
-fn is_ident(c: u8) -> bool {
-    c.is_ascii_alphanumeric() || c == b'_'
+    code_only(source)
+        .split(|c: char| !is_ident(c as u8) || !c.is_ascii())
+        .any(|word| word == "unsafe")
 }
 
 /// Whether a root carries the attribute on a line of its own.

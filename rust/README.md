@@ -88,7 +88,7 @@ tree, not inputs to its build.
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
-`fb-doc-check` (`doc_check/`), the section-citation and `unsafe` checks. There is no
+`fb-doc-check` (`doc_check/`), the section-citation, `unsafe` and contract checks. There is no
 umbrella crate. The crate graph is the selection graph
 ([`testing.md`](docs/testing.md), "Selection: the workspace graph is the
 selection graph"): `log` at the bottom, `error_handling` on it, `wwr` on
@@ -169,9 +169,10 @@ Two things go the other way, where Rust asks for more than the C++ does:
 
 ## Contracts
 
-One precondition is checked with the [`contracts`](https://crates.io/crates/contracts)
-crate, in debug builds only: a device-bound view's `dev_idx` is -1
-(unknown) or more.
+Preconditions are checked with the [`contracts`](https://crates.io/crates/contracts)
+crate, in debug builds only, and rustdoc shows each as its item's
+`§ Contracts` section; a check soundness rests on is an `assert!` instead
+([`testing.md`](docs/testing.md), "Contracts are part of the spec").
 
 Outcomes of GPU calls are deliberately not contracts. A call that can fail
 returns a status or a `Result`, and a failure is an expected result, not a
@@ -438,6 +439,11 @@ a listed crate's, and a listed crate must still hold `unsafe`.
 `doc_check/tests/rules.rs` reads the rules register,
 [`rules.md`](docs/rules.md), and fails when a check a row names, a lint,
 a type, a test file or a test in one, does not exist.
+
+`doc_check/tests/contracts.rs` checks that no doc comment restates a
+contract, which rustdoc renders on its own, and that every `debug_assert!`
+carries an `// INVARIANT:` comment ([`testing.md`](docs/testing.md),
+"Contracts are part of the spec").
 
 Tests run in parallel, so a capture test must not use global capture mode.
 A global capture forbids other threads' unsafe calls, and on the 3080 it

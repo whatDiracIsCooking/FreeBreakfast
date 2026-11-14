@@ -24,8 +24,6 @@ use fb_recipes_diagonalize::add_diagonalize;
 /// row `"F X"`), [`add_diagonalize`]'s `syevd` and `syevd check` on F' (C'
 /// its row `"F' U"`), and `back transform` (stream: `C = X C'`).
 ///
-/// Requires, checked in debug builds: `n` is at least 1.
-///
 /// # Panics
 /// As [`add_diagonalize`]: if `n²` or `lwork` does not fit an `i32`; or if
 /// `f` or `x` is a row of another worker's table ([`Dag::add`]).
