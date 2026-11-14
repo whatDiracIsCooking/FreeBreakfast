@@ -11,10 +11,10 @@
 //! - **`inverse root`**, on the worker's stream: w copied into a scratch
 //!   row Λ, mapped in place to `Λ^(-1/2)` by `libfb_recipes_kernels.so`'s
 //!   kernel through [`fb_recipes_sys::inverse_sqrt`] (an eigenvalue at or
-//!   below the floor becomes 0, which drops its mode), then `M = U diag(Λ^(-1/2))` by a BLAS `dgmm`
-//!   into scratch M and `X = M Uᵀ` by a `gemm` into the output row X, both
-//!   on the worker's handle, through [`fb_recipes_blas::dgmm`] and
-//!   [`fb_recipes_blas::gemm`].
+//!   below the floor becomes 0, which drops its mode), then
+//!   `X = U diag(Λ^(-1/2)) Uᵀ` into the output row X by
+//!   [`gmmwich`]`::<T, f64>` on the worker's handle: a `dgmm` writes
+//!   `M = U diag(Λ^(-1/2))` into scratch M and a `gemm` writes `X = M Uᵀ`.
 //!
 //! **Conditioning.** As in the C++: the floor test comes before the square
 //! root, so X is free of NaN and Inf for a zero or negative eigenvalue, and
@@ -29,7 +29,7 @@
 //! | S copied into U, then `diagonalize(res, n, U, w)`, which syncs to read syevd's flag | [`add_diagonalize`]'s `syevd` (the copy into U its first work) and `syevd check` |
 //! | U and the eigenvalues, pool buffers of the call's own; M, the device workspace's | U and w, `syevd`'s output rows, read by `inverse root`; Λ and M, its scratch rows |
 //! | `inverse_sqrt<T>(stream, n, w, floor)` over w itself | Λ, a copy of w, through [`inverse_sqrt`]: a task writes only its own rows |
-//! | `gmmwich<WWRBLAS_OP_T>(res.blas(), n, U, Λ, M, X)`: a `dgmm` and a `gemm` | the same two calls, on the worker's handle, [`DeviceStream::blas`] |
+//! | `gmmwich<WWRBLAS_OP_T>(res.blas(), n, U, Λ, M, X)`: a `dgmm` and a `gemm` | [`gmmwich`]`::<T, f64>(handle, n, n, U, Λ, M, X)`, on the worker's handle, [`DeviceStream::blas`] |
 //! | `orthogonalize_footprint<T>(n, syevd_lwork)` | the layout, read off by the planner, `lwork` handed in ([`syevd_lwork`](fb_recipes_diagonalize::syevd_lwork)) |
 //! | the extreme eigenvalues copied back and cond(S) logged, a second sync | not ported: a task has no host wait inside it, and nothing reads the log yet |
 //! | `ScopedDeviceIndex` for the call | nothing: a stream worker's tasks run on its device |
@@ -44,7 +44,7 @@ use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2d};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_recipes_blas::{N, Right, T, dgmm, gemm};
+use fb_recipes_blas::{T, gmmwich};
 use fb_recipes_diagonalize::add_diagonalize;
 use fb_recipes_sys::inverse_sqrt;
 
@@ -170,9 +170,8 @@ impl Task for InverseRoot {
             device.take_mut(rows.m),
             device.take_mut(rows.x),
         );
-        // M = U diag(Λ): column j of U scaled by Λ[j].
-        dgmm::<Right, f64>(handle, n, n, &u, &lambda, &mut m)?;
-        // X = M Uᵀ, symmetric by construction.
-        gemm::<N, T, f64>(handle, n, n, n, 1.0, &m, &u, 0.0, &mut x)
+        // X = U diag(Λ) Uᵀ, symmetric by construction: gmmwich's OpX = T
+        // form, M = U diag(Λ) (column j of U scaled by Λ[j]), then X = M Uᵀ.
+        gmmwich::<T, f64>(handle, n, n, &u, &lambda, &mut m, &mut x)
     }
 }
