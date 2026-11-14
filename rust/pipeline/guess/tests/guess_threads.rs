@@ -104,9 +104,9 @@ fn main() {
                 seen: Arc::clone(&seen),
             },
         );
-        let instance = dag.plan().instantiate(&[0]);
+        let mut instance = dag.plan().instantiate(&[0]);
         instance
-            .run(&HostOnly::new(n_streams), n_cpu)
+            .run(&mut HostOnly::new(n_streams), n_cpu)
             .result
             .unwrap();
         drop(instance);

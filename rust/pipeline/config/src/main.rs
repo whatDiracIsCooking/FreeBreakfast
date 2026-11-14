@@ -29,9 +29,9 @@ fn run(args: &[String]) -> Status {
             config.output.display()
         ))
     })?;
-    let instance = planned.instantiate(&[0]);
-    let backend = thread_pool::Device::new(&[0], instance.plan());
-    let record = instance.run(&backend, default_n_cpu(1));
+    let mut instance = planned.instantiate(&[0]);
+    let mut backend = thread_pool::Device::new(&[0], instance.plan());
+    let record = instance.run(&mut backend, default_n_cpu(1));
     // Written whether or not the run failed: the record holds the error,
     // and the times of what ran before it.
     let timing = config.output.join("timing.json");

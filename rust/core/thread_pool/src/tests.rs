@@ -109,7 +109,7 @@ fn run_shape(shape: &Shape, n_cpu: usize, fail: &[usize]) -> (Observed, Status) 
             );
             ids.lock().unwrap().push(node);
         }
-        run(&plan, &HostOnly::new(shape.n_streams), n_cpu).result
+        run(&mut plan, &mut HostOnly::new(shape.n_streams), n_cpu).result
     };
     (obs, result)
 }
@@ -195,7 +195,7 @@ fn an_error_names_its_task_and_worker_and_carries_the_others() {
     plan.add("second", Placement::Stream(0), &[], |_: Lane<'_, ()>| {
         Err(Error::numerical("nan"))
     });
-    let error = run(&plan, &HostOnly::new(1), 1).result.unwrap_err();
+    let error = run(&mut plan, &mut HostOnly::new(1), 1).result.unwrap_err();
     assert_eq!(error.kind, ErrorKind::Io);
     assert_eq!(
         error.to_string(),
@@ -215,7 +215,7 @@ fn a_node_runs_inside_its_task_record() {
         seen.lock().unwrap().push(log::current_task());
         Ok(())
     });
-    run(&plan, &HostOnly::new(1), 1).result.unwrap();
+    run(&mut plan, &mut HostOnly::new(1), 1).result.unwrap();
     assert_eq!(
         *seen.lock().unwrap(),
         [Some("a@cpu0".to_string()), Some("b@stream0".to_string())]
@@ -233,7 +233,7 @@ fn a_panicking_node_fails_the_run_instead_of_hanging_it() {
     // Waiting on `a`: without the abort these workers would wait forever.
     plan.add("b", Placement::Cpu, &[a], |_| Ok(()));
     plan.add("c", Placement::Stream(0), &[a], |_| Ok(()));
-    let _ = run(&plan, &HostOnly::new(1), 3);
+    let _ = run(&mut plan, &mut HostOnly::new(1), 3);
 }
 
 #[test]
@@ -244,7 +244,7 @@ fn a_plan_the_workers_cannot_run_is_refused_before_anything_runs() {
         ran.fetch_add(1, Ordering::SeqCst);
         Ok(())
     });
-    let error = run(&plan, &HostOnly::new(1), 1).result.unwrap_err();
+    let error = run(&mut plan, &mut HostOnly::new(1), 1).result.unwrap_err();
     assert_eq!(error.kind, ErrorKind::InvalidConfig);
 
     let mut plan = Plan::new();
@@ -252,15 +252,15 @@ fn a_plan_the_workers_cannot_run_is_refused_before_anything_runs() {
         ran.fetch_add(1, Ordering::SeqCst);
         Ok(())
     });
-    let error = run(&plan, &HostOnly::new(0), 0).result.unwrap_err();
+    let error = run(&mut plan, &mut HostOnly::new(0), 0).result.unwrap_err();
     assert_eq!(error.kind, ErrorKind::InvalidConfig);
     assert_eq!(ran.load(Ordering::SeqCst), 0);
 }
 
 #[test]
 fn an_empty_plan_runs() {
-    let plan: Plan<'_, ()> = Plan::new();
-    run(&plan, &HostOnly::new(2), 1).result.unwrap();
+    let mut plan: Plan<'_, ()> = Plan::new();
+    run(&mut plan, &mut HostOnly::new(2), 1).result.unwrap();
 }
 
 #[test]
@@ -292,7 +292,7 @@ fn every_node_is_timed_by_its_worker() {
     let b = plan.add("b", Placement::Stream(0), &[a], sleep(10));
     let c = plan.add("c", Placement::Stream(1), &[a], sleep(15));
     plan.add("d", Placement::Cpu, &[b, c], sleep(20));
-    let record = run(&plan, &HostOnly::new(2), 1);
+    let record = run(&mut plan, &mut HostOnly::new(2), 1);
     record.result.unwrap();
     let got: Vec<_> = record
         .tasks
@@ -333,7 +333,7 @@ fn a_failed_run_still_returns_its_times() {
         std::thread::sleep(ms);
         Ok(())
     });
-    let record = run(&plan, &HostOnly::new(1), 2);
+    let record = run(&mut plan, &mut HostOnly::new(1), 2);
     assert_eq!(record.result.unwrap_err().message, "nan");
     let got: Vec<_> = record.tasks.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(got, ["a", "b", "d"]);
@@ -354,7 +354,7 @@ fn a_record_reads_back_from_its_json() {
     let d = plan.add("d", Placement::Cpu, &[b, c], |_| Ok(()));
     plan.set_dims(b, &[("n", 24), ("m", 3)]);
     plan.set_dims(d, &[("n", 24)]);
-    let record = run(&plan, &HostOnly::new(2), 1);
+    let record = run(&mut plan, &mut HostOnly::new(2), 1);
     assert_eq!(record.result, Ok(()));
 
     let json = record.to_json();
@@ -420,7 +420,7 @@ fn a_failed_record_reads_back_without_its_origin() {
     let mut plan = Plan::new();
     let a = plan.add("a", Placement::Stream(0), &[], |_: Lane<'_, ()>| Ok(()));
     plan.add("b", Placement::Cpu, &[a], |_| Err(Error::numerical("nan")));
-    let mut record = run(&plan, &HostOnly::new(1), 1);
+    let mut record = run(&mut plan, &mut HostOnly::new(1), 1);
     let mut back: Record = serde_json::from_str(&record.to_json()).unwrap();
     let (got, want) = (back.result.unwrap_err(), record.result.unwrap_err());
     assert_eq!(
@@ -513,8 +513,8 @@ fn device_edges_wait_for_the_work_they_consume() {
         *seen_by_cpu.lock().unwrap() = dst.read(&Stream::new(0));
         Ok(())
     });
-    let device = Device::new(&[0, 0], &plan);
-    run(&plan, &device, 1).result.unwrap();
+    let mut device = Device::new(&[0, 0], &plan);
+    run(&mut plan, &mut device, 1).result.unwrap();
     assert_eq!(*devices_seen.lock().unwrap(), [0]);
     assert!(
         *seen_by_cpu.lock().unwrap() == pattern,
@@ -560,10 +560,10 @@ fn device_library_handles_are_the_workers_made_before_the_run() {
             Ok(())
         });
     }
-    let device = Device::new(&[0, 0], &plan);
+    let mut device = Device::new(&[0, 0], &plan);
     let mut runs = Vec::new();
     for _ in 0..2 {
-        run(&plan, &device, 1).result.unwrap();
+        run(&mut plan, &mut device, 1).result.unwrap();
         let mut handles = std::mem::take(&mut *seen.lock().unwrap());
         handles.sort_unstable();
         runs.push(handles);

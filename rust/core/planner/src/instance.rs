@@ -12,7 +12,8 @@ use fb_core_thread_pool::{
 
 /// A planned DAG made real: each worker's two blocks, allocated once, and
 /// the [`thread_pool::Plan`] whose nodes hand each task its rows of them.
-/// Run any number of times; a run allocates nothing.
+/// Run any number of times, one run at a time ([`Instance::run`] borrows
+/// it exclusively); a run allocates nothing.
 ///
 /// The executor's plan is what a `thread_pool::Device` backend (the
 /// `device` feature) is built over ([`Instance::plan`]), since it makes one
@@ -85,11 +86,19 @@ impl<'a, H: HostKind, S> Instance<'a, H, S> {
     ///
     /// [`Table::total`]: fb_core_arena::Table::total
     ///
+    /// The instance and the backend are both borrowed exclusively, as
+    /// [`thread_pool::run`] borrows the plan and the backend: one run at a
+    /// time on each. The blocks' borrow flags are host-side and a GPU
+    /// task's row is returned while its device work may still be in
+    /// flight, so a second run of the same blocks would race on them; and
+    /// a backend's events and handles serve one run. Independent (instance,
+    /// backend) pairs may run on threads of their own.
+    ///
     /// # Errors
     /// In [`Record::result`], as [`thread_pool::run`]: the failure lowest
     /// in rank, with `name@worker` on its context.
-    pub fn run<B: Backend<Stream = S>>(&self, backend: &B, n_cpu: usize) -> Record {
-        let mut record = thread_pool::run(&self.plan, backend, n_cpu);
+    pub fn run<B: Backend<Stream = S>>(&mut self, backend: &mut B, n_cpu: usize) -> Record {
+        let mut record = thread_pool::run(&mut self.plan, backend, n_cpu);
         for (worker, blocks) in self.blocks.iter().enumerate() {
             let (device, host) = &**blocks;
             record.arena.push(ArenaSize {

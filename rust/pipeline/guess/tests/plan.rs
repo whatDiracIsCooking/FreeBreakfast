@@ -93,8 +93,8 @@ fn run(mut dag: Dag<'static, Heap, ()>, d: RowId<Heap, f64>, n_cpu: usize) -> (R
             out: Arc::clone(&out),
         },
     );
-    let instance = dag.plan().instantiate(&[0]);
-    let record = instance.run(&HostOnly::new(0), n_cpu);
+    let mut instance = dag.plan().instantiate(&[0]);
+    let record = instance.run(&mut HostOnly::new(0), n_cpu);
     let d = std::mem::take(&mut *out.lock().unwrap());
     (record, d)
 }

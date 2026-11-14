@@ -87,9 +87,9 @@ impl Run {
     /// S, `n_ao²` doubles column-major, which is empty unless the result is
     /// `Ok`.
     pub fn run(self, device: i32) -> (Record, Vec<f64>) {
-        let instance = self.planned.instantiate(&[device]);
-        let backend = thread_pool::Device::new(&[device], instance.plan());
-        let record = instance.run(&backend, 1);
+        let mut instance = self.planned.instantiate(&[device]);
+        let mut backend = thread_pool::Device::new(&[device], instance.plan());
+        let record = instance.run(&mut backend, 1);
         let s = if record.result.is_ok() {
             std::mem::take(&mut *self.s.lock().unwrap_or_else(|e| e.into_inner()))
         } else {

@@ -136,8 +136,8 @@ fn staged_rows_are_the_molecules_nuclei() {
                 out: Arc::clone(&out),
             },
         );
-        let instance = dag.plan().instantiate(&[0]);
-        instance.run(&HostOnly::new(1), 1).result.unwrap();
+        let mut instance = dag.plan().instantiate(&[0]);
+        instance.run(&mut HostOnly::new(1), 1).result.unwrap();
         assert_eq!(*out.lock().unwrap(), expected(&molecule), "{stem}");
     }
 }
@@ -191,9 +191,9 @@ fn device_rows_are_the_staged_rows() {
                 out: Arc::clone(&out),
             },
         );
-        let instance = dag.plan().instantiate(&[0]);
-        let backend = thread_pool::Device::new(&[0], instance.plan());
-        instance.run(&backend, 1).result.unwrap();
+        let mut instance = dag.plan().instantiate(&[0]);
+        let mut backend = thread_pool::Device::new(&[0], instance.plan());
+        instance.run(&mut backend, 1).result.unwrap();
         assert_eq!(*out.lock().unwrap(), expected(&molecule), "{stem}");
     }
 }

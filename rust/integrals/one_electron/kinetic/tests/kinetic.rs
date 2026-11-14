@@ -24,9 +24,9 @@ fn kinetic_matches_pyscf() {
     for (stem, xyz, basis) in common::FIXTURES {
         let fixture = common::plan(xyz, basis);
         let n = fixture.n_ao;
-        let instance = fixture.planned.instantiate(&[0]);
-        let backend = fb_core_thread_pool::Device::new(&[0], instance.plan());
-        let record = instance.run(&backend, 1);
+        let mut instance = fixture.planned.instantiate(&[0]);
+        let mut backend = fb_core_thread_pool::Device::new(&[0], instance.plan());
+        let record = instance.run(&mut backend, 1);
         record.result.unwrap();
         for t in &record.tasks {
             println!(
