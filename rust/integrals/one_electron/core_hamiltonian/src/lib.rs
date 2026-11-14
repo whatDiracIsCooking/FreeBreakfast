@@ -58,7 +58,8 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// `core hamiltonian` (stream: the Cartesian matrix zeroed, [`kinetic_classes`] and then
 /// [`potential_en_classes`] into it, reading the records and the nuclei as
 /// edges), then the spherical transform of [`add_cartesian_to_spherical`]:
-/// `harmonics` (CPU: U into a pinned row), only when `u` is `None`, and
+/// `harmonics` and `harmonics upload` (U into a pinned row, then its
+/// device row), only when `u` is `None`, and
 /// `spherical transform` (stream: `H = Uᵀ H_cart U`). `nuclei` are the
 /// molecule's, uploaded on `worker` by [`fb_molecule_nuclei::add_nuclei`]
 /// earlier in `dag`, the molecule the basis is placed on; `classes` are the
@@ -87,7 +88,7 @@ pub fn add_core_hamiltonian(
     basis: &BasisSet,
     classes: &[ClassRows],
     nuclei: NucleiRows,
-    u: &mut Option<RowId<Pinned, f64>>,
+    u: &mut Option<RowId<Device, f64>>,
 ) -> Result<RowId<Device, f64>> {
     if nuclei.n_nuc < 1 {
         return Err(Error::config(format!(

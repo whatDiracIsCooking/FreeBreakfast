@@ -1,4 +1,4 @@
-plan: 9 tasks, GPU workers: 1
+plan: 10 tasks, GPU workers: 1
  task  worker  lane    name: after
     0       0  cpu     nuclei
     1       0  stream  nuclei upload: after 0
@@ -6,9 +6,10 @@ plan: 9 tasks, GPU workers: 1
     3       0  stream  mmd records: after 2
     4       0  stream  core hamiltonian: after 1 3
     5       0  cpu     harmonics: after 0 1 2 3
-    6       0  stream  spherical transform: after 3 4 5
-    7       0  stream  download: after 0 1 2 3 5 6
-    8       0  cpu     collect: after 7
+    6       0  stream  harmonics upload: after 3 4 5
+    7       0  stream  spherical transform: after 3 4 6
+    8       0  stream  download: after 0 1 2 3 5 6 7
+    9       0  cpu     collect: after 8
 worker 0 device table: 220 rows, 1221388 bytes
 peak: 1198292 bytes at node 3
     offset      bytes  owner   life     name: users (w writes, r reads)
@@ -228,11 +229,11 @@ peak: 1198292 bytes at node 3
    1220864         12  edge    3-4      off_b (3,3): 3w 4r
    1221120         12  edge    3-4      rank_a (3,3): 3w 4r
    1221376         12  edge    3-4      rank_b (3,3): 3w 4r
-       512      39200  edge    4-6      H cartesian: 4w 6r
-     39936      33600  task    6-6      U: 6w
-     73728      33600  task    6-6      H U: 6w
-    107520      28800  edge    6-7      H: 6w 7r
-handoffs: 3->4 3->6 4->6
+       512      39200  edge    4-7      H cartesian: 4w 7r
+     39936      33600  edge    6-7      U: 6w 7r
+     73728      33600  task    7-7      H U: 7w
+    107520      28800  edge    7-8      H: 7w 8r
+handoffs: 3->4 3->6 3->7 4->6 4->7
 worker 0 pinned table: 15 rows, 33600 bytes
 peak: 33600 bytes at node 5
     offset      bytes  owner   life     name: users (w writes, r reads)
@@ -250,5 +251,5 @@ peak: 33600 bytes at node 5
       4096        840  edge    2-3      ket: 2w 3r
       2048        880  edge    2-3      rec_begin: 2w 3r
          0      33600  edge    5-6      U: 5w 6r
-         0      28800  edge    7-8      H: 7w 8r
-handoffs: 0->2 0->5 0->7 1->2 1->5 1->7 2->5 2->7 3->5 3->7 5->7 6->7
+         0      28800  edge    8-9      H: 8w 9r
+handoffs: 0->2 0->5 0->8 1->2 1->5 1->8 2->5 2->8 3->5 3->8 5->8 6->8

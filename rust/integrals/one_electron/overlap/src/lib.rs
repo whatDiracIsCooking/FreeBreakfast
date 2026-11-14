@@ -15,8 +15,9 @@
 //!   ([`ClassRows::read`](fb_integrals_sys::ClassRows::read)).
 //! - then the spherical transform, `S = Uᵀ S_cart U`
 //!   ([`fb_recipes_matrix_ao::add_cartesian_to_spherical`]): `harmonics` on
-//!   the CPU (U into a pinned row, unless an earlier matrix of the plan
-//!   staged it) and `spherical transform` on the worker's stream.
+//!   the CPU and `harmonics upload` on the stream (U into a pinned row,
+//!   then its device row, unless an earlier matrix of the plan staged it)
+//!   and `spherical transform` on the worker's stream.
 //!
 //! [`Run`] is the whole run: the basis read and placed, the records and
 //! those tasks plus a download and a collect, the plan, and one run on a

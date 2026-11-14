@@ -99,8 +99,8 @@ pub fn potential_en_classes(
 /// `potential en` (stream: the Cartesian matrix zeroed and
 /// [`potential_en_classes`], reading the records and the nuclei as edges),
 /// then the spherical transform of
-/// [`add_cartesian_to_spherical`]: `harmonics` (CPU: U into a pinned row),
-/// only when `u` is `None`, and `spherical transform` (stream:
+/// [`add_cartesian_to_spherical`]: `harmonics` and `harmonics upload` (U
+/// into a pinned row, then its device row), only when `u` is `None`, and `spherical transform` (stream:
 /// `V = Uᵀ V_cart U`). `nuclei` are the molecule's, uploaded on `worker` by
 /// [`fb_molecule_nuclei::add_nuclei`] earlier in `dag`, the molecule the
 /// basis is placed on; `classes` are the records of `basis`, added on
@@ -124,7 +124,7 @@ pub fn add_nuclear_attraction(
     basis: &BasisSet,
     classes: &[ClassRows],
     nuclei: NucleiRows,
-    u: &mut Option<RowId<Pinned, f64>>,
+    u: &mut Option<RowId<Device, f64>>,
 ) -> Result<RowId<Device, f64>> {
     if nuclei.n_nuc < 1 {
         return Err(Error::config(format!(

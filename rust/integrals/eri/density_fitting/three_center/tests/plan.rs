@@ -92,9 +92,10 @@ fn a_shell_past_the_kernels_is_unsupported_at_planning() {
 }
 
 /// U and U_aux come from the caller's slots (`fb_recipes_matrix_ao::add_harmonics`):
-/// empty ones get one `harmonics` task each and are left holding its row,
-/// and a second build over the same slots adds none and runs after both,
-/// reading their rows, so neither transform is staged twice.
+/// empty ones get one `harmonics` and one `harmonics upload` task each and
+/// are left holding the upload's device row, and a second build over the
+/// same slots adds none and runs after both uploads, reading their rows, so
+/// neither transform is staged or copied up twice.
 #[test]
 fn u_and_u_aux_are_read_from_the_slots() {
     let (basis, aux) = common::water();
@@ -113,20 +114,23 @@ fn u_and_u_aux_are_read_from_the_slots() {
         .map(|l| l.split_whitespace().skip(3).collect::<Vec<_>>().join(" "))
         .map(|l| l.split(':').next().unwrap().to_owned())
         .collect();
-    let harmonics: Vec<usize> = (0..names.len())
-        .filter(|&t| names[t] == "harmonics")
+    let count = |name: &str| names.iter().filter(|n| *n == name).count();
+    assert_eq!(count("harmonics"), 2, "one harmonics per basis: {names:?}");
+    let uploads: Vec<usize> = (0..names.len())
+        .filter(|&t| names[t] == "harmonics upload")
         .collect();
-    assert_eq!(harmonics.len(), 2, "one harmonics per basis: {names:?}");
+    assert_eq!(uploads.len(), 2, "one upload per basis: {names:?}");
     let last = names.len() - 1;
     assert_eq!(names[last], "three-center", "{names:?}");
     assert!(
-        harmonics.iter().all(|&t| t < last - 2),
+        uploads.iter().all(|&t| t < last - 2),
         "the second build adds no harmonics: {names:?}"
     );
-    for t in harmonics {
+    let reads = planned.device_table(0).reads();
+    for t in uploads {
         assert!(
-            planned.predecessors(last).contains(&t),
-            "the second build reads harmonics {t}"
+            reads.contains(&(t, last)),
+            "the second build reads upload {t}'s row"
         );
     }
 }
