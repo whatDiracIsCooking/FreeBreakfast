@@ -110,7 +110,7 @@ impl<'a> Dag<'a, Pinned, DeviceStream> {
     /// finished, which inside one task would be a host sync
     /// (`docs/programming_model.md`, "Granularity"); as two, one batch's
     /// host copy runs under another's device work. A heap row reaches the
-    /// device by this alone (`docs/memory.md`, "The three kinds").
+    /// device by this alone (`docs/memory.md`, "The table").
     ///
     /// In a loop, iteration `k` copies the range moved on by `k` of its
     /// lengths, `start + k len .. end + k len`, from its views' iteration
