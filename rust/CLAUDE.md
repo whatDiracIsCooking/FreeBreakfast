@@ -37,4 +37,6 @@ its check, or `**unenforced**` if nothing can yet. `fb-doc-check` fails a
 row that names a check that does not exist.
 
 **Gates:** `devtools/test.py pr --only cargo` from the repo root, and the
-commit hook's `cargo fmt --check` and clippy `-D warnings`.
+commit hook's `cargo fmt --check` and clippy `-D warnings`. The hook's
+clippy reaches only the link-free crates; tier 4 of the gates lints the
+crates that link, after building the library.

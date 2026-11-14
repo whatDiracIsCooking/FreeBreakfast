@@ -120,7 +120,7 @@ most of their card time:
 
 | Run | Tiers | Runs |
 |---|---|---|
-| **PR** (`test.py push`, `test.py pr`) | 1, 2, 3 in full; 4 for the affected crates | `cargo test --no-default-features` of every link-free crate in debug, so every contract is on, and `cargo doc`. Then every test of the affected crates that link a library, on the gate's card ("Selecting GPU tiers in cargo", below). |
+| **PR** (`test.py push`, `test.py pr`) | 1, 2, 3 in full; 4 for the affected crates | `cargo test --no-default-features` of every link-free crate in debug, so every contract is on, and `cargo doc`. Then, over the affected crates that link a library, `cargo clippy --all-targets -D warnings` and every test, on the gate's card ("Selecting GPU tiers in cargo", below). |
 | **Nightly** | 4 in full; performance | Every GPU case. A release build, so the timings it records are real ("Performance", below). |
 | **Weekly** | sanitizers, fuzz, mutants, 5 | compute-sanitizer over tier 4. Miri and ASan over tier 3. The fuzzers and property tests with their large case counts. `cargo-mutants` over tier 3. Tier 5 on a multi-GPU VM. |
 
@@ -153,7 +153,10 @@ go with the table:
 - **Format and lint are the commit hook's, as for C++ and Python.**
   `devtools/test.py cargo-lint` (`cargo fmt --check`, and `clippy` with
   warnings denied in both feature sets) runs beside clang-format, cmake-lint
-  and ruff at commit and in CI's `lint` job.
+  and ruff at commit and in CI's `lint` job. It builds no native library,
+  so its clippy reaches only the link-free members; the crates that link
+  are linted by tier 4 of the gates, which builds the library first
+  ("Selecting GPU tiers in cargo", below).
   rustfmt's defaults are the style; `docs/style.md` gains a Rust section the
   first time a rule is needed that rustfmt does not hold.
 - **A diff under `rust/` fires the cargo half of the gates and nothing
@@ -236,7 +239,15 @@ hand-written path rules of "Selection" below are in `devtools/test.py`:
 a module's `kernels/` affect every kernel `-sys` crate, `docs/` and
 `README.md` only `fb-doc-check`, `examples/` only `fb-pipeline-config`
 (whose tests run them through the binary), and any other file outside
-every crate the whole workspace. `pr --all` runs every crate's tier 4.
+every crate the whole workspace (`clippy.toml` and `Cargo.toml` among
+them, so a lint-config change lints every crate that links). `pr --all`
+runs every crate's tier 4.
+
+Before those tests, and before the card is taken, tier 4 runs `cargo
+clippy --all-targets -- -D warnings` over the same crates, in the same
+target directory and environment. It is the only gate of the workspace
+lints on a crate that links, since `cargo-lint` builds no library; a lint
+error is a `tier 4 clippy: FAILED` line and runs no test.
 
 Tier 5 needs a second device, which no case asks for yet; when one does,
 the same rule extends with a reason of its own and a count in the probe.

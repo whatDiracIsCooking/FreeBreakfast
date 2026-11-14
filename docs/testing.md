@@ -36,8 +36,8 @@ A gate is named by **when it runs**, not by what it contains.
 
 | Gate | When | Runs | Budget |
 | --- | --- | --- | --- |
-| `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++ outside `experimental/` and `test/experimental/`, the Python half when it touches `.py`, the cargo half when it touches `rust/` (and then neither of the others for those paths). C++: the host binaries' fast set, and of the GPU binaries each family's representative, as `pr` (#1126; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates on the card | under 5 min on a busy card |
-| `pr` | by hand before opening a PR; `milestone-run` requires it | C++: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates on the test preset's card (`--all`, every crate's), when `origin/main...HEAD` touches `rust/` (`--only cargo` alone) | under 5 min on a busy card |
+| `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++ outside `experimental/` and `test/experimental/`, the Python half when it touches `.py`, the cargo half when it touches `rust/` (and then neither of the others for those paths). C++: the host binaries' fast set, and of the GPU binaries each family's representative, as `pr` (#1126; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates (clippy, then their tests on the card) | under 5 min on a busy card |
+| `pr` | by hand before opening a PR; `milestone-run` requires it | C++: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates (clippy, then their tests on the test preset's card; `--all`, every crate's), when `origin/main...HEAD` touches `rust/` (`--only cargo` alone) | under 5 min on a busy card |
 | `nightly` | a timer on this box | everything, unskipped: the C++ and Python halves, and the cargo half as `pr --only cargo --all` with its slow cases (#1459), plus the cross-backend compile check | none; it has the night |
 
 **The single-backend rule holds for all three.** A gate runs on one card, and
@@ -74,14 +74,22 @@ and skips, exit 0, where cargo is absent.
 
 **Tier 4, the tests on a card, follows once tiers 1 to 3 pass.** It builds
 `rust/`'s own CMake project for the backend of the gate's preset
-(`rust/build-<backend>`, configured the first time), then, holding that card
-as the C++ half does, runs `cargo test` in `rust/target/<backend>` with
-`FB_RUST_BUILD_DIR` set, one test thread, over the affected crates that link
-the library: each changed file's crate and its reverse dependents, read from
-`cargo metadata`, less those whose default graph declares no `links` (their
-tests ran in tier 3). A module's `kernels/` select every kernel `-sys`
-crate, `rust/docs/` none, and any other file under `rust/` outside every
-crate selects them all; `pr --all` does too. A device case is declared on the
+(`rust/build-<backend>`, configured the first time), then, in
+`rust/target/<backend>` with `FB_RUST_BUILD_DIR` set, over the affected
+crates that link the library: each changed file's crate and its reverse
+dependents, read from `cargo metadata`, less those whose default graph
+declares no `links` (their tests ran in tier 3). A module's `kernels/`
+select every kernel `-sys` crate, `rust/docs/` none, and any other file
+under `rust/` outside every crate selects them all, `clippy.toml` and the
+workspace `Cargo.toml` (its `[workspace.lints]`) among them; `pr --all`
+does too. First `cargo clippy --all-targets -- -D warnings` over those
+crates, before the card is taken: `cargo-lint` (below) cannot build a crate
+that links, so this is the one gate of the workspace lints
+(`undocumented_unsafe_blocks`, `missing_panics_doc`, `missing_docs`,
+`clippy.toml`'s `disallowed_methods`, …) on them. It prints `tier 4 clippy:
+ok (Ns)`, or `tier 4 clippy: FAILED` with the lint's tail, and a failure
+runs no test. Then, holding that card as the C++ half does, `cargo test`
+over the same crates, one test thread. A device case is declared on the
 case, `#[ignore = "tier 4: needs a GPU"]`, so a plain `cargo test` lists it
 as ignored with that reason. The gate asks wwr (`wwr_get_device_count`, in a
 child, under the lock) whether it sees a device, passes `--include-ignored`
@@ -92,7 +100,8 @@ case(s) (<why>)`, every case that did not run with its binary and reason, or
 tier 4 is skipped whole with a line saying so. `rust/docs/testing.md`
 "Selecting GPU tiers in cargo" has the rule. At commit, a change under `rust/` runs `devtools/test.py
 cargo-lint`: `cargo fmt --check`, and `cargo clippy --all-targets -D
-warnings` in both of those feature sets; CI's `lint` job runs it too.
+warnings` in both of those feature sets, over the link-free members only;
+CI's `lint` job runs it too. A crate that links is linted by tier 4.
 
 **The push gate runs `pr`'s selection on its GPU binaries** (#1126). Its job is
 "is this obviously broken", and before it, its GPU smoke ran every fast case
@@ -437,7 +446,8 @@ timer, `devtools/systemd/free-breakfast-nightly@.timer`.
 5. **Run the cargo half** (#1459), as `pr --only cargo --all` runs it but with
    no `FREE_BREAKFAST_FAST_TESTS`, so the slow cases run
    (`rust/docs/testing.md` "Slow cases"): tiers 1 to 3, then every crate's
-   tier 4 on the preset's card, which takes the card lock again by itself.
+   tier 4 (its clippy, then its tests on the preset's card, which take the
+   card lock again by themselves).
    Its counts, per test binary and in total, go to the log beside a
    `slow cases run` line for each `cargo test`, and its totals onto the
    summary line; its failure fails the night. Its cases are not yet in the

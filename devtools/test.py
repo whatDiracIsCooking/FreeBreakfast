@@ -34,12 +34,15 @@ push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   counts.
   It needs no card and skips itself, exit 0, where cargo is absent. Then
   tier 4, once those pass: rust/'s CMake project built for the preset's
-  backend (rust/build-<backend>), and under that card's lock every test of
-  the crates the diff affects that link the library (each changed file's
-  crate and its reverse dependents, from `cargo metadata`), one test thread,
-  in rust/target/<backend>. A device case is `#[ignore = "tier 4: needs a
-  GPU"]`: it runs (--include-ignored) only when wwr sees a device, and every
-  case that did not run is printed in one list with its reason.
+  backend (rust/build-<backend>), then over the crates the diff affects
+  that link the library (each changed file's crate and its reverse
+  dependents, from `cargo metadata`; a lint-config change affects them all),
+  in rust/target/<backend>: `cargo clippy --all-targets -D warnings`, the
+  one gate of the workspace lints on those crates, and, once it passes,
+  under that card's lock every test, one test thread. A device case is
+  `#[ignore = "tier 4: needs a GPU"]`: it runs (--include-ignored) only when
+  wwr sees a device, and every case that did not run is printed in one list
+  with its reason.
 
 pr: the gate before opening a PR (milestone-run requires it). Configure,
   build, ctest, then the fast pytest set. Of the C++ cases only each family's
@@ -90,6 +93,7 @@ cargo-lint: what the commit hook runs for a commit touching rust/, and CI's
   lint job: `cargo fmt --check`, and `cargo clippy --all-targets -D warnings`
   over the link-free members in each feature set that builds without the
   library (--no-default-features, and their defaults). Reads no config.sh.
+  The members that link are linted by tier 4 of push and pr instead.
 
 push and pr run with FREE_BREAKFAST_FAST_TESTS=1, so every case under
 FBF_SKIP_IF_FAST_TESTS() skips; nightly is the unskipped run. Each
@@ -1305,11 +1309,15 @@ def cargo_tier4(
     library, device cases included, in debug, one test thread, on the card
     `preset`'s backend names, held whole. Builds rust/'s own CMake project
     for that backend first (rust/build-<backend>), and builds the crates in
-    rust/target/<backend>. A device case runs only when wwr sees a device
-    under the card lock; otherwise it is reported ignored, and every
-    ignored case is printed in one list with its reason. Skips, exit 0,
-    where cmake is absent: the libraries cannot be built. `fast` and
-    `counts` as cargo_half's."""
+    rust/target/<backend>. Before the tests, and before the card is taken,
+    `cargo clippy --all-targets -D warnings` over the same crates in the
+    same target directory: cargo-lint reaches only the link-free crates, so
+    this is the one gate of the workspace lints on the crates that link.
+    A lint failure fails tier 4 and runs no test. A device case runs only
+    when wwr sees a device under the card lock; otherwise it is reported
+    ignored, and every ignored case is printed in one list with its
+    reason. Skips, exit 0, where cmake is absent: the libraries cannot be
+    built. `fast` and `counts` as cargo_half's."""
     backend = backend_of_preset(preset, cfg)
     if why := toolchain_unavailable():
         say(f"{tag}: {why}")
@@ -1347,8 +1355,38 @@ def cargo_tier4(
         CARGO_TARGET_DIR=str(RUST_DIR / "target" / backend),
         FB_RUST_BUILD_DIR=str(build),
     )
-    cmd = ["cargo", "test", *(["-j", jobs] if jobs else [])]
-    cmd += [a for c in crates for a in ("-p", c)] + ["--", "--test-threads=1"]
+    selected = [a for c in crates for a in ("-p", c)]
+    jflag = ["-j", jobs] if jobs else []
+    # The workspace lints on the crates that link, which cargo-lint cannot
+    # build: first, so a lint error fails in a check build, and outside the
+    # card lock, since clippy needs no device. The same env as the tests,
+    # so a build script's environment does not differ between the two.
+    clippy = ["cargo", "clippy", *jflag, "--all-targets", *selected]
+    clippy += ["--", "-D", "warnings"]
+    start = time.monotonic()
+    with log.open("a") as f:
+        f.write(f"--- tier 4 clippy: {' '.join(clippy)} ---\n")
+        proc = subprocess.run(
+            clippy,
+            cwd=RUST_DIR,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+        f.write(proc.stdout)
+    if proc.returncode != 0:
+        say(
+            f"{tag}:   tier 4 clippy: FAILED, cargo clippy exited {proc.returncode}",
+            log=log,
+        )
+        say(f"{tag}: tier 4 FAILED: cargo clippy exited {proc.returncode}", err=True)
+        for line in proc.stdout.splitlines()[-25:]:
+            say(f"{tag}:   {line}", err=True)
+        return proc.returncode
+    say(f"{tag}:   tier 4 clippy: ok ({time.monotonic() - start:.0f}s)", log=log)
+    cmd = ["cargo", "test", *jflag, *selected, "--", "--test-threads=1"]
     with Card(backend, cfg):
         count, seen = device_probe(build)
         say(f"{tag}:   {seen}")
@@ -2452,8 +2490,8 @@ def nightly_plan(args: argparse.Namespace, cfg: dict[str, str]) -> list[str]:
         f"2. C++: ctest and the GPU batches, under the {backend} card lock",
         "3. pytest: the whole suite, slow included, the card released",
         "4. cargo half: tiers 1 to 3 (cargo test --no-default-features over the"
-        " link-free crates, cargo doc), then tier 4 of every crate under the"
-        f" {backend} card lock; slow cases included",
+        " link-free crates, cargo doc), then tier 4 of every crate (clippy,"
+        f" then the tests under the {backend} card lock); slow cases included",
         "5. cross-backend-check.sh",
         "6. the metrics record, the slow-test report, the night's issue",
     ]
