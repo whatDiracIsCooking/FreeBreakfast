@@ -7,7 +7,8 @@
 //!
 //! [`add_core_hamiltonian`] adds, after the records
 //! ([`fb_integrals_mmd::add_records`]) and the nuclei's upload
-//! ([`fb_molecule_nuclei::add_nuclei`]), one build task,
+//! ([`fb_molecule_nuclei::add_nuclei`]), both passed in so one build and
+//! one upload serve every reader of a plan, one build task,
 //! **`core hamiltonian`**, on the worker's stream: the Cartesian matrix
 //! zeroed, every class's kinetic launch
 //! ([`fb_integrals_one_electron_kinetic::kinetic_classes`]) and then every
@@ -25,7 +26,7 @@
 //!
 //! | C++ | Here |
 //! |---|---|
-//! | `core_hamiltonian(res, classes, molecule, h.cartesian())`: `kinetic` (zeroed, then one launch per class) and `add_nuclear_attraction` on top, each class on a stream forked from `res.stream()` and joined back | the `core hamiltonian` task of [`add_core_hamiltonian`]: zeroed, then [`kinetic_classes`] and [`potential_en_classes`] on the worker's one stream, so every V launch follows every T launch by stream order |
+//! | `core_hamiltonian(res, classes, molecule, h.cartesian())`: `kinetic` (zeroed, then one launch per class) and `add_nuclear_attraction` on top, each class on a stream forked from `res.stream()` and joined back | the `core hamiltonian` task of [`add_core_hamiltonian`]: zeroed, then [`kinetic_classes`] and [`potential_en_classes`] on the worker's one stream, so every V launch follows every T launch by stream order; the records' [`ClassRows`] passed in by the caller |
 //! | `check_one_electron_build`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | the two safe layers' `debug_requires`; [`add_core_hamiltonian`] asserts the `i32` bound at planning, and the records hold only `la <= lb` |
 //! | `check_nuclei`'s `InvalidConfig`, before anything launches | [`add_core_hamiltonian`]'s `InvalidConfig` at planning for [`NucleiRows`] with no nucleus, adding nothing; nuclei of another worker are another table's rows, which [`Dag::add`] refuses with a panic |
 //! | `molecule.view()`, the `NucleiView` | [`NucleiRows`] from [`fb_molecule_nuclei::add_nuclei`], passed in, so one upload serves every reader of the plan |
@@ -42,7 +43,7 @@ use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
-use fb_integrals_mmd::{ClassRows, add_records};
+use fb_integrals_mmd::ClassRows;
 use fb_integrals_one_electron_kinetic::kinetic_classes;
 use fb_integrals_one_electron_potential_en::potential_en_classes;
 use fb_molecule_nuclei::NucleiRows;
@@ -52,27 +53,27 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// on GPU worker `worker`, and return H: an output row of `nao_sphe²`
 /// doubles, column-major, symmetric up to rounding.
 ///
-/// The records' two tasks ([`add_records`]), then `core hamiltonian`
-/// (stream: the Cartesian matrix zeroed, [`kinetic_classes`] and then
+/// `core hamiltonian` (stream: the Cartesian matrix zeroed, [`kinetic_classes`] and then
 /// [`potential_en_classes`] into it, reading the records and the nuclei as
 /// edges), then the spherical transform of [`add_cartesian_to_spherical`]:
 /// `harmonics` (CPU: U into a pinned row), only when `u` is `None`, and
 /// `spherical transform` (stream: `H = Uᵀ H_cart U`). `nuclei` are the
 /// molecule's, uploaded on `worker` by [`fb_molecule_nuclei::add_nuclei`]
-/// earlier in `dag`, the molecule the basis is placed on; `u` is the plan's
-/// slot for U over `basis` on `worker`, shared with every other matrix the
-/// plan transforms.
+/// earlier in `dag`, the molecule the basis is placed on; `classes` are the
+/// records of `basis`, added on `worker` by
+/// [`fb_integrals_mmd::add_records`] earlier in `dag`, so one build serves
+/// every reader of the plan; `u` is the plan's slot for U over `basis` on
+/// `worker`, shared with every other matrix the plan transforms.
 ///
 /// # Errors
 /// `InvalidConfig` for `nuclei` with no nucleus (`n_nuc` not positive: the
-/// nuclear-attraction wrapper's refusal, at planning), then
-/// [`add_records`]' load check of the kernel library; either before
-/// anything is added.
+/// nuclear-attraction wrapper's refusal, at planning), before anything is
+/// added.
 ///
 /// # Panics
 /// If `basis` has no shells, or `nao_cart²` does not fit an `i32` (the
-/// kernels index the matrix in 32 bits), or `nuclei` are rows of another
-/// worker's or another plan's table ([`Dag::add`]).
+/// kernels index the matrix in 32 bits), or `classes` or `nuclei` are rows
+/// of another worker's or another plan's table ([`Dag::add`]).
 ///
 /// [`kinetic_classes`]: fb_integrals_one_electron_kinetic::kinetic_classes
 /// [`potential_en_classes`]: fb_integrals_one_electron_potential_en::potential_en_classes
@@ -81,6 +82,7 @@ pub fn add_core_hamiltonian(
     dag: &mut Dag<'_>,
     worker: usize,
     basis: &BasisSet,
+    classes: &[ClassRows],
     nuclei: NucleiRows,
     u: &mut Option<RowId<Pinned, f64>>,
 ) -> Result<RowId<Device, f64>> {
@@ -99,12 +101,11 @@ pub fn add_core_hamiltonian(
         i32::try_from(n_cart * n_cart).is_ok(),
         "add_core_hamiltonian: {n_cart}² Cartesian AOs do not fit the kernels' 32-bit index"
     );
-    let classes = add_records(dag, worker, basis)?;
     let h_cart = dag.add(
         "core hamiltonian",
         worker,
         CoreHamiltonian {
-            classes,
+            classes: classes.to_vec(),
             nuclei,
             n_cart,
         },

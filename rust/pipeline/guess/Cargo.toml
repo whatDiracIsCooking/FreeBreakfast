@@ -24,6 +24,7 @@ wwr-sys.workspace = true
 [dev-dependencies]
 fb-core-arena = { workspace = true, features = ["test-support"] }
 fb-core-types.workspace = true
+fb-integrals-mmd.workspace = true
 fb-integrals-one-electron-overlap.workspace = true
 fb-io-basis.workspace = true
 fb-io-xyz.workspace = true

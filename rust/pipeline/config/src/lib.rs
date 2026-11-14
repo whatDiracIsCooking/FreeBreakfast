@@ -55,6 +55,7 @@ use std::path::{Path, PathBuf};
 
 use fb_core_error_handling::{Error, ErrorKind, Result};
 use fb_core_planner::{Dag, Planned};
+use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_overlap::add_overlap;
 use fb_pipeline_guess::{add_loaded_guess, add_sad_guess};
 use serde::Deserialize;
@@ -238,9 +239,10 @@ fn refusal(kind: ErrorKind, path: &Path, text: &str, e: &toml::de::Error) -> Err
 /// [`Config::output`]. Touches no device; the output directory need not
 /// exist until the plan runs.
 ///
-/// For [`Calculation::Overlap`]: [`add_overlap`], then [`add_write_npy`]
-/// of S to `overlap.npy`. For [`Calculation::Guess`]: [`add_sad_guess`],
-/// or [`add_loaded_guess`] when [`GuessStep::from`] is set, then
+/// For [`Calculation::Overlap`]: the records ([`add_records`]) and
+/// [`add_overlap`] over them, then [`add_write_npy`] of S to
+/// `overlap.npy`. For [`Calculation::Guess`]: [`add_sad_guess`], or
+/// [`add_loaded_guess`] when [`GuessStep::from`] is set, then
 /// [`add_write_host_npy`] of D to `d.npy`.
 ///
 /// # Errors
@@ -248,7 +250,7 @@ fn refusal(kind: ErrorKind, path: &Path, text: &str, e: &toml::de::Error) -> Err
 /// (`[molecule] xyz: `, `[basis_set] basis: `): an XYZ file that cannot be
 /// read or parsed (`Io`), a basis that is neither a compiled-in name nor a
 /// readable document (`Io`), an element the basis lacks; and the kernel
-/// library's load check ([`add_overlap`]). A loaded guess's file is read
+/// library's load check ([`add_records`]). A loaded guess's file is read
 /// when the plan runs, so its refusals are the run's.
 pub fn plan(config: &Config) -> Result<Planned<'static>> {
     // Charge and multiplicity enter neither the overlap nor the SAD guess,
@@ -261,7 +263,8 @@ pub fn plan(config: &Config) -> Result<Planned<'static>> {
     let mut dag = Dag::new();
     match config.calculation {
         Calculation::Overlap => {
-            let s = add_overlap(&mut dag, 0, &basis, &mut None)?;
+            let classes = add_records(&mut dag, 0, &basis)?;
+            let s = add_overlap(&mut dag, 0, &basis, &classes, &mut None);
             let n = basis.nao_sphe() as usize;
             add_write_npy(&mut dag, 0, s, n, config.output.join("overlap.npy"));
         }

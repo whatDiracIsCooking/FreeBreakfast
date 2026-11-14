@@ -23,8 +23,8 @@
 //!   [`potential_en_classes`], reading each class's records and the nuclei
 //!   as edges; then the spherical transform, `V = Uᵀ V_cart U`
 //!   ([`fb_recipes_matrix_ao::add_cartesian_to_spherical`]), U's slot passed
-//!   in so a plan stages U once. The nuclei are passed in too, so one upload
-//!   serves every reader of the plan.
+//!   in so a plan stages U once. The records and the nuclei are passed in
+//!   too, so one build and one upload serve every reader of the plan.
 //!
 //! V is not renormalized, as S and T are not: an AO's norm is its published
 //! contraction's ([`fb_basis::ShellStamp::primitive_normalized`]).
@@ -32,7 +32,7 @@
 //! | C++ | Here |
 //! |---|---|
 //! | `potential_en_class(stream, cls, nuclei, n_ao, v)` (`potential_en_bridge.h`), one class | [`potential_en_classes`]`(stream, device, classes, nuclei, n_cart, v)`, every class in order on one stream, the `fb_nuclei_view` formed from the [`NucleiRows`], its requirements as `debug_requires` |
-//! | `nuclear_attraction(res, classes, molecule, v)`: zeroed, then one launch per class, each on a stream forked from `res.stream()` | the `potential en` task of [`add_nuclear_attraction`]: zeroed, then [`potential_en_classes`] on the worker's one stream |
+//! | `nuclear_attraction(res, classes, molecule, v)`: zeroed, then one launch per class, each on a stream forked from `res.stream()` | the `potential en` task of [`add_nuclear_attraction`]: zeroed, then [`potential_en_classes`] on the worker's one stream, the records' [`ClassRows`] passed in by the caller |
 //! | `add_nuclear_attraction(res, classes, molecule, m)`, V added into `m` unzeroed | [`potential_en_classes`], called by the task that zeroed the matrix |
 //! | `molecule.view()`, the `NucleiView` | [`NucleiRows`] from [`fb_molecule_nuclei::add_nuclei`], passed in; the view formed from its rows' pointers in [`potential_en_classes`] |
 //! | `check_nuclei`'s `InvalidConfig` for nuclei on another device | [`add_nuclear_attraction`]'s `InvalidConfig` at planning for [`NucleiRows`] with no nucleus (the wrapper's `n_nuc >= 1`), adding nothing; nuclei of another worker are another table's rows, which [`Dag::add`] refuses with a panic |
@@ -50,7 +50,7 @@ use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
-use fb_integrals_mmd::{ClassRows, add_records, launch};
+use fb_integrals_mmd::{ClassRows, launch};
 use fb_integrals_sys::{FB_POTENTIAL_EN_MAX_MOMENTUM, fb_nuclei_view, fb_potential_en_class};
 use fb_molecule_nuclei::NucleiRows;
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
@@ -137,30 +137,32 @@ pub fn potential_en_classes(
 /// to `dag` on GPU worker `worker`, and return V: an output row of
 /// `nao_sphe²` doubles, column-major, symmetric up to rounding.
 ///
-/// The records' two tasks ([`add_records`]), then `potential en` (stream:
-/// the Cartesian matrix zeroed and [`potential_en_classes`], reading the
-/// records and the nuclei as edges), then the spherical transform of
+/// `potential en` (stream: the Cartesian matrix zeroed and
+/// [`potential_en_classes`], reading the records and the nuclei as edges),
+/// then the spherical transform of
 /// [`add_cartesian_to_spherical`]: `harmonics` (CPU: U into a pinned row),
 /// only when `u` is `None`, and `spherical transform` (stream:
 /// `V = Uᵀ V_cart U`). `nuclei` are the molecule's, uploaded on `worker` by
 /// [`fb_molecule_nuclei::add_nuclei`] earlier in `dag`, the molecule the
-/// basis is placed on; `u` is the plan's slot for U over `basis` on
-/// `worker`, shared with every other matrix the plan transforms.
+/// basis is placed on; `classes` are the records of `basis`, added on
+/// `worker` by [`fb_integrals_mmd::add_records`] earlier in `dag`, so one
+/// build serves every reader of the plan; `u` is the plan's slot for U over
+/// `basis` on `worker`, shared with every other matrix the plan transforms.
 ///
 /// # Errors
 /// `InvalidConfig` for `nuclei` with no nucleus (`n_nuc` not positive: the
-/// launch wrapper's refusal, at planning), then [`add_records`]' load check
-/// of the kernel library; either before anything is added.
+/// launch wrapper's refusal, at planning), before anything is added.
 ///
 /// # Panics
 /// If `basis` has no shells, or `nao_cart²` does not fit an `i32` (the
-/// kernels index the matrix in 32 bits), or `nuclei` are rows of another
-/// worker's or another plan's table ([`Dag::add`]).
+/// kernels index the matrix in 32 bits), or `classes` or `nuclei` are rows
+/// of another worker's or another plan's table ([`Dag::add`]).
 #[track_caller]
 pub fn add_nuclear_attraction(
     dag: &mut Dag<'_>,
     worker: usize,
     basis: &BasisSet,
+    classes: &[ClassRows],
     nuclei: NucleiRows,
     u: &mut Option<RowId<Pinned, f64>>,
 ) -> Result<RowId<Device, f64>> {
@@ -179,12 +181,11 @@ pub fn add_nuclear_attraction(
         i32::try_from(n_cart * n_cart).is_ok(),
         "add_nuclear_attraction: {n_cart}² Cartesian AOs do not fit the kernels' 32-bit index"
     );
-    let classes = add_records(dag, worker, basis)?;
     let v_cart = dag.add(
         "potential en",
         worker,
         PotentialEn {
-            classes,
+            classes: classes.to_vec(),
             nuclei,
             n_cart,
         },
