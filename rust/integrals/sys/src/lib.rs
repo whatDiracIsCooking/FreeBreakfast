@@ -86,6 +86,7 @@ pub use three_center::add_three_center_tasks;
 use fb_core_error_handling::Status;
 use fb_core_wwr::common::wwr_status_from_code;
 use fb_core_wwr::gpu_status_at;
+use fb_kernel_abi::Backend;
 
 /// Checks that the `libfb_integrals_kernels.so` this process loaded is the one
 /// these bindings describe: its [`fb_integrals_abi_version`] against
@@ -104,20 +105,13 @@ pub fn check_library() -> Result<(), String> {
     let version = unsafe { fb_integrals_abi_version() };
     // SAFETY: as above.
     let backend = unsafe { fb_integrals_backend() };
-    let found = (version, backend);
+    let built_for = const { Backend::named(env!("FB_KERNELS_BACKEND")) };
     fb_kernel_abi::check(
         "integrals",
-        found,
-        (FB_INTEGRALS_ABI_VERSION, env!("FB_KERNELS_BACKEND")),
+        (version, backend),
+        (FB_INTEGRALS_ABI_VERSION, built_for),
     )
 }
-
-// The numbers fb_kernel_abi::check names the found backend by.
-const _: () = assert!(FB_BACKEND_CUDA == 1 && FB_BACKEND_HIP == 2);
-// The numbers fb_kernel_abi::launch_status reads a launch status by.
-const _: () = assert!(
-    FB_LAUNCH_SUCCESS == 0 && FB_LAUNCH_UNSUPPORTED == -1 && FB_LAUNCH_INVALID_ARGUMENT == -2
-);
 
 // The structs' layout, which mmd_launch.cu (and potential_en_launch.cu, the
 // nuclei's) static_asserts with the same numbers: both sides follow the C rule over the same fields, and these catch

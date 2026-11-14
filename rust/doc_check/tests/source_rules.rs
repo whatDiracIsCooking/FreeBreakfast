@@ -17,9 +17,9 @@
 //! - **Nothing crosses from Rust into C++**: no `no_mangle` or
 //!   `export_name`, no `pub` `extern` function, and no `cdylib` or
 //!   `staticlib` crate (`docs/gpu_layer.md`, "What the port changes").
-//! - **The safe wrapper links down**: in a binding crate (a member with a
-//!   `src/bindings.rs`), every `pub fn` that calls a binding links it in its
-//!   doc comment (`docs/documentation.md`, "The C header").
+//! - **The safe wrapper links down**: in a binding crate (a member whose
+//!   `src/bindings.rs` declares functions), every `pub fn` that calls a
+//!   binding links it in its doc comment (`docs/documentation.md`, "The C header").
 //! - **One BLAS operation, one name**: no public function or `pub use`
 //!   of `fb-recipes-blas` (`recipes/blas/src/`) shares a name with a
 //!   free function of `fb_core_wwr::blas` (`core/wwr/src/blas.rs`), and
@@ -891,6 +891,9 @@ fn every_safe_wrapper_links_down_to_its_binding() {
     let sources = workspace_sources();
     let crates: Vec<&str> = sources
         .iter()
+        // A bindings file with no extern block is a shared header's
+        // (`fb-kernel-abi`'s), which binds no function to wrap.
+        .filter(|(_, s)| s.contains("extern \"C\""))
         .filter_map(|(p, _)| p.strip_suffix("/src/bindings.rs"))
         .collect();
     assert!(crates.len() >= 2, "binding crates found: {crates:?}");

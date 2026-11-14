@@ -135,7 +135,8 @@ bindings and the backend against the CMake build whose C ABI library
 `wwr-sys` links. `rust/kernel_lib.rs`, which every kernel `-sys` crate's
 `build.rs` includes, reads that backend once from the build's
 `CMakeCache.txt`, since wwr's C ABI has no query naming its backend, and
-hands it to the crate as `FB_KERNELS_BACKEND`. It refuses a mismatch with a
+hands it to the crate as `FB_KERNELS_BACKEND`, which the crate reads as a
+`fb_kernel_abi::Backend` at compile time. It refuses a mismatch with a
 message naming both values. A library built for
 the other backend otherwise fails at its first launch, or deep inside wwr,
 with nothing naming the cause.
@@ -295,8 +296,15 @@ the bindings are generated from. The forked `mmd.h`, `overlap.h`,
 that includes its wrappers' C headers, and that is the file
 `devtools/rust-bindings.py` reads, so there is one bindings file per shared
 object and the two are versioned together. The plain-C vocabulary every
-library shares, `fb_launch_status`, its values and `FB_DEVICE_ALIGNMENT`, is
-`rust/device_headers/fb_launch.h`. The two integer types are the bridges'
+library shares, `fb_launch_status`, its values, `FB_DEVICE_ALIGNMENT` and
+`fb_backend`, is `rust/device_headers/fb_launch.h`, and it has one Rust
+home: the script binds it once, into `fb-kernel-abi`'s generated
+`bindings.rs`, and does not inline it into a module's bindings, which open
+with a `pub use fb_kernel_abi::{…}` of its names instead, so each `-sys`
+crate still offers them and a new library adds no copy. There
+`fb_launch_status` is `LaunchStatus`, a newtype ("Statuses" below), and
+`fb_backend` stays the integer a library returns, read by value as
+`fb_kernel_abi::Backend`. The two integer types are the bridges'
 own: every count, index and momentum is an `int32_t`, and bytes, which only
 the workspace queries and the arena speak, are `size_t`.
 
@@ -443,10 +451,15 @@ synchronization, which the orchestrator owns, and it is sticky: the device
 accepts no more launches. [`diagnostics.md`](diagnostics.md) has how a sticky
 fault is reported once and stops launches on its device.
 
-On the Rust side the integer is converted with `TryFrom`, never made into a
-Rust `enum` directly, so a value Rust does not know is an error rather than
-undefined behaviour. A tier-3 test compares the C list and the Rust list
-member by member.
+On the Rust side the integer is `fb_kernel_abi::LaunchStatus`, a
+`#[repr(transparent)]` newtype over it that the extern functions return, so
+a launch status cannot be passed where a `wwr_status` or a count is wanted.
+It is converted by value, in `fb_kernel_abi::launch_status`, never made into
+a Rust `enum`, so a value Rust does not know is an error rather than
+undefined behaviour. The Rust list is the C list: its constants are
+generated from `fb_launch.h`, the conversion names them rather than their
+numbers, and the tier-3 test that regenerates the bindings fails on a
+difference.
 
 ## Shared types
 

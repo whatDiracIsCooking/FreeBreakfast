@@ -1,8 +1,9 @@
 /* The launch status, the device alignment and the backend tag every kernel
  * library under rust/ shares (rust/docs/gpu_layer.md, "Statuses", "Scratch:
  * the workspace query" and "What the port changes"). Plain C:
- * devtools/rust_bindings.py reads it, through each module's header, into
- * that module's -sys bindings. */
+ * devtools/rust-bindings.py binds it once, in fb-kernel-abi
+ * (rust/kernel_abi/src/bindings.rs), and each module's -sys bindings, whose
+ * header includes it, re-export its names from there. */
 #pragma once
 
 #include <stddef.h>

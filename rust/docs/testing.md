@@ -484,10 +484,11 @@ tested at the cheapest tier that can see each of its promises:
   type carries `const` assertions of its `size_of`, `align_of` and each
   field's `offset_of`, and the C++ side has the matching `static_assert`s.
   A layout that drifts does not build on either side.
-- **The status lists match, at tier 3.** The C enum of launch statuses and
-  Rust's `TryFrom` are compared member by member, so neither side can add a
-  code the other lacks. A value Rust does not know is an error, and that path
-  has a test that sends one.
+- **The status lists match, at tier 3.** Rust's launch statuses are
+  generated from the C header's, and the test that regenerates the bindings
+  fails on a difference, so neither side can add a code the other lacks. A
+  value Rust does not know is an error, and that path has a test that sends
+  one.
 - **Bindings do not drift.** The bindings are committed
   ([`gpu_layer.md`](gpu_layer.md), "Build"), so a reviewer sees a changed
   signature in the diff, and a tier-3 test regenerates them and fails on a
