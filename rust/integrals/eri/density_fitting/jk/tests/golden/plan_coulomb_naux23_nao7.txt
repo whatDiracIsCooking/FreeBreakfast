@@ -1,0 +1,13 @@
+plan: 3 tasks, GPU workers: 1
+ task  worker  lane    name: after
+    0       0  stream  B
+    1       0  stream  D
+    2       0  stream  df coulomb: after 0 1
+worker 0 device table: 4 rows, 10424 bytes
+peak: 9984 bytes at node 2
+    offset      bytes  owner   life     name: users (w writes, r reads)
+         0       9016  edge    0-2      B: 0w 2r
+      9216        392  edge    1-2      D: 1w 2r
+     10240        184  task    2-2      gamma: 2w
+      9728        392  edge    2-2      J: 2w
+handoffs:

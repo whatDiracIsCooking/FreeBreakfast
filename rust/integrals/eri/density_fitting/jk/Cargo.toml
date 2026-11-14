@@ -1,0 +1,26 @@
+[package]
+name = "fb-integrals-eri-density-fitting-jk"
+description = "integrals/eri/density_fitting/jk: closed-shell J = Bᵀ (B vec(D)) and one-factor K = 2 Xᵀ X, X_m = B_m C, over the fitted factor B, as tasks"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+contracts.workspace = true
+fb-core-arena.workspace = true
+fb-core-error-handling.workspace = true
+fb-core-planner.workspace = true
+fb-core-thread-pool = { workspace = true, features = ["device"] }
+fb-core-wwr.workspace = true
+fb-recipes-symmetrize.workspace = true
+# The load check of the library K's mirror launches from.
+fb-recipes-sys.workspace = true
+# BLAS for the gemvs', the batched gemm's and the syrk's modes.
+wwr-sys = { workspace = true, features = ["blas"] }
+
+[dev-dependencies]
+fb-io-npy.workspace = true
+fb-test-support.workspace = true
