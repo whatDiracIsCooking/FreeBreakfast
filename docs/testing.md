@@ -38,7 +38,7 @@ A gate is named by **when it runs**, not by what it contains.
 | --- | --- | --- | --- |
 | `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++ outside `experimental/` and `test/experimental/`, the Python half when it touches `.py`, the cargo half when it touches `rust/` (and then neither of the others for those paths). C++: the host binaries' fast set, and of the GPU binaries each family's representative, as `pr` (#1126; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates on the card | under 5 min on a busy card |
 | `pr` | by hand before opening a PR; `milestone-run` requires it | C++: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates on the test preset's card (`--all`, every crate's), when `origin/main...HEAD` touches `rust/` (`--only cargo` alone) | under 5 min on a busy card |
-| `nightly` | a timer on this box | everything, unskipped, both languages, plus the cross-backend compile check | none; it has the night |
+| `nightly` | a timer on this box | everything, unskipped: the C++ and Python halves, and the cargo half as `pr --only cargo --all` with its slow cases (#1459), plus the cross-backend compile check | none; it has the night |
 
 **The single-backend rule holds for all three.** A gate runs on one card, and
 which one is printed in its result line. No gate runs both backends unless asked.
@@ -225,6 +225,7 @@ devtools/test.py nightly    # what the timer calls (#985)
 
 ```bash
 devtools/test.py push --dry-run              # which halves this push would run
+devtools/test.py nightly --dry-run           # the night's phases, nothing run
 devtools/test.py pr --preset hip             # pin a card; the test preset follows
 devtools/test.py pr --only cpp -- -R Exch    # one half; after -- goes to ctest
 devtools/test.py pr --no-test                # configure + build only
@@ -433,14 +434,22 @@ timer, `devtools/systemd/free-breakfast-nightly@.timer`.
    the run waits for it rather than sharing it. The GPU batches' budget is
    `NIGHTLY_GPU_BATCH_BUDGET_SECONDS` (4 h), since unskipped they run far past
    the gates' 45 min; the stall watchdog is the gates' own.
-5. **Run `devtools/cross-backend-check.sh`**, outside the card, after the
+5. **Run the cargo half** (#1459), as `pr --only cargo --all` runs it but with
+   no `FREE_BREAKFAST_FAST_TESTS`, so the slow cases run
+   (`rust/docs/testing.md` "Slow cases"): tiers 1 to 3, then every crate's
+   tier 4 on the preset's card, which takes the card lock again by itself.
+   Its counts, per test binary and in total, go to the log beside a
+   `slow cases run` line for each `cargo test`, and its totals onto the
+   summary line; its failure fails the night. Its cases are not yet in the
+   record.
+6. **Run `devtools/cross-backend-check.sh`**, outside the card, after the
    tests. Its exit 2 (it could not run) fails the night, with a line saying so:
    it is never a pass.
-6. **Record the run** (see "Metrics"), pass or fail, even when the build
+7. **Record the run** (see "Metrics"), pass or fail, even when the build
    failed and nothing ran.
-7. **Report the slow-test rule** over that record and the series before it
+8. **Report the slow-test rule** over that record and the series before it
    ("The slow-test rule, enforced" below), when any case ran.
-8. **File the night's issue** ("Failures open an issue" below): a failure
+9. **File the night's issue** ("Failures open an issue" below): a failure
    opens or comments on it, a pass closes it.
 
 The build and the GPU run are **strictly sequential**. Many GPU cases are bound
@@ -449,16 +458,20 @@ series noisy.
 
 It logs to `<primary>/.slow-tier-reports/<mode>-<stamp>-<rev>-default.log`,
 with the per-case reports in `<log>.results/`, and appends
-`test.py nightly PASS  rev=…  preset=default  mode=nightly  stamp=…  metrics=…  slow-rule=N/M`
-to `summary.log`, with `issue=…` after it when the night filed one. The exit
-status is the first failing phase's.
+`test.py nightly PASS  rev=…  preset=default  mode=nightly  stamp=…  cargo=P/F/I  metrics=…  slow-rule=N/M`
+to `summary.log`, with `issue=…` after it when the night filed one. `cargo=`
+is the cargo half's passed, failed and ignored over both its `cargo test`
+runs (libtest counts a slow case as passed either way; the `slow cases run`
+lines say it ran). The exit status is the first failing phase's.
+`devtools/test.py nightly --dry-run` prints the phases and what each runs,
+and fetches, builds and runs nothing.
 
 **A reduced run** takes ctest's arguments after `--`, as `pr` does:
 `devtools/test.py nightly --rev REF -- -R Name`. They select the ctest
-entries and the GPU batches; pytest and the slow-test report do not run, and
-the record is `manual`, so it never enters the timing series. It is how a
-change to the nightly itself is tried end to end without an hour's run (#986's
-acceptance was three of them). Its summary line carries `run=reduced`, and a
+entries and the GPU batches; pytest, the cargo half and the slow-test report
+do not run, and the record is `manual`, so it never enters the timing series.
+It is how a change to the nightly itself is tried end to end without an hour's
+run (#986's acceptance was three of them). Its summary line carries `run=reduced`, and a
 `--rev` run's carries `ref=REF`, so neither is mistaken for the timer's night.
 
 ### How to tell it ran
