@@ -30,10 +30,14 @@ pub const FB_BACKEND_HIP: fb_backend = 2;
 /// with fb_cholesky_diagonal, and so the width of its panels: the C++
 /// kCholeskyBlock. A tile is 64^2 doubles, 32 KiB of shared memory.
 pub const FB_CHOLESKY_TILE: i32 = 64;
+/// The order of the largest bordered system fb_diis_solve takes, a history
+/// of 64 plus the Lagrange row: the C++ kDiisSolveMaxDim. The kernel's shared memory is sized statically from
+/// it, (dim + 1) dim doubles = 34,320 B, under CUDA's 48 KiB static limit.
+pub const FB_DIIS_SOLVE_MAX_DIM: i32 = 65;
 /// The version of this header's ABI. Bump it with any change to a
 /// declaration here or in a header this one includes, so that fb-recipes-sys
 /// refuses a library built from another version of them.
-pub const FB_RECIPES_ABI_VERSION: u32 = 4;
+pub const FB_RECIPES_ABI_VERSION: u32 = 5;
 
 unsafe extern "C" {
     /// Factors the jb x jb diagonal tile at a (column-major, leading dimension
@@ -54,6 +58,25 @@ unsafe extern "C" {
     /// or info; otherwise the launch's status. Launch errors only: a fault
     /// inside the kernel surfaces at the next synchronization.
     pub fn fb_cholesky_diagonal(stream: wwr_stream, jb: i32, first: i32, a: *mut f64, lda: i32, l11: *mut f64, info: *mut i32) -> fb_launch_status;
+    /// Solves the bordered DIIS system for the m extrapolation coefficients, on
+    /// stream, in one block, in shared memory: rows [ <e_i|e_j> | -1 ] for
+    /// i < m and [ -1^T | 0 ] times [ c ; l ] equal to [ 0 ; -1 ], so c
+    /// minimizes |sum_i c_i e_i| subject to sum_i c_i = 1. gram is the residual Gram, column-indexed with leading dimension ld;
+    /// only its upper triangle over the first m columns, gram[a ld + c] for
+    /// a <= c < m, is read, and the kernel symmetrizes it. The system is solved
+    /// by Gauss-Jordan elimination with partial pivoting, and the m
+    /// coefficients are written to coeff. If a pivot falls below 1e-14 the
+    /// subspace is singular: coeff becomes the unit selector at newest (1
+    /// there, 0 elsewhere), so an extrapolation over it reproduces the newest
+    /// iterate, and *singular is set to 1; otherwise *singular is 0. gram,
+    /// coeff and singular are device pointers.
+    ///
+    /// Returns FB_LAUNCH_INVALID_ARGUMENT, enqueueing nothing, for an m below 1,
+    /// an ld below m or not below FB_DIIS_SOLVE_MAX_DIM, a newest outside
+    /// 0..m-1, or a null gram, coeff or singular; otherwise the launch's
+    /// status. Launch errors only: a fault inside the kernel surfaces at the
+    /// next synchronization.
+    pub fn fb_diis_solve(stream: wwr_stream, m: i32, ld: i32, newest: i32, gram: *const f64, coeff: *mut f64, singular: *mut i32) -> fb_launch_status;
     /// Replaces each of the first count of data with 1 / sqrt(x), in place, on
     /// stream, except an element at or below floor, which becomes 0.
     ///

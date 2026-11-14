@@ -10,6 +10,9 @@
 //!   calls through it ([`blas::gemm`]).
 //! - [`device_slice`]: no wwr counterpart. Device memory with its length,
 //!   which a safe library call takes and checks in place of a raw pointer.
+//! - [`copy`]: wwr's `src/extension/memory_buffer` `:copy`, a run of
+//!   device elements copied to another on a stream ([`copy::d2d`]), between
+//!   [`split_at_mut`](device_slice::split_at_mut) parts of rows.
 //! - [`memset`]: wwr's `src/extension/memory_buffer` `:memset`, device
 //!   memory zeroed on a stream ([`memset::zero`]), over a
 //!   [`DeviceSliceMut`](device_slice::DeviceSliceMut).
@@ -29,6 +32,7 @@
 
 pub mod blas;
 pub mod common;
+pub mod copy;
 pub mod device_slice;
 pub mod handle;
 pub mod memset;

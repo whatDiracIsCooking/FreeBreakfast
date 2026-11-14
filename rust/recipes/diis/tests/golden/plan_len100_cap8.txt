@@ -1,0 +1,25 @@
+plan: 4 tasks, GPU workers: 1
+ task  worker  lane    name: after
+    0       0  stream  diis history
+    1       0  stream  pair
+    2       0  stream  diis push: after 0 1
+    3       0  cpu     decide: after 1 2; decides loop 1-3, at most 50 iterations
+worker 0 device table: 8 rows, 16644 bytes
+peak: 16644 bytes at node 1
+    offset      bytes  owner   life     name: users (w writes, r reads)
+         0       6400  edge    0-3      F* iterates: 0w 2w
+      6400       6400  edge    0-3      F* residuals: 0w 2w
+     12800        512  edge    0-3      F* gram: 0w 2w
+loop 1-3: region of 3332 bytes at 13312, its body's rows:
+     13312        800  edge    1-2      F: 1w 2r
+     14336        800  edge    1-2      e: 1w 2r
+     16384         64  task    2-2      F* coefficients: 2w
+     16640          4  task    2-2      F* singular: 2w
+     15360        800  edge    2-2      F*: 2w
+handoffs:
+worker 0 pinned table: 1 rows, 4 bytes
+peak: 4 bytes at node 2
+    offset      bytes  owner   life     name: users (w writes, r reads)
+loop 1-3: region of 4 bytes at 0, its body's rows:
+         0          4  edge    2-3      F* singular: 2w 3r
+handoffs:

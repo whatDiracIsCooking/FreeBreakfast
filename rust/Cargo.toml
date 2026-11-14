@@ -44,6 +44,7 @@ members = [
     "pipeline/scf",
     "recipes/symmetrize",
     "recipes/cholesky",
+    "recipes/diis",
     "integrals/eri/density_fitting/metric",
     "integrals/eri/density_fitting/fit",
     "integrals/eri/density_fitting/jk",
@@ -97,6 +98,7 @@ fb-recipes-orthogonalize = { path = "recipes/orthogonalize" }
 fb-pipeline-scf = { path = "pipeline/scf" }
 fb-recipes-symmetrize = { path = "recipes/symmetrize" }
 fb-recipes-cholesky = { path = "recipes/cholesky" }
+fb-recipes-diis = { path = "recipes/diis" }
 fb-integrals-eri-density-fitting-metric = { path = "integrals/eri/density_fitting/metric" }
 fb-integrals-eri-density-fitting-fit = { path = "integrals/eri/density_fitting/fit" }
 fb-integrals-eri-density-fitting-jk = { path = "integrals/eri/density_fitting/jk" }
