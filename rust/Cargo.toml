@@ -92,6 +92,9 @@ fb-pipeline-scf = { path = "pipeline/scf" }
 contracts = "0.6.11"
 # core::log: the line's local time, and the OS thread id (std has none).
 jiff = "0.2.43"
+# doc_check: the workspace graph test reads the package graph (a
+# dev-dependency only). Exact, since rust/Cargo.lock is not tracked.
+guppy = "=0.19.1"
 libc = "0.2"
 log = { version = "0.4.35", features = ["std"] }
 proptest = "1"
