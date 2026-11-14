@@ -147,7 +147,13 @@ the workspace: which crates the feature uses and which will use it. Every
 crate edge costs selection on every PR that touches its target, there is no
 umbrella crate, and a crate that only logs must not depend on the handle
 types ([`testing.md`](testing.md), "Selection: the workspace graph is the
-selection graph").
+selection graph"). So every direct dependency is one the crate's sources
+name, in code or an intra-doc link: a normal one in `src/`, a build one in
+`build.rs`, a dev one in `src/` or the test targets. A normal dependency
+only the tests name is a dev-dependency, since every reverse dependent
+inherits a normal edge. An edge no source can show, a `links` crate kept so
+its link line reaches the binary or a feature switched on in another crate,
+is listed with its reason in the check.
 
 **Recorded.** The edges, each with its size, kind, order and lifetime, in
 the DAG; the crate edges in `Cargo.toml`.
@@ -155,7 +161,8 @@ the DAG; the crate edges in `Cargo.toml`.
 **Checks.** The planner's invariants over the DAG, fuzzed as a pure
 function: every edge's sync precedes its first read, no two live buffers
 alias ([`testing.md`](testing.md), "Fuzzing"). The workspace graph is read
-by a tier-3 test that fails when a crate's reverse dependents pass a bar.
+by a tier-3 test that fails when a crate's reverse dependents pass a bar,
+and when a crate declares a dependency its sources do not name.
 
 ## What already exists
 

@@ -13,9 +13,7 @@ fb-core-arena.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-planner.workspace = true
 fb-core-thread-pool = { workspace = true, features = ["device"] }
-fb-core-wwr.workspace = true
 fb-molecule.workspace = true
-wwr-sys.workspace = true
 
 [dev-dependencies]
 fb-atom.workspace = true
