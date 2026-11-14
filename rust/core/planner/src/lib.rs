@@ -34,7 +34,9 @@
 //!   `Dag::upload` and `Dag::download` add a copy node, a pinned row to a
 //!   new device row or back, named after the new row, and
 //!   `Dag::download_rows` one node for several device rows down, one
-//!   event for them all: a copy that is a node's whole work is never a
+//!   event for them all, and `Dag::upload_heap` / `Dag::download_heap` a
+//!   range of a heap row through a pinned window, a CPU and a GPU node
+//!   each: a copy that is a node's whole work is never a
 //!   hand-written task (`docs/memory.md`, "The table").
 //!
 //! [`Bufs::iteration`]: fb_core_arena::Bufs::iteration
