@@ -392,6 +392,7 @@ dependencies = [
  "fb-io-basis",
  "fb-io-npy",
  "fb-io-xyz",
+ "fb-recipes-matrix-ao",
  "fb-test-support",
  "serde_json",
 ]

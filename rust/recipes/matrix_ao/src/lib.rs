@@ -6,17 +6,18 @@
 //!
 //! [`add_cartesian_to_spherical`] adds, for one Cartesian matrix row:
 //!
-//! - **`harmonics`**, on the CPU, once per plan and basis: U, the
-//!   Cartesian-to-spherical transform
+//! - **`harmonics`**, on the CPU, once per plan and basis
+//!   ([`add_harmonics`]): U, the Cartesian-to-spherical transform
 //!   ([`fb_basis::spherical_transform_matrix`]), written into a pinned row
-//!   that every later transform over the basis reads.
+//!   that every later transform over the basis reads, and any other task
+//!   that reads U.
 //! - **`spherical transform`**, on the worker's stream: U copied into device
 //!   scratch, then `M = Uᵀ M_cart U` as two GEMMs ([`fb_recipes_blas::gemm`])
 //!   on the worker's handle, the intermediate `M_cart U` scratch too.
 //!
 //! | C++ | Here |
 //! |---|---|
-//! | `upload_spherical_transform_matrix(res, basis)` (nothing for an identity U), shared by every pair over the basis | the `harmonics` task's pinned row, added by the first call and handed to the later ones through the caller's slot, always |
+//! | `upload_spherical_transform_matrix(res, basis)` (nothing for an identity U), shared by every pair over the basis | the `harmonics` task's pinned row ([`add_harmonics`]), added by the first call and handed to the later ones through the caller's slot, always |
 //! | `MatrixAOPair`'s U and own scratch, so two pairs may run on different streams | each transform's own device copy of U and its own `M_cart U` scratch |
 //! | `MatrixAOPair::cartesian_to_spherical` (`gemmwich`; a copy for an identity U) | the `spherical transform` task's two GEMMs, always |
 //! | `res.blas()`, the `DeviceResources`' handle | the stream worker's handle, [`DeviceStream::blas`], made with the backend and bound to the worker's stream |
@@ -45,10 +46,9 @@ use fb_recipes_blas::{N, T, gemm};
 /// column-major. The task added is `spherical transform` (stream: U copied
 /// into device scratch `U`, then `M = Uᵀ M_cart U` as two GEMMs, the
 /// intermediate `M_cart U` scratch `"{name} U"`). Before it, when `u` is
-/// `None`, `harmonics` (CPU: U, [`fb_basis::spherical_transform_matrix`],
-/// written into a pinned row), whose row is then left in `u`: pass the same
-/// slot for every matrix of the plan over `basis` on `worker`, and U is
-/// staged once and read by every transform.
+/// `None`, `harmonics` ([`add_harmonics`]), whose row is then left in `u`:
+/// pass the same slot for every reader of U over `basis` on `worker`, and U
+/// is staged once and read by every one.
 ///
 /// # Panics
 /// If `u` holds a row of another worker's table ([`Dag::add`]).
@@ -62,15 +62,7 @@ pub fn add_cartesian_to_spherical(
     name: &str,
     cartesian: RowId<Device, f64>,
 ) -> RowId<Device, f64> {
-    let u = *u.get_or_insert_with(|| {
-        dag.add(
-            "harmonics",
-            worker,
-            Harmonics {
-                u: fb_basis::spherical_transform_matrix(basis),
-            },
-        )
-    });
+    let u = add_harmonics(dag, worker, basis, u);
     dag.add(
         "spherical transform",
         worker,
@@ -83,6 +75,35 @@ pub fn add_cartesian_to_spherical(
         },
     )
     .m
+}
+
+/// Return U of `basis`, the Cartesian-to-spherical transform, as the
+/// pinned row in `u`: `nao_cart` × `nao_sphe` doubles, column-major. When
+/// `u` is `None`, `harmonics` (CPU: U,
+/// [`fb_basis::spherical_transform_matrix`], written into a pinned row) is
+/// added to `dag` on worker `worker` first, and its row left in `u`.
+///
+/// `u` is the plan's slot for U over `basis` on `worker`: every reader of U
+/// passes the same one, so U is staged once. [`add_cartesian_to_spherical`]
+/// calls this; a task that reads U itself, such as the three-center
+/// integrals' transform, reads the row it returns.
+#[debug_requires(basis.nshells() > 0, "a basis of at least one shell")]
+#[track_caller]
+pub fn add_harmonics(
+    dag: &mut Dag<'_>,
+    worker: usize,
+    basis: &BasisSet,
+    u: &mut Option<RowId<Pinned, f64>>,
+) -> RowId<Pinned, f64> {
+    *u.get_or_insert_with(|| {
+        dag.add(
+            "harmonics",
+            worker,
+            Harmonics {
+                u: fb_basis::spherical_transform_matrix(basis),
+            },
+        )
+    })
 }
 
 /// CPU: U written into a pinned row, for the transform to copy up.

@@ -23,7 +23,7 @@
 //! | `metric_class` (`src/integrals/eri/density_fitting/metric`) | [`fb_metric_class`], the records and pairs as field segments, as there; the safe path is [`add_metric_tasks`] over an [`AuxTable`] |
 //! | `metric`'s host staging: one record per aux primitive, the pairs P <= Q per class, swapped to the lower momentum first | [`AuxTable::push_shell`] and the `metric tables` task of [`add_metric_tasks`] |
 //! | `three_center_class`, `three_center_symmetrize` (`.../three_center`) | [`fb_three_center_class`], [`fb_three_center_symmetrize`]`(stream, n_ao, n_aux, input, output)`, overlapping arrays refused |
-//! | `three_center`'s host staging: `mmd`'s records copied back and regrouped by shell pair, the aux records, the cells, U and U_aux in one upload; the launches, the three spherical GEMMs and the average | [`add_three_center_tasks`]: `three-center download`, `three-center tables` and `three-center` |
+//! | `three_center`'s host staging: `mmd`'s records copied back and regrouped by shell pair, the aux records, the cells, U and U_aux in one upload; the launches, the three spherical GEMMs and the average | [`add_three_center_tasks`]: `three-center download`, `three-center tables` and `three-center`, U and U_aux read from the caller's pinned rows (the plan's `harmonics` rows) rather than staged again |
 //! | `kMetricMaxMomentum`, `kThreeCenterMaxMomentum`, `kThreeCenterAuxMaxMomentum` | [`FB_METRIC_MAX_MOMENTUM`], [`FB_THREE_CENTER_MAX_MOMENTUM`], [`FB_THREE_CENTER_AUX_MAX_MOMENTUM`] |
 //! | `kMetricRecordFields`, `kMetricPairFields`, `kThreeCenterBraFields`, `kThreeCenterAuxFields`, `kThreeCenterCellFields` | [`FB_METRIC_RECORD_FIELDS`], [`FB_METRIC_PAIR_FIELDS`], [`FB_THREE_CENTER_BRA_FIELDS`], [`FB_THREE_CENTER_AUX_FIELDS`], [`FB_THREE_CENTER_CELL_FIELDS`], for a safe layer to size its segments by |
 //! | `wwrErrorInvalidValue` for a refusal | [`FB_LAUNCH_INVALID_ARGUMENT`] (a count, a null pointer, a short workspace) or [`FB_LAUNCH_UNSUPPORTED`] (no kernel for the class) |
@@ -55,9 +55,10 @@
 //!   caller could fill reaches the launch.
 //!
 //! - [`add_three_center_tasks`], the three tasks of (mn\|P) over a
-//!   basis's [`ClassRows`] and an [`AuxTable`]: the records' bra fields
-//!   downloaded, regrouped by shell pair on the CPU with the cells formed
-//!   from them, then one upload, one [`fb_three_center_class`] per class
+//!   basis's [`ClassRows`], an [`AuxTable`] and the pinned rows of U and
+//!   U_aux: the records' bra fields downloaded, regrouped by shell pair on
+//!   the CPU with the cells formed from them, then the uploads, one
+//!   [`fb_three_center_class`] per class
 //!   into a Cartesian scratch row, the spherical GEMMs
 //!   (`fb_core_wwr::blas`) and [`fb_three_center_symmetrize`] into an
 //!   output row. Every cell index is one the CPU task wrote, from the
