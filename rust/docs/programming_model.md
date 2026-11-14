@@ -517,7 +517,7 @@ list is in three tiers:
   `fb-integrals-one-electron-overlap`, `fb-integrals-one-electron-kinetic`,
   `fb-integrals-one-electron-potential-en`,
   `fb-integrals-one-electron-core-hamiltonian`, `fb-recipes-matrix-ao`,
-  `fb-recipes-diagonalize`, `fb-recipes-orthogonalize`, `fb-pipeline-scf`.
+  `fb-recipes-diagonalize`, `fb-recipes-orthogonalize`.
 
 The core crates hold the wrappers: `fb-core-wwr` over the `wwr-sys`
 bindings, the arena over the raw allocation and copy bindings, the two
