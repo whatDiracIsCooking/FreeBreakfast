@@ -1,0 +1,299 @@
+{
+  "atoms": [
+    {
+      "coord": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "symbol": "He",
+      "z": 2
+    },
+    {
+      "coord": [
+        1.07,
+        0.83,
+        -1.21
+      ],
+      "symbol": "Ne",
+      "z": 10
+    }
+  ],
+  "aux_max_l": 6,
+  "aux_shells": [
+    {
+      "atom": 0,
+      "centre": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coefficient": 1.1986229503064476,
+      "exponent": 2.0,
+      "l": 0
+    },
+    {
+      "atom": 0,
+      "centre": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coefficient": 2.565015927486952,
+      "exponent": 1.6,
+      "l": 1
+    },
+    {
+      "atom": 0,
+      "centre": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coefficient": 2.6050155660456262,
+      "exponent": 1.3,
+      "l": 2
+    },
+    {
+      "atom": 0,
+      "centre": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coefficient": 1.4721580892990938,
+      "exponent": 1.0,
+      "l": 3
+    },
+    {
+      "atom": 0,
+      "centre": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coefficient": 0.7117663810428931,
+      "exponent": 0.85,
+      "l": 4
+    },
+    {
+      "atom": 0,
+      "centre": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coefficient": 0.23276238381875455,
+      "exponent": 0.7,
+      "l": 5
+    },
+    {
+      "atom": 0,
+      "centre": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coefficient": 0.06587869814479347,
+      "exponent": 0.6,
+      "l": 6
+    },
+    {
+      "atom": 1,
+      "centre": [
+        1.07,
+        0.83,
+        -1.21
+      ],
+      "coefficient": 1.3742587901292338,
+      "exponent": 2.4,
+      "l": 0
+    },
+    {
+      "atom": 1,
+      "centre": [
+        1.07,
+        0.83,
+        -1.21
+      ],
+      "coefficient": 2.9718762362077866,
+      "exponent": 1.8,
+      "l": 1
+    },
+    {
+      "atom": 1,
+      "centre": [
+        1.07,
+        0.83,
+        -1.21
+      ],
+      "coefficient": 2.965743031524184,
+      "exponent": 1.4,
+      "l": 2
+    },
+    {
+      "atom": 1,
+      "centre": [
+        1.07,
+        0.83,
+        -1.21
+      ],
+      "coefficient": 1.8242652746145998,
+      "exponent": 1.1,
+      "l": 3
+    },
+    {
+      "atom": 1,
+      "centre": [
+        1.07,
+        0.83,
+        -1.21
+      ],
+      "coefficient": 0.8329181509009541,
+      "exponent": 0.9,
+      "l": 4
+    },
+    {
+      "atom": 1,
+      "centre": [
+        1.07,
+        0.83,
+        -1.21
+      ],
+      "coefficient": 0.2912683343916706,
+      "exponent": 0.75,
+      "l": 5
+    },
+    {
+      "atom": 1,
+      "centre": [
+        1.07,
+        0.83,
+        -1.21
+      ],
+      "coefficient": 0.08894118404826078,
+      "exponent": 0.65,
+      "l": 6
+    }
+  ],
+  "command": "UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/df_high_aux_reference.py",
+  "int2c2e": "int2c2e.npy",
+  "int3c2e": [
+    {
+      "aux": [
+        0,
+        49
+      ],
+      "file": "int3c2e_aux0_49.npy"
+    },
+    {
+      "aux": [
+        49,
+        98
+      ],
+      "file": "int3c2e_aux49_98.npy"
+    }
+  ],
+  "nao": 32,
+  "naux": 98,
+  "orbital_max_l": 3,
+  "orbital_shells": [
+    {
+      "atom": 0,
+      "centre": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coefficient": 0.7655165883890895,
+      "exponent": 1.1,
+      "l": 0
+    },
+    {
+      "atom": 0,
+      "centre": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coefficient": 1.2495200368024146,
+      "exponent": 0.9,
+      "l": 1
+    },
+    {
+      "atom": 0,
+      "centre": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coefficient": 0.9948707607315018,
+      "exponent": 0.75,
+      "l": 2
+    },
+    {
+      "atom": 0,
+      "centre": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coefficient": 0.46643890061068877,
+      "exponent": 0.6,
+      "l": 3
+    },
+    {
+      "atom": 1,
+      "centre": [
+        1.07,
+        0.83,
+        -1.21
+      ],
+      "coefficient": 0.8676960220959276,
+      "exponent": 1.3,
+      "l": 0
+    },
+    {
+      "atom": 1,
+      "centre": [
+        1.07,
+        0.83,
+        -1.21
+      ],
+      "coefficient": 1.4254109407099804,
+      "exponent": 1.0,
+      "l": 1
+    },
+    {
+      "atom": 1,
+      "centre": [
+        1.07,
+        0.83,
+        -1.21
+      ],
+      "coefficient": 1.1138249280646129,
+      "exponent": 0.8,
+      "l": 2
+    },
+    {
+      "atom": 1,
+      "centre": [
+        1.07,
+        0.83,
+        -1.21
+      ],
+      "coefficient": 0.5584824139085819,
+      "exponent": 0.65,
+      "l": 3
+    }
+  ],
+  "source": {
+    "integrals": [
+      "int2c2e_sph",
+      "int3c2e_sph"
+    ],
+    "libcint": "6.1.3"
+  },
+  "what": "One hand-built shell per l on two skew centres -- orbitals to f, auxiliary to i -- the smallest basis reaching every emitted metric class (lP <= lQ <= 6) and eri3 class (la <= lb <= 3, lP <= 6). Coefficients are the primitives' own normalisers, so both sides are unit-normalised.",
+  "written_by": "tools/emit/df_high_aux_reference.py"
+}

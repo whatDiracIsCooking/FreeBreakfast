@@ -22,13 +22,11 @@ use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d}
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::common::wwr_status_from_code;
-use fb_core_wwr::gpu_status_at;
 use fb_core_wwr::handle::DeviceHandleStream;
 
 use crate::{
     FB_METRIC_MAX_MOMENTUM, FB_METRIC_PAIR_FIELDS, FB_METRIC_RECORD_FIELDS,
-    FB_THREE_CENTER_AUX_FIELDS, fb_metric_class,
+    FB_THREE_CENTER_AUX_FIELDS, fb_metric_class, launched,
 };
 
 /// The fields of one aux record.
@@ -52,11 +50,11 @@ const _: () = assert!(FB_THREE_CENTER_AUX_FIELDS == FB_METRIC_RECORD_FIELDS);
 /// fits the kernels' 32-bit index.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AuxTable {
-    n_cart: usize,
-    momentum: Vec<i32>,
-    ao_offset: Vec<i32>,
+    pub(crate) n_cart: usize,
+    pub(crate) momentum: Vec<i32>,
+    pub(crate) ao_offset: Vec<i32>,
     /// Each shell's first record, `n_shells + 1` long.
-    rec_begin: Vec<i32>,
+    pub(crate) rec_begin: Vec<i32>,
     records: Vec<[f64; RECORD_FIELDS]>,
 }
 
@@ -136,10 +134,28 @@ impl AuxTable {
     pub fn n_shells(&self) -> usize {
         self.momentum.len()
     }
+
+    /// The records.
+    pub(crate) fn n_rec(&self) -> usize {
+        self.records.len()
+    }
+
+    /// The records field-major, as both families' kernels read them: field
+    /// `f` of record `r` at `f n_rec + r`.
+    pub(crate) fn field_major(&self) -> Vec<f64> {
+        let n_rec = self.records.len();
+        let mut out = vec![0.0; RECORD_FIELDS * n_rec];
+        for (r, record) in self.records.iter().enumerate() {
+            for (f, &v) in record.iter().enumerate() {
+                out[f * n_rec + r] = v;
+            }
+        }
+        out
+    }
 }
 
 /// A shell of momentum `l >= 0`'s Cartesian functions.
-fn n_cart_of(l: i32) -> usize {
+pub(crate) fn n_cart_of(l: i32) -> usize {
     let l = l as usize;
     (l + 1) * (l + 2) / 2
 }
@@ -164,13 +180,8 @@ impl Staging {
     /// a pair whose first shell has the higher momentum swapped, since the
     /// kernel stores every element with its mirror.
     fn new(aux: &AuxTable) -> Staging {
-        let n_rec = aux.records.len();
-        let mut records = vec![0.0; RECORD_FIELDS * n_rec];
-        for (r, record) in aux.records.iter().enumerate() {
-            for (f, &v) in record.iter().enumerate() {
-                records[f * n_rec + r] = v;
-            }
-        }
+        let n_rec = aux.n_rec();
+        let records = aux.field_major();
         let n_l = FB_METRIC_MAX_MOMENTUM.max(aux.momentum.iter().copied().max().unwrap_or(0))
             as usize
             + 1;
@@ -363,10 +374,7 @@ impl Task for Metric {
                     metric.as_mut_ptr(),
                 )
             };
-            let what = format!("fb_metric_class ({lp}, {lq})");
-            fb_kernel_abi::launch_status(&what, status, |code, at| {
-                Some(gpu_status_at(wwr_status_from_code(code)?, at))
-            })?;
+            launched("fb_metric_class", &[lp, lq], status)?;
         }
         Ok(())
     }

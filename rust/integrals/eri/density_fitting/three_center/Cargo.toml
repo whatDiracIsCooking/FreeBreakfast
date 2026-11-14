@@ -1,0 +1,27 @@
+[package]
+name = "fb-integrals-eri-density-fitting-three-center"
+description = "integrals/eri/density_fitting/three_center: the three-center integrals (mn|P) as tasks"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+contracts.workspace = true
+fb-basis.workspace = true
+fb-core-arena.workspace = true
+fb-core-error-handling.workspace = true
+fb-core-planner.workspace = true
+fb-integrals-mmd.workspace = true
+fb-integrals-sys.workspace = true
+
+[dev-dependencies]
+fb-core-thread-pool = { workspace = true, features = ["device"] }
+fb-core-types.workspace = true
+fb-io-basis.workspace = true
+fb-io-npy.workspace = true
+fb-io-xyz.workspace = true
+fb-test-support.workspace = true
+serde_json.workspace = true

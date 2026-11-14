@@ -677,6 +677,7 @@ impl Task for Records {
         let mut first = 0;
         for (c, (pairs, cls)) in self.tables.classes.iter().zip(&rows.classes).enumerate() {
             let n_pairs = pairs.bra.len();
+            let class = [cls.la, cls.lb];
             let src = fb_primitive_pair_source {
                 n_pairs: n_pairs as i32,
                 // In bounds: the class's pairs, and its prefix, lie inside
@@ -700,7 +701,7 @@ impl Task for Records {
             // the uploads above wrote on this stream from tables
             // RecordTables::new checked (each index the kernels follow is
             // inside its array), and none overlap: each is a row of its own.
-            launched("fb_mmd_order", cls, unsafe {
+            launched("fb_mmd_order", &class, unsafe {
                 fb_mmd_order(
                     stream,
                     n,
@@ -743,7 +744,7 @@ impl Task for Records {
             // SAFETY: perm is the order just written, a permutation of the
             // class's n host records; src is as above; and every array of
             // out is an n-long row of its own.
-            launched("fb_mmd_records", cls, unsafe {
+            launched("fb_mmd_records", &class, unsafe {
                 fb_mmd_records(stream, n, &src, perm.as_ptr(), &out)
             })?;
 
@@ -751,7 +752,7 @@ impl Task for Records {
             // zero, as the C++ does; every build refuses such a class.
             if cls.lb <= FB_PAIR_BOUND_MAX_MOMENTUM {
                 // SAFETY: zeta and bound are n-long rows of their own.
-                launched("fb_mmd_bound", cls, unsafe {
+                launched("fb_mmd_bound", &class, unsafe {
                     fb_mmd_bound(stream, cls.la, cls.lb, n, zeta.as_ptr(), bound.as_mut_ptr())
                 })?;
             } else {
@@ -798,11 +799,11 @@ impl Task for Records {
                 // SAFETY: the view's arrays are the class's n-long rows,
                 // written above on this stream, and each bound is a row of
                 // its own that the kernel only writes.
-                launched("fb_ordered_pair_bound", cls, unsafe {
+                launched("fb_ordered_pair_bound", &class, unsafe {
                     fb_ordered_pair_bound(stream, &view, bound_ab.as_mut_ptr())
                 })?;
                 // SAFETY: as above, the view swapped.
-                launched("fb_ordered_pair_bound (swapped)", cls, unsafe {
+                launched("fb_ordered_pair_bound (swapped)", &class, unsafe {
                     fb_ordered_pair_bound(stream, &swapped, bound_ba.as_mut_ptr())
                 })?;
             } else {

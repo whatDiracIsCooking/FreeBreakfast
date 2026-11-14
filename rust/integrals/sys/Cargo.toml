@@ -1,6 +1,6 @@
 [package]
 name = "fb-integrals-sys"
-description = "integrals' launch wrappers: FFI bindings over libfb_integrals_kernels.so, the records tasks and the safe launchers over them"
+description = "integrals' launch wrappers: FFI bindings over libfb_integrals_kernels.so, the records, metric and three-center tasks and the safe launchers over them"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -17,7 +17,7 @@ fb-core-planner.workspace = true
 fb-core-thread-pool = { workspace = true, features = ["device"] }
 fb-core-wwr.workspace = true
 fb-kernel-abi.workspace = true
-wwr-sys.workspace = true
+wwr-sys = { workspace = true, features = ["blas"] }
 
 [dev-dependencies]
 fb-core-wwr = { workspace = true, features = ["test-support"] }
