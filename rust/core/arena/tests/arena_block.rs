@@ -48,6 +48,14 @@ fn warm_up() {
 /// The card gives back the bytes it was asked for, within the driver's
 /// rounding: declared equals allocated, and the drop frees it all. The one
 /// check that the table's total is the whole of the block's cost.
+///
+/// The readings are the device's, every tenant of the card counted, and
+/// the gates' card lock does not hold out a process outside the container
+/// (#1553). The drop's check is one-sided already: it fails only on a
+/// fall, which another tenant's free cannot cause. The block's cost stays
+/// two-sided, unlike the replay checks', because both of its sides are the
+/// rule: less than the table is a block too small for its rows, and more
+/// is a hidden allocation. Its window is one allocation, not a run.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn declared_equals_allocated() {
