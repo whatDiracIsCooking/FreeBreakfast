@@ -515,8 +515,7 @@ list is in three tiers:
 - **Bindings:** `fb-integrals-sys`, `fb-recipes-sys`.
 - **Method crates:** `fb-integrals-mmd`,
   `fb-integrals-one-electron-overlap`, `fb-integrals-one-electron-kinetic`,
-  `fb-integrals-one-electron-potential-en`,
-  `fb-integrals-one-electron-core-hamiltonian`, `fb-recipes-matrix-ao`,
+  `fb-integrals-one-electron-potential-en`, `fb-recipes-matrix-ao`,
   `fb-recipes-orthogonalize`.
 
 The core crates hold the wrappers: `fb-core-wwr` over the `wwr-sys`
@@ -525,7 +524,7 @@ bindings, the arena over the raw allocation and copy bindings, the two
 `core::thread_pool`'s `Device` backend. The binding crates declare a kernel
 library's `extern "C"` functions and check its version at load. A method
 crate's `unsafe` is a direct call into its kernels' launchers, the BLAS or
-the solver, or `wwr_memset_async`, each block with a `// SAFETY:` comment
+the solver, each block with a `// SAFETY:` comment
 saying why its pointers and lengths hold; those calls could later be wrapped
 safely in the core and binding crates, which would empty the third tier.
 `fb-doc-check`'s `tests/unsafe_code.rs` reads this list: a crate root that
@@ -545,14 +544,16 @@ A library call reaches the crates above `core` through a safe wrapper, not
 `fb_core_wwr::solver::syevd` take their operands as `DeviceSlice`s (device
 memory with its length, which the arena's rows implement) and check each
 extent against them in every build (syevd's work against the solver's own
-query), and `fb-recipes-blas`, the BLAS calls' packed shorthand, forbids
-`unsafe` itself, as the arena's `memcpy_*` do for the copies. That is the
-shape for the rest. `fb-pipeline-scf` and `fb-recipes-diagonalize` have
-nothing left to call raw and forbid `unsafe`; the other recipe crates still
-call `wwr-sys` or a kernel library directly (`fb-recipes-matrix-ao` the BLAS
-workspace hand-off, `fb-recipes-orthogonalize` its `fb_inverse_sqrt`
-launch, the method crates their kernels), so they do not yet, and each call
-moves behind a checked wrapper of its own.
+query), `fb_core_wwr::memset::zero` zeroes one on a stream, and
+`fb-recipes-blas`, the BLAS calls' packed shorthand, forbids `unsafe`
+itself, as the arena's `memcpy_*` do for the copies. That is the shape for
+the rest. `fb-pipeline-scf`, `fb-recipes-diagonalize` and
+`fb-integrals-one-electron-core-hamiltonian` have nothing left to call raw
+and forbid `unsafe`; the other recipe crates still call `wwr-sys` or a
+kernel library directly (`fb-recipes-matrix-ao` the BLAS workspace
+hand-off, `fb-recipes-orthogonalize` its `fb_inverse_sqrt` launch, the
+method crates their kernels), so they do not yet, and each call moves
+behind a checked wrapper of its own.
 
 ```toml
 [workspace.lints.clippy]            # every member: [lints] workspace = true

@@ -14,8 +14,7 @@ use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane, Placement};
 use fb_core_wwr::common::ScopedDeviceIndex;
-use fb_core_wwr::gpu_status;
-use fb_core_wwr::handle::DeviceHandleStream;
+use fb_core_wwr::memset;
 use wwr_sys::wwr_status;
 
 const N: usize = 4096;
@@ -237,17 +236,9 @@ impl Task for Stage {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let dst = d.take_mut(*out);
+        let mut dst = d.take_mut(*out);
         match self.0 {
-            // SAFETY: the row's bytes, on the task's stream.
-            None => gpu_status(unsafe {
-                wwr_sys::wwr_memset_async(
-                    dst.as_mut_ptr().cast(),
-                    0,
-                    BIG * size_of::<f64>(),
-                    stream.stream(),
-                )
-            }),
+            None => memset::zero(&mut dst, stream),
             Some(input) => memcpy_d2d(&dst, d.get(input), stream),
         }
     }

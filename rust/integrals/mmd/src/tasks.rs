@@ -8,14 +8,14 @@ use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::common::wwr_status_from_code;
+use fb_core_wwr::gpu_status_at;
 use fb_core_wwr::handle::DeviceHandleStream;
-use fb_core_wwr::{gpu_status, gpu_status_at};
+use fb_core_wwr::memset;
 use fb_integrals_sys::{
     FB_PAIR_BOUND_MAX_MOMENTUM, FB_RECORD_BOUND_MAX_MOMENTUM, fb_launch_status, fb_mmd_bound,
     fb_mmd_order, fb_mmd_order_workspace_bytes, fb_mmd_records, fb_ordered_pair_bound,
     fb_primitive_pair_class_view, fb_primitive_pair_records, fb_primitive_pair_source,
 };
-use wwr_sys::wwr_stream;
 
 use super::tables::Tables;
 
@@ -472,7 +472,8 @@ impl Task for Records {
             let (pa_x, pa_y, pa_z) = (f(cls.pa_x), f(cls.pa_y), f(cls.pa_z));
             let (pb_x, pb_y, pb_z) = (f(cls.pb_x), f(cls.pb_y), f(cls.pb_z));
             let (sv, ea, eb) = (f(cls.s), f(cls.ea), f(cls.eb));
-            let (bound, bound_ab, bound_ba) = (f(cls.bound), f(cls.bound_ab), f(cls.bound_ba));
+            let (mut bound, mut bound_ab, mut bound_ba) =
+                (f(cls.bound), f(cls.bound_ab), f(cls.bound_ba));
             let g = |row| device.take_mut(row);
             let (off_a, off_b, rank_a, rank_b) =
                 (g(cls.off_a), g(cls.off_b), g(cls.rank_a), g(cls.rank_b));
@@ -509,7 +510,7 @@ impl Task for Records {
                     fb_mmd_bound(stream, cls.la, cls.lb, n, zeta.as_ptr(), bound.as_mut_ptr())
                 })?;
             } else {
-                zero(stream, bound.as_mut_ptr(), n)?;
+                memset::zero(&mut bound, worker)?;
             }
             if cls.lb <= FB_RECORD_BOUND_MAX_MOMENTUM {
                 let view = fb_primitive_pair_class_view {
@@ -560,8 +561,8 @@ impl Task for Records {
                     fb_ordered_pair_bound(stream, &swapped, bound_ba.as_mut_ptr())
                 })?;
             } else {
-                zero(stream, bound_ab.as_mut_ptr(), n)?;
-                zero(stream, bound_ba.as_mut_ptr(), n)?;
+                memset::zero(&mut bound_ab, worker)?;
+                memset::zero(&mut bound_ba, worker)?;
             }
         }
         Ok(())
@@ -581,14 +582,6 @@ fn upload<T: Element>(
     let dst = device.take_mut(dst);
     memcpy_p2d(&dst, host, src, worker)?;
     Ok(dst.as_ptr())
-}
-
-/// `n` doubles at `ptr` zeroed on `stream`.
-fn zero(stream: wwr_stream, ptr: *mut f64, n: i32) -> Status {
-    // SAFETY: `ptr` is an n-long device row, on the task's stream.
-    gpu_status(unsafe {
-        wwr_sys::wwr_memset_async(ptr.cast(), 0, n as usize * size_of::<f64>(), stream)
-    })
 }
 
 /// A launch wrapper's status as a `Status`, naming the wrapper and the

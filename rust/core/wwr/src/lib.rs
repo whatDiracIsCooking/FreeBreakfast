@@ -10,6 +10,9 @@
 //!   calls through it ([`blas::gemm`]).
 //! - [`device_slice`]: no wwr counterpart. Device memory with its length,
 //!   which a safe library call takes and checks in place of a raw pointer.
+//! - [`memset`]: wwr's `src/extension/memory_buffer` `:memset`, device
+//!   memory zeroed on a stream ([`memset::zero`]), over a
+//!   [`DeviceSliceMut`](device_slice::DeviceSliceMut).
 //! - [`solver`]: wwr's `src/extension/solver`, the dense solver's status as
 //!   an error code and its handle, bound to a stream as the BLAS one is.
 //!
@@ -28,6 +31,7 @@ pub mod blas;
 pub mod common;
 pub mod device_slice;
 pub mod handle;
+pub mod memset;
 pub mod runtime;
 pub mod solver;
 mod status;

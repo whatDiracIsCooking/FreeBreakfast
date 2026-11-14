@@ -40,8 +40,8 @@ use fb_core_arena::{Bufs, Device, DeviceMut, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
+use fb_core_wwr::memset;
 use fb_integrals_mmd::{ClassRows, launch};
 use fb_integrals_sys::{FB_KINETIC_MAX_MOMENTUM, fb_kinetic_class};
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
@@ -171,17 +171,8 @@ impl Task for Kinetic {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let t = device.take_mut(*t);
-        // SAFETY: `t` is a device row of `t.len()` doubles, on the task's
-        // stream.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memset_async(
-                t.as_mut_ptr().cast(),
-                0,
-                t.len() * size_of::<f64>(),
-                stream.stream(),
-            )
-        })?;
+        let mut t = device.take_mut(*t);
+        memset::zero(&mut t, stream)?;
         kinetic_classes(stream, device, &self.classes, self.n_cart, &t)
     }
 }
