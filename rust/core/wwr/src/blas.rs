@@ -10,6 +10,7 @@
 //! | the same `gemm<T>`, called with raw pointers | [`gemm`], over [`DeviceSlice`]s it checks |
 //! | `dgmm<T>` over `wwrblas{S,D,C,Z}dgmm` | [`BlasScalar`]'s `dgmm_raw` |
 //! | the same `dgmm<T>`, called with raw pointers | [`dgmm`], over [`DeviceSlice`]s it checks; `incx` at least 1, and C never A (no in-place call) |
+//! | `kOne<T>`, `kZero<T>` (`core/constants`), the BLAS scalars one and zero by address | [`BlasScalar::ONE`] and [`BlasScalar::ZERO`], by value |
 //!
 //! As in wwr, the handle is a [`StreamBoundHandle`]: made from a shared
 //! stream owner, created on its device, bound to its stream, and holding
@@ -247,6 +248,14 @@ impl DeviceHandleStream for BlasHandle {
 /// the type's letter. Sealed, since [`gemm`] and [`dgmm`] trust each method
 /// to be that call.
 pub trait BlasScalar: Copy + sealed::Sealed {
+    /// One (`1 + 0i` on a complex type), the `alpha` of a plain product:
+    /// the C++ `kOne<T>`.
+    const ONE: Self;
+
+    /// Zero, the `beta` that overwrites C rather than accumulating into it:
+    /// the C++ `kZero<T>`.
+    const ZERO: Self;
+
     /// `wwrblas<t>gemm`: `C = alpha op_a(A) op_b(B) + beta C`, column-major,
     /// `op_a(A)` m × k, `op_b(B)` k × n, C m × n.
     ///
@@ -304,10 +313,13 @@ mod sealed {
 }
 
 macro_rules! blas_scalar {
-    ($($t:ty => $gemm:ident, $dgmm:ident);* $(;)?) => {$(
+    ($($t:ty => $gemm:ident, $dgmm:ident, $one:expr, $zero:expr);* $(;)?) => {$(
         impl sealed::Sealed for $t {}
 
         impl BlasScalar for $t {
+            const ONE: Self = $one;
+            const ZERO: Self = $zero;
+
             unsafe fn gemm_raw(
                 handle: wwr_blas_handle,
                 op_a: wwr_blas_operation,
@@ -352,10 +364,12 @@ macro_rules! blas_scalar {
 }
 
 blas_scalar! {
-    f32 => wwr_blas_sgemm, wwr_blas_sdgmm;
-    f64 => wwr_blas_dgemm, wwr_blas_ddgmm;
-    wwr_complex64 => wwr_blas_cgemm, wwr_blas_cdgmm;
-    wwr_complex128 => wwr_blas_zgemm, wwr_blas_zdgmm;
+    f32 => wwr_blas_sgemm, wwr_blas_sdgmm, 1.0, 0.0;
+    f64 => wwr_blas_dgemm, wwr_blas_ddgmm, 1.0, 0.0;
+    wwr_complex64 => wwr_blas_cgemm, wwr_blas_cdgmm,
+        wwr_complex64 { re: 1.0, im: 0.0 }, wwr_complex64 { re: 0.0, im: 0.0 };
+    wwr_complex128 => wwr_blas_zgemm, wwr_blas_zdgmm,
+        wwr_complex128 { re: 1.0, im: 0.0 }, wwr_complex128 { re: 0.0, im: 0.0 };
 }
 
 /// Panic unless a column-major `rows` × `cols` matrix at leading dimension

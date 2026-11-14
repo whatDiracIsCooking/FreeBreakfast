@@ -594,6 +594,7 @@ version = "0.1.0"
 dependencies = [
  "fb-core-error-handling",
  "fb-core-wwr",
+ "fb-test-support",
  "wwr-sys",
 ]
 
