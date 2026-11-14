@@ -515,6 +515,10 @@ apply to this tree as written. `milestone-run` executes what `milestone`
 creates: one subagent per ready issue, each in a `.claude/worktrees/` checkout,
 PRs merged serially by the orchestrator.
 
+`.claude/agents/rust-rebuild.md` is the one subagent definition: it works on
+`rust/` by the design docs in `rust/docs/`, and `rust/CLAUDE.md` says how it
+is kept in step with them.
+
 Three more came across in the hoist and were **removed**: `constants`,
 `error-handling` and `memory-buffer` documented the *ancestor* project's
 versions of those modules, and described its module tree in detail — which has

@@ -3,6 +3,12 @@
 The Rust rebuild. `README.md` has the crate list and "Build and test";
 `docs/design.md` indexes the design docs. This file points into them.
 
+**The `rust-rebuild` agent** (`.claude/agents/rust-rebuild.md` at the
+repository root) is this file at length: what to read for which task, the
+design questions, the checks to run and what to report. Delegate work under
+`rust/` to it. `doc_check/tests/section_citations.rs` checks its section
+citations, and this file's, so a renamed heading breaks them.
+
 **Follow the docs over the surrounding code.** Where a neighbour breaks a
 rule below, fix the counter-example (or file an issue) rather than copy it.
 
