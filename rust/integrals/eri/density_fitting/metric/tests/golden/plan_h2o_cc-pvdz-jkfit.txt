@@ -1,0 +1,28 @@
+plan: 7 tasks, GPU workers: 1
+ task  worker  lane    name: after
+    0       0  cpu     metric tables
+    1       0  stream  metric: after 0
+    2       0  cpu     harmonics: after 0 1
+    3       0  stream  spherical transform: after 1 2
+    4       0  stream  metric average: after 1 3
+    5       0  stream  download: after 0 1 2 3 4
+    6       0  cpu     collect: after 5
+worker 0 device table: 7 rows, 488320 bytes
+peak: 488072 bytes at node 3
+    offset      bytes  owner   life     name: users (w writes, r reads)
+    159232       1680  task    1-1      aux records: 1w
+    137472      21672  task    1-1      aux pairs: 1w
+         0     137288  edge    1-3      M cartesian: 1w 3r
+    137472     121568  task    3-3      U: 3w
+    259072     121568  task    3-3      M spherical U: 3w
+    380672     107648  edge    3-4      M spherical: 3w 4r
+         0     107648  edge    4-5      M: 4w 5r
+handoffs: 1->3 1->4 3->4
+worker 0 pinned table: 4 rows, 121568 bytes
+peak: 121568 bytes at node 2
+    offset      bytes  owner   life     name: users (w writes, r reads)
+     21760       1680  edge    0-1      aux records: 0w 1r
+         0      21672  edge    0-1      aux pairs: 0w 1r
+         0     121568  edge    2-3      U: 2w 3r
+         0     107648  edge    5-6      M: 5w 6r
+handoffs: 0->2 0->5 1->2 1->5 2->5 3->5

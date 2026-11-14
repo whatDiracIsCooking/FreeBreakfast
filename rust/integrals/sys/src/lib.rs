@@ -20,7 +20,8 @@
 //! | `NucleiView` (`src/molecule`) | [`fb_nuclei_view`], `#[repr(C)]`, by pointer |
 //! | `potential_en_class(stream, cls, nuclei, n_ao, v)` | [`fb_potential_en_class`]`(stream, cls, nuclei, n_ao, v)`, the nuclei by pointer |
 //! | `kPairBoundMaxMomentum`, `kRecordBoundMaxMomentum`, the overlap, kinetic and nuclear-attraction launchers' `kMaxL` | [`FB_PAIR_BOUND_MAX_MOMENTUM`], [`FB_RECORD_BOUND_MAX_MOMENTUM`], [`FB_OVERLAP_MAX_MOMENTUM`], [`FB_KINETIC_MAX_MOMENTUM`], [`FB_POTENTIAL_EN_MAX_MOMENTUM`] |
-//! | `metric_class` (`src/integrals/eri/density_fitting/metric`) | [`fb_metric_class`], the records and pairs as field segments, as there |
+//! | `metric_class` (`src/integrals/eri/density_fitting/metric`) | [`fb_metric_class`], the records and pairs as field segments, as there; the safe path is [`add_metric_tasks`] over an [`AuxTable`] |
+//! | `metric`'s host staging: one record per aux primitive, the pairs P <= Q per class, swapped to the lower momentum first | [`AuxTable::push_shell`] and the `metric tables` task of [`add_metric_tasks`] |
 //! | `three_center_class`, `three_center_symmetrize` (`.../three_center`) | [`fb_three_center_class`], [`fb_three_center_symmetrize`]`(stream, n_ao, n_aux, input, output)`, overlapping arrays refused |
 //! | `kMetricMaxMomentum`, `kThreeCenterMaxMomentum`, `kThreeCenterAuxMaxMomentum` | [`FB_METRIC_MAX_MOMENTUM`], [`FB_THREE_CENTER_MAX_MOMENTUM`], [`FB_THREE_CENTER_AUX_MAX_MOMENTUM`] |
 //! | `kMetricRecordFields`, `kMetricPairFields`, `kThreeCenterBraFields`, `kThreeCenterAuxFields`, `kThreeCenterCellFields` | [`FB_METRIC_RECORD_FIELDS`], [`FB_METRIC_PAIR_FIELDS`], [`FB_THREE_CENTER_BRA_FIELDS`], [`FB_THREE_CENTER_AUX_FIELDS`], [`FB_THREE_CENTER_CELL_FIELDS`], for a safe layer to size its segments by |
@@ -44,9 +45,17 @@
 //!   length is asserted in every build, the status a `Status` through
 //!   [`fb_kernel_abi::launch_status`].
 //!
-//! The density-fitting wrappers ([`fb_metric_class`],
-//! [`fb_three_center_class`], [`fb_three_center_symmetrize`]) have no safe
-//! call yet: the raw bindings alone, for the crate that ports the module.
+//! - [`AuxTable`], an auxiliary basis's shells and records as the
+//!   density-fitting kernels read them, checked shell by shell as it is
+//!   built, and [`add_metric_tasks`], the two tasks that stage it with
+//!   every aux shell pair and launch each class of the Cartesian metric
+//!   ([`fb_metric_class`]) into an output row. The pairs are formed here
+//!   from the table and held in the tasks' own rows, so no device table a
+//!   caller could fill reaches the launch.
+//!
+//! The three-center wrappers ([`fb_three_center_class`],
+//! [`fb_three_center_symmetrize`]) have no safe call yet: the raw bindings
+//! alone, for the crate that ports the module.
 //!
 //! A class kernel writes at AO offsets held in device memory, so
 //! [`ClassRows`] is a type only [`add_record_tasks`] makes; its doc comment
@@ -57,10 +66,12 @@
 #[rustfmt::skip]
 mod bindings;
 mod classes;
+mod metric;
 mod records;
 
 pub use bindings::*;
 pub use classes::{kinetic_class, overlap_class, potential_en_class};
+pub use metric::{AuxTable, add_metric_tasks};
 pub use records::{ClassPairs, ClassRows, RecordTables, ShellTable, add_record_tasks};
 
 use fb_core_error_handling::Status;
