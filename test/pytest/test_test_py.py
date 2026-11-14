@@ -264,6 +264,22 @@ def test_dry_run_dispatch(
     assert "push:   src/a.cppm" in out and "push:   tool.py" in out
 
 
+def test_dry_run_names_tier4_crates(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        gates, "changed_files", lambda _env: ["rust/examples/overlap.toml"]
+    )
+    monkeypatch.setattr(
+        gates, "tier4_crates", lambda files: sorted(gates.affected_crates(files, _META))
+    )
+    args, _ = gates.parse(["push", "--dry-run"])
+    assert gates.cmd_push(args, {}) == 0
+    out = capsys.readouterr().out
+    assert "C++ half: no, Python half: no, cargo half: yes" in out
+    assert "push: tier 4 crate(s): fb-pipeline-config" in out
+
+
 def test_push_by_hand_without_a_base_exits_2(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -473,8 +489,8 @@ def _package(name: str, path: str, links: str | None = None) -> dict:
 
 
 # A workspace shaped like rust/'s: log below wwr; arena and thread_pool on
-# wwr; planner on both; recipes-sys and integrals-sys on wwr-sys, with wwr a
-# dev-dependency; atom on log alone.
+# wwr; planner on both; pipeline-config on planner; recipes-sys and
+# integrals-sys on wwr-sys, with wwr a dev-dependency; atom on log alone.
 _META = {
     "workspace_root": "/ws/rust",
     "workspace_members": [
@@ -483,6 +499,7 @@ _META = {
         "fb-core-arena",
         "fb-core-thread-pool",
         "fb-core-planner",
+        "fb-pipeline-config",
         "fb-recipes-sys",
         "fb-integrals-sys",
         "fb-atom",
@@ -495,6 +512,7 @@ _META = {
         _package("fb-core-arena", "core/arena"),
         _package("fb-core-thread-pool", "core/thread_pool"),
         _package("fb-core-planner", "core/planner"),
+        _package("fb-pipeline-config", "pipeline/config"),
         _package("fb-recipes-sys", "recipes/sys", "fb_recipes_kernels"),
         _package("fb-integrals-sys", "integrals/sys", "fb_integrals_kernels"),
         _package("fb-atom", "atom"),
@@ -511,6 +529,7 @@ _META = {
                 "fb-core-arena": ["fb-core-wwr", "wwr-sys"],
                 "fb-core-thread-pool": ["fb-core-wwr", "fb-core-log"],
                 "fb-core-planner": ["fb-core-arena", "fb-core-thread-pool"],
+                "fb-pipeline-config": ["fb-core-planner"],
                 "fb-recipes-sys": ["wwr-sys", "fb-core-wwr"],
                 "fb-integrals-sys": ["wwr-sys", "fb-core-wwr"],
                 "fb-atom": ["fb-core-log"],
@@ -526,6 +545,7 @@ _LINKING = {
     "fb-core-arena",
     "fb-core-thread-pool",
     "fb-core-planner",
+    "fb-pipeline-config",
     "fb-recipes-sys",
     "fb-integrals-sys",
 }
@@ -535,11 +555,17 @@ _LINKING = {
     "files, expected",
     [
         # One crate's diff: that crate and its reverse dependents, no others.
-        (["rust/core/arena/src/block.rs"], {"fb-core-arena", "fb-core-planner"}),
-        (["rust/core/planner/tests/planner_device.rs"], {"fb-core-planner"}),
+        (
+            ["rust/core/arena/src/block.rs"],
+            {"fb-core-arena", "fb-core-planner", "fb-pipeline-config"},
+        ),
+        (
+            ["rust/core/planner/tests/planner_device.rs"],
+            {"fb-core-planner", "fb-pipeline-config"},
+        ),
         (
             ["rust/core/thread_pool/Cargo.toml"],
-            {"fb-core-thread-pool", "fb-core-planner"},
+            {"fb-core-thread-pool", "fb-core-planner", "fb-pipeline-config"},
         ),
         # A dev-dependent counts: the -sys crates' tests use wwr.
         (["rust/core/wwr/src/runtime.rs"], _LINKING),
@@ -549,13 +575,14 @@ _LINKING = {
         (["rust/atom/src/lib.rs"], set()),
         # The path rules: kernels are every kernel library's -sys crate's
         # (one library links another); docs and the bindings generator are
-        # tier-3 crates'.
+        # tier-3 crates'; the examples are the crate's that runs them.
         (
             ["rust/recipes/kernels/merge_sort.cu"],
             {"fb-recipes-sys", "fb-integrals-sys"},
         ),
         (["rust/docs/testing.md", "rust/README.md"], set()),
         (["devtools/rust-bindings.py"], set()),
+        (["rust/examples/overlap.toml"], {"fb-pipeline-config"}),
         # A file in no crate and no rule, or no diff at all: everything.
         (["rust/Cargo.lock"], _LINKING),
         (["rust/capi_dir.rs"], _LINKING),
