@@ -174,7 +174,8 @@ pub fn merge_sort(
     sort(stream, keys, values.as_mut_ptr(), workspace)
 }
 
-/// [`merge_sort`] with no values: all of `keys` sorted, on `stream`.
+/// [`merge_sort`] with no values: all of `keys` sorted, on `stream`;
+/// [`fb_merge_sort`] with a null `values`.
 ///
 /// # Errors
 /// As [`merge_sort`].

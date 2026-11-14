@@ -88,8 +88,8 @@ tree, not inputs to its build.
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
-`fb-doc-check` (`doc_check/`), the section-citation, `unsafe` and contract checks, and the
-workspace graph test. There is no umbrella crate. The crate graph is the selection graph
+`fb-doc-check` (`doc_check/`), the section-citation, `unsafe`, contract and
+source-rule checks, and the workspace graph test. There is no umbrella crate. The crate graph is the selection graph
 ([`testing.md`](docs/testing.md), "Selection: the workspace graph is the
 selection graph"): `log` at the bottom, `error_handling` on it, `wwr` on
 both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
@@ -454,6 +454,12 @@ a type, a test file or a test in one, does not exist.
 contract, which rustdoc renders on its own, and that every `debug_assert!`
 carries an `// INVARIANT:` comment ([`testing.md`](docs/testing.md),
 "Contracts are part of the spec").
+
+`doc_check/tests/source_rules.rs` scans the sources for six rules of the
+register, each named in its row: every `#[ignore]` is a device case's, no
+Markdown sits beside a module, a doc example carries its marker, nothing is
+exported to C, a binding crate's safe wrapper links down to the binding it
+calls, and a test that trips a contract is `#[cfg(debug_assertions)]`.
 
 Tests run in parallel, so a capture test must not use global capture mode.
 A global capture forbids other threads' unsafe calls, and on the 3080 it

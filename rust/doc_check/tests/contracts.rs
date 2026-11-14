@@ -24,9 +24,7 @@
 
 #![forbid(unsafe_code)]
 
-use fb_doc_check::{code_only, is_ident};
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use fb_doc_check::{code_only, is_ident, string_literals, workspace_sources};
 
 /// The phrase every hand-written restatement used, matched
 /// case-insensitively.
@@ -49,27 +47,6 @@ const DEBUG_ASSERTS: [&str; 3] = ["debug_assert", "debug_assert_eq", "debug_asse
 fn doc_line(line: &str) -> Option<&str> {
     let t = line.trim_start();
     t.strip_prefix("///").or_else(|| t.strip_prefix("//!"))
-}
-
-/// The string literals in `attr`, unescaped only of `\"`.
-fn strings(attr: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut chars = attr.chars();
-    while let Some(c) = chars.next() {
-        if c != '"' {
-            continue;
-        }
-        let mut s = String::new();
-        while let Some(c) = chars.next() {
-            match c {
-                '\\' => s.extend(chars.next()),
-                '"' => break,
-                c => s.push(c),
-            }
-        }
-        out.push(s);
-    }
-    out
 }
 
 /// Lowercase, with every run of whitespace one space.
@@ -130,7 +107,7 @@ fn restated(path: &str, source: &str) -> Vec<String> {
                 .map(char::from)
                 .collect();
             if CONTRACTS.contains(&name.as_str()) {
-                messages.extend(strings(&attr).last().cloned());
+                messages.extend(string_literals(&attr).last().cloned());
             }
             continue;
         }
@@ -193,52 +170,9 @@ fn unmarked(path: &str, source: &str) -> Vec<String> {
     failures
 }
 
-/// Every `.rs` under `dir`, `target/` excluded, into `out`.
-fn rust_files(dir: &Path, out: &mut BTreeSet<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for e in entries {
-        let p = e.unwrap().path();
-        if p.is_dir() {
-            if p.file_name().is_some_and(|n| n != "target") {
-                rust_files(&p, out);
-            }
-        } else if p.extension().is_some_and(|x| x == "rs") {
-            out.insert(p);
-        }
-    }
-}
-
-/// Every `.rs` of every workspace member, with its path from the root.
-fn sources() -> Vec<(String, String)> {
-    let root = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
-    let root = root.canonicalize().unwrap_or(root);
-    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
-    let list = manifest
-        .split_once("members = [")
-        .and_then(|(_, rest)| rest.split_once(']'))
-        .expect("the workspace manifest's members list")
-        .0;
-    let mut files = BTreeSet::new();
-    for m in list.split(',').map(|m| m.trim().trim_matches('"')) {
-        if !m.is_empty() {
-            rust_files(&root.join(m), &mut files);
-        }
-    }
-    files
-        .into_iter()
-        .map(|f| {
-            let text = std::fs::read_to_string(&f).unwrap();
-            let name = f.strip_prefix(&root).unwrap_or(&f).display().to_string();
-            (name, text)
-        })
-        .collect()
-}
-
 #[test]
 fn no_doc_comment_restates_a_contract() {
-    let sources = sources();
+    let sources = workspace_sources();
     assert!(sources.len() > 50, "only {} sources found", sources.len());
     let failures: Vec<String> = sources.iter().flat_map(|(p, s)| restated(p, s)).collect();
     assert!(
@@ -251,7 +185,10 @@ fn no_doc_comment_restates_a_contract() {
 
 #[test]
 fn every_debug_assert_is_a_marked_invariant() {
-    let failures: Vec<String> = sources().iter().flat_map(|(p, s)| unmarked(p, s)).collect();
+    let failures: Vec<String> = workspace_sources()
+        .iter()
+        .flat_map(|(p, s)| unmarked(p, s))
+        .collect();
     assert!(
         failures.is_empty(),
         "{} debug_assert(s) not marked as invariants:\n{}",
