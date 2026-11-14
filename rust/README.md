@@ -73,6 +73,7 @@ tree, not inputs to its build.
 | `fb_pipeline_guess` | `src/pipeline/guess`, and `src/sad`'s task form | The Guess step as tasks of a `Dag`: `add_sad_guess`, one CPU node per distinct (Z, shells) stamp known from the basis at planning (`baked stamp <symbol>`, parsed by `fb-io-sad`, when the basis carries a name and the stamp is compiled in; `atomic scf <symbol>`, `fb-sad`'s SCF, otherwise, so a path-read basis runs every one), each into a host row, then `sad guess` on the CPU placing them into D, bitwise the serial `sad_density`; the first failing stamp in stamp order is the run's error. `add_loaded_guess`, the step's `load`: one CPU node reading D from a `.npy` file. Both generic over the host kind and stream, so their tier 3 runs on `Heap` rows and `HostOnly` workers; `add_guess_upload` copies D on the worker's stream into a device row. The plan text for formaldehyde in cc-pVDZ, by name and by path, is the committed golden `pipeline/guess/tests/golden/plan_*.txt` |
 | `fb_molecule_nuclei` | `src/molecule`, its device half (`Molecule`'s `upload`, `view`, `NucleiView`, `molecule_footprint`) | `add_nuclei`: a `Molecule`'s nuclei as two tasks of a `Dag`, `nuclei` on the CPU (each nucleus's charge and position, in atom order, into two pinned rows, `n` and `3 n` doubles) and `nuclei upload` on the stream (both copied into device rows), and `NucleiRows`, `n_nuc` and those two device rows, which a reader declares with `NucleiRows::read` and hands its launch wrapper as an `fb_nuclei_view` of their pointers. A crate beside `fb_molecule`, so that one links nothing. Every size is the molecule's, at planning; the plan text for H2O and CO is the committed golden `molecule/nuclei/tests/golden/plan_*.txt` |
 | `fb_integrals_one_electron_potential_en` | `src/integrals/one_electron/potential_en`'s `nuclear_attraction` / `add_nuclear_attraction` and its bridge's `potential_en_class` | `potential_en_classes`, the safe layer over `fb_potential_en_class`: every class's launch on one stream into a Cartesian matrix the caller zeroed, the wrapper's `fb_nuclei_view` formed from `fb_molecule_nuclei`'s `NucleiRows`, the launcher's requirements as `debug_requires`, callable by a task that launches several families into one matrix (after `kinetic_classes`, for T + V). `add_nuclear_attraction`: V of a `BasisSet` over the nuclei's rows as tasks after the records, `potential en` on the stream (the Cartesian matrix zeroed, then `potential_en_classes`, reading `ClassRows` and `NucleiRows` as edges), then `fb_recipes_matrix_ao`'s spherical transform, U's slot passed in; nuclei with no nucleus refused at planning as `InvalidConfig`, adding nothing. The plan text for each of the overlap's fixtures is the committed golden `integrals/one_electron/potential_en/tests/golden/plan_*.txt` |
+| `fb_integrals_one_electron_core_hamiltonian` | `src/integrals/one_electron/core_hamiltonian`'s `core_hamiltonian` | `add_core_hamiltonian`: H = T + V of a `BasisSet` over `fb_molecule_nuclei`'s `NucleiRows` as tasks after the records, one build task, `core hamiltonian`, on the stream (the Cartesian matrix zeroed, then `kinetic_classes` and `potential_en_classes` on top, reading `ClassRows` and `NucleiRows` as edges, with no T or V row of its own), then `fb_recipes_matrix_ao`'s spherical transform, U's slot passed in; nuclei with no nucleus refused at planning as `InvalidConfig`, adding nothing. The plan text for each of the overlap's fixtures is the committed golden `integrals/one_electron/core_hamiltonian/tests/golden/plan_*.txt` |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -103,7 +104,9 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `wwr` and `error_handling`; and `molecule/nuclei` on `molecule`,
 `planner`, `arena`, `thread_pool`, `wwr` and `error_handling`; and
 `integrals/one_electron/potential_en` on `integrals/mmd`,
-`molecule/nuclei`, `recipes/matrix_ao` and what they stand on.
+`molecule/nuclei`, `recipes/matrix_ao` and what they stand on; and
+`integrals/one_electron/core_hamiltonian` on `integrals/one_electron/kinetic`,
+`integrals/one_electron/potential_en` and what they stand on.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -348,6 +351,16 @@ rounding of the sums over primitives and nuclei, the Boys evaluation and
 the two GEMMs. Its references are committed in
 `integrals/one_electron/potential_en/tests/data/` with the script that
 writes them, the overlap's with `int1e_nuc`, and the same conventions.
+
+The core Hamiltonian on a card is
+`integrals/one_electron/core_hamiltonian/tests/core_hamiltonian.rs`: the
+overlap's three fixtures, T and V launched into one matrix by one task,
+run once and compared with PySCF's H (`int1e_kin + int1e_nuc`) at
+`max |H - H_ref| <= 1e-12 * max |H_ref|`, the bar of T and V, since
+adding in place reorders no sum inside either. Its references are committed in
+`integrals/one_electron/core_hamiltonian/tests/data/` with the script that
+writes them, the overlap's with `int1e_kin + int1e_nuc`, and the same
+conventions.
 
 `doc_check/tests/section_citations.rs` checks that every section the
 README, `docs/` and every member's Rust sources cite by name is a heading of
@@ -775,3 +788,18 @@ its PySCF comparison. Against PySCF's V, `max |V - V_ref|` is `4.8e-14`
 `1e-12 * max |V_ref|` about `6.2e-11`, `6.2e-11` and `6.4e-11`. Clippy (`-D
 warnings`, the new crate with its tests too), rustdoc (`-D warnings`) and
 `cargo fmt --check` are clean. Not run on the gfx1200.
+
+2026-11-14, `integrals/one_electron/core_hamiltonian` (H = T + V as one
+task over both kernel families), on the RTX 3080 (CUDA), holding the card,
+linking the libraries the `default` preset built: `devtools/test.py pr
+--only cargo --all` passes, tier 3 197 tests, none in the new crate, tier
+4 115, none skipped, 3 of them new: its plan goldens (one build task,
+`core hamiltonian`, and one `H cartesian` row, none for T or V), its
+refusal of nuclei with no nucleus at planning (`InvalidConfig`, nothing
+added) and its PySCF comparison. Against PySCF's H, `max |H - H_ref|` is
+`4.8e-14` (H2O/STO-3G), `8.8e-14` (H2O/cc-pVDZ) and `3.7e-13`
+(CO/cc-pVTZ), the bar `1e-12 * max |H_ref|` about `3.3e-11`, `3.3e-11`
+and `3.5e-11`. Each reference equals the kinetic's T plus the nuclear
+attraction's V to `1.4e-14`. Clippy (`-D warnings`, the new crate with its
+tests too), rustdoc (`-D warnings`) and `cargo fmt --check` are clean. Not
+run on the gfx1200.
