@@ -1345,3 +1345,17 @@ half. A synthetic tree pins the walk: an ancestor's lower limit wins,
 mount's root stop the walk. On the RTX 3080 (CUDA), the `default`
 preset: `devtools/test.py pr --only cargo --all` passed, tiers 1 to 3
 343 tests, tier 4 366, none skipped. HIP not run.
+
+2026-11-14, heap rows to the device and back (#1619): `Dag::upload_heap`
+and `Dag::download_heap` move a range of a heap row through a pinned
+window of their own, a CPU node and a stream node each (`stage <row>`,
+`upload <row>`; `download <row>`, `unstage <row>`). In a loop, iteration
+`k` takes the range moved on by `k` of its lengths. A 32 MiB heap row cut
+into eight ranges went up on lane 1 and came back on lane 0 in a counted
+loop of depth 2, bitwise equal to the source, with no allocation on a
+second run. The record's only host waits were each trip's `unstage` on
+its download, plus the lanes' exits. The copy-node scan now also sees a
+CPU task whose whole work is a heap/pinned copy. On the gfx1200 (HIP),
+the `hip` preset: `devtools/test.py pr --only cargo --all` passed on
+this tree rebased over #1613, tiers 1 to 3 342 tests, tier 4 368, none
+skipped, every plan golden unchanged. CUDA not run.
