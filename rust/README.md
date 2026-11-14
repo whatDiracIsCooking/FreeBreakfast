@@ -1319,3 +1319,17 @@ the moved goldens, `last build` leaves the pinned table and the stand-in
 prints as `pinned`; no table's total or peak changes. On the RTX 3080
 (CUDA), the `default` preset: `devtools/test.py pr --only cargo --all`
 passes, tier 3 339 tests, tier 4 360, none skipped. HIP not run.
+
+2026-11-14, a counted loop in a decision loop's body (#1613): a decision
+loop's body may hold a counted loop, replayed whole every iteration, its
+trips overlapped with no host wait between them. The counted loop's
+region is a row of the decision loop's body table, and a counted body
+node's record entries carry the decision loop's iteration as `outer`.
+On a card, a decision loop of three iterations zeroed an accumulator,
+uploaded and reduced eight batches on two lanes at depth 2, and
+downloaded the sum. Every iteration came out bitwise equal to the host's
+ordered reduce, with the arena's block count unchanged, and the only
+sync points were the decision's on the download and the lanes' exits. On
+the RTX 3080 (CUDA), the `default` preset: `devtools/test.py pr --only
+cargo --all` passed, tiers 1 to 3 342 tests, tier 4 365, none skipped,
+and no plan golden moved. HIP not run.
