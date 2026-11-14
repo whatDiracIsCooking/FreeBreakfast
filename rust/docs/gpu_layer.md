@@ -530,7 +530,11 @@ correctness rests on is a contract.
   fields are private and which only `add_record_tasks` makes, beside the
   tasks that write its rows from tables checked on the host; its doc
   comment has the argument. A raw `fb_primitive_pair_class_view`, which
-  anyone can fill with any pointers, never reaches a safe call.
+  anyone can fill with any pointers, never reaches a safe call. A reader
+  declares only the record fields its family's kernels read
+  (`fb_integrals_sys::Fields`), and its launcher's view carries those and
+  null for the rest, which is sound only because a test holds each
+  family's field set to exactly what its forked kernels dereference.
 - **Non-overlap is checked from offsets.** "No array may overlap another" is
   decidable from arena offsets at tier 2.
 - **Correctness-only rules are `debug_requires`.** `la <= lb` for a basis's

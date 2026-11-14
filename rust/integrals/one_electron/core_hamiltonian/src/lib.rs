@@ -47,7 +47,7 @@ use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::memset;
 use fb_integrals_one_electron_kinetic::kinetic_classes;
 use fb_integrals_one_electron_potential_en::potential_en_classes;
-use fb_integrals_sys::ClassRows;
+use fb_integrals_sys::{ClassRows, Fields};
 use fb_molecule_nuclei::NucleiRows;
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 
@@ -130,7 +130,7 @@ impl Task for CoreHamiltonian {
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         for c in &self.classes {
-            c.read(device);
+            c.read(device, Fields::KINETIC.union(Fields::POTENTIAL_EN));
         }
         self.nuclei.read(device);
         device.output("H cartesian", self.n_cart * self.n_cart)

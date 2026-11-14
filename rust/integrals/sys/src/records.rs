@@ -222,10 +222,57 @@ impl RecordTables {
     }
 }
 
+/// A set of a class's record fields: the ones a family's kernels read. A
+/// reader's layout declares exactly these ([`ClassRows::read`]), so the
+/// rows its kernels never touch are not edges into it, and a launcher
+/// hands its kernel a view with these pointers and null for the rest.
+///
+/// Each family's set is every field its forked kernels dereference
+/// through the view, and no other: a test scans
+/// `integrals/kernels/one_electron/<family>/` and holds each set to it,
+/// which is what makes the null pointers sound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fields(u32);
+
+impl Fields {
+    /// The overlap's: ζ, P − A, P − B, `s` and both AO offsets.
+    pub const OVERLAP: Self = Self(
+        1 << F_ZETA | 0b111 << F_PA_X | 0b111 << F_PB_X | 1 << F_S | 1 << I_OFF_A | 1 << I_OFF_B,
+    );
+    /// The kinetic energy's: the overlap's, and β.
+    pub const KINETIC: Self = Self(Self::OVERLAP.0 | 1 << F_EB);
+    /// The nuclear attraction's: the overlap's, and P.
+    pub const POTENTIAL_EN: Self = Self(Self::OVERLAP.0 | 0b111 << F_P_X);
+
+    /// The fields of either set: a task that launches two families over
+    /// one class, as the core Hamiltonian does, reads both.
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Whether the field at `bit` is in the set.
+    const fn has(self, bit: usize) -> bool {
+        self.0 & 1 << bit != 0
+    }
+}
+
+// Each field's bit in a [`Fields`]: the double fields in
+// [`ClassRows::f64_rows`]'s order, then the integer ones in
+// [`ClassRows::i32_rows`]'s.
+const F_ZETA: usize = 0;
+const F_P_X: usize = 1;
+const F_PA_X: usize = 4;
+const F_PB_X: usize = 7;
+const F_S: usize = 10;
+const F_EB: usize = 12;
+const I_OFF_A: usize = 16;
+const I_OFF_B: usize = 17;
+
 /// One class's records on the device: its momenta, its record count, the
 /// Cartesian AO count of its basis, and a row per field, each `n_rec`
 /// long, all outputs of the records task. A reader declares that it reads
-/// them with [`ClassRows::read`], and hands the class to a launcher:
+/// the fields its family uses with [`ClassRows::read`], and hands the
+/// class to a launcher:
 /// [`overlap_class`](crate::overlap_class),
 /// [`kinetic_class`](crate::kinetic_class) or
 /// [`potential_en_class`](crate::potential_en_class).
@@ -351,32 +398,49 @@ impl ClassRows {
         [self.off_a, self.off_b, self.rank_a, self.rank_b]
     }
 
-    /// Declare, in a reader's layout, that it reads every field: what a
-    /// launcher then fetches.
-    pub fn read(&self, device: &mut Layout<'_, Device>) {
-        for row in self.f64_rows() {
-            device.read(row);
+    /// Declare, in a reader's layout, that it reads `fields`, its
+    /// family's ([`Fields`]): what a launcher of that family then fetches.
+    pub fn read(&self, device: &mut Layout<'_, Device>, fields: Fields) {
+        for (bit, row) in self.f64_rows().into_iter().enumerate() {
+            if fields.has(bit) {
+                device.read(row);
+            }
         }
-        for row in self.i32_rows() {
-            device.read(row);
+        for (bit, row) in (16..).zip(self.i32_rows()) {
+            if fields.has(bit) {
+                device.read(row);
+            }
         }
     }
 
-    /// The class as the C ABI takes it, every field a row of `device`.
+    /// The class as the C ABI takes it for a kernel that reads `fields`:
+    /// each of those a row of `device`, every other pointer null.
     ///
     /// # Panics
-    /// If a field was not declared by the reading task's layout
-    /// ([`Bufs::get`]).
-    pub(crate) fn view(&self, device: &Bufs<'_, Device>) -> fb_primitive_pair_class_view {
+    /// If a field of `fields` was not declared by the reading task's
+    /// layout ([`Bufs::get`]).
+    pub(crate) fn view(
+        &self,
+        device: &Bufs<'_, Device>,
+        fields: Fields,
+    ) -> fb_primitive_pair_class_view {
         let n_rec = self.n_rec as usize;
-        let f = |row| {
-            let row = device.get(row);
+        let rows = self.f64_rows();
+        let f = |bit: usize| {
+            if !fields.has(bit) {
+                return std::ptr::null();
+            }
+            let row = device.get(rows[bit]);
             // INVARIANT: the records task declared every field n_rec long.
             debug_assert_eq!(row.len(), n_rec);
             row.as_ptr()
         };
-        let i = |row| {
-            let row = device.get(row);
+        let rows = self.i32_rows();
+        let i = |bit: usize| {
+            if !fields.has(bit) {
+                return std::ptr::null();
+            }
+            let row = device.get(rows[bit - 16]);
             // INVARIANT: as above.
             debug_assert_eq!(row.len(), n_rec);
             row.as_ptr()
@@ -385,26 +449,26 @@ impl ClassRows {
             la: self.la,
             lb: self.lb,
             n_rec: self.n_rec,
-            zeta: f(self.zeta),
-            p_x: f(self.p_x),
-            p_y: f(self.p_y),
-            p_z: f(self.p_z),
-            pa_x: f(self.pa_x),
-            pa_y: f(self.pa_y),
-            pa_z: f(self.pa_z),
-            pb_x: f(self.pb_x),
-            pb_y: f(self.pb_y),
-            pb_z: f(self.pb_z),
-            s: f(self.s),
-            ea: f(self.ea),
-            eb: f(self.eb),
-            bound: f(self.bound),
-            bound_ab: f(self.bound_ab),
-            bound_ba: f(self.bound_ba),
-            off_a: i(self.off_a),
-            off_b: i(self.off_b),
-            rank_a: i(self.rank_a),
-            rank_b: i(self.rank_b),
+            zeta: f(0),
+            p_x: f(1),
+            p_y: f(2),
+            p_z: f(3),
+            pa_x: f(4),
+            pa_y: f(5),
+            pa_z: f(6),
+            pb_x: f(7),
+            pb_y: f(8),
+            pb_z: f(9),
+            s: f(10),
+            ea: f(11),
+            eb: f(12),
+            bound: f(13),
+            bound_ab: f(14),
+            bound_ba: f(15),
+            off_a: i(16),
+            off_b: i(17),
+            rank_a: i(18),
+            rank_b: i(19),
         }
     }
 }
@@ -833,6 +897,109 @@ fn upload<T: Element>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The view's pointer fields, each at its bit in a [`Fields`].
+    const VIEW_FIELDS: [&str; 20] = [
+        "zeta", "p_x", "p_y", "p_z", "pa_x", "pa_y", "pa_z", "pb_x", "pb_y", "pb_z", "s", "ea",
+        "eb", "bound", "bound_ab", "bound_ba", "off_a", "off_b", "rank_a", "rank_b",
+    ];
+
+    /// The view's pointer fields that the forked sources under
+    /// `integrals/kernels/one_electron/<family>/` dereference: `name->field`
+    /// or `name.field` for every `name` declared there as a
+    /// `fb_primitive_pair_class_view` pointer or reference.
+    fn dereferenced(family: &str) -> std::collections::BTreeSet<String> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../kernels/one_electron")
+            .join(family);
+        let mut sources = Vec::new();
+        let mut todo = vec![dir.clone()];
+        while let Some(d) = todo.pop() {
+            for entry in std::fs::read_dir(&d).unwrap_or_else(|e| panic!("{d:?}: {e}")) {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    todo.push(path);
+                } else if path
+                    .extension()
+                    .is_some_and(|x| ["cu", "h", "cuh"].iter().any(|e| x == *e))
+                {
+                    sources.push(std::fs::read_to_string(&path).unwrap());
+                }
+            }
+        }
+        let text = sources.join("\n");
+        // Every name a view is bound to: `fb_primitive_pair_class_view *cls`,
+        // `... &cls`, `const fb_primitive_pair_class_view *const cls`.
+        let mut names = std::collections::BTreeSet::new();
+        for (at, _) in text.match_indices("fb_primitive_pair_class_view") {
+            let rest = &text[at + "fb_primitive_pair_class_view".len()..];
+            let rest = rest.trim_start_matches(|c: char| c.is_whitespace() || "*&".contains(c));
+            let rest = rest.strip_prefix("const").unwrap_or(rest).trim_start();
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                names.insert(name);
+            }
+        }
+        assert!(
+            !names.is_empty(),
+            "{family}: no fb_primitive_pair_class_view in {dir:?}"
+        );
+        let mut used = std::collections::BTreeSet::new();
+        for name in &names {
+            for sep in ["->", "."] {
+                let pat = format!("{name}{sep}");
+                for (at, _) in text.match_indices(&pat) {
+                    let before = text[..at].chars().next_back();
+                    if before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                        continue;
+                    }
+                    let field: String = text[at + pat.len()..]
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    if VIEW_FIELDS.contains(&field.as_str()) {
+                        used.insert(field);
+                    }
+                }
+            }
+        }
+        used
+    }
+
+    /// Each family's [`Fields`] is exactly the view fields its forked
+    /// kernels dereference. Every other pointer a launcher hands that
+    /// family is null, so a kernel that starts reading another field fails
+    /// here before it can read a null one on the device.
+    #[test]
+    fn each_family_reads_exactly_its_fields() {
+        for (family, fields) in [
+            ("overlap", Fields::OVERLAP),
+            ("kinetic", Fields::KINETIC),
+            ("potential_en", Fields::POTENTIAL_EN),
+        ] {
+            let set: std::collections::BTreeSet<String> = VIEW_FIELDS
+                .iter()
+                .enumerate()
+                .filter(|&(bit, _)| fields.has(bit))
+                .map(|(_, f)| f.to_string())
+                .collect();
+            assert_eq!(dereferenced(family), set, "{family}");
+        }
+    }
+
+    /// The bits name the view's fields in [`ClassRows::f64_rows`]'s and
+    /// [`ClassRows::i32_rows`]'s order.
+    #[test]
+    fn the_field_bits_follow_the_rows() {
+        let bit = |name: &str| VIEW_FIELDS.iter().position(|f| *f == name).unwrap();
+        assert_eq!(
+            [F_ZETA, F_P_X, F_PA_X, F_PB_X, F_S, F_EB, I_OFF_A, I_OFF_B],
+            ["zeta", "p_x", "pa_x", "pb_x", "s", "eb", "off_a", "off_b"].map(bit)
+        );
+    }
 
     /// Two shells, an s of two primitives at AO 0 and a p of one at AOs
     /// 1..4, and their three pairs in classes (0,0), (0,1) and (1,1).

@@ -44,7 +44,7 @@ use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::device_slice::DeviceSliceMut;
 use fb_core_wwr::memset;
 use fb_core_wwr::runtime::Stream;
-use fb_integrals_sys::{ClassRows, kinetic_class};
+use fb_integrals_sys::{ClassRows, Fields, kinetic_class};
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 
 /// Add every class's kinetic-energy contributions into the Cartesian matrix
@@ -54,7 +54,8 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// to) before the call, and is symmetric after it when it was before.
 ///
 /// `stream` is the calling task's, `device` its view, and every class's
-/// fields were declared read by its layout ([`ClassRows::read`]).
+/// [`Fields::KINETIC`] were declared read by its layout
+/// ([`ClassRows::read`]).
 ///
 /// # Errors
 /// The first launch's refusal or launch error, as [`kinetic_class`] names
@@ -133,7 +134,7 @@ impl Task for Kinetic {
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         for c in &self.classes {
-            c.read(device);
+            c.read(device, Fields::KINETIC);
         }
         device.output("T cartesian", self.n_cart * self.n_cart)
     }

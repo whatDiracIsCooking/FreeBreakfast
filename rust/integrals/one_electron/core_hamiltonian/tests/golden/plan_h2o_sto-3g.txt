@@ -40,15 +40,15 @@ peak: 21232 bytes at node 3
       7424        720  edge    3-4      pb_y (0,0): 3w 4r
       8192        720  edge    3-4      pb_z (0,0): 3w 4r
       8960        720  edge    3-4      s (0,0): 3w 4r
-      9728        720  edge    3-4      ea (0,0): 3w 4r
+      9728        720  edge    3-3      ea (0,0): 3w
      10496        720  edge    3-4      eb (0,0): 3w 4r
-     11264        720  edge    3-4      bound (0,0): 3w 4r
-     12032        720  edge    3-4      bound_ab (0,0): 3w 4r
-     12800        720  edge    3-4      bound_ba (0,0): 3w 4r
+     11264        720  edge    3-3      bound (0,0): 3w
+     12032        720  edge    3-3      bound_ab (0,0): 3w
+     12800        720  edge    3-3      bound_ba (0,0): 3w
      14080        360  edge    3-4      off_a (0,0): 3w 4r
      14592        360  edge    3-4      off_b (0,0): 3w 4r
-     15104        360  edge    3-4      rank_a (0,0): 3w 4r
-     15616        360  edge    3-4      rank_b (0,0): 3w 4r
+     15104        360  edge    3-3      rank_a (0,0): 3w
+     15616        360  edge    3-3      rank_b (0,0): 3w
      16128        288  edge    3-4      zeta (0,1): 3w 4r
      16640        288  edge    3-4      p_x (0,1): 3w 4r
      17152        288  edge    3-4      p_y (0,1): 3w 4r
@@ -60,15 +60,15 @@ peak: 21232 bytes at node 3
      20224        288  edge    3-4      pb_y (0,1): 3w 4r
      20736        288  edge    3-4      pb_z (0,1): 3w 4r
      21248        288  edge    3-4      s (0,1): 3w 4r
-     21760        288  edge    3-4      ea (0,1): 3w 4r
+     21760        288  edge    3-3      ea (0,1): 3w
      22272        288  edge    3-4      eb (0,1): 3w 4r
-     22784        288  edge    3-4      bound (0,1): 3w 4r
-     23296        288  edge    3-4      bound_ab (0,1): 3w 4r
-     23808        288  edge    3-4      bound_ba (0,1): 3w 4r
+     22784        288  edge    3-3      bound (0,1): 3w
+     23296        288  edge    3-3      bound_ab (0,1): 3w
+     23808        288  edge    3-3      bound_ba (0,1): 3w
      24320        144  edge    3-4      off_a (0,1): 3w 4r
      24576        144  edge    3-4      off_b (0,1): 3w 4r
-     24832        144  edge    3-4      rank_a (0,1): 3w 4r
-     25088        144  edge    3-4      rank_b (0,1): 3w 4r
+     24832        144  edge    3-3      rank_a (0,1): 3w
+     25088        144  edge    3-3      rank_b (0,1): 3w
      26112         72  edge    3-4      zeta (1,1): 3w 4r
      26368         72  edge    3-4      p_x (1,1): 3w 4r
      26624         72  edge    3-4      p_y (1,1): 3w 4r
@@ -80,16 +80,16 @@ peak: 21232 bytes at node 3
      28160         72  edge    3-4      pb_y (1,1): 3w 4r
      28416         72  edge    3-4      pb_z (1,1): 3w 4r
      28672         72  edge    3-4      s (1,1): 3w 4r
-     28928         72  edge    3-4      ea (1,1): 3w 4r
+     28928         72  edge    3-3      ea (1,1): 3w
      29184         72  edge    3-4      eb (1,1): 3w 4r
-     29440         72  edge    3-4      bound (1,1): 3w 4r
-     29696         72  edge    3-4      bound_ab (1,1): 3w 4r
-     29952         72  edge    3-4      bound_ba (1,1): 3w 4r
+     29440         72  edge    3-3      bound (1,1): 3w
+     29696         72  edge    3-3      bound_ab (1,1): 3w
+     29952         72  edge    3-3      bound_ba (1,1): 3w
      31488         36  edge    3-4      off_a (1,1): 3w 4r
      31744         36  edge    3-4      off_b (1,1): 3w 4r
-     32000         36  edge    3-4      rank_a (1,1): 3w 4r
-     32256         36  edge    3-4      rank_b (1,1): 3w 4r
-     13568        392  edge    4-7      H cartesian: 4w 7r
+     32000         36  edge    3-3      rank_a (1,1): 3w
+     32256         36  edge    3-3      rank_b (1,1): 3w
+     21760        392  edge    4-7      H cartesian: 4w 7r
          0        392  edge    6-7      U: 6w 7r
        512        392  task    7-7      H U: 7w
       1024        392  edge    7-8      H: 7w 8r
