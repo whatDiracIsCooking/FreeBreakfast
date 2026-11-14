@@ -251,6 +251,96 @@ def test_shallow_clone(repo: Path, tmp_path: Path) -> None:
     assert gates.changed_files(_clean_env(), clone) == []
 
 
+def _with_origin_main(repo: Path) -> Path:
+    """`repo` with origin/main at its HEAD and a committed rust/ crate file."""
+    (repo / "rust" / "core" / "wwr" / "src").mkdir(parents=True)
+    (repo / "rust" / "core" / "wwr" / "src" / "runtime.rs").write_text("//\n")
+    (repo / ".gitignore").write_text("target/\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "rust")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    return repo
+
+
+def test_by_hand_a_dirty_edit_under_rust_is_selected(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # #1502: an uncommitted edit selected nothing, and tier 4 said PASS.
+    repo = _with_origin_main(repo)
+    assert gates.changed_files(_clean_env(), repo) == []
+    assert "uncommitted" not in capsys.readouterr().out
+    (repo / "rust" / "core" / "wwr" / "src" / "runtime.rs").write_text("// x\n")
+    files = gates.changed_files(_clean_env(), repo)
+    assert files == ["rust/core/wwr/src/runtime.rs"]
+    assert "1 uncommitted file(s) in the tree -- included" in capsys.readouterr().out
+    assert gates.halves(files) == (False, False, True)
+    assert gates.affected_crates(files, _META) & _LINKING == _LINKING
+    # Staged counts the same, and joins what is committed since origin/main.
+    _git(repo, "add", "-A")
+    (repo / "tool.py").write_text("x = 2\n")
+    _git(repo, "commit", "-q", "-m", "py", "--", "tool.py")
+    assert gates.changed_files(_clean_env(), repo) == [
+        "rust/core/wwr/src/runtime.rs",
+        "tool.py",
+    ]
+
+
+def test_by_hand_an_untracked_file_is_selected_and_an_ignored_one_not(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _with_origin_main(repo)
+    (repo / "rust" / "core" / "wwr" / "src" / "new.rs").write_text("//\n")
+    (repo / "target").mkdir()
+    (repo / "target" / "junk.rs").write_text("//\n")
+    assert gates.changed_files(_clean_env(), repo) == ["rust/core/wwr/src/new.rs"]
+    assert "1 uncommitted file(s)" in capsys.readouterr().out
+
+
+def _a_repo_to_add(tmp_path: Path) -> Path:
+    src = tmp_path / "subsrc"
+    src.mkdir()
+    _git(src, "init", "-q", "-b", "main")
+    (src / "README.md").write_text("sub\n")
+    _git(src, "add", "-A")
+    _git(src, "commit", "-q", "-m", "sub")
+    return src
+
+
+def test_by_hand_a_dirty_submodule_is_its_own_path(repo: Path, tmp_path: Path) -> None:
+    # A dirty submodule is its gitlink path, never the files inside it, and
+    # never a crash; halves() then matches nothing for it.
+    repo = _with_origin_main(repo)
+    _git(
+        repo,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        f"file://{_a_repo_to_add(tmp_path)}",
+        "deps/sub",
+    )
+    _git(repo, "commit", "-q", "-m", "sub")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    sub = repo / "deps" / "sub"
+    (sub / "README.md").write_text("edited\n")
+    (sub / "untracked.cpp").write_text("//\n")
+    assert gates.changed_files(_clean_env(), repo) == ["deps/sub"]
+    _git(sub, "commit", "-q", "-am", "moved")
+    assert gates.changed_files(_clean_env(), repo) == ["deps/sub"]
+    assert gates.halves(["deps/sub"]) == (False, False, False)
+
+
+def test_under_pre_commit_a_dirty_tree_is_not_read(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A push tests the pushed range exactly, whatever the tree holds.
+    (repo / "src" / "a.cppm").write_text("export module b;\n")
+    (repo / "new.py").write_text("y = 1\n")
+    assert gates.changed_files(_range(repo, "HEAD~1", "HEAD"), repo) == ["tool.py"]
+    assert "uncommitted" not in capsys.readouterr().out
+
+
 def test_dry_run_dispatch(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

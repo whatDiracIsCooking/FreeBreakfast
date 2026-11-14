@@ -1487,7 +1487,10 @@ class DiffError(Exception):
 def changed_files(env: dict[str, str], root: Path = REPO_ROOT) -> list[str] | None:
     """The files a push changes: pre-commit's PRE_COMMIT_FROM_REF...TO_REF,
     the same three-dot diff its own `files:` filters read (two dots when the
-    two have no merge base); by hand, origin/main...HEAD.
+    two have no merge base); by hand, origin/main...HEAD, and when the tree
+    is dirty its staged, unstaged and untracked (non-ignored) files too, with
+    a line saying so (#1502): a hand run before the commit tests the edit. A
+    submodule appears as its own path, never the files inside it.
 
     None means both halves run: pre-commit sets no refs for a push of a whole
     history, and under pre-commit a range git cannot read (a shallow clone
@@ -1519,7 +1522,13 @@ def changed_files(env: dict[str, str], root: Path = REPO_ROOT) -> list[str] | No
             check=False,
         )
         if proc.returncode == 0:
-            return [f for f in proc.stdout.split("\0") if f]
+            files = [f for f in proc.stdout.split("\0") if f]
+            if hooked:
+                return files
+            dirty = _dirty_files(root, git_env)
+            if dirty:
+                say(f"{len(dirty)} uncommitted file(s) in the tree -- included")
+            return sorted(set(files) | set(dirty))
     why = proc.stderr.strip().splitlines()[-1:] or ["no output"]
     if hooked:
         say(
@@ -1533,6 +1542,26 @@ def changed_files(env: dict[str, str], root: Path = REPO_ROOT) -> list[str] | No
         " --unshallow` in a shallow clone), or set PRE_COMMIT_FROM_REF and"
         " PRE_COMMIT_TO_REF to the range to test."
     )
+
+
+def _dirty_files(root: Path, git_env: dict[str, str]) -> list[str]:
+    """The tree's tracked changes against HEAD, staged or not, and its
+    untracked files git does not ignore. With the committed range from the
+    merge base this is the tree's diff against that base."""
+    found: set[str] = set()
+    for cmd in (
+        ["diff", "--name-only", "--no-ext-diff", "-z", "HEAD"],
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+    ):
+        proc = subprocess.run(
+            ["git", "-C", str(root), *cmd],
+            env=git_env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        found |= {f for f in proc.stdout.split("\0") if f}
+    return sorted(found)
 
 
 def halves(files: list[str] | None) -> tuple[bool, bool, bool]:
@@ -2083,13 +2112,21 @@ def cmd_pr(
     do_cpp = args.only in (None, "cpp")
     do_py = args.only in (None, "python") and not args.no_test
     do_cargo = args.only in (None, "cargo") and not args.no_test
+    changed: list[list[str] | None] = []
+
+    def pr_files() -> list[str] | None:
+        """changed_files, read once: a diff git cannot read is None, which
+        tests more, not less."""
+        if not changed:
+            try:
+                changed.append(changed_files(dict(os.environ)))
+            except DiffError:
+                changed.append(None)
+        return changed[0]
+
     if do_cargo and args.only is None:
-        # push's dispatch, over origin/main...HEAD: a diff git cannot read
-        # tests more, not less.
-        try:
-            do_cargo = halves(changed_files(dict(os.environ)))[2]
-        except DiffError:
-            do_cargo = True
+        # push's dispatch, over origin/main...HEAD and a dirty tree.
+        do_cargo = halves(pr_files())[2]
 
     if (
         do_cpp
@@ -2209,10 +2246,7 @@ def cmd_pr(
         crc = cargo_half(tag, jobs, log)
         if crc == 0:
             # --all, or a diff git cannot read: every crate's tier 4.
-            try:
-                files = None if args.all else changed_files(dict(os.environ))
-            except DiffError:
-                files = None
+            files = None if args.all else pr_files()
             crc = cargo_tier4(tag, cfg, test_preset or preset, files, jobs, log)
         else:
             say(f"{tag}: tier 4 not run -- tiers 1 to 3 failed", log=log)

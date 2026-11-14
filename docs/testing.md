@@ -37,7 +37,7 @@ A gate is named by **when it runs**, not by what it contains.
 | Gate | When | Runs | Budget |
 | --- | --- | --- | --- |
 | `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++ outside `experimental/` and `test/experimental/`, the Python half when it touches `.py`, the cargo half when it touches `rust/` (and then neither of the others for those paths). C++: the host binaries' fast set, and of the GPU binaries each family's representative, as `pr` (#1126; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates (clippy, then their tests on the card) | under 5 min on a busy card |
-| `pr` | by hand before opening a PR; `milestone-run` requires it | C++: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates (clippy, then their tests on the test preset's card; `--all`, every crate's), when `origin/main...HEAD` touches `rust/` (`--only cargo` alone) | under 5 min on a busy card |
+| `pr` | by hand before opening a PR; `milestone-run` requires it | C++: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates (clippy, then their tests on the test preset's card; `--all`, every crate's), when `origin/main...HEAD` or the uncommitted tree touches `rust/` (`--only cargo` alone) | under 5 min on a busy card |
 | `nightly` | a timer on this box | everything, unskipped: the C++ and Python halves, and the cargo half as `pr --only cargo --all` with its slow cases (#1459), plus the cross-backend compile check | none; it has the night |
 
 **The single-backend rule holds for all three.** A gate runs on one card, and
@@ -246,9 +246,12 @@ devtools/test.py pr --record                 # and append it to `metrics`
 
 - **`push` dispatches on the diff.** It reads the pushed range from
   pre-commit's `PRE_COMMIT_FROM_REF...PRE_COMMIT_TO_REF` (by hand,
-  `origin/main...HEAD`), runs the Python half when a `.py` changed and the C++
-  half when a source, a header, a `CMakeLists.txt`, `CMakePresets.json` or a
-  `.cmake` did, and runs nothing for a docs-only push. The hook in
+  `origin/main...HEAD` and, when the tree is dirty, its staged, unstaged and
+  untracked non-ignored files, with a line saying so (#1502); a submodule is
+  its own path, never the files in it), runs the Python half when a `.py`
+  changed and the C++ half when a source, a header, a `CMakeLists.txt`,
+  `CMakePresets.json` or a `.cmake` did, and runs nothing for a docs-only
+  push. The hook in
   `.pre-commit-config.yaml` is `always_run` with no `files:` filter, so the
   dispatch is written down once, in `test.py`. A push of a whole history
   carries no range, and runs both; so does a range git cannot read under the
