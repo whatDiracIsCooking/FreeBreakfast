@@ -306,7 +306,10 @@ decision is written down here:
 - **The graph is tested.** A tier-3 test reads the package graph with
   [`guppy`](https://crates.io/crates/guppy) and fails when a crate's reverse
   dependents pass a bar, except the few crates the test names as allowed to
-  be global. A flattening then shows up in the PR that causes it, not in a
+  be global. The bar is two thirds of the other members, and the global
+  crates are `fb-core-log` and `fb-core-error-handling`
+  (`doc_check/tests/workspace_graph.rs` derives the number from the
+  distribution). A flattening then shows up in the PR that causes it, not in a
   replay a year later.
 - **The selector is [`determinator`](https://docs.rs/determinator/) over
   `guppy`**, which marks the packages a git diff affects. Two of its rules
@@ -515,8 +518,10 @@ schedule. Here they are weekly from the start.
   single build sees two devices. Can several workers on one card stand in for
   most of tier 5, with true multi-GPU tested only on a multi-GPU VM?
 - **Determinator's path rules.** The rules that map a kernel library's
-  sources to the crate that wraps them are hand-written. Who regenerates them when a
-  module is added, and does the graph test catch a stale one?
+  sources to the crate that wraps them are hand-written. The graph test
+  catches a stale one (a `kernels/` no rule covers or no `-sys` crate wraps,
+  a rule naming a file or crate that is gone); who regenerates them when a
+  module is added?
 - **ASan on stable.** Adopt the Tier 2 target now, or wait for the
   stabilization and run ASan on nightly Rust until then?
 - **The mutant bar.** What kill rate does a crate need, and is a surviving
