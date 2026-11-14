@@ -7,6 +7,8 @@
 //! | `:solver_error`, the `wwrsolverStatus_t` specializations | `impl ErrorCode for wwr_solver_status` |
 //! | `:solver_handle`, `SolverDnHandleWrapper<P_create, P_destroy, S, P_device>` | [`SolverHandle`], over [`Stream`] |
 //! | `:solver_params`, the generic API's params object | not ported: the legacy int-based calls take none |
+//! | `usual_fp`'s real half, the typed dispatch `syevd<T>`, `syevd_lwork<T>` over `wwrsolverDn{S,D}syevd` and its query | [`SolverScalar`], its `syevd_raw` and `syevd_lwork_raw` (`solver/syevd.rs`) |
+//! | the same `syevd<T>`, `syevd_lwork<T>`, called with raw pointers | [`syevd`] over [`DeviceSliceMut`](crate::device_slice::DeviceSliceMut)s it checks, the work against the query; [`syevd_lwork`] |
 //!
 //! As [`BlasHandle`](crate::blas::BlasHandle) is: a [`StreamBoundHandle`]
 //! made from a shared stream owner, created on its device, bound to its
@@ -16,6 +18,15 @@
 //! **The status has two values.** WarpWraps' C ABI maps every failure of
 //! cuSOLVER or hipSOLVER to `WWR_SOLVER_STATUS_UNKNOWN`, so the vendor's
 //! reason does not cross; a caller names the call that failed.
+//!
+//! **The typed calls**, one file per routine (`solver/syevd.rs`), are as
+//! [`blas`](crate::blas)'s: [`SolverScalar`] is the `unsafe` raw layer,
+//! sealed over the types the C ABI takes, and [`syevd`] the safe call over
+//! it, every extent checked against its slice in every build.
+
+mod syevd;
+
+pub use syevd::{SolverScalar, syevd, syevd_lwork};
 
 use std::ops::Deref;
 use std::rc::Rc;

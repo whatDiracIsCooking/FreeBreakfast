@@ -517,7 +517,7 @@ list is in three tiers:
   `fb-integrals-one-electron-overlap`, `fb-integrals-one-electron-kinetic`,
   `fb-integrals-one-electron-potential-en`,
   `fb-integrals-one-electron-core-hamiltonian`, `fb-recipes-matrix-ao`,
-  `fb-recipes-diagonalize`, `fb-recipes-orthogonalize`.
+  `fb-recipes-orthogonalize`.
 
 The core crates hold the wrappers: `fb-core-wwr` over the `wwr-sys`
 bindings, the arena over the raw allocation and copy bindings, the two
@@ -541,16 +541,18 @@ comment justifies exactly one thing. Miri covers what a lint cannot
 ([`testing.md`](testing.md), "Sanitizers").
 
 A library call reaches the crates above `core` through a safe wrapper, not
-`wwr-sys`: `fb_core_wwr::blas::gemm` and `dgmm` take their operands as
-`DeviceSlice`s (device memory with its length, which the arena's rows
-implement) and check each extent against them in every build, and
-`fb-recipes-blas`, their packed shorthand, forbids `unsafe` itself, as the
-arena's `memcpy_*` do for the copies. That is the shape for the rest.
-`fb-pipeline-scf` has nothing left to call raw and forbids `unsafe`; the
-recipe crates still call `wwr-sys` or a kernel library directly (`syevd`,
-the BLAS workspace, their kernels; `fb-recipes-orthogonalize` only its
-`fb_inverse_sqrt` launch), so they do not yet, and each call moves behind
-a checked wrapper of its own.
+`wwr-sys`: `fb_core_wwr::blas::gemm` and `dgmm` and
+`fb_core_wwr::solver::syevd` take their operands as `DeviceSlice`s (device
+memory with its length, which the arena's rows implement) and check each
+extent against them in every build (syevd's work against the solver's own
+query), and `fb-recipes-blas`, the BLAS calls' packed shorthand, forbids
+`unsafe` itself, as the arena's `memcpy_*` do for the copies. That is the
+shape for the rest. `fb-pipeline-scf` and `fb-recipes-diagonalize` have
+nothing left to call raw and forbid `unsafe`; the other recipe crates still
+call `wwr-sys` or a kernel library directly (`fb-recipes-matrix-ao` the BLAS
+workspace hand-off, `fb-recipes-orthogonalize` its `fb_inverse_sqrt`
+launch, the method crates their kernels), so they do not yet, and each call
+moves behind a checked wrapper of its own.
 
 ```toml
 [workspace.lints.clippy]            # every member: [lints] workspace = true

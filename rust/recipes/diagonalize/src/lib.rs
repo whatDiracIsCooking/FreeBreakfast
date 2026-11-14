@@ -1,7 +1,7 @@
 //! The symmetric eigendecomposition `A = U diag(w) Uᵀ` on the GPU, as tasks
-//! of a [`Dag`]: the dense solver's legacy `syevd` through `wwr-sys`, on
-//! the stream worker's solver handle. The C++ `src/recipes/diagonalize` is
-//! the reference design.
+//! of a [`Dag`]: the dense solver's legacy `syevd` through
+//! [`fb_core_wwr::solver::syevd`], on the stream worker's solver handle.
+//! The C++ `src/recipes/diagonalize` is the reference design.
 //!
 //! [`add_diagonalize`] adds, for one symmetric matrix row:
 //!
@@ -30,19 +30,21 @@
 //! | `res.device_workspace()`, grown to `syevd_lwork` at the call | the task's `syevd work` scratch row, `lwork` doubles, laid out at planning |
 //! | `res.info()` and `res.fetch_info()`, one stream sync | the `syevd info` device scratch row, its pinned copy, and the `syevd check` task the executor waits for `syevd` before |
 //! | `info < 0`: `GpuRuntime`; `info > 0`: `Numerical` | the same, from `syevd check` |
-//! | `syevd_lwork<T>(res, n)` | [`syevd_lwork`], on a [`SolverHandle`] |
+//! | `syevd_lwork<T>(res, n)` | [`syevd_lwork`], on a [`SolverHandle`]: [`solver::syevd_lwork`] at this crate's modes |
+//! | `wwr::syevd<T>`, raw pointers | [`solver::syevd`], over the task's rows, each extent checked |
 //! | `diagonalize_footprint<T>(lwork)` | the layout, read off by the planner |
 //! | `res.solver()`, the `DeviceResources`' handle | the stream worker's handle, [`DeviceStream::solver`], made with the backend and bound to the worker's stream |
 //! | `float` and `double` | `f64` only, until a caller needs `f32` |
 //! | `n <= 0`: an empty success | refused at planning: `n` is at least 1 |
+
+#![forbid(unsafe_code)]
 
 use contracts::debug_requires;
 use fb_core_arena::{Bufs, Device, HostKind, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::gpu_status;
-use fb_core_wwr::solver::SolverHandle;
+use fb_core_wwr::solver::{self, SolverHandle};
 use wwr_sys::{wwr_solver_eig_mode, wwr_solver_fill_mode};
 
 /// syevd's eigenvector mode and triangle, shared by the query and the call
@@ -68,23 +70,7 @@ pub fn syevd_lwork(solver: &SolverHandle, n: usize) -> Result<usize> {
         return Ok(0);
     }
     let n = i32::try_from(n).expect("syevd_lwork: n fits the solver's i32");
-    let mut lwork = 0_i32;
-    // SAFETY: the handle is live; the legacy query reads neither matrix
-    // pointer, and writes one integer through a valid local.
-    gpu_status(unsafe {
-        wwr_sys::wwr_solver_dn_dsyevd_buffer_size(
-            solver.get(),
-            EIG_MODE,
-            FILL_MODE,
-            n,
-            std::ptr::null(),
-            n,
-            std::ptr::null(),
-            &mut lwork,
-        )
-    })
-    .map_err(|e| Error::gpu(format!("syevd_lwork (n = {n}): {}", e.message)))?;
-    Ok(usize::try_from(lwork).expect("the solver's work is not negative"))
+    solver::syevd_lwork::<f64>(solver, EIG_MODE, FILL_MODE, n, n)
 }
 
 /// Add the eigendecomposition of the symmetric `n` × `n` matrix `a` to `dag`
@@ -189,32 +175,24 @@ impl Task for Syevd {
         let Lane::Stream { stream: worker, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let u = device.take_mut(rows.u);
+        let mut u = device.take_mut(rows.u);
         memcpy_d2d(&u, device.get(self.a), worker)?;
-        let w = device.take_mut(rows.w);
-        let work = device.take_mut(rows.work);
-        let flag = device.take_mut(rows.flag);
-        // The planner checked both fit an i32.
-        let (n, lwork) = (self.n as i32, self.lwork as i32);
-        // SAFETY: U is n × n with ld n, w n doubles, the work `lwork`
-        // doubles and the flag one integer, all device rows of this task;
-        // the handle is the worker's, bound to `stream`, so syevd enqueues
-        // there, after the copy into U.
-        gpu_status(unsafe {
-            wwr_sys::wwr_solver_dn_dsyevd(
-                worker.solver().get(),
-                EIG_MODE,
-                FILL_MODE,
-                n,
-                u.as_mut_ptr(),
-                n,
-                w.as_mut_ptr(),
-                work.as_mut_ptr(),
-                lwork,
-                flag.as_mut_ptr(),
-            )
-        })
-        .map_err(|e| Error::gpu(format!("syevd (n = {n}): {}", e.message)))?;
+        let mut w = device.take_mut(rows.w);
+        let (mut work, mut flag) = (device.take_mut(rows.work), device.take_mut(rows.flag));
+        // The planner checked n² fits an i32. The handle is the worker's,
+        // bound to its stream, so syevd enqueues there, after the copy into
+        // U; it checks the work row against its own query.
+        solver::syevd(
+            worker.solver(),
+            EIG_MODE,
+            FILL_MODE,
+            self.n as i32,
+            &mut u,
+            self.n as i32,
+            &mut w,
+            &mut work,
+            &mut flag,
+        )?;
         memcpy_d2p(host, rows.info, &flag, worker)
     }
 }
