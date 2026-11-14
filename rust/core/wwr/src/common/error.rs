@@ -1,4 +1,5 @@
-//! `wwr.extension.common:error`: `wwrError_t` registered as an error code.
+//! `wwr.extension.common:error`: `wwrError_t` registered as an error code,
+//! and [`wwr_status_from_code`], the C ABI's integer read back as one.
 
 use super::ErrorCode;
 use wwr_sys::wwr_status;
@@ -36,6 +37,28 @@ impl ErrorCode for wwr_status {
     }
 }
 
+/// The `wwr_status` whose value is `code`, or `None` for an integer no
+/// enumerator has: a launch wrapper's positive `fb_launch_status`, which
+/// carries a `wwr_status` as an `int32_t` (`docs/gpu_layer.md`,
+/// "Statuses"). A table rather than a transmute, so a value Rust does not
+/// know is a `None` and never undefined behaviour. The closure every safe
+/// layer hands `fb_kernel_abi::launch_status`:
+/// `|code, at| Some(gpu_status_at(wwr_status_from_code(code)?, at))`.
+pub fn wwr_status_from_code(code: i32) -> Option<wwr_status> {
+    use wwr_status::*;
+    const ALL: [wwr_status; 8] = [
+        WWR_STATUS_SUCCESS,
+        WWR_STATUS_INVALID_VALUE,
+        WWR_STATUS_INVALID_DEVICE,
+        WWR_STATUS_NO_DEVICE,
+        WWR_STATUS_NOT_READY,
+        WWR_STATUS_MEMORY_ALLOCATION,
+        WWR_STATUS_NOT_SUPPORTED,
+        WWR_STATUS_UNKNOWN,
+    ];
+    ALL.into_iter().find(|&s| s as i32 == code)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,6 +78,14 @@ mod tests {
         ] {
             assert_eq!(s.name(), format!("{s:?}"));
             assert!(!s.description().is_empty());
+            assert_eq!(wwr_status_from_code(s as i32), Some(s));
         }
+    }
+
+    /// An integer no enumerator has is `None`.
+    #[test]
+    fn an_unknown_code_is_none() {
+        assert_eq!(wwr_status_from_code(8), None);
+        assert_eq!(wwr_status_from_code(-1), None);
     }
 }
