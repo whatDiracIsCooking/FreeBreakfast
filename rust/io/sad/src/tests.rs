@@ -7,9 +7,10 @@
 //! compiled-in set through `resolve_basis`, its primitives normalized as
 //! the BasisSet step normalizes them, the element's shells alone at the
 //! origin, and `sad_density` with no lookup. The bar is bitwise, since
-//! `fb-sad` runs the C++ generator's operations in the C++ order. The C++
-//! slow case, every element through argon, is not here: the workspace has
-//! no slow tier yet. One run each.
+//! `fb-sad` runs the C++ generator's operations in the C++ order. One run
+//! each. The C++ slow case, every element through argon, is the one slow
+//! case: it returns at once under `FREE_BREAKFAST_FAST_TESTS`, which the
+//! gates set (`docs/testing.md`, "Slow cases").
 
 use fb_atom::{Atom, Element};
 use fb_basis::{BasisSet, BasisStamp, Shell};
@@ -76,6 +77,12 @@ fn expect_baked_matches_computed(name: &str, keep: impl Fn(i32) -> bool) {
         let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<u64>>();
         assert_eq!(bits(&baked), bits(&computed), "{name} Z={z}");
     }
+}
+
+/// Whether the gates' fast mode is on: `FREE_BREAKFAST_FAST_TESTS` set,
+/// non-empty and not starting with `0`, as `FBF_SKIP_IF_FAST_TESTS` reads it.
+fn fast_tests() -> bool {
+    std::env::var("FREE_BREAKFAST_FAST_TESTS").is_ok_and(|v| !v.is_empty() && !v.starts_with('0'))
 }
 
 #[test]
@@ -163,5 +170,18 @@ fn baked_matches_computed_for_hco() {
     // check only which stamps exist.
     for name in COMPILED_IN_SETS {
         expect_baked_matches_computed(name, |z| z == 1 || z == 6 || z == 8);
+    }
+}
+
+#[test]
+fn baked_matches_computed_through_argon() {
+    // Slow: every element H to Ar of every set, not just H, C and O. The C++
+    // case stops the two TZ sets at neon; this one does not.
+    if fast_tests() {
+        eprintln!("skipped: slow case (FREE_BREAKFAST_FAST_TESTS is set)");
+        return;
+    }
+    for name in COMPILED_IN_SETS {
+        expect_baked_matches_computed(name, |z| z <= 18);
     }
 }

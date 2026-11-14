@@ -287,6 +287,9 @@ import json, os, sys
 args = sys.argv[1:]
 with open(os.environ["FAKE_CARGO_LOG"], "a") as f:
     f.write(" ".join(args) + "\\n")
+if args[0] == "test":
+    with open(os.environ["FAKE_CARGO_LOG"] + ".fast", "a") as f:
+        f.write(os.environ.get("FREE_BREAKFAST_FAST_TESTS", "unset") + "\\n")
 ws = "/ws/rust"
 if args[0] == "metadata":
     print(json.dumps({
@@ -379,6 +382,7 @@ def test_cargo_counts() -> None:
 def _push_cargo(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, files: list[str]
 ) -> int:
+    monkeypatch.delenv("FREE_BREAKFAST_FAST_TESTS", raising=False)
     monkeypatch.setattr(gates, "changed_files", lambda _env: files)
 
     def other_half(*_a, **_k):
@@ -415,6 +419,9 @@ def test_push_runs_the_cargo_half_and_prints_its_counts(
     calls = fake_cargo.read_text().splitlines()
     test = next(c for c in calls if c.startswith("test"))
     assert test == "test -j 4 --no-default-features -p fb-core-log"
+    # The slow cases return at once, whatever the caller's shell exported.
+    assert "slow cases skipped (FREE_BREAKFAST_FAST_TESTS=1)" in out
+    assert Path(f"{fake_cargo}.fast").read_text() == "1\n"
     # Documented in both feature sets, as clippy lints them: a device
     # feature's docs must resolve without it (#1404).
     docs = [c for c in calls if c.startswith("doc")]
@@ -640,6 +647,7 @@ def test_tier4_with_a_device_runs_them_and_skips_none(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.delenv("FREE_BREAKFAST_FAST_TESTS", raising=False)
     rc, calls = _tier4(monkeypatch, tmp_path, devices=1)
     assert rc == 0
     out = capsys.readouterr().out
@@ -648,6 +656,9 @@ def test_tier4_with_a_device_runs_them_and_skips_none(
     )
     assert "tier 4: 2 passed, 0 failed, 0 ignored" in out
     assert "tier 4 skipped: none" in out
+    # Tier 4 is fast too: --include-ignored runs the device cases, not the
+    # slow ones.
+    assert Path(f"{fake_cargo}.fast").read_text() == "1\n"
 
 
 def test_a_failing_tier4_fails_and_is_named(

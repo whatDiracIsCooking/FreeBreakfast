@@ -191,7 +191,7 @@ reason, so no runner, feature or harness is needed to see it:
 - **`#[ignore]` means "needs a device" and nothing else** in this
   workspace, so `--include-ignored` runs exactly the device cases beside the
   rest. A doc block that is not a test is fenced `text`, not `ignore`, and a
-  slow or flaky case finds another mechanism when one first appears.
+  slow case uses the switch of "Slow cases", below.
 - **The gate decides whether a device is there, not each case.** Tier 4
   (`devtools/test.py push` and `pr`) builds the libraries
   ([`README.md`](../README.md), "Build and test") for the backend of the
@@ -219,6 +219,27 @@ the whole workspace. `pr --all` runs every crate's tier 4.
 
 Tier 5 needs a second device, which no case asks for yet; when one does,
 the same rule extends with a reason of its own and a count in the probe.
+
+## Slow cases
+
+**A slow case reads `FREE_BREAKFAST_FAST_TESTS`, the C++ half's switch,
+and returns at once when it is set** (non-empty and not starting with
+`0`, as `FBF_SKIP_IF_FAST_TESTS()` reads it). The gates set it for both
+cargo test runs, tier 3 and tier 4, whatever the caller's shell exported,
+and say so on a `slow cases skipped` line beside each one's counts. Unset,
+a case runs in full, so what runs the slow cases is any `cargo test` without
+the switch: `cargo test -p <crate>` by hand, and the nightly once it builds
+`rust/` ("What runs when"). It is the C++ rule's case, past about 1.5 s
+outside its family's representative, and it carries the reason in the
+case. The one today is `fb-io-sad`'s
+`baked_matches_computed_through_argon`, every element through argon in
+every compiled-in set against the atomic SCF; `baked_matches_computed_for_hco`
+is its fast representative.
+
+libtest has no skipped state, so a returned case counts as passed; the
+gate's line, not the count, is what says it did not run. `#[ignore]` is
+not used for this: tier 4 passes `--include-ignored`, so it would run
+every slow case beside the device ones.
 
 ## Selection: the workspace graph is the selection graph
 
