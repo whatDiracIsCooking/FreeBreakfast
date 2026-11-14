@@ -14,8 +14,9 @@
 //! normalization (the metric's argument).
 //!
 //! [`add_three_center`] adds, after the kernel library's load check and the
-//! kernels' limits at planning, `harmonics` for each basis whose U the
-//! caller's slot does not hold yet ([`add_harmonics`]), and the three tasks
+//! kernels' limits at planning, `harmonics` and `harmonics upload` for
+//! each basis whose U the caller's slot does not hold yet
+//! ([`add_harmonics`]), and the three tasks
 //! of [`fb_integrals_sys::add_three_center_tasks`]:
 //!
 //! - **`three-center download`**, on the worker's stream: the orbital
@@ -25,8 +26,8 @@
 //!   shell pair, the aux records (the metric's, one per aux primitive,
 //!   `s = c (π/α)^{3/2}`) into one pinned row, and the cells, one per
 //!   (shell pair, aux shell) in its class `(la, lb, lP)`, into another.
-//! - **`three-center`**, on the worker's stream: both uploaded, and U and
-//!   U_aux from the plan's `harmonics` rows, which the metric's transform
+//! - **`three-center`**, on the worker's stream: both uploaded; U and U_aux
+//!   read from the plan's device rows of them, which the metric's transform
 //!   over the same aux basis reads too; one launch
 //!   per class into the Cartesian tensor, `nao_cart² naux_cart` doubles,
 //!   every element a plain store by the one cell it belongs to, so nothing
@@ -43,7 +44,7 @@
 //! | C++ | Here |
 //! |---|---|
 //! | `three_center(res, basis, classes, aux, b, max_bytes)`, into the caller's `b` | [`add_three_center`]`(dag, worker, basis, classes, aux, u, u_aux)`, returning (mn\|P)'s row; the slots of U and U_aux passed in, as every transform takes them |
-//! | U and U_aux staged with the records and cells | the plan's `harmonics` rows ([`add_harmonics`]), each staged once for every reader over its basis and copied into the last task's scratch |
+//! | U and U_aux staged with the records and cells | the plan's device rows of U and U_aux ([`add_harmonics`]), each copied up once for every reader over its basis on the worker and read by the last task |
 //! | `mmd`'s records copied back and regrouped on the host, the call synchronizing after the copy | `three-center download` and `three-center tables`: a stream task, its pinned outputs read by a CPU task after the executor waits on its event |
 //! | the staging, the cells, the Cartesian tensor and the work, the call's own buffers | pinned rows and the stream task's device scratch, all in the plan's arena |
 //! | `three_center_class` per class, `gemm` and `gemmStridedBatched` (`recipes/blas`, wwr) | [`fb_integrals_sys::add_three_center_tasks`], over `fb_core_wwr::blas`'s `gemm` and `gemm_strided_batched` |
@@ -60,7 +61,7 @@ use std::collections::BTreeMap;
 
 use contracts::debug_requires;
 use fb_basis::BasisSet;
-use fb_core_arena::{Device, Pinned, RowId};
+use fb_core_arena::{Device, RowId};
 use fb_core_error_handling::{Error, Result};
 use fb_core_planner::Dag;
 use fb_integrals_sys::{
@@ -81,11 +82,12 @@ use fb_recipes_matrix_ao::add_harmonics;
 /// every reader of the plan. `u` and `u_aux` are the plan's slots for U
 /// over `basis` and over `aux` on `worker`, shared with every other reader
 /// of each (the metric's transform takes `u_aux`'s): `harmonics` (CPU)
-/// is added for each that is `None`, and its row left there
-/// ([`add_harmonics`]). The tasks are then `three-center download`
-/// (stream), `three-center tables` (CPU) and `three-center` (stream), whose
-/// scratch holds U, U_aux, the Cartesian tensor (`naux_cart · nao_cart²`
-/// doubles) and the transform's intermediate (`naux · nao_cart²`).
+/// and `harmonics upload` (stream) are added for each that is `None`, and
+/// U's device row left there ([`add_harmonics`]). The tasks are then
+/// `three-center download` (stream), `three-center tables` (CPU) and
+/// `three-center` (stream), which reads U and U_aux and whose scratch holds
+/// the Cartesian tensor (`naux_cart · nao_cart²` doubles) and the
+/// transform's intermediate (`naux · nao_cart²`).
 ///
 /// First, before anything is added, the kernel library's load check
 /// ([`fb_integrals_sys::check_library`]), and then what the kernels can
@@ -113,8 +115,8 @@ pub fn add_three_center(
     basis: &BasisSet,
     classes: &[ClassRows],
     aux: &BasisSet,
-    u: &mut Option<RowId<Pinned, f64>>,
-    u_aux: &mut Option<RowId<Pinned, f64>>,
+    u: &mut Option<RowId<Device, f64>>,
+    u_aux: &mut Option<RowId<Device, f64>>,
 ) -> Result<RowId<Device, f64>> {
     // Not `map_err(Error::gpu)`: through a function pointer the error's
     // origin would be core's, not this call's caller.

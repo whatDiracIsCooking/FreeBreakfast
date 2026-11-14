@@ -6,19 +6,20 @@
 //!
 //! [`add_cartesian_to_spherical`] adds, for one Cartesian matrix row:
 //!
-//! - **`harmonics`**, on the CPU, once per plan and basis
-//!   ([`add_harmonics`]): U, the Cartesian-to-spherical transform
+//! - **`harmonics`**, on the CPU, and **`harmonics upload`**, on the
+//!   worker's stream, once per plan, worker and basis ([`add_harmonics`]):
+//!   U, the Cartesian-to-spherical transform
 //!   ([`fb_basis::spherical_transform_matrix`]), written into a pinned row
-//!   that every later transform over the basis reads, and any other task
-//!   that reads U.
-//! - **`spherical transform`**, on the worker's stream: U copied into device
-//!   scratch, then `M = Uᵀ M_cart U` as two GEMMs ([`fb_core_wwr::blas::gemm`])
-//!   on the worker's handle, the intermediate `M_cart U` scratch too.
+//!   and copied once into a device row that every later transform over the
+//!   basis on the worker reads, as does any other task that reads U.
+//! - **`spherical transform`**, on the worker's stream: `M = Uᵀ M_cart U`
+//!   as two GEMMs ([`fb_core_wwr::blas::gemm`]) on the worker's handle,
+//!   reading U's device row, the intermediate `M_cart U` scratch.
 //!
 //! | C++ | Here |
 //! |---|---|
-//! | `upload_spherical_transform_matrix(res, basis)` (nothing for an identity U), shared by every pair over the basis | the `harmonics` task's pinned row ([`add_harmonics`]), added by the first call and handed to the later ones through the caller's slot, always |
-//! | `MatrixAOPair`'s U and own scratch, so two pairs may run on different streams | each transform's own device copy of U and its own `M_cart U` scratch |
+//! | `upload_spherical_transform_matrix(res, basis)` (nothing for an identity U), one device buffer co-owned by every pair over the basis | the `harmonics upload` task's device row ([`add_harmonics`]), added by the first call and handed to the later ones through the caller's slot, always; one per worker, since an edge between workers needs a transport row |
+//! | `MatrixAOPair`'s own `work_` scratch | each transform's own `M_cart U` scratch |
 //! | `MatrixAOPair::cartesian_to_spherical` (`gemmwich`; a copy for an identity U) | the `spherical transform` task's two GEMMs, always |
 //! | `res.blas()`, the `DeviceResources`' handle | the stream worker's handle, [`DeviceStream::blas`], made with the backend and bound to the worker's stream |
 //! | `MatrixAO<L>`, `BasisLayout`, `ao_count` | nothing: a matrix is a device row, its order the basis's `nao_cart` or `nao_sphe` |
@@ -44,12 +45,12 @@ use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N as OP_N, WWR_BLAS_OP_T as OP_T};
 /// `nao_sphe²` doubles, column-major, named `name`.
 ///
 /// `cartesian` is an earlier task's output of `nao_cart²` doubles,
-/// column-major. The task added is `spherical transform` (stream: U copied
-/// into device scratch `U`, then `M = Uᵀ M_cart U` as two GEMMs, the
-/// intermediate `M_cart U` scratch `"{name} U"`). Before it, when `u` is
-/// `None`, `harmonics` ([`add_harmonics`]), whose row is then left in `u`:
-/// pass the same slot for every reader of U over `basis` on `worker`, and U
-/// is staged once and read by every one.
+/// column-major. The task added is `spherical transform` (stream:
+/// `M = Uᵀ M_cart U` as two GEMMs reading U's device row, the intermediate
+/// `M_cart U` scratch `"{name} U"`). Before it, when `u` is `None`,
+/// `harmonics` and `harmonics upload` ([`add_harmonics`]), whose device row
+/// is then left in `u`: pass the same slot for every reader of U over
+/// `basis` on `worker`, and U is copied up once and read by every one.
 ///
 /// # Panics
 /// If `u` holds a row of another worker's table ([`Dag::add`]).
@@ -59,7 +60,7 @@ pub fn add_cartesian_to_spherical(
     dag: &mut Dag<'_>,
     worker: usize,
     basis: &BasisSet,
-    u: &mut Option<RowId<Pinned, f64>>,
+    u: &mut Option<RowId<Device, f64>>,
     name: &str,
     cartesian: RowId<Device, f64>,
 ) -> RowId<Device, f64> {
@@ -79,35 +80,37 @@ pub fn add_cartesian_to_spherical(
 }
 
 /// Return U of `basis`, the Cartesian-to-spherical transform, as the
-/// pinned row in `u`: `nao_cart` × `nao_sphe` doubles, column-major. When
-/// `u` is `None`, `harmonics` (CPU: U,
-/// [`fb_basis::spherical_transform_matrix`], written into a pinned row) is
-/// added to `dag` on worker `worker` first, and its row left in `u`.
+/// device row in `u`: `nao_cart` × `nao_sphe` doubles, column-major. When
+/// `u` is `None`, two tasks are added to `dag` on worker `worker` first,
+/// and the second's output row left in `u`: `harmonics` (CPU: U,
+/// [`fb_basis::spherical_transform_matrix`], written into a pinned row)
+/// and `harmonics upload` (stream: that row copied into a device output
+/// row, `U`).
 ///
 /// `u` is the plan's slot for U over `basis` on `worker`: every reader of U
-/// passes the same one, so U is staged once. [`add_cartesian_to_spherical`]
-/// calls this; a task that reads U itself, such as the three-center
-/// integrals' transform, reads the row it returns.
+/// passes the same one, so U is copied up once per run and every reader
+/// reads the one row, a broadcast on the worker
+/// (`docs/programming_model.md`, "Workers are a hierarchy").
+/// [`add_cartesian_to_spherical`] calls this; a task that reads U itself,
+/// such as the three-center integrals' transform, reads the row it
+/// returns.
 #[debug_requires(basis.nshells() > 0, "a basis of at least one shell")]
 #[track_caller]
 pub fn add_harmonics(
     dag: &mut Dag<'_>,
     worker: usize,
     basis: &BasisSet,
-    u: &mut Option<RowId<Pinned, f64>>,
-) -> RowId<Pinned, f64> {
+    u: &mut Option<RowId<Device, f64>>,
+) -> RowId<Device, f64> {
     *u.get_or_insert_with(|| {
-        dag.add(
-            "harmonics",
-            worker,
-            Harmonics {
-                u: fb_basis::spherical_transform_matrix(basis),
-            },
-        )
+        let u = fb_basis::spherical_transform_matrix(basis);
+        let len = u.len();
+        let host = dag.add("harmonics", worker, Harmonics { u });
+        dag.add("harmonics upload", worker, Upload { host, len })
     })
 }
 
-/// CPU: U written into a pinned row, for the transform to copy up.
+/// CPU: U written into a pinned row, for `harmonics upload` to copy up.
 struct Harmonics {
     /// `nao_cart` × `nao_sphe`, column-major.
     u: Vec<f64>,
@@ -133,12 +136,43 @@ impl Task for Harmonics {
     }
 }
 
-/// GPU: `M = Uᵀ M_cart U`, U copied from its pinned row into device
-/// scratch, then `M_cart U` into scratch and `Uᵀ (M_cart U)` into M, two
-/// GEMMs on the worker's stream, as the C++ `gemmwich` orders them.
+/// GPU: U's pinned row copied into its device row, the one every reader of
+/// U over the basis on the worker reads.
+struct Upload {
+    host: RowId<Pinned, f64>,
+    /// `nao_cart · nao_sphe`.
+    len: usize,
+}
+
+impl Task for Upload {
+    type Rows = RowId<Device, f64>;
+    const GPU: bool = true;
+
+    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
+        host.read(self.host);
+        device.output("U", self.len)
+    }
+
+    fn run(
+        &self,
+        u: &Self::Rows,
+        device: &Bufs<'_, Device>,
+        host: &Bufs<'_, Pinned>,
+        lane: Lane<'_, DeviceStream>,
+    ) -> Status {
+        let Lane::Stream { stream: worker, .. } = lane else {
+            unreachable!("a GPU task runs on a stream")
+        };
+        memcpy_p2d(&device.take_mut(*u), host, self.host, worker)
+    }
+}
+
+/// GPU: `M = Uᵀ M_cart U` over U's device row, `M_cart U` into scratch and
+/// `Uᵀ (M_cart U)` into M, two GEMMs on the worker's stream, as the C++
+/// `gemmwich` orders them.
 struct Transform {
     m_cart: RowId<Device, f64>,
-    u: RowId<Pinned, f64>,
+    u: RowId<Device, f64>,
     n_cart: usize,
     n_sph: usize,
     /// M's row name; the intermediate's is `"{name} U"`.
@@ -147,7 +181,6 @@ struct Transform {
 
 #[derive(Clone, Copy)]
 struct TransformRows {
-    u: RowId<Device, f64>,
     work: RowId<Device, f64>,
     m: RowId<Device, f64>,
 }
@@ -156,17 +189,11 @@ impl Task for Transform {
     type Rows = TransformRows;
     const GPU: bool = true;
 
-    fn layout(
-        &self,
-        device: &mut Layout<'_, Device>,
-        host: &mut Layout<'_, Pinned>,
-    ) -> TransformRows {
-        host.read(self.u);
+    fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> TransformRows {
+        device.read(self.u);
         device.read(self.m_cart);
-        let n_u = self.n_cart * self.n_sph;
         TransformRows {
-            u: device.scratch("U", n_u),
-            work: device.scratch(&format!("{} U", self.name), n_u),
+            work: device.scratch(&format!("{} U", self.name), self.n_cart * self.n_sph),
             m: device.output(&self.name, self.n_sph * self.n_sph),
         }
     }
@@ -175,14 +202,13 @@ impl Task for Transform {
         &self,
         rows: &TransformRows,
         device: &Bufs<'_, Device>,
-        host: &Bufs<'_, Pinned>,
+        _: &Bufs<'_, Pinned>,
         lane: Lane<'_, DeviceStream>,
     ) -> Status {
         let Lane::Stream { stream: worker, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let u = device.take_mut(rows.u);
-        memcpy_p2d(&u, host, self.u, worker)?;
+        let u = device.get(self.u);
 
         // The worker's handle, bound to `stream` when the backend was made.
         let handle = worker.blas();

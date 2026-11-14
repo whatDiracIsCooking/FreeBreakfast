@@ -21,8 +21,8 @@
 //!   uploaded; then one launch per class into the Cartesian metric, every
 //!   element a plain store by the one pair it belongs to, so nothing is
 //!   zeroed and the Cartesian metric is exactly symmetric.
-//! - **`harmonics`** (only when the caller's slot is empty) and **`spherical
-//!   transform`** ([`add_cartesian_to_spherical`]): `Uᵀ M U`, U's blocks
+//! - **`harmonics`** and **`harmonics upload`** (only when the caller's
+//!   slot is empty) and **`spherical transform`** ([`add_cartesian_to_spherical`]): `Uᵀ M U`, U's blocks
 //!   general in l, here through the kernels' i.
 //! - **`metric average`**, on the stream: `Uᵀ M U` is two GEMMs, which round
 //!   `(P, Q)` and `(Q, P)` in different orders, so the spherical metric is
@@ -68,8 +68,8 @@ use fb_recipes_symmetrize::symmetrize;
 /// `nao_sphe²` doubles, column-major, exactly symmetric.
 ///
 /// `metric tables` (CPU) and `metric` (stream: every class into the
-/// Cartesian metric), `harmonics` (CPU: U into a pinned row) only when `u`
-/// is `None`, `spherical transform` (stream: `Uᵀ M U`) and `metric
+/// Cartesian metric), `harmonics` and `harmonics upload` (U into a pinned
+/// row, then its device row) only when `u` is `None`, `spherical transform` (stream: `Uᵀ M U`) and `metric
 /// average` (stream: `(M + Mᵀ)/2` into M's row). `u` is the plan's slot for
 /// U over `aux` on `worker`, shared with every other transform over `aux`.
 ///
@@ -93,7 +93,7 @@ pub fn add_metric(
     dag: &mut Dag<'_>,
     worker: usize,
     aux: &BasisSet,
-    u: &mut Option<RowId<Pinned, f64>>,
+    u: &mut Option<RowId<Device, f64>>,
 ) -> Result<RowId<Device, f64>> {
     // Not `map_err(Error::gpu)`: through a function pointer the error's
     // origin would be core's, not this call's caller.

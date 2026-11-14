@@ -16,8 +16,8 @@
 //!   aux shell), per class `(la, lb, lP)`, the pair outer and the aux
 //!   shell inner, into another.
 //! - **`three-center`**, on the worker's stream: both rows uploaded into
-//!   scratch, and U and U_aux from the caller's pinned rows (the plan's
-//!   `harmonics` rows, staged once for every reader), one
+//!   scratch; U and U_aux read from the caller's device rows (the plan's
+//!   `harmonics upload` rows, copied up once for every reader), one
 //!   [`fb_three_center_class`] launch per class that has a cell into the
 //!   Cartesian tensor (scratch), the three spherical GEMMs and
 //!   [`fb_three_center_symmetrize`] into (mn|P), its output.
@@ -109,13 +109,13 @@ impl Staging {
 ///
 /// `classes` are the orbital basis's records ([`add_record_tasks`]), and
 /// `n_pairs[c]` the shell pairs of `classes[c]`; `aux` the auxiliary
-/// basis's table; `[u, u_aux]` the pinned rows of the two bases'
+/// basis's table; `[u, u_aux]` the device rows of the two bases'
 /// Cartesian-to-spherical transforms, U `n_cart` × `n_sph` and U_aux
 /// `aux.n_cart()` × `n_aux_sph`, column-major, written by earlier tasks of
 /// `dag` on `worker` (`fb_recipes_matrix_ao::add_harmonics`'s), and
 /// `[n_sph, n_aux_sph]` their column counts. The tasks are `three-center
 /// download` (stream), `three-center tables` (CPU) and `three-center`
-/// (stream), which reads U and U_aux into device scratch beside the
+/// (stream), which reads U and U_aux and holds, as scratch, the
 /// Cartesian tensor (`n_cart² aux.n_cart()` doubles) and the transform's
 /// intermediate (`n_cart² n_aux_sph`), so all are in its table at
 /// planning, beside the output.
@@ -136,8 +136,8 @@ impl Staging {
 /// index); `n_sph` is not in `1..=n_cart`, or `n_aux_sph` in
 /// `1..=aux.n_cart()`; a class's cell count does not fit an `i32`; a class,
 /// U or U_aux is of another worker's or plan's table ([`Dag::add`]); or, at
-/// run time, U's row is not `n_cart · n_sph` doubles or U_aux's not
-/// `aux.n_cart() · n_aux_sph` ([`memcpy_p2d`]).
+/// run time, U's row is shorter than `n_cart · n_sph` doubles or U_aux's
+/// than `aux.n_cart() · n_aux_sph` (`fb_core_wwr::blas`'s GEMMs).
 #[debug_requires(!classes.is_empty(), "an orbital basis of at least one shell")]
 #[debug_requires(aux.n_shells() > 0, "an aux basis of at least one shell")]
 #[track_caller]
@@ -147,7 +147,7 @@ pub fn add_three_center_tasks(
     classes: &[ClassRows],
     n_pairs: &[usize],
     aux: &AuxTable,
-    u: [RowId<Pinned, f64>; 2],
+    u: [RowId<Device, f64>; 2],
     n_sph: [usize; 2],
 ) -> RowId<Device, f64> {
     let staging = Arc::new(staging(classes, n_pairs, aux, n_sph));
@@ -461,21 +461,19 @@ impl Task for Tables {
     }
 }
 
-/// GPU: the tables, U and U_aux uploaded, every class launched into the
+/// GPU: the tables uploaded, every class launched into the
 /// Cartesian tensor, the three spherical GEMMs, and the (m, n) average into
 /// (mn|P).
 struct ThreeCenter {
     staging: Arc<Staging>,
     tables: TableRows<Pinned>,
-    /// U and U_aux, the caller's pinned rows.
-    u: [RowId<Pinned, f64>; 2],
+    /// U and U_aux, the caller's device rows.
+    u: [RowId<Device, f64>; 2],
 }
 
 #[derive(Clone, Copy)]
 struct ThreeCenterRows {
     tables: TableRows<Device>,
-    /// U and U_aux, copied up from their pinned rows.
-    u: [RowId<Device, f64>; 2],
     cartesian: RowId<Device, f64>,
     work: RowId<Device, f64>,
     out: RowId<Device, f64>,
@@ -488,18 +486,14 @@ impl Task for ThreeCenter {
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         host.read(self.tables.records);
         host.read(self.tables.cells);
-        host.read(self.u[0]);
-        host.read(self.u[1]);
+        device.read(self.u[0]);
+        device.read(self.u[1]);
         let s = &self.staging;
         ThreeCenterRows {
             tables: TableRows {
                 records: device.scratch("three-center records", s.n_records()),
                 cells: device.scratch("three-center cells", CELL_FIELDS * s.n_cells),
             },
-            u: [
-                device.scratch("U", s.n_cart * s.n_sph),
-                device.scratch("U_aux", s.n_aux_cart * s.n_aux_sph),
-            ],
             cartesian: device.scratch("(mn|P) cartesian", s.n_cart * s.n_cart * s.n_aux_cart),
             work: device.scratch("(mn|P) work", s.n_cart * s.n_cart * s.n_aux_sph),
             out: device.output("(mn|P)", s.n_sph * s.n_sph * s.n_aux_sph),
@@ -526,10 +520,7 @@ impl Task for ThreeCenter {
         memcpy_p2d(&records, host, self.tables.records, worker)?;
         let cells = device.take_mut(rows.tables.cells);
         memcpy_p2d(&cells, host, self.tables.cells, worker)?;
-        let u = device.take_mut(rows.u[0]);
-        memcpy_p2d(&u, host, self.u[0], worker)?;
-        let u_aux = device.take_mut(rows.u[1]);
-        memcpy_p2d(&u_aux, host, self.u[1], worker)?;
+        let (u, u_aux) = (device.get(self.u[0]), device.get(self.u[1]));
         let mut cartesian = device.take_mut(rows.cartesian);
         let mut work = device.take_mut(rows.work);
         let out = device.take_mut(rows.out);

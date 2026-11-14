@@ -18,7 +18,8 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// `overlap` (stream: the Cartesian matrix zeroed and one
 /// [`overlap_class`] launch per class, reading the records as an edge),
 /// then the spherical transform of [`add_cartesian_to_spherical`]:
-/// `harmonics` (CPU: U into a pinned row), only when `u` is `None`, and
+/// `harmonics` and `harmonics upload` (U into a pinned row, then its
+/// device row), only when `u` is `None`, and
 /// `spherical transform` (stream: `S = Uᵀ S_cart U`). `classes` are the
 /// records of `basis`, added on `worker` by
 /// [`fb_integrals_mmd::add_records`] earlier in `dag`, so one build serves
@@ -36,7 +37,7 @@ pub fn add_overlap(
     worker: usize,
     basis: &BasisSet,
     classes: &[ClassRows],
-    u: &mut Option<RowId<Pinned, f64>>,
+    u: &mut Option<RowId<Device, f64>>,
 ) -> RowId<Device, f64> {
     let n_cart = basis.nao_cart() as usize;
     assert!(

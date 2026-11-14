@@ -84,8 +84,8 @@ pub fn kinetic_classes(
 ///
 /// `kinetic` (stream: the Cartesian matrix zeroed and [`kinetic_classes`],
 /// reading the records as an edge), then the spherical transform of
-/// [`add_cartesian_to_spherical`]: `harmonics` (CPU: U into a pinned row),
-/// only when `u` is `None`, and `spherical transform` (stream:
+/// [`add_cartesian_to_spherical`]: `harmonics` and `harmonics upload` (U
+/// into a pinned row, then its device row), only when `u` is `None`, and `spherical transform` (stream:
 /// `T = Uᵀ T_cart U`). `classes` are the records of `basis`, added on
 /// `worker` by [`fb_integrals_mmd::add_records`] earlier in `dag`, so one
 /// build serves every reader of the plan; `u` is the plan's slot for U over
@@ -102,7 +102,7 @@ pub fn add_kinetic(
     worker: usize,
     basis: &BasisSet,
     classes: &[ClassRows],
-    u: &mut Option<RowId<Pinned, f64>>,
+    u: &mut Option<RowId<Device, f64>>,
 ) -> RowId<Device, f64> {
     let n_cart = basis.nao_cart() as usize;
     assert!(

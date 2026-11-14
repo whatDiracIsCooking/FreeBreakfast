@@ -1,12 +1,13 @@
-plan: 7 tasks, GPU workers: 1
+plan: 8 tasks, GPU workers: 1
  task  worker  lane    name: after
     0       0  cpu     mmd tables
     1       0  stream  mmd records: after 0
     2       0  stream  overlap: after 1
     3       0  cpu     harmonics: after 0 1
-    4       0  stream  spherical transform: after 1 2 3
-    5       0  stream  download overlap.npy: after 0 1 3 4
-    6       0  cpu     write overlap.npy: after 5
+    4       0  stream  harmonics upload: after 1 2 3
+    5       0  stream  spherical transform: after 1 2 4
+    6       0  stream  download overlap.npy: after 0 1 3 4 5
+    7       0  cpu     write overlap.npy: after 6
 worker 0 device table: 139 rows, 33826308 bytes
 peak: 33804204 bytes at node 1
     offset      bytes  owner   life     name: users (w writes, r reads)
@@ -145,11 +146,11 @@ peak: 33804204 bytes at node 1
   33825792          4  edge    1-2      off_b (2,2): 1w 2r
   33826048          4  edge    1-2      rank_a (2,2): 1w 2r
   33826304          4  edge    1-2      rank_b (2,2): 1w 2r
-  33554432       5000  edge    2-4      S cartesian: 2w 4r
-  33559552       4800  task    4-4      U: 4w
-  33564416       4800  task    4-4      S U: 4w
-  33569280       4608  edge    4-5      S: 4w 5r
-handoffs: 1->2 1->4 2->4
+  33554432       5000  edge    2-5      S cartesian: 2w 5r
+  33559552       4800  edge    4-5      U: 4w 5r
+  33564416       4800  task    5-5      S U: 5w
+  33569280       4608  edge    5-6      S: 5w 6r
+handoffs: 1->2 1->4 1->5 2->4 2->5
 worker 0 pinned table: 13 rows, 4800 bytes
 peak: 4800 bytes at node 3
     offset      bytes  owner   life     name: users (w writes, r reads)
@@ -165,5 +166,5 @@ peak: 4800 bytes at node 3
       2048        312  edge    0-1      ket: 0w 1r
       1024        336  edge    0-1      rec_begin: 0w 1r
          0       4800  edge    3-4      U: 3w 4r
-         0       4608  edge    5-6      overlap.npy: 5w 6r
-handoffs: 0->3 0->5 1->3 1->5 3->5 4->5
+         0       4608  edge    6-7      overlap.npy: 6w 7r
+handoffs: 0->3 0->6 1->3 1->6 3->6 4->6
