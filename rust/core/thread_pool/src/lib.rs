@@ -8,7 +8,9 @@
 //! - [`Plan`]: the nodes, each with its predecessors, its [`Placement`] (the
 //!   CPU pool or one stream worker) and the callable that runs it. Nodes are
 //!   added in topological order, so a node's [`NodeId`] is its rank and a
-//!   plan cannot have a cycle.
+//!   plan cannot have a cycle; and its loops ([`Plan::add_loop`]), each a
+//!   run of nodes, its body, replayed on the same workers until a CPU
+//!   decision node after it stops it, at most a bound fixed at planning.
 //! - [`Backend`]: the device side of a run: the stream workers' streams, the
 //!   events at the edges that leave one, and the syncs. [`HostOnly`] has no
 //!   device and is what the device-free tests run on; `Device` (the
@@ -17,7 +19,8 @@
 //!   BLAS and a dense-solver handle), made with the backend before any run
 //!   and reached by a GPU node through its [`Lane`].
 //! - [`run`]: open one [`std::thread::scope`] with `n_cpu` CPU workers and
-//!   one thread per stream worker, run every node once, join, and return
+//!   one thread per stream worker, run every node once (a loop's body and
+//!   decision once per iteration), join, and return
 //!   the [`Record`]: the result, a [`TaskTime`] per node that ran and a
 //!   [`SyncPoint`] per host wait, and as `timing.json` its
 //!   [`Record::to_json`].
@@ -25,7 +28,9 @@
 //! # What a run promises
 //!
 //! 1. Every node runs exactly once, unless one of its ancestors failed, in
-//!    which case it never runs.
+//!    which case it never runs. A loop's body nodes and decision run once
+//!    per iteration, and the next iteration's start only after the
+//!    decision returns `Continue`, so once the whole body has completed.
 //! 2. No node starts before each predecessor has finished in the sense its
 //!    edge needs (the table below).
 //! 3. At most `n_cpu` CPU nodes run at once, and each stream worker runs one
@@ -65,6 +70,20 @@
 //!
 //! A CPU node that waits on the device holds its CPU worker while it waits.
 //!
+//! # Loops
+//!
+//! A loop is a sub-DAG replayed between host decisions
+//! (`docs/programming_model.md`, "Plan once, run many"). Its decision is a
+//! CPU node after every body node, so a CPU worker has waited on the host
+//! for every GPU body node's work before it runs: the body is quiescent,
+//! its events complete, when the decision readies it again. The replay
+//! happens under the run's one lock, in the same scope, on the same
+//! workers: nothing is spawned and nothing allocated but the record's
+//! entries. A node after the loop depends on the decision, and is ready
+//! only when the decision returns `Break`. The bound is the plan's: a
+//! decision that would start iteration `max_iterations` fails the run
+//! with [`MaxIterationsExceeded`](fb_core_error_handling::ErrorKind::MaxIterationsExceeded).
+//!
 //! # Failure
 //!
 //! A node's `Err` gets `name@worker` pushed onto its
@@ -101,6 +120,14 @@
 //!   waited for.
 //! - **The run's wall time**, from the workers' start to their join.
 //!
+//! A loop's body nodes and decision have an entry per iteration, each with
+//! its iteration's index ([`TaskTime::iteration`]), and the record carries
+//! each loop's iteration count ([`Record::iterations`]). A body's stream
+//! scopes are reused every iteration, so its decision reads them, after
+//! the host waits that make the body complete and before it replays: a
+//! sync point the loop has anyway, so still no scope adds one. A scope that
+//! cannot be read there fails the decision.
+//!
 //! The record also carries each node's dimensions ([`Plan::set_dims`]) and
 //! the profile that built the executor; the plan's arena sizes
 //! ([`ArenaSize`]) are the planner's to add.
@@ -119,11 +146,9 @@
 //!
 //! # Not yet
 //!
-//! Replaying a sub-DAG on the run's workers (an SCF iteration) is not here.
-//! The run ends when no node remains, not when a list is exhausted, so a
-//! decision node can later enqueue the next iteration's nodes without a
-//! second scope. `scope!` inside a node and the sync-after-every-task switch
-//! are `diagnostics.md`'s and not here.
+//! A loop inside a loop's body, and a node after a loop reading a body node
+//! directly: both are refused by contract. `scope!` inside a node and the
+//! sync-after-every-task switch are `diagnostics.md`'s and not here.
 //!
 //! ```
 //! use std::sync::atomic::{AtomicU32, Ordering};

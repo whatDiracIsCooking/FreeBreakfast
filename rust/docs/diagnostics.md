@@ -75,7 +75,11 @@ one around the whole run. Every pair is read after the run, when each stream
 worker has synced its stream on the way out: that is a sync point after
 every closing event, if not always the first. It also opens a host scope
 around every sync point: each CPU node's wait on each GPU predecessor, and
-each stream worker's sync as it exits. `scope!` inside a task is not here
+each stream worker's sync as it exits. A loop's body runs its GPU nodes
+on the same events every iteration, so the loop's decision, after the host
+waits that make the whole body complete, reads that iteration's stream
+scopes before it readies the body again: a sync point the loop has anyway,
+the first after each closing event. `scope!` inside a task is not here
 yet. A failed run still returns the times of the tasks that ran; a scope
 that cannot be read fails a run that otherwise succeeded, and is dropped
 from one that already failed, since it would only echo that failure
@@ -106,8 +110,11 @@ from `thread_pool::run` and the planner's `Instance::run`. Today it holds
 the run's result; the profile that built it (`debug` or `release`, from
 `cfg!(debug_assertions)`); its wall time; per task its node's rank, its
 name, its worker, its dimensions (a task's `Task::dims`, empty by default),
-its host time and its device time; every sync point, with the worker that
-waited, the node it waited for and the host time of the wait; and, from
+its host time and its device time, and for a loop's body node or decision
+the iteration it ran in, one entry per iteration; every sync point, with
+the worker that waited, the node it waited for, the iteration of the node
+that waited and the host time of the wait; each loop's iteration count, by
+its decision node; and, from
 `Instance::run`, the plan's block sizes per worker and kind. `Record::to_json`
 is the `timing.json` text, and the type's rustdoc is its schema: times are
 integer nanoseconds, nodes their ranks, and an error keeps its kind,

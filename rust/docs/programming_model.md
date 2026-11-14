@@ -358,6 +358,22 @@ special node: it is a planned sub-DAG run repeatedly, with a host decision
 between runs. The decision is a node (convergence, a step accepted, the walk
 reaching a minimum) whose output is read on the host.
 
+**The executor replays the body in the run it is in.** In
+`fb_core_thread_pool`, a loop is its body, the nodes added after a given
+one, and a decision node `Plan::add_loop` adds after the body's sinks, so
+after every body node. The decision is a CPU node, so a worker has waited
+on the host for every GPU body node before it runs: the body's work has
+completed, and its rows and events are free to be used again, when the
+decision returns. Its `Continue` readies the body again, under the run's
+one lock, in the same scope and on the same workers, so a replay spawns no
+thread and allocates nothing; its `Break` readies what follows the loop,
+which depends on the decision and never on a body node. The decision is
+handed the iteration's index. The iteration count has a bound, fixed at
+planning beside the dimensions: a decision that would start one iteration
+past it fails the run with `MaxIterationsExceeded`, and a failed body node
+ends the loop and skips what follows it, as any failure skips its
+descendants. A loop in a loop's body is not built.
+
 **DAGs nest.** A node may be a sub-DAG with dimensions of its own. The
 pipeline is a DAG of steps; a step is a DAG of tasks; the RHF step's body is a
 sub-DAG replayed per iteration. Dimensions attach to the sub-DAG, not to the
@@ -433,7 +449,8 @@ if each opened a scope of its own, one config line would make hundreds of
 threads. The rule is the arena rule restated: a sub-DAG's arena is carved
 from its parent's, and a sub-DAG's nodes are scheduled onto its parent's
 workers. Only the top-level run owns threads. Nesting adds nodes to the
-queue, never workers.
+queue, never workers, and a loop re-adds its body's nodes to it, as the
+thread-count test below checks across a replay.
 
 **The count is a budget, admitted beside memory.** `n_cpu` defaults to the
 host's `available_parallelism` less the stream workers' threads, floored at
@@ -484,7 +501,8 @@ asked for stealing on the CPU side a crate could slot in behind the same type.
 no more threads than the plan said. The last is a tier-3 test
 ([`testing.md`](testing.md), "Tiers: where a check lives") that reads the
 `Threads:` line of `/proc/self/status` after a device-free run and compares it
-to the plan's worker total plus the main thread. It is the one check that
+to the plan's worker total plus the main thread, and reads the same count
+before a loop's first iteration and after its last. It is the one check that
 catches what a lint cannot see: a linked host library opening a pool of its
 own at load, as a host BLAS does. If one is ever linked, its thread count is
 set to one at initialization, and this test is what notices when that slips.

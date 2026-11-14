@@ -1,6 +1,9 @@
 //! The executor's promises over random DAGs, with [`HostOnly`] workers (tier
-//! 3), and the device edges once on device 0 (tier 4).
+//! 3), a loop's replay over a fixed contraction (tier 2), and the device
+//! edges and a loop's stream scopes once on device 0 (tier 4).
 
+use std::collections::BTreeMap;
+use std::ops::ControlFlow;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -432,6 +435,188 @@ fn a_failed_record_reads_back_without_its_origin() {
     assert_eq!(back, record);
 }
 
+/// The committed contraction of the loop tests: `x <- A x + b` from
+/// `x = 0`, with `b` on `A`'s dominant eigenvector, `(2, 1)` for the
+/// eigenvalue 0.4 (the other is 0.1), and `|A|_inf = 0.5`.
+const A: [[f64; 2]; 2] = [[0.3, 0.2], [0.1, 0.2]];
+const B: [f64; 2] = [0.2, 0.1];
+/// The decision's stop: `|x_k - x_{k-1}| <= TOL`.
+const TOL: f64 = 1e-12;
+
+/// The iterate the loop body moves along.
+#[derive(Default)]
+struct Iterate {
+    x: [f64; 2],
+    ax: [f64; 2],
+    next: [f64; 2],
+    moved: f64,
+}
+
+/// A plan of `x0`, a loop whose body is `A x` (stream 0), `+ b` (CPU) and
+/// `|dx|` (stream 1) under the decision `converged`, bounded at
+/// `max_iterations`, and `report` after it. `A x` fails on its call number
+/// `fail_on` (from 1), if given. Returns the plan and the decision.
+fn fixed_point_plan<'a>(
+    it: &'a Mutex<Iterate>,
+    calls: &'a AtomicUsize,
+    max_iterations: usize,
+    fail_on: Option<usize>,
+) -> (Plan<'a, ()>, NodeId) {
+    let mut plan = Plan::new();
+    let x0 = plan.add("x0", Placement::Cpu, &[], |_: Lane<'_, ()>| {
+        *it.lock().unwrap() = Iterate::default();
+        Ok(())
+    });
+    let ax = plan.add("A x", Placement::Stream(0), &[x0], move |_| {
+        if Some(calls.fetch_add(1, Ordering::SeqCst) + 1) == fail_on {
+            return Err(Error::numerical("injected"));
+        }
+        let mut it = it.lock().unwrap();
+        let x = it.x;
+        it.ax = A.map(|row| row[0] * x[0] + row[1] * x[1]);
+        Ok(())
+    });
+    let plus = plan.add("+ b", Placement::Cpu, &[ax], |_| {
+        let mut it = it.lock().unwrap();
+        it.next = [it.ax[0] + B[0], it.ax[1] + B[1]];
+        Ok(())
+    });
+    plan.add("|dx|", Placement::Stream(1), &[plus, x0], |_| {
+        let mut it = it.lock().unwrap();
+        let (x, next) = (it.x, it.next);
+        it.moved = (next[0] - x[0]).hypot(next[1] - x[1]);
+        it.x = next;
+        Ok(())
+    });
+    let decision = plan.add_loop("converged", ax, max_iterations, |_| {
+        Ok(if it.lock().unwrap().moved <= TOL {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        })
+    });
+    plan.add("report", Placement::Cpu, &[decision, x0], |_| Ok(()));
+    (plan, decision)
+}
+
+/// Each node's iterations in the record, by name.
+fn iterations_of(record: &Record, name: &str) -> Vec<Option<usize>> {
+    record
+        .tasks
+        .iter()
+        .filter(|t| t.name == name)
+        .map(|t| t.iteration)
+        .collect()
+}
+
+/// Tier 2, one run: the loop replays its body until the decision stops it,
+/// after the number of iterations the contraction's spectral radius gives,
+/// at the closed-form fixed point.
+///
+/// With `x_0 = 0` and `b` an eigenvector of `A` for its spectral radius
+/// `rho`, `x_k - x_{k-1} = A^{k-1} b = rho^{k-1} b`, so the decision first
+/// stops at the smallest `k` with `rho^{k-1} |b| <= TOL`, which the test
+/// computes from `rho` (the larger root of `A`'s characteristic
+/// polynomial). The exponent falls 0.52 from an integer, far beyond the
+/// rounding of a difference near `1e-12` of iterates near 0.3 (a few
+/// `1e-4` of it). There `x* - x_k = rho^k x* = rho / (1 - rho) (x_k -
+/// x_{k-1})`, so `|x_k - x*| <= 2/3 TOL` with `rho = 0.4`, and `x* = (I -
+/// A)^{-1} b` in closed form; the rounding of the iterates is `~1e-17`.
+#[test]
+fn a_loop_replays_its_body_to_the_fixed_point() {
+    let (trace, det) = (A[0][0] + A[1][1], A[0][0] * A[1][1] - A[0][1] * A[1][0]);
+    let rho = (trace + (trace * trace - 4.0 * det).sqrt()) / 2.0;
+    let exponent = (TOL / B[0].hypot(B[1])).ln() / rho.ln();
+    assert!(
+        (exponent - exponent.round()).abs() > 0.1,
+        "the stop is too close to a boundary for the count to be exact: {exponent}"
+    );
+    let expected = 1 + exponent.ceil() as usize;
+
+    let it = Mutex::new(Iterate::default());
+    let calls = AtomicUsize::new(0);
+    let (mut plan, decision) = fixed_point_plan(&it, &calls, 1000, None);
+    let record = run(&mut plan, &mut HostOnly::new(2), 2);
+    record.result.as_ref().unwrap();
+
+    assert_eq!(record.iterations, BTreeMap::from([(decision, expected)]));
+    let each: Vec<_> = (0..expected).map(Some).collect();
+    for name in ["A x", "+ b", "|dx|", "converged"] {
+        assert_eq!(iterations_of(&record, name), each, "{name}");
+    }
+    assert_eq!(iterations_of(&record, "x0"), [None]);
+    assert_eq!(iterations_of(&record, "report"), [None]);
+
+    let m = [[1.0 - A[0][0], -A[0][1]], [-A[1][0], 1.0 - A[1][1]]];
+    let d = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+    let fixed = [
+        (m[1][1] * B[0] - m[0][1] * B[1]) / d,
+        (m[0][0] * B[1] - m[1][0] * B[0]) / d,
+    ];
+    let x = it.lock().unwrap().x;
+    assert!(
+        (x[0] - fixed[0]).hypot(x[1] - fixed[1]) <= TOL,
+        "{x:?} against {fixed:?}"
+    );
+
+    // Each iteration's entries read back from `timing.json`.
+    let json = record.to_json();
+    assert_eq!(serde_json::from_str::<Record>(&json).unwrap(), record);
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["iterations"][decision.index().to_string()], expected);
+    assert!(value["tasks"][0]["iteration"].is_null());
+    assert_eq!(value["tasks"][2]["iteration"], 1);
+}
+
+/// Tier 2: a decision still saying `Continue` at its bound fails the run
+/// with `MaxIterationsExceeded`, after the bound's iterations, and the node
+/// after the loop never runs.
+#[test]
+fn a_loop_that_reaches_its_bound_fails_the_run() {
+    let it = Mutex::new(Iterate::default());
+    let calls = AtomicUsize::new(0);
+    let (mut plan, decision) = fixed_point_plan(&it, &calls, 5, None);
+    let record = run(&mut plan, &mut HostOnly::new(2), 2);
+    let error = record.result.as_ref().unwrap_err();
+    assert_eq!(error.kind, ErrorKind::MaxIterationsExceeded);
+    assert_eq!(error.context.len(), 1);
+    assert!(error.context[0].starts_with("converged@cpu"), "{error}");
+    assert_eq!(record.iterations, BTreeMap::from([(decision, 5)]));
+    assert_eq!(iterations_of(&record, "converged").len(), 5);
+    assert!(iterations_of(&record, "report").is_empty());
+}
+
+/// Tier 2: a body node failing in the second iteration returns its error,
+/// ends the loop there, and the decision of that iteration and the node
+/// after the loop have no entry.
+#[test]
+fn a_failed_body_node_ends_the_loop_and_the_run() {
+    let it = Mutex::new(Iterate::default());
+    let calls = AtomicUsize::new(0);
+    let (mut plan, decision) = fixed_point_plan(&it, &calls, 1000, Some(2));
+    let record = run(&mut plan, &mut HostOnly::new(2), 2);
+    let error = record.result.as_ref().unwrap_err();
+    assert_eq!(
+        (error.kind, error.message.as_str()),
+        (ErrorKind::Numerical, "injected")
+    );
+    assert_eq!(error.context, ["A x@stream0"]);
+    assert_eq!(record.iterations, BTreeMap::from([(decision, 2)]));
+    assert_eq!(iterations_of(&record, "A x"), [Some(0), Some(1)]);
+    assert_eq!(iterations_of(&record, "converged"), [Some(0)]);
+    assert!(iterations_of(&record, "report").is_empty());
+}
+
+#[test]
+#[cfg(debug_assertions)] // the contract is compiled out of release
+#[should_panic(expected = "no predecessor is in a closed loop's body")]
+fn a_node_after_a_loop_cannot_read_its_body() {
+    let mut plan: Plan<'_, ()> = Plan::new();
+    let body = plan.add("body", Placement::Cpu, &[], |_| Ok(()));
+    plan.add_loop("decide", body, 2, |_| Ok(ControlFlow::Break(())));
+    plan.add("after", Placement::Cpu, &[body], |_| Ok(()));
+}
+
 #[test]
 fn default_n_cpu_leaves_the_stream_threads_and_keeps_one() {
     assert!(default_n_cpu(0) >= 1);
@@ -578,4 +763,93 @@ fn device_library_handles_are_the_workers_made_before_the_run() {
         "one solver handle per stream worker"
     );
     assert_eq!(runs[0], runs[1], "a run made a handle of its own");
+}
+
+/// Device 0, one run: a loop whose body is a stream node and a CPU node
+/// after it reads each iteration's stream scope back, one per iteration.
+///
+/// Iteration `k` enqueues `k + 1` times the same chain of device-to-device
+/// copies, so its device time is `k + 1` times the first's: a scope read
+/// after a later iteration re-recorded the events, or one iteration's time
+/// copied to another, breaks the strict increase. The increase per
+/// iteration is a whole chain, 16 copies of 32 MiB, far above an event
+/// pair's resolution.
+#[cfg(feature = "device-tests")]
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn device_loop_reads_each_iterations_stream_scope() {
+    use fb_core_wwr::handle::DeviceHandleStream;
+    use fb_core_wwr::runtime::Stream;
+    use fb_core_wwr::runtime::tests::{DeviceBytes, ok};
+    use wwr_sys::wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_DEVICE;
+
+    const N: usize = 32 << 20;
+    const HOPS: usize = 16;
+    const ITERATIONS: usize = 3;
+    let setup = Stream::new(0);
+    let a = DeviceBytes::upload(&vec![7u8; N], &setup);
+    let b = DeviceBytes::new(N);
+    let calls = AtomicUsize::new(0);
+    let host_ran = AtomicUsize::new(0);
+
+    let mut plan: Plan<'_, DeviceStream> = Plan::new();
+    let copies = plan.add("copies", Placement::Stream(0), &[], |lane| {
+        let Lane::Stream { stream, .. } = lane else {
+            unreachable!()
+        };
+        let k = calls.fetch_add(1, Ordering::SeqCst);
+        for hop in 0..(k + 1) * HOPS {
+            let (to, from) = if hop % 2 == 0 { (&b, &a) } else { (&a, &b) };
+            // SAFETY: both device ranges are N bytes and outlive the run.
+            ok(unsafe {
+                wwr_sys::wwr_memcpy_async(
+                    to.0,
+                    from.0,
+                    N,
+                    WWR_MEMCPY_DEVICE_TO_DEVICE,
+                    stream.stream(),
+                )
+            });
+        }
+        Ok(())
+    });
+    plan.add("host", Placement::Cpu, &[copies], |_| {
+        host_ran.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    });
+    let decision = plan.add_loop("decide", copies, ITERATIONS, |i| {
+        Ok(if i + 1 < ITERATIONS {
+            ControlFlow::Continue(())
+        } else {
+            ControlFlow::Break(())
+        })
+    });
+    let mut device = Device::new(&[0], &plan);
+    let record = run(&mut plan, &mut device, 1);
+    record.result.as_ref().unwrap();
+
+    assert_eq!(record.iterations, BTreeMap::from([(decision, ITERATIONS)]));
+    assert_eq!(host_ran.load(Ordering::SeqCst), ITERATIONS);
+    let scopes: Vec<_> = record
+        .tasks
+        .iter()
+        .filter(|t| t.name == "copies")
+        .map(|t| (t.iteration, t.device))
+        .collect();
+    assert_eq!(scopes.len(), ITERATIONS, "{scopes:?}");
+    for (k, &(iteration, device)) in scopes.iter().enumerate() {
+        assert_eq!(iteration, Some(k));
+        assert!(device.is_some(), "iteration {k}'s scope was not read");
+    }
+    assert!(
+        scopes.windows(2).all(|w| w[0].1 < w[1].1),
+        "each iteration's scope is its own: {scopes:?}"
+    );
+    // The CPU node waited on the stream node once per iteration.
+    let waits = record
+        .syncs
+        .iter()
+        .filter(|s| s.node.is_some() && s.waited_for == copies)
+        .count();
+    assert_eq!(waits, ITERATIONS, "{:?}", record.syncs);
 }
