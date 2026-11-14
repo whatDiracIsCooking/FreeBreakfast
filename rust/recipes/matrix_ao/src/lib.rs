@@ -11,28 +11,26 @@
 //!   ([`fb_basis::spherical_transform_matrix`]), written into a pinned row
 //!   that every later transform over the basis reads.
 //! - **`spherical transform`**, on the worker's stream: U copied into device
-//!   scratch, then `M = Uᵀ M_cart U` as two GEMMs through `wwr-sys`'s BLAS,
-//!   the intermediate `M_cart U` scratch too.
+//!   scratch, then `M = Uᵀ M_cart U` as two GEMMs through `wwr-sys`'s BLAS
+//!   on the worker's handle, the intermediate `M_cart U` scratch too.
 //!
 //! | C++ | Here |
 //! |---|---|
 //! | `upload_spherical_transform_matrix(res, basis)` (nothing for an identity U), shared by every pair over the basis | the `harmonics` task's pinned row, added by the first call and handed to the later ones through the caller's slot, always |
 //! | `MatrixAOPair`'s U and own scratch, so two pairs may run on different streams | each transform's own device copy of U and its own `M_cart U` scratch |
 //! | `MatrixAOPair::cartesian_to_spherical` (`gemmwich`; a copy for an identity U) | the `spherical transform` task's two GEMMs, always |
-//! | `res.blas()`, the `DeviceResources`' handle | each transform's own handle, made at its first run |
+//! | `res.blas()`, the `DeviceResources`' handle | the stream worker's handle, [`DeviceStream::blas`], made with the backend and bound to the worker's stream |
 //! | `MatrixAO<L>`, `BasisLayout`, `ao_count` | nothing: a matrix is a device row, its order the basis's `nao_cart` or `nao_sphe` |
 //! | `MatrixAOPair::spherical_to_cartesian` | not ported yet |
 
-use std::sync::Mutex;
-
 use fb_basis::BasisSet;
 use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
-use fb_core_error_handling::{Error, Status};
+use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
-use wwr_sys::{wwr_blas_handle, wwr_blas_operation, wwr_blas_status, wwr_memcpy_kind, wwr_stream};
+use wwr_sys::{wwr_blas_operation, wwr_memcpy_kind, wwr_stream};
 
 /// Add the spherical form of the Cartesian AO matrix `cartesian` of `basis`
 /// to `dag` on GPU worker `worker`, and return it: an output row of
@@ -81,7 +79,6 @@ pub fn add_cartesian_to_spherical(
             n_cart: basis.nao_cart() as usize,
             n_sph: basis.nao_sphe() as usize,
             name: name.to_owned(),
-            blas: Mutex::new(None),
         },
     )
     .m
@@ -113,36 +110,6 @@ impl Task for Harmonics {
     }
 }
 
-/// A BLAS handle, made on the stream worker's thread at the transform's
-/// first run and destroyed with the plan.
-struct Blas(wwr_blas_handle);
-
-// SAFETY: a cuBLAS or hipBLAS handle may be used from any thread, one call
-// at a time; the transform holds it behind a mutex, so no two threads ever
-// call through it at once.
-unsafe impl Send for Blas {}
-
-impl Drop for Blas {
-    fn drop(&mut self) {
-        // SAFETY: the handle is live, made by `wwr_blas_create`, and nothing
-        // uses it after this.
-        let status = unsafe { wwr_sys::wwr_blas_destroy(self.0) };
-        if status != wwr_blas_status::WWR_BLAS_STATUS_SUCCESS {
-            log::error!("wwr_blas_destroy: {status:?}");
-        }
-    }
-}
-
-/// A BLAS status as a `Status`, naming the call.
-#[track_caller]
-fn blas(what: &str, status: wwr_blas_status) -> Status {
-    if status == wwr_blas_status::WWR_BLAS_STATUS_SUCCESS {
-        Ok(())
-    } else {
-        Err(Error::gpu(format!("{what}: {status:?}")))
-    }
-}
-
 /// GPU: `M = Uᵀ M_cart U`, U copied from its pinned row into device
 /// scratch, then `M_cart U` into scratch and `Uᵀ (M_cart U)` into M, two
 /// GEMMs on the worker's stream, as the C++ `gemmwich` orders them.
@@ -153,10 +120,6 @@ struct Transform {
     n_sph: usize,
     /// M's row name; the intermediate's is `"{name} U"`.
     name: String,
-    /// The handle, made at the first run: WarpWraps' C ABI has no
-    /// `wwr_blas_set_workspace`, so the handle cannot take a worker row yet
-    /// (`fb_core_arena`, "Not yet"), and a plan is laid out with no device.
-    blas: Mutex<Option<Blas>>,
 }
 
 #[derive(Clone, Copy)]
@@ -192,10 +155,10 @@ impl Task for Transform {
         host: &Bufs<'_, Pinned>,
         lane: Lane<'_, DeviceStream>,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
+        let Lane::Stream { stream: worker, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let stream: wwr_stream = stream.stream();
+        let stream: wwr_stream = worker.stream();
         let u_host = host.get(self.u);
         let u = device.take_mut(rows.u);
         // SAFETY: two rows of `u_host.len()` doubles, on the task's stream.
@@ -211,21 +174,8 @@ impl Task for Transform {
             )
         })?;
 
-        let mut held = self.blas.lock().unwrap_or_else(|e| e.into_inner());
-        if held.is_none() {
-            let mut raw: wwr_blas_handle = std::ptr::null_mut();
-            // SAFETY: `raw` is valid for one write.
-            blas("wwr_blas_create", unsafe {
-                wwr_sys::wwr_blas_create(&mut raw)
-            })?;
-            *held = Some(Blas(raw));
-        }
-        let handle = held.as_ref().map(|b| b.0).unwrap();
-        // SAFETY: the handle is live, and the stream is the worker's, live
-        // for the run.
-        blas("wwr_blas_set_stream", unsafe {
-            wwr_sys::wwr_blas_set_stream(handle, stream)
-        })?;
+        // The worker's handle, bound to `stream` when the backend was made.
+        let handle = worker.blas().get();
 
         let (n_cart, n_sph) = (self.n_cart as i32, self.n_sph as i32);
         let (one, zero) = (1.0_f64, 0.0_f64);
@@ -237,7 +187,7 @@ impl Task for Transform {
         // SAFETY: every matrix is a device row of the declared size, each
         // ld its row count; the scalars are host memory, the handle's
         // default pointer mode; the GEMM enqueues on `stream`.
-        blas("wwr_blas_dgemm (M_cart U)", unsafe {
+        gpu_status(unsafe {
             wwr_sys::wwr_blas_dgemm(
                 handle,
                 WWR_BLAS_OP_N,
@@ -257,7 +207,7 @@ impl Task for Transform {
         })?;
         // M = Uᵀ work: (n_sph × n_cart)(n_cart × n_sph).
         // SAFETY: as above.
-        blas("wwr_blas_dgemm (Uᵀ M_cart U)", unsafe {
+        gpu_status(unsafe {
             wwr_sys::wwr_blas_dgemm(
                 handle,
                 WWR_BLAS_OP_T,

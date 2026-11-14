@@ -44,9 +44,11 @@ The C++ tree is where the layer's shape comes from, not what `rust/` builds
 on. A port copies the bridges and kernels it needs into `rust/`, and the
 copy is what the Rust tree compiles; the counts above are the C++ tree's,
 and they say how much a full port forks. Forked so far: the merge sort
-(`rust/recipes/kernels/`), and the primitive-pair records' and the
-overlap's launchers and emitted units (`rust/integrals/kernels/`), over a
-trimmed fork of the device headers they include (`rust/device_headers/`).
+(`rust/recipes/kernels/`), and the launchers and emitted units of the
+primitive-pair records, the overlap, the kinetic energy and the nuclear
+attraction (`rust/integrals/kernels/`, the last with the emitted Boys
+routine, `eval_boys.h` and its `eval_boys_<m>.h`, in `shared/` there), over
+a trimmed fork of the device headers they include (`rust/device_headers/`).
 
 ## What the port changes
 
@@ -118,7 +120,9 @@ only in review. Each library exports two entries,
 `fb_<module>_abi_version()` and `fb_<module>_backend()`, defined in its
 `kernels/abi.cu`: the first returns the `FB_<MODULE>_ABI_VERSION` its C
 header defines, bumped by hand with any change to a declaration the header
-reaches, and the second `FB_BACKEND_CUDA` or `FB_BACKEND_HIP`
+reaches (`FB_RECIPES_ABI_VERSION` is 1; `FB_INTEGRALS_ABI_VERSION` is 2,
+bumped when the kinetic and nuclear-attraction wrappers and `fb_nuclei_view`
+joined `fb_integrals.h`), and the second `FB_BACKEND_CUDA` or `FB_BACKEND_HIP`
 (`fb_launch.h`), chosen by the compiler's own `__CUDACC__` or `__HIP__`
 rather than a definition the build passes. The `-sys` crate's
 `check_library()` checks the version against the constant in its committed
@@ -136,8 +140,8 @@ hook short of a linker section an `rlib` may drop, so `check_library()` is a
 plain function that a caller runs once before its first launch. The safe
 layer runs it at planning: `fb-integrals-mmd`'s `add_records` calls
 `fb_integrals_sys::check_library()` before it adds a task, so a mismatch is
-the plan's `GpuRuntime` error and nothing launches; the overlap plans
-through `add_records`. Each `-sys` crate's tier 4 also runs it against the
+the plan's `GpuRuntime` error and nothing launches; the overlap, the
+kinetic energy and the nuclear attraction plan through `add_records`. Each `-sys` crate's tier 4 also runs it against the
 library built for its card. The comparison itself is
 `fb_kernel_abi::check`, a function of values passed in, in `fb-kernel-abi`,
 a crate that links nothing, so its tests of a mismatched version and
@@ -191,17 +195,39 @@ not check, because it cannot without a runtime call
 of its own; the safe wrapper's contract (tier 2) can, in debug builds.
 
 **Library calls go straight from Rust through `wwr-sys`.** BLAS, the
-solvers, the collectives: WarpWraps' C ABI already covers them, and the crate
-already drives a GEMM that way (`experimental/rust/gemm`). Only this tree's
-own kernels need a C++ wrapper.
+solvers, the collectives: WarpWraps' C ABI already covers them, and the
+spherical transform drives its GEMMs that way (`fb-recipes-matrix-ao`).
+Only this tree's own kernels need a C++ wrapper.
 
-**A library's workspace is part of the task's layout.** The solvers' is
+**A library handle is the stream worker's, made before the run.** Each
+stream worker owns one handle per library, bound to its stream and on its
+device: `fb_core_thread_pool::DeviceStream`, what a GPU task's `Lane` hands
+it, is the worker's stream (it derefs to `fb_core_wwr::runtime::Stream`)
+and its handles (`blas()`, an `fb_core_wwr::blas::BlasHandle`). The
+`Device` backend makes them when it is built over an instance's plan, with
+the streams and events, so creating a handle is never a task's work and
+never happens inside a `run`; the C++ tree's `res.blas()`, one handle per
+`DeviceResources`, is the same rule per device. Planning still needs no
+device: a task names no handle in its layout, and the tier-3 planner tests
+run on `HostOnly` workers under `--no-default-features`, with no wwr crate
+in their graph. BLAS is the
+one library so far; the dense solver's handle joins it in `DeviceStream`.
+Every task of the worker shares the handles, so a task that changes one's
+state (its pointer mode) sets it back before it returns.
+
+**A library's workspace is part of the layout.** The solvers' is
 already a dimension: the pipeline treats `syevd_lwork` as one, and a layout
 calls the query at planning ([`programming_model.md`](programming_model.md),
 "Memory: layouts and arenas"). cuBLAS and hipBLAS allocate a workspace per
 handle on their own unless they are handed one (`cublasSetWorkspace` and its
-HIP twin), so the orchestrator hands every handle a buffer from the arena,
-and a run allocates nothing through a library either.
+HIP twin), so the design hands every handle a worker row of the arena
+([`memory.md`](memory.md), "The table"), and a run allocates nothing through
+a library either. That row waits on WarpWraps: its C ABI has no
+`wwr_blas_set_workspace` (requested in
+[WarpWraps#376](https://github.com/whatDiracIsCooking/WarpWraps/issues/376)),
+so until it does a BLAS handle allocates its own workspace when the
+`Device` backend makes it, once per worker and before the run, outside the
+arena's count.
 
 **Rust never launches a kernel itself.** The C ABI exports a launch call
 (`wwr_launch_kernel_ex_c`), so Rust could take a kernel's address and launch
@@ -211,8 +237,8 @@ it. It does not, because the block and the dispatch belong with the kernel
 ## From bridge to C ABI
 
 What changes when a C++ bridge header is forked into `rust/` as the C header
-the bindings are generated from. The forked `mmd.h`, `overlap.h` and
-`merge_sort.h` follow this table:
+the bindings are generated from. The forked `mmd.h`, `overlap.h`,
+`kinetic.h`, `potential_en.h` and `merge_sort.h` follow this table:
 
 | The C++ tree's bridge | The forked C header |
 |---|---|
@@ -246,10 +272,11 @@ The instantiation list is the source: the entries are generated from it, so
 none is invented and none dropped.
 
 The views and parameter structs cross as they are, by pointer from host
-memory. `PrimitivePairClassView`, `PrimitivePairSource` and
-`PrimitivePairRecords` are forked as `fb_primitive_pair_class_view`,
-`fb_primitive_pair_source` and `fb_primitive_pair_records`, the same fields
-in the same order. The CI `Replacement` and `EinsumPlan` are integers and
+memory. `PrimitivePairClassView`, `PrimitivePairSource`,
+`PrimitivePairRecords` and `src/molecule`'s `NucleiView` are forked as
+`fb_primitive_pair_class_view`, `fb_primitive_pair_source`,
+`fb_primitive_pair_records` and `fb_nuclei_view` (`nuclei_view.h`), the same
+fields in the same order. The CI `Replacement` and `EinsumPlan` are integers and
 pointers already, and `EinsumPlan` already carries the `static_assert` that
 it is trivially copyable and standard-layout "because it crosses the bridge
 by value". "Shared types" below makes that the rule.
@@ -283,7 +310,8 @@ to an integer at the call.
 (`kPairBoundMaxMomentum`, `kRecordBoundMaxMomentum`), because a host module
 unit cannot include the `.cu`'s table. The forked C headers export it
 instead (`FB_PAIR_BOUND_MAX_MOMENTUM`, `FB_RECORD_BOUND_MAX_MOMENTUM`,
-`FB_OVERLAP_MAX_MOMENTUM`), each `.cu` asserts it against its table, the
+`FB_OVERLAP_MAX_MOMENTUM`, `FB_KINETIC_MAX_MOMENTUM`,
+`FB_POTENTIAL_EN_MAX_MOMENTUM`), each `.cu` asserts it against its table, the
 bindings carry it as a Rust `const`, and the safe wrapper can refuse an
 unsupported momentum before the call, at tier 2, with the same number the
 kernel was built from.
@@ -442,7 +470,9 @@ because nvcc accepts code that `clang -x hip` rejects.
 **One shared object per module.** `rust/<module>/kernels/` builds
 `libfb_<module>_kernels.so` at `<build>/<module>/kernels`:
 `libfb_recipes_kernels.so` (the merge sort) and `libfb_integrals_kernels.so`
-(the primitive-pair records and the overlap) today. Under CUDA each uses
+(the primitive-pair records, the overlap, the kinetic energy and the nuclear
+attraction: `fb_mmd_*`, `fb_ordered_pair_bound`, `fb_overlap_class`,
+`fb_kinetic_class` and `fb_potential_en_class`) today. Under CUDA each uses
 separable compilation with the device link resolved inside the `.so`
 (`CUDA_RESOLVE_DEVICE_SYMBOLS`), so nothing relocatable crosses the ABI, and
 links the shared vendor runtime, not CMake's static default, so that the
@@ -510,9 +540,9 @@ changes").
   as a `const` pointer to a plain-C `typedef struct` in host memory, a small
   POD such as `EinsumPlan` included, because one rule is uniform; the wrapper
   reads the fields on the host and launches the kernel with what it needs.
-  The first three crossed that way when `mmd` and the overlap were forked
-  ("From bridge to C ABI"), their layout asserted on both sides ("Shared
-  types").
+  The first three crossed that way when `mmd` and the overlap were forked,
+  and `fb_nuclei_view` with the nuclear attraction ("From bridge to C
+  ABI"), each layout asserted on both sides ("Shared types").
 - **Where the workspace query runs for a planner with no library.** The query
   is a host function in the kernel's `.so`, so a tier-3 planner test that
   calls it links that `.so` even though it launches nothing. Loading it is

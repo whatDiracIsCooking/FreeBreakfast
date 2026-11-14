@@ -9,11 +9,17 @@ use super::plan::{Placement, Plan};
 use fb_core_error_handling::Error;
 use fb_core_error_handling::{Result, Status};
 #[cfg(feature = "device")]
+use fb_core_wwr::blas::BlasHandle;
+#[cfg(feature = "device")]
 use fb_core_wwr::common::ScopedDeviceIndex;
 #[cfg(feature = "device")]
 use fb_core_wwr::gpu_status;
 #[cfg(feature = "device")]
 use fb_core_wwr::runtime::{Event, Stream, event};
+#[cfg(feature = "device")]
+use std::ops::Deref;
+#[cfg(feature = "device")]
+use std::rc::Rc;
 
 /// The device side of a run: what the stream workers enqueue on, and the
 /// waits that make each edge leaving a stream hold
@@ -101,9 +107,50 @@ impl Backend for HostOnly {
     }
 }
 
-/// The stream a GPU node is handed under [`Device`].
+/// What a GPU node is handed under [`Device`]: its stream worker's stream,
+/// which it derefs to, and the worker's library handles, each bound to that
+/// stream. Made with the [`Device`], never during a run, so a task reaches
+/// a handle through its [`Lane`](super::Lane) and never makes one.
+///
+/// Every GPU node of the worker shares its handles, so a node that changes
+/// a handle's state (its pointer mode, say) sets it back before it returns;
+/// none does today. BLAS is the one library so far; a solver handle joins
+/// it here.
 #[cfg(feature = "device")]
-pub type DeviceStream = Stream;
+pub struct DeviceStream {
+    // Fields drop in declaration order: the handles before the stream they
+    // are bound to (each also holds the stream until it is destroyed).
+    blas: BlasHandle,
+    stream: Rc<Stream>,
+}
+
+#[cfg(feature = "device")]
+impl DeviceStream {
+    /// A non-blocking stream on `dev_idx` and a BLAS handle bound to it.
+    /// Aborts if either cannot be made.
+    #[track_caller]
+    pub fn new(dev_idx: i32) -> Self {
+        let stream = Rc::new(Stream::new(dev_idx));
+        DeviceStream {
+            blas: BlasHandle::new(Rc::clone(&stream)),
+            stream,
+        }
+    }
+
+    /// The worker's BLAS handle, bound to its stream: pass its `get()` to
+    /// a `wwr_blas_*` call, and the call enqueues on the stream.
+    pub fn blas(&self) -> &BlasHandle {
+        &self.blas
+    }
+}
+
+#[cfg(feature = "device")]
+impl Deref for DeviceStream {
+    type Target = Stream;
+    fn deref(&self) -> &Stream {
+        &self.stream
+    }
+}
 
 /// Without the `device` feature: a stream that cannot exist, so the
 /// planner's production defaults (`Task<Pinned, DeviceStream>`) still name a
@@ -115,12 +162,12 @@ pub enum DeviceStream {}
 
 #[cfg(feature = "device")]
 /// GPU stream workers: one non-blocking stream per worker, each on its own
-/// device, and two timing events per GPU node: its stream scope, recorded
-/// before it runs and after it returns. The second is also what its
-/// consumers wait on.
+/// device with its library handles bound to it ([`DeviceStream`]), and two
+/// timing events per GPU node: its stream scope, recorded before it runs
+/// and after it returns. The second is also what its consumers wait on.
 ///
-/// Built once per plan and reused every run: the streams and events are
-/// created here, never during a run.
+/// Built once per plan and reused every run: the streams, handles and
+/// events are created here, never during a run.
 pub struct Device {
     devices: Vec<i32>,
     streams: Vec<DeviceStream>,
@@ -129,12 +176,15 @@ pub struct Device {
 }
 
 #[cfg(feature = "device")]
-// SAFETY: the stream and event handles are raw runtime pointers, which is
-// why the wrappers are neither `Send` nor `Sync`. The runtime API is
+// SAFETY: the stream, event and library handles are raw runtime pointers,
+// which is why the wrappers are neither `Send` nor `Sync`. The runtime API is
 // thread-safe for every call made on them here (record, wait, synchronize,
-// elapsed time),
-// and the handles are created before any run and destroyed only when the
-// `Device` drops, which a run's borrow of it rules out.
+// elapsed time). A library handle is called through only by the tasks of
+// its own stream worker, which runs one at a time on one thread, and cuBLAS
+// and hipBLAS allow a handle to be used from any thread one call at a time.
+// Every handle is created before any run and destroyed only when the
+// `Device` drops, which a run's borrow of it rules out; so is every `Rc` a
+// `DeviceStream` holds, cloned and dropped only then, never during a run.
 unsafe impl Sync for Device {}
 
 #[cfg(feature = "device")]

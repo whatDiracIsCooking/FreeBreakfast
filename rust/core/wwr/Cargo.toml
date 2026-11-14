@@ -16,4 +16,5 @@ test-support = []
 contracts.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-log.workspace = true
-wwr-sys.workspace = true
+# BLAS for the handle in `blas`, beside the runtime.
+wwr-sys = { workspace = true, features = ["blas"] }
