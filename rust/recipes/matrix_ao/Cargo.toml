@@ -15,7 +15,9 @@ fb-core-arena.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-planner.workspace = true
 fb-core-thread-pool = { workspace = true, features = ["device"] }
-fb-recipes-blas.workspace = true
+fb-core-wwr.workspace = true
+# BLAS for the operation enum, beside the runtime.
+wwr-sys = { workspace = true, features = ["blas"] }
 
 [dev-dependencies]
 fb-io-basis.workspace = true

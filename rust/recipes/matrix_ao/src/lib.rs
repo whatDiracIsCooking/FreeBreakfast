@@ -12,7 +12,7 @@
 //!   that every later transform over the basis reads, and any other task
 //!   that reads U.
 //! - **`spherical transform`**, on the worker's stream: U copied into device
-//!   scratch, then `M = Uᵀ M_cart U` as two GEMMs ([`fb_recipes_blas::gemm`])
+//!   scratch, then `M = Uᵀ M_cart U` as two GEMMs ([`fb_core_wwr::blas::gemm`])
 //!   on the worker's handle, the intermediate `M_cart U` scratch too.
 //!
 //! | C++ | Here |
@@ -36,7 +36,8 @@ use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d}
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_recipes_blas::{N, T, gemm};
+use fb_core_wwr::blas::gemm;
+use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N as OP_N, WWR_BLAS_OP_T as OP_T};
 
 /// Add the spherical form of the Cartesian AO matrix `cartesian` of `basis`
 /// to `dag` on GPU worker `worker`, and return it: an output row of
@@ -191,10 +192,14 @@ impl Task for Transform {
         let mut work = device.take_mut(rows.work);
         let mut m = device.take_mut(rows.m);
         // work = M_cart U: (n_cart × n_cart)(n_cart × n_sph).
-        gemm::<N, N, f64>(
-            handle, n_cart, n_sph, n_cart, 1.0, &m_cart, &u, 0.0, &mut work,
+        gemm(
+            handle, OP_N, OP_N, n_cart, n_sph, n_cart, 1.0, &m_cart, n_cart, &u, n_cart, 0.0,
+            &mut work, n_cart,
         )?;
         // M = Uᵀ work: (n_sph × n_cart)(n_cart × n_sph).
-        gemm::<T, N, f64>(handle, n_sph, n_sph, n_cart, 1.0, &u, &work, 0.0, &mut m)
+        gemm(
+            handle, OP_T, OP_N, n_sph, n_sph, n_cart, 1.0, &u, n_cart, &work, n_cart, 0.0, &mut m,
+            n_sph,
+        )
     }
 }

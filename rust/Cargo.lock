@@ -682,7 +682,6 @@ dependencies = [
  "fb-molecule-nuclei",
  "fb-pipeline-eri",
  "fb-pipeline-guess",
- "fb-recipes-blas",
  "fb-recipes-diagonalize",
  "fb-recipes-diis",
  "fb-recipes-orthogonalize",
@@ -760,9 +759,10 @@ dependencies = [
  "fb-core-error-handling",
  "fb-core-planner",
  "fb-core-thread-pool",
+ "fb-core-wwr",
  "fb-io-basis",
  "fb-io-xyz",
- "fb-recipes-blas",
+ "wwr-sys",
 ]
 
 [[package]]

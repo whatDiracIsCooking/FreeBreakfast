@@ -838,7 +838,9 @@ comment justifies exactly one thing. Miri covers what a lint cannot
 memory with its length, which the arena's rows implement) and check each
 extent against them in every build (syevd's work against the solver's own
 query), <code>fb_core_wwr::memset::zero</code> zeroes one on a stream, and
-<code>fb-recipes-blas</code>, the BLAS calls' packed shorthand, forbids <code>unsafe</code>
+<code>fb-recipes-blas</code>, the C++ recipes' sandwich products over those calls
+(and no single call of its own: <a href="gpu_layer.md"><code>gpu_layer.md</code></a>,
+&quot;Layering&quot;), forbids <code>unsafe</code>
 itself, as the arena's <code>memcpy_*</code> do for the copies. A kernel library's
 launch is wrapped the same way in its binding crate, beside the generated
 bindings: <code>fb_recipes_sys::inverse_sqrt</code>, <code>merge_sort</code> and

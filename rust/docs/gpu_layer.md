@@ -204,6 +204,20 @@ solvers, the collectives: WarpWraps' C ABI already covers them, and the
 spherical transform drives its GEMMs that way (`fb-recipes-matrix-ao`).
 Only this tree's own kernels need a C++ wrapper.
 
+**One BLAS operation has one name: `fb_core_wwr::blas`'s.** A task that
+makes a single call (`gemm`, `gemv`, `geam`, `syrk`, `trsm`, `dgmm`,
+`gemm_strided_batched`) calls the checked wrapper there, every leading
+dimension, op and side passed in, packed or not. `fb-recipes-blas` holds
+only the C++ `src/recipes/blas`'s named compositions, the sandwiches
+`gemmwich` and `gmmwich` (two calls through a caller's work matrix), and
+exports no name of a single call: its packed `gemm` and `dgmm`, the C++'s
+shorthand, are private to it. Two public `gemm`s, one deriving the leading
+dimensions and one taking them, had split the callers by which file they
+were copied from (#1545); a packed call is a leading dimension written
+out, which costs a caller three arguments and no second name to learn.
+`fb-doc-check` holds it (`tests/source_rules.rs`): no public function of
+`fb-recipes-blas` shares a name with one of `fb_core_wwr::blas`.
+
 **A library handle is the stream worker's, made before the run.** Each
 stream worker owns one handle per library, bound to its stream and on its
 device: `fb_core_thread_pool::DeviceStream`, what a GPU task's `Lane` hands

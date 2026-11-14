@@ -3,7 +3,7 @@
 //! the tiles).
 //!
 //! Two calls a task makes inside its `run`, on its stream, as it calls
-//! `fb_recipes_blas::gemm`; neither is a task of its own. Each is one launch
+//! `fb_core_wwr::blas::gemm`; neither is a task of its own. Each is one launch
 //! of the kernels forked into `recipes/kernels/symmetrize/`, through
 //! `fb-recipes-sys`'s safe wrappers, which hold the `unsafe` and check every
 //! extent the launch trusts; this crate holds none.

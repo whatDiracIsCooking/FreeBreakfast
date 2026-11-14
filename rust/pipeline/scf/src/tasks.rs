@@ -6,8 +6,9 @@ use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_recipes_blas::{N, T, gemm};
+use fb_core_wwr::blas::gemm;
 use fb_recipes_diagonalize::add_diagonalize;
+use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N as OP_N, WWR_BLAS_OP_T as OP_T};
 
 /// Add the solution of `F C = S C ε` through `x = S^(-1/2)` to `dag` on GPU
 /// worker `worker`, and return `(ε, C)`: an output row of the `n` orbital
@@ -100,8 +101,25 @@ impl Task for FockTransform {
         let (f, x) = (device.get(self.f), device.get(self.x));
         let (mut fx, mut f_prime) = (device.take_mut(rows.fx), device.take_mut(rows.f_prime));
         // The second gemm follows the first on the handle's stream.
-        gemm::<N, N, f64>(handle, n, n, n, 1.0, &f, &x, 0.0, &mut fx)?;
-        gemm::<T, N, f64>(handle, n, n, n, 1.0, &x, &fx, 0.0, &mut f_prime)
+        gemm(
+            handle, OP_N, OP_N, n, n, n, 1.0, &f, n, &x, n, 0.0, &mut fx, n,
+        )?;
+        gemm(
+            handle,
+            OP_T,
+            OP_N,
+            n,
+            n,
+            n,
+            1.0,
+            &x,
+            n,
+            &fx,
+            n,
+            0.0,
+            &mut f_prime,
+            n,
+        )
     }
 }
 
@@ -142,6 +160,21 @@ impl Task for BackTransform {
             device.take_mut(*c),
         );
         let n = self.n as i32;
-        gemm::<N, N, f64>(worker.blas(), n, n, n, 1.0, &x, &c_prime, 0.0, &mut c)
+        gemm(
+            worker.blas(),
+            OP_N,
+            OP_N,
+            n,
+            n,
+            n,
+            1.0,
+            &x,
+            n,
+            &c_prime,
+            n,
+            0.0,
+            &mut c,
+            n,
+        )
     }
 }
