@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::panic::Location;
 use std::ptr;
-use std::sync::atomic::AtomicIsize;
+use std::sync::atomic::{AtomicIsize, AtomicU64, Ordering};
 
 use super::DEVICE_ALIGNMENT;
 use super::bufs::Bufs;
@@ -11,6 +11,29 @@ use super::kind::Kind;
 use super::table::Table;
 use fb_core_error_handling::{Error, ErrorKind, check_or_abort};
 use log::error;
+
+/// Every block [`Block::new`] has allocated in this process, of any kind.
+static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
+
+/// How many blocks this process has allocated, of every kind, since it
+/// started: one per [`Block::new`] of a table with a non-zero total (a table
+/// of zero bytes allocates nothing and is not counted), never decreased by a
+/// drop. The arena is the only place the workspace allocates, so the count
+/// is every allocation of ours, and only ours: unlike the device's free
+/// memory, another tenant of the card cannot move it, and neither can a
+/// library allocating behind the arena, which it does not see
+/// (`docs/memory.md`, "What is checked"). A test reads it twice around what
+/// must allocate nothing:
+///
+/// ```
+/// let before = fb_core_arena::allocations();
+/// // ... a loop's replay ...
+/// assert_eq!(fb_core_arena::allocations(), before);
+/// ```
+#[must_use]
+pub fn allocations() -> u64 {
+    ALLOCATIONS.load(Ordering::Relaxed)
+}
 
 /// One contiguous allocation of kind `K` on one GPU worker, sized to its
 /// table's total, made in [`Block::new`] and freed when it drops
@@ -96,6 +119,7 @@ impl<K: Kind> Block<K> {
                     context: Vec::new(),
                 }));
             }
+            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
             if K::ALWAYS_FILL || cfg!(debug_assertions) {
                 // SAFETY: the allocation just made, of `total` bytes.
                 check_or_abort(unsafe { K::fill(base, total, location) });
