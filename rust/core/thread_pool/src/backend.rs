@@ -31,11 +31,16 @@ use std::rc::Rc;
 /// waits that make each edge leaving a stream hold
 /// ([`thread_pool`](super), "When an edge is satisfied").
 ///
-/// Every method is called from the worker the comment names, so an
-/// implementation shared by reference across the run's threads is `Sync`.
-/// [`run`](super::run) borrows it exclusively, so those threads are one
-/// run's: the backend is never in two runs at once.
-pub trait Backend: Sync {
+/// Every method is called from the worker the comment names.
+/// [`run`](super::run) borrows the backend exclusively and shares it with
+/// its workers through a wrapper only it can make, so a backend is on
+/// several threads only inside one run, and never in two runs at once. A
+/// backend need not be `Sync`, and `Device` is not: outside a run no
+/// `&Device` can reach another thread at all.
+///
+/// Sealed: [`HostOnly`] and `Device` are the implementations, so `run`'s
+/// argument for sharing one across its workers covers every backend.
+pub trait Backend: sealed::Sealed {
     /// What a GPU node enqueues on.
     type Stream;
     /// Held by a stream worker's thread for the whole run: its device made
@@ -68,6 +73,16 @@ pub trait Backend: Sync {
     /// for a backend with no device clock.
     fn elapsed(&self, node: NodeId) -> Result<Option<Duration>>;
 }
+
+/// Nothing outside this module can name it, so nothing outside the crate
+/// can implement [`Backend`].
+mod sealed {
+    pub trait Sealed {}
+}
+
+impl sealed::Sealed for HostOnly {}
+#[cfg(feature = "device")]
+impl sealed::Sealed for Device {}
 
 /// No device: `n` stream workers that are plain threads, whose nodes are
 /// complete when they return. For device-free tests of the executor and of
@@ -187,32 +202,22 @@ pub enum DeviceStream {}
 /// Built once per plan and reused every run, one run at a time
 /// ([`run`](super::run) borrows it exclusively): the streams, handles and
 /// events are created here, never during a run.
+///
+/// Neither `Send` nor `Sync`, as the raw runtime handles inside it are not:
+/// only a run shares it across threads, its workers, through `run`'s own
+/// wrapper. So no code outside a run can call through its handles from
+/// two threads:
+///
+/// ```compile_fail,E0277
+/// fn shared_across_threads<T: Sync>() {}
+/// shared_across_threads::<fb_core_thread_pool::Device>();
+/// ```
 pub struct Device {
     devices: Vec<i32>,
     streams: Vec<DeviceStream>,
     /// Indexed by node, each GPU node's (start, end); `None` for a CPU node.
     events: Vec<Option<(Event, Event)>>,
 }
-
-#[cfg(feature = "device")]
-// SAFETY: the stream, event and library handles are raw runtime pointers,
-// which is why the wrappers are neither `Send` nor `Sync`. A `&Device` is
-// shared across threads only by `run`'s workers, inside one run: `run`
-// takes the backend by `&mut`, so one run at a time uses it, and nothing
-// else in the tree reaches it from another thread meanwhile (spawning is
-// the executor's alone, `clippy.toml`'s `disallowed-methods`). Within the
-// run, the runtime API is thread-safe for every call made through a shared
-// reference here (record, wait, synchronize, elapsed time), on events that
-// are this plan's and no other run's. A library handle is called through
-// only by the nodes of its own stream worker, which runs one node at a time
-// on one thread, and cuBLAS, hipBLAS, cuSOLVER and hipSOLVER allow a handle
-// to be used from any thread one call at a time.
-// Every handle is created before any run and destroyed only when the
-// `Device` drops, and a BLAS handle's workspace is handed over only by
-// `bind_blas_workspace`, through `&mut self`; a run's borrow rules out
-// both. So is every `Rc` a `DeviceStream` holds, cloned and dropped only
-// then, never during a run.
-unsafe impl Sync for Device {}
 
 #[cfg(feature = "device")]
 impl Device {
