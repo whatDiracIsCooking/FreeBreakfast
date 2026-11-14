@@ -223,14 +223,28 @@ Per worker and per kind, the block must fit:
 | Heap | `block <= max_host_mem` | The plan's cap, one block for every worker |
 | Host | `sum of the node's pinned blocks + heap block <= available` | Neither kind is paged out for the other: pinned is locked, and the heap block's pages are committed by its fill; no margin, as the pinned row's |
 
-**The available memory is the cgroup's too.** `available` is the node's
-`MemAvailable`, which inside a container is the host's, so under a cgroup
-v2 memory limit it is the smaller of that and what the limit leaves:
-`memory.max` less `memory.current`, the cgroup's inactive page cache
-(`inactive_file` in `memory.stat`) counted free, as `MemAvailable` counts
-the node's (`fb_core_arena::host_available`). The limit read is the
-process's own cgroup's; an ancestor's lower limit is not read (#1622). A limit of
-`max`, or none, leaves `MemAvailable`.
+**The available memory is the cgroups' too.** `available` is the node's
+`MemAvailable`, which inside a container is the host's, so under cgroup v2
+memory limits it is the smallest of that and what each limit leaves:
+`memory.max` less the cgroup's usage, `memory.current` less what it could
+reclaim (`fb_core_arena::host_available`). Every cgroup from the process's
+own up to the root of the mount is read, so a lower limit on an ancestor,
+such as a systemd slice above a container's cgroup, wins. A limit of `max`,
+or none, leaves `MemAvailable`. The walk stops at a directory it cannot list,
+and at the mount's root: a cgroup namespace hides the parents above it, and
+a limit there is not read, the one gap left.
+
+**Reclaimable is half the cache and half the slab.** The kernel's own
+`MemAvailable` estimate, `si_mem_available` in `mm/show_mem.c`, counts the
+page cache on the file LRU lists (`active_file` plus `inactive_file`) and the
+reclaimable slab as available, each less the smaller of half of it and the
+node's low watermark. The same terms are in a cgroup's `memory.stat`
+(`Documentation/admin-guide/cgroup-v2.rst`): `active_file`, `inactive_file`
+and `slab_reclaimable`; shmem sits on the anon lists and counts used. A cgroup
+has no low watermark of its own, so each term is counted at half, rounded up:
+what the kernel counts when the watermark is at least that half, and less than
+it counts otherwise. A cgroup's figure is then never more hopeful than the
+node's rule, and errs, when it errs, by at most half its cache and slab.
 
 **No headroom and no eighth.** The 64 MiB fragmentation headroom and the HIP
 `ceil(P / 8)` reuse rounding are properties of a pool that reserves in chunks

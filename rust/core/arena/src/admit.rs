@@ -84,15 +84,33 @@ pub fn admit_host(pinned: &[usize], heap: usize, available: usize) -> Status {
 
 /// The host memory the plan's host blocks may take together, in bytes,
 /// read at planning ([`admit_host`]): the node's `MemAvailable` from
-/// `/proc/meminfo`, or, under a cgroup v2 memory limit, the smaller of it
-/// and what the limit leaves, `memory.max` less `memory.current`, the
-/// cgroup's inactive page cache (`inactive_file` in `memory.stat`) counted
-/// free, as `MemAvailable` counts the node's. A container's `MemAvailable`
-/// is the host's; its limit is the cgroup's. The limit read is the
-/// process's own cgroup's (`/proc/self/cgroup`), or the root of
-/// `/sys/fs/cgroup` when that path is not mounted there, as inside a
-/// container without a cgroup namespace; an ancestor's lower limit is not
-/// read. A limit of `max`, or none, is no limit.
+/// `/proc/meminfo`, or, under cgroup v2 memory limits, the smallest of it
+/// and what each limit leaves: `memory.max` less the cgroup's usage,
+/// `memory.current` less what it could reclaim, from `memory.stat`. A
+/// container's `MemAvailable` is the host's; its limits are its cgroups'.
+///
+/// What counts as reclaimable is the kernel's own `MemAvailable` estimate
+/// (`si_mem_available`, `mm/show_mem.c`) applied to the cgroup's counts
+/// (`memory.stat`, `Documentation/admin-guide/cgroup-v2.rst`): the page
+/// cache on the file LRU lists, `active_file` plus `inactive_file` (shmem
+/// is on the anon lists, and counts used), and the reclaimable slab,
+/// `slab_reclaimable`, each less the smaller of half of it and the node's
+/// low watermark (the kernel's other reclaimable kernel memory has no
+/// `memory.stat` field, and counts used). A cgroup has no watermark of its
+/// own, so the half is taken: each term counts half of itself, rounded up,
+/// which is what the kernel's estimate counts when the watermark is at
+/// least that half and less than it counts otherwise, so a cgroup's figure
+/// is never more hopeful than the node's rule (`docs/memory.md`,
+/// "Admission").
+///
+/// Every cgroup from the process's own (`/proc/self/cgroup`) up to the
+/// root of `/sys/fs/cgroup` is read, so a lower limit on an ancestor, a
+/// systemd slice above a container's cgroup, wins. The walk starts at that
+/// root when the process's path is not a directory under it, as inside a
+/// container without a cgroup namespace, and stops at the first directory
+/// it cannot list, or at the root, above which a cgroup namespace hides
+/// the parents: a limit there is not read. A cgroup with no `memory.max`
+/// file, or `max` in it, has no limit.
 ///
 /// # Errors
 /// [`ErrorKind::Io`](fb_core_error_handling::ErrorKind::Io): `/proc/meminfo`
@@ -101,27 +119,54 @@ pub fn admit_host(pinned: &[usize], heap: usize, available: usize) -> Status {
 pub fn host_available() -> Result<usize> {
     let meminfo = std::fs::read_to_string("/proc/meminfo")
         .map_err(|e| Error::io(format!("cannot read '/proc/meminfo': {e}")))?;
-    let dir = std::fs::read_to_string("/proc/self/cgroup")
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find_map(|l| l.strip_prefix("0::"))
-                .map(|p| format!("/sys/fs/cgroup{}", p.trim_end_matches('/')))
-        })
-        .filter(|d| std::path::Path::new(&format!("{d}/memory.max")).exists())
-        .unwrap_or_else(|| "/sys/fs/cgroup".to_owned());
-    let read = |file: &str| std::fs::read_to_string(format!("{dir}/{file}")).ok();
-    available(
+    let own = std::fs::read_to_string("/proc/self/cgroup").ok();
+    available_under(
         &meminfo,
-        read("memory.max").as_deref(),
-        read("memory.current").as_deref(),
-        read("memory.stat").as_deref(),
+        std::path::Path::new("/sys/fs/cgroup"),
+        own.as_deref(),
     )
 }
 
-/// [`host_available`] from the files' text: `MemAvailable` from `meminfo`,
-/// and the cgroup's `memory.max`, `memory.current` and `memory.stat` where
-/// each was read.
+/// [`host_available`] over the cgroup v2 tree mounted at `mount`, the
+/// process's cgroup given as `/proc/self/cgroup`'s text, `own`: the
+/// smallest of [`available`] at each cgroup on the walk.
+pub(super) fn available_under(
+    meminfo: &str,
+    mount: &std::path::Path,
+    own: Option<&str>,
+) -> Result<usize> {
+    use std::path::Component;
+    let leaf = own
+        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("0::")))
+        .map(|p| std::path::Path::new(p.trim()))
+        .filter(|p| {
+            p.components()
+                .all(|c| matches!(c, Component::RootDir | Component::Normal(_)))
+        })
+        .map(|p| mount.join(p.strip_prefix("/").unwrap_or(p)))
+        .filter(|d| d.is_dir())
+        .unwrap_or_else(|| mount.to_owned());
+    let mut least = available(meminfo, None, None, None)?;
+    for dir in leaf.ancestors() {
+        if !dir.starts_with(mount) || std::fs::read_dir(dir).is_err() {
+            break;
+        }
+        let read = |file: &str| std::fs::read_to_string(dir.join(file)).ok();
+        least = least.min(available(
+            meminfo,
+            read("memory.max").as_deref(),
+            read("memory.current").as_deref(),
+            read("memory.stat").as_deref(),
+        )?);
+    }
+    Ok(least)
+}
+
+/// The host memory one cgroup leaves, from the files' text: `MemAvailable`
+/// from `meminfo`, or, where the cgroup's `memory.max` is a number, the
+/// smaller of it and the limit less the cgroup's usage, `memory.current`
+/// less what it could reclaim, from `memory.stat`, by
+/// [`host_available`]'s rule.
 pub(super) fn available(
     meminfo: &str,
     max: Option<&str>,
@@ -154,12 +199,17 @@ pub(super) fn available(
     };
     let max = bytes(max, "memory.max")?;
     let current = current.map_or(Ok(0), |c| bytes(c, "memory.current"))?;
-    let inactive = match stat.and_then(|s| s.lines().find_map(|l| l.strip_prefix("inactive_file ")))
-    {
-        Some(v) => bytes(v, "memory.stat inactive_file")?,
-        None => 0,
+    let field = |name: &str| {
+        let prefix = format!("{name} ");
+        match stat.and_then(|s| s.lines().find_map(|l| l.strip_prefix(prefix.as_str()))) {
+            Some(v) => bytes(v, &format!("memory.stat {name}")),
+            None => Ok(0),
+        }
     };
-    Ok(node.min(max.saturating_sub(current.saturating_sub(inactive))))
+    let half = |x: usize| x - x / 2;
+    let cache = field("active_file")?.saturating_add(field("inactive_file")?);
+    let reclaimable = half(cache).saturating_add(half(field("slab_reclaimable")?));
+    Ok(node.min(max.saturating_sub(current.saturating_sub(reclaimable))))
 }
 
 /// Device `dev_idx`'s free and total memory, in bytes, read at planning:
