@@ -435,6 +435,9 @@ crate roots against the list of crates allowed `unsafe`
 ([`programming_model.md`](docs/programming_model.md), "Capabilities are
 enforced by lints"): a root that does not `#![forbid(unsafe_code)]` must be
 a listed crate's, and a listed crate must still hold `unsafe`.
+`doc_check/tests/rules.rs` reads the rules register,
+[`rules.md`](docs/rules.md), and fails when a check a row names, a lint,
+a type, a test file or a test in one, does not exist.
 
 Tests run in parallel, so a capture test must not use global capture mode.
 A global capture forbids other threads' unsafe calls, and on the 3080 it
@@ -461,6 +464,9 @@ hold the mechanics: the [programming model](docs/programming_model.md),
 [memory](docs/memory.md), the [GPU layer](docs/gpu_layer.md),
 [testing](docs/testing.md), [diagnostics](docs/diagnostics.md) and
 [documentation](docs/documentation.md).
+[`rules.md`](docs/rules.md) is the register of the rules they state, each
+with what checks it. **A new rule is added to the register in the PR that
+states it, with its check or an *unenforced* entry.**
 They describe the finished shape; the section below is the order the tree
 gets there in.
 
