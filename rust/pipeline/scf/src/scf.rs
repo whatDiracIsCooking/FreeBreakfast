@@ -17,6 +17,7 @@ use fb_pipeline_eri::DensityFitted;
 use fb_recipes_diagonalize::add_diagonalize;
 use fb_recipes_diis::{DIIS_MAX_HISTORY_LIMIT, Diis, add_diis};
 use fb_recipes_sys::inverse_sqrt;
+use serde::Deserialize;
 use wwr_sys::wwr_blas_operation::WWR_BLAS_OP_N as OP_N;
 use wwr_sys::wwr_blas_side_mode::{WWR_BLAS_SIDE_LEFT as LEFT, WWR_BLAS_SIDE_RIGHT as RIGHT};
 
@@ -35,10 +36,14 @@ const GUESS_FACTOR_FLOOR: f64 = 0.5e-12;
 /// density-fitted closed-shell loop reads, each at the C++ default
 /// ([`ScfStep::default`]).
 ///
+/// It is also the config's `[scf]` table: each field a key, every key
+/// optional at its default, and any other key refused by name.
+///
 /// The C++ `fock_rebuild_interval` and `tau_j` are the integral-direct
 /// builder's, which every DF build ignores, and `molden` a product writer:
 /// none is ported.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ScfStep {
     /// The loop's bound: the most Fock builds before the run fails with
     /// `MaxIterationsExceeded`. Default 100; at least 1.
@@ -66,9 +71,13 @@ impl Default for ScfStep {
 }
 
 impl ScfStep {
-    /// `InvalidConfig` naming the first option out of range, as the C++
-    /// step refuses them.
-    fn check(&self) -> Status {
+    /// Check each option against its range, as the C++ step does; [`add_scf`]
+    /// checks them too, so a reader of a config can refuse them before
+    /// anything is planned.
+    ///
+    /// # Errors
+    /// `InvalidConfig` naming the first option out of range.
+    pub fn check(&self) -> Status {
         if self.max_iterations < 1 {
             return Err(Error::config(format!(
                 "[scf] max_iterations is {}, below 1",
@@ -94,8 +103,9 @@ impl ScfStep {
 
 /// Add the closed-shell DF-RHF of `molecule` to `dag` on GPU worker
 /// `worker`, from the guess density `guess`, and return
-/// `(scalars, [ε, C, D])`: a pinned row of two doubles, `[E, ‖e‖_F]` of the
-/// last Fock build (E in hartree, electronic plus nuclear repulsion), and
+/// `(scalars, [ε, C, D])`: a pinned row of three doubles, `[E, ‖e‖_F,
+/// builds]` of the last Fock build (E in hartree, electronic plus nuclear
+/// repulsion; `builds` the loop's iterations, a whole number), and
 /// device output rows of the `n` orbital energies ascending, the orbitals
 /// (`n²` doubles, column-major, column `j` the orbital of `ε[j]`) and
 /// `D = 2 C_occ C_occᵀ` (`n²`), all of the converged Fock matrix as built.
@@ -121,7 +131,7 @@ impl ScfStep {
 /// iteration adds to its own: the C++ takes the same factor `nocc` columns
 /// at a time and sums their K. Then `diis history` ([`add_diis`], the rings
 /// of `"DIIS F"`), and **`energy before`** (CPU): the decision's carried
-/// last energy, 0 as the C++ starts it.
+/// row `"last build"`, its energy 0 as the C++ starts it.
 ///
 /// **The body**, one iteration: `df coulomb` (J of D) and `df exchange` (K
 /// of the factor); **`guess exchange`** (stream), when `nocc < n`: K plus
@@ -129,10 +139,12 @@ impl ScfStep {
 /// iteration has it; [`add_fock`]'s `fock`, `residual` and `energy and
 /// norm`; `diis push` ([`Diis::add_push`]) of (F, e); [`add_solve_fock`] on
 /// the extrapolated F; [`add_density`], which writes D and the factor for
-/// the next iteration. **The decision**, `converged` (CPU): converged when
-/// `|ΔE| < energy_tolerance` and `‖e‖ < commutator_tolerance`, from the
-/// second iteration on; otherwise a singular DIIS extrapolation restarts
-/// the history ([`Diis::reset`]). Each iteration is logged at `info`.
+/// the next iteration. **The decision**, `converged` (CPU): the build's E
+/// and `‖e‖` and the iteration count written into `"last build"`, the row
+/// returned as `scalars`; converged when `|ΔE| < energy_tolerance` and
+/// `‖e‖ < commutator_tolerance`, from the second iteration on; otherwise a
+/// singular DIIS extrapolation restarts the history ([`Diis::reset`]). Each
+/// iteration is logged at `info`.
 ///
 /// **After the loop**, the published orbitals are the converged F's as
 /// built, not of its extrapolation, as in the C++: [`add_solve_fock`] on
@@ -211,6 +223,7 @@ pub fn add_scf(
     let (f_star, singular) = diis.add_push(dag, f, e);
     let (_, c_next) = add_solve_fock(dag, worker, n, lwork, f_star, x);
     add_density(dag, worker, n, nocc, c_next, guess, factor.c_occ);
+    // The decision writes the last build's E, ‖e‖ and count into `previous`.
     dag.add_loop(
         "converged",
         worker,
@@ -229,7 +242,7 @@ pub fn add_scf(
     // After the loop: the converged F's own orbitals and their density.
     let (eps, c) = add_solve_fock(dag, worker, n, lwork, f, x);
     let d = add_published_density(dag, worker, n, nocc, c);
-    Ok((scalars, [eps, c, d]))
+    Ok((previous, [eps, c, d]))
 }
 
 /// GPU: `C̃ = U diag((w/2)^(1/2))`, its last `nocc` columns into the
@@ -367,7 +380,8 @@ impl Task for GuessExchange {
     }
 }
 
-/// CPU, before the loop: the decision's last energy, 0.
+/// CPU, before the loop: the decision's carried `[E, ‖e‖, builds]`, its
+/// energy 0.
 struct EnergyBefore;
 
 impl Task for EnergyBefore {
@@ -375,7 +389,7 @@ impl Task for EnergyBefore {
     const GPU: bool = false;
 
     fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        host.output("E before", 1)
+        host.output("last build", 3)
     }
 
     fn run(
@@ -385,13 +399,13 @@ impl Task for EnergyBefore {
         host: &Bufs<'_, Pinned>,
         _: Lane<'_, DeviceStream>,
     ) -> Status {
-        host.take_mut(*row)[0] = 0.0;
+        host.take_mut(*row).fill(0.0);
         Ok(())
     }
 }
 
-/// The loop's decision: the iteration logged, convergence tested, and a
-/// singular DIIS subspace restarted.
+/// The loop's decision: the iteration recorded and logged, convergence
+/// tested, and a singular DIIS subspace restarted.
 struct Converged {
     scalars: RowId<Pinned, f64>,
     singular: RowId<Pinned, i32>,
@@ -414,9 +428,10 @@ impl Decision for Converged {
         let [energy, norm] = host.get(self.scalars)[..] else {
             unreachable!("the scalars row is [E, |e|]")
         };
-        let previous = host.take_mut(self.previous);
-        let delta = energy - previous[0];
-        previous[0] = energy;
+        let last = host.take_mut(self.previous);
+        let delta = energy - last[0];
+        // A count well under 2^53, so exact as a double.
+        last.copy_from_slice(&[energy, norm, (iteration + 1) as f64]);
         log::info!(
             "scf: iteration {:3}  E = {energy:.12}  dE = {delta:+.3e}  |[F,D]| = {norm:.3e}",
             iteration + 1

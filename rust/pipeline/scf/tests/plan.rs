@@ -72,7 +72,7 @@ fn scf_run(step: &ScfStep) -> Result<Run> {
 /// The whole DF-RHF run of water in cc-pVDZ over cc-pVDZ-JKFIT, at the
 /// default options: the setup, B, the SAD guess, the guess's factor and
 /// the rest's K before the loop, the iteration as the loop's body (its rows
-/// in the region, D, the factor, the rest's K, DIIS's rings and `E before`
+/// in the region, D, the factor, the rest's K, DIIS's rings and `last build`
 /// carried, F read after it), and the converged F's orbitals and density
 /// after it. The plan text, the arena's size among it, is the committed
 /// golden.

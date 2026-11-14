@@ -588,18 +588,27 @@ dependencies = [
 name = "fb-pipeline-config"
 version = "0.1.0"
 dependencies = [
+ "fb-basis",
  "fb-core-arena",
  "fb-core-error-handling",
  "fb-core-log",
  "fb-core-planner",
  "fb-core-thread-pool",
+ "fb-core-wwr",
  "fb-integrals-mmd",
+ "fb-integrals-one-electron-core-hamiltonian",
  "fb-integrals-one-electron-overlap",
  "fb-io-basis",
  "fb-io-npy",
  "fb-io-sad",
  "fb-io-xyz",
+ "fb-molecule",
+ "fb-molecule-nuclei",
+ "fb-pipeline-eri",
  "fb-pipeline-guess",
+ "fb-pipeline-scf",
+ "fb-recipes-diagonalize",
+ "fb-recipes-orthogonalize",
  "fb-sad",
  "fb-test-support",
  "serde",
@@ -679,6 +688,7 @@ dependencies = [
  "fb-recipes-sys",
  "fb-test-support",
  "log",
+ "serde",
  "wwr-sys",
 ]
 

@@ -153,8 +153,7 @@ impl Run {
 
     /// Lay the arena out on `device` and run the plan once, on one stream.
     /// Returns the run's [`Record`], its result and every task's times, and
-    /// the products, `None` unless the result is `Ok`; their iteration
-    /// count is the record's for the loop.
+    /// the products, `None` unless the result is `Ok`.
     pub fn run(self, device: i32) -> (Record, Option<ScfOutput>) {
         let mut instance = self.planned.instantiate(&[device]);
         let mut backend = instance.backend();
@@ -162,10 +161,6 @@ impl Run {
         let mut out = None;
         if record.result.is_ok() {
             out = self.out.lock().unwrap_or_else(|e| e.into_inner()).take();
-            if let Some(o) = &mut out {
-                // One loop in the plan.
-                o.iterations = record.iterations.values().copied().sum();
-            }
         }
         (record, out)
     }
@@ -207,7 +202,7 @@ impl Task for Download {
     }
 }
 
-/// CPU: the last iteration's `[E, ‖e‖]` and the pinned copies read out,
+/// CPU: the last build's `[E, ‖e‖, builds]` and the pinned copies read out,
 /// after the executor waited for the download.
 struct Collect {
     scalars: RowId<Pinned, f64>,
@@ -238,8 +233,8 @@ impl Task for Collect {
         *self.out.lock().unwrap_or_else(|e| e.into_inner()) = Some(ScfOutput {
             energy: scalars[0],
             residual: scalars[1],
-            // Filled from the record by Run::run.
-            iterations: 0,
+            // A whole number the decision wrote.
+            iterations: scalars[2] as usize,
             epsilon,
             c,
             d,

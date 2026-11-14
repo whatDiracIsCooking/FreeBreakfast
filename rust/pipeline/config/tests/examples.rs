@@ -11,7 +11,11 @@
 //! guess's is bitwise: its `d.npy` against `fb-sad`'s serial density, the
 //! task form placing the same stamps in the same order, and a run loading
 //! that file writing the same bytes, since a `.npy` read and written back
-//! is its bytes.
+//! is its bytes. The DF-RHF's is `fb-pipeline-scf`'s, fixed by analysis
+//! there (`tests/scf.rs`), one run: `|E - E_ref| <= 1e-9` hartree against
+//! PySCF's DF-RHF energy of the same water, basis and fitting set, its
+//! committed reference; `scf.json` writes E at full precision, so the
+//! file adds nothing to the miss.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -21,6 +25,9 @@ use fb_core_thread_pool::Record;
 
 /// The bar, relative to `max |S_ref|`.
 const BAR: f64 = 1e-12;
+
+/// The DF-RHF energy bar, hartree.
+const ENERGY_BAR: f64 = 1e-9;
 
 /// `rust/examples/<file>`.
 fn example(file: &str) -> PathBuf {
@@ -88,22 +95,47 @@ fn overlap_example() {
     );
 }
 
-/// The timing record `timing` read back: one entry per task of `config`'s
-/// plan, in rank order, each of `named` among them.
-fn check_timing(config: &Path, timing: &Path, named: &[&str]) {
+/// The timing record `timing` read back, parsed as the timing record's
+/// type: every task of `config`'s plan timed, in rank order and then
+/// iteration; a loop's body node and decision once per iteration, 0 to the
+/// loop's count; every other node once; each of `named` among them. Returns
+/// the record. The plan is laid out at a stand-in syevd work: the tasks do
+/// not depend on it.
+fn check_timing(config: &Path, timing: &Path, named: &[&str]) -> Record {
     let planned =
-        fb_pipeline_config::plan(&fb_pipeline_config::read_config(config).unwrap()).unwrap();
+        fb_pipeline_config::plan(&fb_pipeline_config::read_config(config).unwrap(), |_| Ok(1))
+            .unwrap();
     let text = std::fs::read_to_string(timing).unwrap();
     let record: Record = serde_json::from_str(&text).expect("timing.json parses");
-    record.result.unwrap();
-    assert_eq!(record.tasks.len(), planned.len(), "one entry per task");
-    for (rank, task) in record.tasks.iter().enumerate() {
-        assert_eq!(task.node.index(), rank, "{}: in rank order", task.name);
+    record.result.as_ref().unwrap();
+    // One loop at most in these plans.
+    let count = record.iterations.values().copied().sum::<usize>();
+    let mut entries = std::collections::BTreeMap::<usize, Vec<Option<usize>>>::new();
+    let mut previous = None;
+    for task in &record.tasks {
+        let at = (task.node.index(), task.iteration);
+        assert!(
+            previous < Some(at),
+            "{}: in rank and iteration order",
+            task.name
+        );
+        previous = Some(at);
+        entries.entry(at.0).or_default().push(task.iteration);
+    }
+    assert_eq!(entries.len(), planned.len(), "every task timed");
+    for (node, iterations) in &entries {
+        if iterations[0].is_some() {
+            let want: Vec<_> = (0..count).map(Some).collect();
+            assert_eq!(iterations, &want, "node {node}: one entry per iteration");
+        } else {
+            assert_eq!(iterations, &[None], "node {node}: one entry");
+        }
     }
     let names: Vec<&str> = record.tasks.iter().map(|t| t.name.as_str()).collect();
     for n in named {
         assert!(names.contains(n), "{n} timed: {names:?}");
     }
+    record
 }
 
 /// The example guess through the binary: exit 0, its `d.npy` bitwise
@@ -172,6 +204,174 @@ fn guess_example() {
         &loaded,
         &cwd.join("loaded/timing.json"),
         &["load guess", "write d.npy"],
+    );
+}
+
+/// What a DF-RHF run wrote into `dir`: `scf.json` parsed, its residual
+/// under the default tolerance and its orbital energies ascending, one per
+/// AO; returns its energy and iteration count.
+fn scf_json(dir: &Path) -> (f64, usize) {
+    let text = std::fs::read_to_string(dir.join("scf.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&text).expect("scf.json parses");
+    let energy = json["energy"].as_f64().expect("energy");
+    let iterations = json["iterations"].as_u64().expect("iterations") as usize;
+    assert!(
+        json["residual"].as_f64().expect("residual") < 1e-7,
+        "{text}"
+    );
+    let epsilon: Vec<f64> = json["epsilon"]
+        .as_array()
+        .expect("epsilon")
+        .iter()
+        .map(|e| e.as_f64().unwrap())
+        .collect();
+    let n = fb_io_npy::read_npy(&dir.join("c.npy")).unwrap().shape[0];
+    assert_eq!(epsilon.len(), n, "one orbital energy per AO");
+    assert!(epsilon.is_sorted(), "ascending: {epsilon:?}");
+    (energy, iterations)
+}
+
+/// The example DF-RHF through the binary: exit 0, its `scf.json` energy
+/// within the bar of PySCF's, `c.npy` and `d.npy` square, its
+/// `timing.json` the timing record with the loop's entries per iteration,
+/// the write nodes among them. Then a second run, `[guess] from` the
+/// first's `d.npy`, converges at the decision's first chance, its second
+/// iteration: from the converged density the first build's residual is
+/// already under the tolerance, and the second's energy moves by the
+/// round-off of one more Roothaan step. Needs a GPU.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn rhf_example() {
+    let cwd = workdir("example_rhf");
+    let config = example("rhf.toml");
+    let out = free_breakfast(&cwd, &config);
+    assert_eq!(out.status.code(), Some(0), "the example exits 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("completed: 0 errors"), "{stdout}");
+
+    let dir = cwd.join("rhf");
+    let (energy, iterations) = scf_json(&dir);
+    let e_ref = fb_io_npy::read_npy(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../scf/tests/data/scf_h2o_cc-pvdz_cc-pvdz-jkfit.npy"),
+    )
+    .unwrap()
+    .data[0];
+    let miss = (energy - e_ref).abs();
+    println!("E = {energy:.12} against {e_ref:.12}, |dE| = {miss:e}, {iterations} iterations");
+    assert!(miss <= ENERGY_BAR, "|dE| = {miss:e} over {ENERGY_BAR:e}");
+    for m in ["c.npy", "d.npy"] {
+        let a = fb_io_npy::read_npy(&dir.join(m)).unwrap();
+        assert_eq!(a.shape, [24, 24], "{m}: water's cc-pVDZ AOs");
+    }
+    let record = check_timing(
+        &config,
+        &dir.join("timing.json"),
+        &[
+            "converged",
+            "write c.npy",
+            "write d.npy",
+            "download scf.json",
+            "write scf.json",
+        ],
+    );
+    assert_eq!(
+        record.iterations.values().copied().sum::<usize>(),
+        iterations,
+        "scf.json's count is the loop's"
+    );
+
+    // The second run loads the first's d.npy.
+    let loaded = cwd.join("load.toml");
+    std::fs::copy(example("water.xyz"), cwd.join("water.xyz")).unwrap();
+    std::fs::write(
+        &loaded,
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .replace("output = \"rhf\"", "output = \"loaded\"")
+            .replace("type = \"sad\"", "from = \"rhf/d.npy\""),
+    )
+    .unwrap();
+    let out = free_breakfast(&cwd, &loaded);
+    assert_eq!(out.status.code(), Some(0), "the loading run exits 0");
+    let (again, iterations) = scf_json(&cwd.join("loaded"));
+    println!("from d.npy: E = {again:.12}, {iterations} iterations");
+    assert_eq!(iterations, 2, "converged at the decision's first chance");
+    assert!((again - e_ref).abs() <= ENERGY_BAR, "E = {again:.12}");
+    check_timing(
+        &loaded,
+        &cwd.join("loaded/timing.json"),
+        &["load guess", "write scf.json"],
+    );
+}
+
+/// A config the binary runs and the run fails: exit code `kind`'s, no
+/// panic, the log naming every one of `named`, and `timing.json` written
+/// with the error.
+fn failed(name: &str, config: &str, xyz: &str, kind: ErrorKind, named: &[&str]) {
+    let cwd = workdir(name);
+    std::fs::write(cwd.join("m.xyz"), xyz).unwrap();
+    let path = cwd.join("config.toml");
+    std::fs::write(&path, config).unwrap();
+    let out = free_breakfast(&cwd, &path);
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!stderr.contains("panicked"), "{name}: a panic: {stderr}");
+    assert_eq!(
+        out.status.code(),
+        Some(kind.exit_code()),
+        "{name}: {kind:?}'s code"
+    );
+    assert!(stdout.contains("completed: 1 errors"), "{name}: {stdout}");
+    for n in named {
+        assert!(stdout.contains(n), "{name}: names '{n}': {stdout}");
+    }
+    let text = std::fs::read_to_string(cwd.join("fbf_output/timing.json")).unwrap();
+    let record: Record = serde_json::from_str(&text).expect("timing.json parses");
+    assert_eq!(record.result.expect_err(name).kind, kind, "{name}");
+}
+
+/// A DF-RHF config of water in STO-3G over cc-pVDZ-JKFIT, `m.xyz` its
+/// geometry, `extra` appended.
+fn rhf_config(extra: &str) -> String {
+    format!(
+        "calculation = \"rhf\"\n[molecule]\nxyz = \"m.xyz\"\n[basis_set]\nbasis = \"sto-3g\"\n\
+         [eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n{extra}"
+    )
+}
+
+/// Two Fock builds are not enough from the SAD guess: the loop's bound
+/// fails the run, `MaxIterationsExceeded`, its pinned code 6. Needs a GPU.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn too_few_iterations_exits_max_iterations_exceeded() {
+    failed(
+        "failed_max_iterations",
+        &rhf_config("[scf]\nmax_iterations = 2\n"),
+        &std::fs::read_to_string(example("water.xyz")).unwrap(),
+        ErrorKind::MaxIterationsExceeded,
+        &["did not stop in 2 iterations"],
+    );
+}
+
+/// Two nuclei at one point: every fitting function is there twice, so the
+/// metric `(P|Q)` is singular in exact arithmetic. The duplicate's pivot in
+/// the Cholesky factor is the round-off of `M - (M/√M)²`, of either sign:
+/// a pivot that is not positive fails the factor at once, and a positive
+/// one, of order `ε M`, divides the rows below it by its root, so a later
+/// duplicate's pivot is not positive. The run fails, `Numerical`, its
+/// pinned code 8, before the loop. Needs a GPU.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn a_singular_metric_exits_numerical() {
+    failed(
+        "failed_numerical",
+        &rhf_config(""),
+        "2\nH2 at one point\nH 0 0 0\nH 0 0 0\n",
+        ErrorKind::Numerical,
+        &["not positive"],
     );
 }
 
