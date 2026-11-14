@@ -26,6 +26,43 @@ pub type fb_backend = i32;
 pub const FB_BACKEND_CUDA: fb_backend = 1;
 /// Built for HIP.
 pub const FB_BACKEND_HIP: fb_backend = 2;
+/// The largest momentum of an auxiliary shell fb_metric_class has a kernel
+/// for, i: the extent of the metric table tools/emit/df_kernels.py writes,
+/// which metric_launch.cu static_asserts against it. It is the aux basis's
+/// limit, above the orbital one on purpose.
+pub const FB_METRIC_MAX_MOMENTUM: i32 = 6;
+/// The fields of one aux record, each a segment of n_rec doubles, in this
+/// order: the centre's x, y and z, the exponent alpha, and the weight
+/// s = c (pi / alpha)^{3/2}.
+pub const FB_METRIC_RECORD_FIELDS: i32 = 5;
+/// The fields of one aux shell pair (P, Q), each a segment of n_pair int32s,
+/// in this order: P's record range [p_rec0, p_rec1), Q's [q_rec0, q_rec1),
+/// and the two shells' first Cartesian AOs off_p and off_q.
+pub const FB_METRIC_PAIR_FIELDS: i32 = 6;
+/// The largest momentum of an orbital shell m or n fb_three_center_class has
+/// a kernel for, f: the la and lb extents of the eri3 table
+/// tools/emit/df_kernels.py writes, which three_center_launch.cu
+/// static_asserts against it and against the orbital basis's limit.
+pub const FB_THREE_CENTER_MAX_MOMENTUM: i32 = 3;
+/// The largest momentum of an auxiliary shell P fb_three_center_class has a
+/// kernel for, i: the lP extent of the eri3 table, as
+/// FB_METRIC_MAX_MOMENTUM is the metric's. It is above the orbital limit on
+/// purpose.
+pub const FB_THREE_CENTER_AUX_MAX_MOMENTUM: i32 = 6;
+/// The fields of one bra record, each a segment of n_bra_rec doubles, in this
+/// order: zeta, P's x, y and z, P - A's, P - B's, and s = c_a c_b
+/// (pi / zeta)^{3/2}: the primitive-pair records' fields of the same names.
+pub const FB_THREE_CENTER_BRA_FIELDS: i32 = 11;
+/// The fields of one aux record, each a segment of n_aux_rec doubles, in this
+/// order: the centre's x, y and z, the exponent alpha, and the weight
+/// s = c (pi / alpha)^{3/2}: the metric's aux record.
+pub const FB_THREE_CENTER_AUX_FIELDS: i32 = 5;
+/// The fields of one cell (an AO shell pair crossed with an aux shell), each
+/// a segment of n_cell int32s, in this order: the pair's bra record range
+/// [ab_rec0, ab_rec1), the aux shell's record range [p_rec0, p_rec1), and the
+/// first Cartesian AO of the pair's two shells and of the aux shell, off_a,
+/// off_b and off_p.
+pub const FB_THREE_CENTER_CELL_FIELDS: i32 = 7;
 /// One primitive-pair class on the device: the record arrays of a class, by
 /// pointer. The struct itself is host memory, handed to a wrapper by address;
 /// every array it points at is device memory with n_rec entries, and a vector
@@ -203,9 +240,60 @@ pub const FB_POTENTIAL_EN_MAX_MOMENTUM: i32 = 3;
 /// The version of this header's ABI. Bump it with any change to a
 /// declaration here or in a header this one includes, so that fb-integrals-sys
 /// refuses a library built from another version of them.
-pub const FB_INTEGRALS_ABI_VERSION: u32 = 2;
+pub const FB_INTEGRALS_ABI_VERSION: u32 = 3;
 
 unsafe extern "C" {
+    /// Writes class (lp, lq) of the Cartesian metric (P|Q) into the n_aux x n_aux
+    /// metric, on stream: the generated metric<lp, lq>, one thread per aux shell
+    /// pair.
+    ///
+    /// records is FB_METRIC_RECORD_FIELDS segments of n_rec doubles, every record
+    /// the pairs name; pairs is FB_METRIC_PAIR_FIELDS segments of n_pair int32s,
+    /// each pair's P of momentum lp and Q of lq. Each element is a plain store,
+    /// with its mirror: every element belongs to exactly one aux shell pair, so
+    /// classes launched into one metric need no ordering among them and no
+    /// zeroing before the first, and a run is bit-reproducible. A diagonal pair
+    /// (P == Q, only when lp == lq) writes its whole block too. Every array is
+    /// device memory.
+    ///
+    /// Returns FB_LAUNCH_INVALID_ARGUMENT for a null array, a count not positive
+    /// or an n_aux whose n_aux * n_aux does not fit the kernels' 32-bit index,
+    /// and FB_LAUNCH_UNSUPPORTED for a class with no kernel
+    /// (0 <= lp <= lq <= FB_METRIC_MAX_MOMENTUM has one), each enqueueing
+    /// nothing; otherwise the launch status. Launch errors only: the kernel's own
+    /// faults surface at the next synchronization.
+    pub fn fb_metric_class(stream: wwr_stream, lp: i32, lq: i32, n_rec: i32, records: *const f64, n_pair: i32, pairs: *const i32, n_aux: i32, metric: *mut f64) -> fb_launch_status;
+    /// Writes class (la, lb, lp) of the Cartesian (mn|P) into the n_ao x n_ao x
+    /// n_aux eri3, element (m, n, P) at (m n_ao + n) n_aux + P, on stream: the
+    /// generated eri3<la, lb, lp>, one thread per cell.
+    ///
+    /// bra is FB_THREE_CENTER_BRA_FIELDS segments of n_bra_rec doubles, aux
+    /// FB_THREE_CENTER_AUX_FIELDS segments of n_aux_rec, and cells
+    /// FB_THREE_CENTER_CELL_FIELDS segments of n_cell int32s, each cell's pair of
+    /// momenta (la, lb) and its aux shell of lp. Each element is a plain store,
+    /// with its (m, n) mirror: every element belongs to exactly one cell, so
+    /// classes launched into one eri3 need no ordering among them and no zeroing
+    /// before the first, and a run is bit-reproducible. A diagonal pair
+    /// (off_a == off_b) writes its whole block. Every array is device memory.
+    ///
+    /// Returns FB_LAUNCH_INVALID_ARGUMENT for a null array, a count not positive
+    /// or an n_ao and n_aux whose n_ao * n_ao * n_aux does not fit the kernels'
+    /// 32-bit index, and FB_LAUNCH_UNSUPPORTED for a class with no kernel
+    /// (0 <= la <= lb <= FB_THREE_CENTER_MAX_MOMENTUM with
+    /// 0 <= lp <= FB_THREE_CENTER_AUX_MAX_MOMENTUM has one), each enqueueing
+    /// nothing; otherwise the launch status. Launch errors only: the kernel's own
+    /// faults surface at the next synchronization.
+    pub fn fb_three_center_class(stream: wwr_stream, la: i32, lb: i32, lp: i32, n_bra_rec: i32, bra: *const f64, n_aux_rec: i32, aux: *const f64, n_cell: i32, cells: *const i32, n_ao: i32, n_aux: i32, eri3: *mut f64) -> fb_launch_status;
+    /// output = half of input plus half of its (m, n) transpose, on stream:
+    /// element (P, n, m) at P + n_aux (n + n_ao m) of each, so output is exactly
+    /// symmetric in m and n. input and output are device arrays of
+    /// n_ao * n_ao * n_aux doubles.
+    ///
+    /// Returns FB_LAUNCH_INVALID_ARGUMENT for a null array, a count not positive,
+    /// an n_ao and n_aux whose n_ao * n_ao * n_aux does not fit a 32-bit index,
+    /// or an input and output that overlap, each enqueueing nothing; otherwise the
+    /// launch status.
+    pub fn fb_three_center_symmetrize(stream: wwr_stream, n_ao: i32, n_aux: i32, input: *const f64, output: *mut f64) -> fb_launch_status;
     /// The bytes of the one scratch buffer fb_mmd_order needs for n_rec records:
     /// the merge sort's, keys with values (fb_merge_sort_workspace_bytes), zero
     /// up to one tile (2816 records) and for n_rec not positive. A plain host
