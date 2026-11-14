@@ -2,8 +2,8 @@
 //! STO-3G and cc-pVDZ, CO in cc-pVTZ (f on both atoms, the bond off every
 //! axis), each an XYZ file and a compiled-in basis, with PySCF's H beside
 //! them (`tests/data/README.md`); and the plan they run: the nuclei's upload
-//! ([`add_nuclei`]), [`add_core_hamiltonian`] over it, and two tasks that
-//! bring H to the host.
+//! ([`add_nuclei`]), the records ([`add_records`]), [`add_core_hamiltonian`]
+//! over both, and two tasks that bring H to the host.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -14,6 +14,7 @@ use fb_core_planner::{Dag, Planned, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
+use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_molecule_nuclei::add_nuclei;
 use wwr_sys::wwr_memcpy_kind;
@@ -33,7 +34,7 @@ pub fn data(file: &str) -> PathBuf {
         .join(file)
 }
 
-/// A fixture planned: the nuclei's and H's tasks, then `download` (stream:
+/// A fixture planned: the nuclei's, the records' and H's tasks, then `download` (stream:
 /// H copied into a pinned row) and `collect` (CPU: the pinned row copied
 /// into `h`).
 #[allow(dead_code, reason = "the plan binary reads the plan alone")]
@@ -55,8 +56,9 @@ pub fn plan(xyz: &str, basis: &str) -> Fixture {
     let n_ao = basis.nao_sphe() as usize;
     let mut dag = Dag::new();
     let nuclei = add_nuclei(&mut dag, 0, &molecule);
-    let h =
-        add_core_hamiltonian(&mut dag, 0, &basis, nuclei, &mut None).expect("the library loads");
+    let classes = add_records(&mut dag, 0, &basis).expect("the library loads");
+    let h = add_core_hamiltonian(&mut dag, 0, &basis, &classes, nuclei, &mut None)
+        .expect("the nuclei are not empty");
     let pinned = dag.add(
         "download",
         0,

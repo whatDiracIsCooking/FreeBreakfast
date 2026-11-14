@@ -10,6 +10,7 @@ use fb_core_planner::{Dag, Planned, Task};
 use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane, Record};
 use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
+use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_integrals_one_electron_overlap::add_overlap;
 use fb_molecule_nuclei::add_nuclei;
@@ -19,9 +20,10 @@ use wwr_sys::wwr_memcpy_kind;
 use super::tasks::add_solve_fock;
 
 /// The orbitals of the core Hamiltonian, `H C = S C ε`, of one molecule in
-/// one basis, planned once: the nuclei's upload ([`add_nuclei`]), S
-/// ([`add_overlap`]) and H ([`add_core_hamiltonian`]) sharing one staging
-/// of the spherical transform, `X = S^(-1/2)` ([`add_orthogonalize`], at
+/// one basis, planned once: the nuclei's upload ([`add_nuclei`]), the
+/// records ([`add_records`]), S ([`add_overlap`]) and H
+/// ([`add_core_hamiltonian`]) sharing that one build of the records and one
+/// staging of the spherical transform, `X = S^(-1/2)` ([`add_orthogonalize`], at
 /// the default floor), the step ([`add_solve_fock`]) with H for F, and two
 /// tasks that bring ε and C to the host, `download` (stream: both copied
 /// into pinned rows) and `collect` (CPU: the pinned rows copied out).
@@ -48,7 +50,7 @@ impl Run {
     /// The readers' refusals: an XYZ file that cannot be read or parsed, a
     /// basis that is neither a carried name nor a readable document, an
     /// element the basis lacks; `lwork`'s error; and the kernel libraries'
-    /// load checks ([`add_overlap`], [`add_orthogonalize`]).
+    /// load checks ([`add_records`], [`add_orthogonalize`]).
     pub fn new(xyz: &Path, basis: &str, lwork: impl FnOnce(usize) -> Result<usize>) -> Result<Run> {
         // Charge and multiplicity enter neither S nor H.
         let molecule = fb_io_xyz::read_xyz(xyz, 0, 1)?;
@@ -60,8 +62,9 @@ impl Run {
         let mut dag = Dag::new();
         let nuclei = add_nuclei(&mut dag, 0, &molecule);
         let mut u = None;
-        let s = add_overlap(&mut dag, 0, &basis, &mut u)?;
-        let h = add_core_hamiltonian(&mut dag, 0, &basis, nuclei, &mut u)?;
+        let classes = add_records(&mut dag, 0, &basis)?;
+        let s = add_overlap(&mut dag, 0, &basis, &classes, &mut u);
+        let h = add_core_hamiltonian(&mut dag, 0, &basis, &classes, nuclei, &mut u)?;
         let x = add_orthogonalize(
             &mut dag,
             0,

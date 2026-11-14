@@ -3,12 +3,12 @@
 
 use fb_basis::BasisSet;
 use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
-use fb_core_error_handling::{Result, Status};
+use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
-use fb_integrals_mmd::{ClassRows, add_records, launch};
+use fb_integrals_mmd::{ClassRows, launch};
 use fb_integrals_sys::fb_overlap_class;
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 
@@ -16,39 +16,43 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// `worker`, and return S: an output row of `nao_sphe²` doubles,
 /// column-major, symmetric up to rounding.
 ///
-/// The records' two tasks ([`add_records`]), then `overlap` (stream: the
-/// Cartesian matrix zeroed and one `fb_overlap_class` launch per class,
-/// reading the records as an edge), then the spherical transform of
-/// [`add_cartesian_to_spherical`]: `harmonics` (CPU: U into a pinned row),
-/// only when `u` is `None`, and `spherical transform` (stream:
-/// `S = Uᵀ S_cart U`). `u` is the plan's slot for U over `basis` on
+/// `overlap` (stream: the Cartesian matrix zeroed and one
+/// `fb_overlap_class` launch per class, reading the records as an edge),
+/// then the spherical transform of [`add_cartesian_to_spherical`]:
+/// `harmonics` (CPU: U into a pinned row), only when `u` is `None`, and
+/// `spherical transform` (stream: `S = Uᵀ S_cart U`). `classes` are the
+/// records of `basis`, added on `worker` by
+/// [`fb_integrals_mmd::add_records`] earlier in `dag`, so one build serves
+/// every reader of the plan; `u` is the plan's slot for U over `basis` on
 /// `worker`, shared with every other matrix the plan transforms.
-///
-/// # Errors
-/// [`add_records`]' load check of the kernel library, before anything is
-/// added.
 ///
 /// # Panics
 /// If `basis` has no shells, or `nao_cart²` does not fit an `i32` (the
-/// overlap kernels index the matrix in 32 bits).
+/// overlap kernels index the matrix in 32 bits), or `classes` are rows of
+/// another worker's or another plan's table ([`Dag::add`]).
 #[track_caller]
 pub fn add_overlap(
     dag: &mut Dag<'_>,
     worker: usize,
     basis: &BasisSet,
+    classes: &[ClassRows],
     u: &mut Option<RowId<Pinned, f64>>,
-) -> Result<RowId<Device, f64>> {
+) -> RowId<Device, f64> {
     assert!(basis.nshells() > 0, "add_overlap: a basis with no shells");
     let n_cart = basis.nao_cart() as usize;
     assert!(
         i32::try_from(n_cart * n_cart).is_ok(),
         "add_overlap: {n_cart}² Cartesian AOs do not fit the kernels' 32-bit index"
     );
-    let classes = add_records(dag, worker, basis)?;
-    let s_cart = dag.add("overlap", worker, Overlap { classes, n_cart });
-    Ok(add_cartesian_to_spherical(
-        dag, worker, basis, u, "S", s_cart,
-    ))
+    let s_cart = dag.add(
+        "overlap",
+        worker,
+        Overlap {
+            classes: classes.to_vec(),
+            n_cart,
+        },
+    );
+    add_cartesian_to_spherical(dag, worker, basis, u, "S", s_cart)
 }
 
 /// GPU: the Cartesian overlap, `nao_cart²`, zeroed and then summed class by

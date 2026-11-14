@@ -11,6 +11,7 @@ mod common;
 
 use fb_core_error_handling::ErrorKind;
 use fb_core_planner::Dag;
+use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_molecule_nuclei::add_nuclei;
 use fb_test_support::golden;
@@ -37,8 +38,8 @@ fn plan_goldens() {
 
 /// Nuclei with no nucleus, outside the nuclear-attraction wrapper's
 /// `n_nuc >= 1`, are refused at planning with an `InvalidConfig` error, and
-/// nothing is added: the plan holds the nuclei's two tasks alone, so neither
-/// T nor V would launch.
+/// nothing is added: the plan holds the nuclei's and the records' two tasks
+/// each alone, so neither T nor V would launch.
 #[test]
 fn no_nucleus_is_refused_at_planning() {
     let molecule = fb_io_xyz::read_xyz(&common::data("h2o.xyz"), 0, 1).unwrap();
@@ -51,12 +52,17 @@ fn no_nucleus_is_refused_at_planning() {
         let mut dag = Dag::new();
         let mut nuclei = add_nuclei(&mut dag, 0, &molecule);
         nuclei.n_nuc = n_nuc;
+        let classes = add_records(&mut dag, 0, &basis).unwrap();
         let mut u = None;
-        let err = add_core_hamiltonian(&mut dag, 0, &basis, nuclei, &mut u)
+        let err = add_core_hamiltonian(&mut dag, 0, &basis, &classes, nuclei, &mut u)
             .expect_err("no nucleus is refused");
         assert_eq!(err.kind, ErrorKind::InvalidConfig, "{err}");
         assert!(err.to_string().contains("nuclei"), "{err}");
         assert!(u.is_none(), "U was not staged");
-        assert_eq!(dag.plan().len(), 2, "only the nuclei's tasks");
+        assert_eq!(
+            dag.plan().len(),
+            4,
+            "only the nuclei's and the records' tasks"
+        );
     }
 }

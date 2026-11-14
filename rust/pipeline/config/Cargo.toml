@@ -19,6 +19,7 @@ fb-core-log.workspace = true
 fb-core-planner.workspace = true
 fb-core-thread-pool = { workspace = true, features = ["device"] }
 fb-core-wwr.workspace = true
+fb-integrals-mmd.workspace = true
 fb-integrals-one-electron-overlap.workspace = true
 fb-io-basis.workspace = true
 fb-io-npy.workspace = true

@@ -14,7 +14,8 @@
 //!   then V on top) calls it between its own launches.
 //! - [`add_kinetic`], T of a [`BasisSet`] added to a
 //!   [`Dag`] after the records
-//!   ([`fb_integrals_mmd::add_records`]): **`kinetic`**, on the worker's
+//!   ([`fb_integrals_mmd::add_records`]), which the caller adds and passes
+//!   in so one build serves every reader of a plan: **`kinetic`**, on the worker's
 //!   stream, the Cartesian matrix zeroed and then [`kinetic_classes`],
 //!   reading each class's records as an edge; then the spherical transform,
 //!   `T = Uᵀ T_cart U` ([`fb_recipes_matrix_ao::add_cartesian_to_spherical`]),
@@ -26,7 +27,7 @@
 //! | C++ | Here |
 //! |---|---|
 //! | `kinetic_class(stream, cls, n_ao, t)` (`kinetic_bridge.h`), one class | [`kinetic_classes`]`(stream, device, classes, n_cart, t)`, every class in order on one stream, its requirements as `debug_requires` |
-//! | `kinetic(res, classes, t.cartesian())`: zeroed, then one launch per class, each on a stream forked from `res.stream()` | the `kinetic` task of [`add_kinetic`]: zeroed, then [`kinetic_classes`] on the worker's one stream |
+//! | `kinetic(res, classes, t.cartesian())`: zeroed, then one launch per class, each on a stream forked from `res.stream()` | the `kinetic` task of [`add_kinetic`]: zeroed, then [`kinetic_classes`] on the worker's one stream, the records' [`ClassRows`] passed in by the caller |
 //! | `kinetic`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | [`kinetic_classes`]' `debug_requires`; [`add_kinetic`] asserts the `i32` bound at planning, and the records hold only `la <= lb` |
 //! | `upload_spherical_transform_matrix`, `MatrixAOPair::cartesian_to_spherical` | [`fb_recipes_matrix_ao::add_cartesian_to_spherical`], U's slot passed in by the caller |
 //! | `res.dev_idx()` made current for the call | nothing: a stream task runs with its worker's device current |
@@ -36,12 +37,12 @@
 use contracts::debug_requires;
 use fb_basis::BasisSet;
 use fb_core_arena::{Bufs, Device, DeviceMut, Layout, Pinned, RowId};
-use fb_core_error_handling::{Result, Status};
+use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
-use fb_integrals_mmd::{ClassRows, add_records, launch};
+use fb_integrals_mmd::{ClassRows, launch};
 use fb_integrals_sys::{FB_KINETIC_MAX_MOMENTUM, fb_kinetic_class};
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 
@@ -104,39 +105,42 @@ pub fn kinetic_classes(
 /// worker `worker`, and return T: an output row of `nao_sphe²` doubles,
 /// column-major, symmetric up to rounding.
 ///
-/// The records' two tasks ([`add_records`]), then `kinetic` (stream: the
-/// Cartesian matrix zeroed and [`kinetic_classes`], reading the records as
-/// an edge), then the spherical transform of
+/// `kinetic` (stream: the Cartesian matrix zeroed and [`kinetic_classes`],
+/// reading the records as an edge), then the spherical transform of
 /// [`add_cartesian_to_spherical`]: `harmonics` (CPU: U into a pinned row),
 /// only when `u` is `None`, and `spherical transform` (stream:
-/// `T = Uᵀ T_cart U`). `u` is the plan's slot for U over `basis` on
-/// `worker`, shared with every other matrix the plan transforms.
-///
-/// # Errors
-/// [`add_records`]' load check of the kernel library, before anything is
-/// added.
+/// `T = Uᵀ T_cart U`). `classes` are the records of `basis`, added on
+/// `worker` by [`fb_integrals_mmd::add_records`] earlier in `dag`, so one
+/// build serves every reader of the plan; `u` is the plan's slot for U over
+/// `basis` on `worker`, shared with every other matrix the plan transforms.
 ///
 /// # Panics
 /// If `basis` has no shells, or `nao_cart²` does not fit an `i32` (the
-/// kinetic kernels index the matrix in 32 bits).
+/// kinetic kernels index the matrix in 32 bits), or `classes` are rows of
+/// another worker's or another plan's table ([`Dag::add`]).
 #[track_caller]
 pub fn add_kinetic(
     dag: &mut Dag<'_>,
     worker: usize,
     basis: &BasisSet,
+    classes: &[ClassRows],
     u: &mut Option<RowId<Pinned, f64>>,
-) -> Result<RowId<Device, f64>> {
+) -> RowId<Device, f64> {
     assert!(basis.nshells() > 0, "add_kinetic: a basis with no shells");
     let n_cart = basis.nao_cart() as usize;
     assert!(
         i32::try_from(n_cart * n_cart).is_ok(),
         "add_kinetic: {n_cart}² Cartesian AOs do not fit the kernels' 32-bit index"
     );
-    let classes = add_records(dag, worker, basis)?;
-    let t_cart = dag.add("kinetic", worker, Kinetic { classes, n_cart });
-    Ok(add_cartesian_to_spherical(
-        dag, worker, basis, u, "T", t_cart,
-    ))
+    let t_cart = dag.add(
+        "kinetic",
+        worker,
+        Kinetic {
+            classes: classes.to_vec(),
+            n_cart,
+        },
+    );
+    add_cartesian_to_spherical(dag, worker, basis, u, "T", t_cart)
 }
 
 /// GPU: the Cartesian kinetic-energy matrix, `nao_cart²`, zeroed and then

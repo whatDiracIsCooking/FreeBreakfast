@@ -1,8 +1,9 @@
 //! The overlap's three fixtures, which both test binaries run: H2O in
 //! STO-3G and cc-pVDZ, CO in cc-pVTZ (f on both atoms, the bond off every
 //! axis), each an XYZ file and a compiled-in basis, with PySCF's T beside
-//! them (`tests/data/README.md`); and the plan they run: [`add_kinetic`]
-//! and two tasks that bring T to the host.
+//! them (`tests/data/README.md`); and the plan they run: the records
+//! ([`add_records`]), [`add_kinetic`] over them, and two tasks that bring T
+//! to the host.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -13,6 +14,7 @@ use fb_core_planner::{Dag, Planned, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
+use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_kinetic::add_kinetic;
 use wwr_sys::wwr_memcpy_kind;
 
@@ -31,7 +33,7 @@ pub fn data(file: &str) -> PathBuf {
         .join(file)
 }
 
-/// A fixture planned: T's tasks, then `download` (stream: T copied into a
+/// A fixture planned: the records' and T's tasks, then `download` (stream: T copied into a
 /// pinned row) and `collect` (CPU: the pinned row copied into `t`).
 #[allow(dead_code, reason = "the plan binary reads the plan alone")]
 pub struct Fixture {
@@ -51,7 +53,8 @@ pub fn plan(xyz: &str, basis: &str) -> Fixture {
         .expect("the basis covers the molecule");
     let n_ao = basis.nao_sphe() as usize;
     let mut dag = Dag::new();
-    let t = add_kinetic(&mut dag, 0, &basis, &mut None).expect("the library loads");
+    let classes = add_records(&mut dag, 0, &basis).expect("the library loads");
+    let t = add_kinetic(&mut dag, 0, &basis, &classes, &mut None);
     let pinned = dag.add(
         "download",
         0,

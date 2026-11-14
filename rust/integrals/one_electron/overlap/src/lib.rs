@@ -6,7 +6,8 @@
 //! (`MatrixAOPair::cartesian_to_spherical`) are the reference design.
 //!
 //! [`add_overlap`] adds S to a [`Dag`](fb_core_planner::Dag) after the
-//! records ([`fb_integrals_mmd::add_records`]):
+//! records ([`fb_integrals_mmd::add_records`]), which the caller adds and
+//! passes in, so one build serves every reader of a plan:
 //!
 //! - **`overlap`**, on the worker's stream: the Cartesian matrix zeroed,
 //!   then one `fb_overlap_class` launch per class, each reading its class's
@@ -16,9 +17,9 @@
 //!   the CPU (U into a pinned row, unless an earlier matrix of the plan
 //!   staged it) and `spherical transform` on the worker's stream.
 //!
-//! [`Run`] is the whole run: the basis read and placed, those tasks plus a
-//! download and a collect, the plan, and one run on a device returning S
-//! and the timing record.
+//! [`Run`] is the whole run: the basis read and placed, the records and
+//! those tasks plus a download and a collect, the plan, and one run on a
+//! device returning S and the timing record.
 //!
 //! S is not renormalized: an AO's norm is its published contraction's,
 //! since the basis normalizes each primitive and never a contraction
@@ -27,7 +28,7 @@
 //!
 //! | C++ | Here |
 //! |---|---|
-//! | `overlap(res, classes, s.cartesian())` | the `overlap` task |
+//! | `overlap(res, classes, s.cartesian())` | the `overlap` task, the records' [`ClassRows`](fb_integrals_mmd::ClassRows) passed in by the caller |
 //! | `upload_spherical_transform_matrix`, `MatrixAOPair::cartesian_to_spherical` | [`fb_recipes_matrix_ao::add_cartesian_to_spherical`], U's slot passed in by the caller |
 //! | `OverlapStep::run`, `write_overlap_npy` | [`Run`], S returned to the caller |
 

@@ -20,9 +20,10 @@
 //! step.
 //!
 //! [`Run`] is the whole run at the core Hamiltonian, the core guess's
-//! orbitals: an XYZ file and a basis name planned once (the records, the
-//! nuclei, S, H, X and the step), laid out in one arena per kind, and run
-//! on one stream, returning ε, C and the timing record.
+//! orbitals: an XYZ file and a basis name planned once (the nuclei, the
+//! records, built once for both S and H, S, H, X and the step), laid out
+//! in one arena per kind, and run on one stream, returning ε, C and the
+//! timing record.
 //!
 //! | C++ | Here |
 //! |---|---|

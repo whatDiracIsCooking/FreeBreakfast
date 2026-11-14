@@ -11,14 +11,16 @@ use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
 use wwr_sys::wwr_memcpy_kind;
 
+use fb_integrals_mmd::add_records;
+
 use super::tasks::add_overlap;
 
-/// The overlap of one molecule in one basis, planned once: the tasks of
-/// [`add_overlap`] and two more that bring S to the host, `download`
-/// (stream: S copied into a pinned row) and `collect` (CPU: the pinned row
-/// copied out). [`Run::planned`] is the plan, its arena sizes among it, with
-/// no device; [`Run::run`] lays the arena out on a device and runs it on one
-/// stream.
+/// The overlap of one molecule in one basis, planned once: the records
+/// ([`add_records`]), the tasks of [`add_overlap`] reading them, and two
+/// more that bring S to the host, `download` (stream: S copied into a
+/// pinned row) and `collect` (CPU: the pinned row copied out).
+/// [`Run::planned`] is the plan, its arena sizes among it, with no device;
+/// [`Run::run`] lays the arena out on a device and runs it on one stream.
 pub struct Run {
     planned: Planned<'static>,
     n_ao: usize,
@@ -35,7 +37,7 @@ impl Run {
     /// The readers' refusals: an XYZ file that cannot be read or parsed, a
     /// basis that is neither a carried name nor a readable document, an
     /// element the basis lacks; and the kernel library's load check
-    /// ([`add_overlap`]), a `GpuRuntime` error naming the found and the
+    /// ([`add_records`]), a `GpuRuntime` error naming the found and the
     /// expected ABI version and backend.
     pub fn new(xyz: &Path, basis: &str) -> Result<Run> {
         // Charge and multiplicity do not enter the overlap.
@@ -45,7 +47,8 @@ impl Run {
             .place(&molecule)?;
         let n_ao = basis.nao_sphe() as usize;
         let mut dag = Dag::new();
-        let s = add_overlap(&mut dag, 0, &basis, &mut None)?;
+        let classes = add_records(&mut dag, 0, &basis)?;
+        let s = add_overlap(&mut dag, 0, &basis, &classes, &mut None);
         let pinned = dag.add(
             "download",
             0,

@@ -18,6 +18,7 @@ use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane};
 use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
+use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_overlap::add_overlap;
 use fb_molecule::nuclear_charge;
 use fb_pipeline_guess::{add_guess_upload, add_sad_guess};
@@ -124,7 +125,8 @@ fn trace_of_d_s_is_the_nuclear_charge_and_the_upload_moves_bytes() {
         let mut dag = Dag::new();
         let d = add_sad_guess(&mut dag, 0, &basis, molecule.atoms()).unwrap();
         let d_device = add_guess_upload(&mut dag, 0, &basis, d);
-        let s = add_overlap(&mut dag, 0, &basis, &mut None).unwrap();
+        let classes = add_records(&mut dag, 0, &basis).unwrap();
+        let s = add_overlap(&mut dag, 0, &basis, &classes, &mut None);
         let d_back = dag.add(
             "download D",
             0,
