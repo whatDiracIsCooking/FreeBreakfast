@@ -9,6 +9,7 @@ use fb_core_planner::{Dag, Planned, Task};
 use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane, Record};
 use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
+use fb_recipes_matrix_ao::add_blas_workspace;
 use wwr_sys::wwr_memcpy_kind;
 
 use fb_integrals_mmd::add_records;
@@ -47,6 +48,7 @@ impl Run {
             .place(&molecule)?;
         let n_ao = basis.nao_sphe() as usize;
         let mut dag = Dag::new();
+        add_blas_workspace(&mut dag, 0);
         let classes = add_records(&mut dag, 0, &basis)?;
         let s = add_overlap(&mut dag, 0, &basis, &classes, &mut None);
         let pinned = dag.add(

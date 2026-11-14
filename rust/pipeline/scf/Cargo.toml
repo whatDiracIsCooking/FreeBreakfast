@@ -22,6 +22,7 @@ fb-io-basis.workspace = true
 fb-io-xyz.workspace = true
 fb-molecule-nuclei.workspace = true
 fb-recipes-diagonalize.workspace = true
+fb-recipes-matrix-ao.workspace = true
 fb-recipes-orthogonalize.workspace = true
 # BLAS for the step's three gemms, beside the runtime.
 wwr-sys = { workspace = true, features = ["blas"] }

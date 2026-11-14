@@ -22,6 +22,10 @@
 //! | `res.blas()`, the `DeviceResources`' handle | the stream worker's handle, [`DeviceStream::blas`], made with the backend and bound to the worker's stream |
 //! | `MatrixAO<L>`, `BasisLayout`, `ao_count` | nothing: a matrix is a device row, its order the basis's `nao_cart` or `nao_sphe` |
 //! | `MatrixAOPair::spherical_to_cartesian` | not ported yet |
+//!
+//! [`add_blas_workspace`] gives a worker's BLAS handle its workspace from
+//! the arena, a worker row, rather than the one the library allocates for
+//! itself: added first by a plan that runs these GEMMs, or any other BLAS.
 
 use contracts::debug_requires;
 use fb_basis::BasisSet;
@@ -32,6 +36,9 @@ use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
 use wwr_sys::{wwr_blas_operation, wwr_memcpy_kind, wwr_stream};
+
+mod workspace;
+pub use workspace::add_blas_workspace;
 
 /// Add the spherical form of the Cartesian AO matrix `cartesian` of `basis`
 /// to `dag` on GPU worker `worker`, and return it: an output row of
