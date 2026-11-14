@@ -277,9 +277,25 @@ fact.</li>
 
 <p><strong>Two rows may share bytes iff one's end precedes the other's start.</strong> That
 is the assigner's one invariant, and it is what the fuzz checks
-(<a href="testing.md"><code>testing.md</code></a>, &quot;Fuzzing&quot;). The assigner is greedy in start
-order with best fit, and a schedule it cannot fit at the given order is
-re-ordered or refused by admission, never allocated past the block.</p>
+(<a href="testing.md"><code>testing.md</code></a>, &quot;Fuzzing&quot;). The assigner is greedy with best
+fit, run in three orders and kept at the smallest total: by first position
+and then the larger row first, by first position and then the longer-lived
+first, and the larger first whatever its position. A schedule it cannot fit
+at the given order is re-ordered or refused by admission, never allocated
+past the block.</p>
+<p><strong>The block is within 3% of its lower bound on every committed golden.</strong>
+The bound is the most that is live at once: at each position, the live
+rows' bytes each padded to the alignment, less the largest padding, which
+the last row does not need; a loop's region counts as one row of its
+parent, and its body is held to the bound alone. No single order meets it:
+measured over the goldens when it was set, start order with the larger
+first came to 1.20 times the bound on the arena's SCF fixture, the
+longer-lived first to 1.005 on the DF-RHF config's plan, where the first
+order and the larger first are within 0.02%, and the larger first to 1.015
+on DIIS's, where start order meets the bound exactly; the three together
+came to 1.026 at worst, the guess config's pinned table. The bound is a
+measurement, not a theorem: a plan that breaks it is a finding about the
+assigner, read before the bound is moved.</p>
 <p><strong>&quot;Precedes&quot; is the plan's rank order, so reuse adds edges.</strong> The positions
 the assigner packs against are the nodes' ranks, the order they were added
 in, but a run starts any ready node whatever its rank: on one stream a
@@ -744,6 +760,11 @@ them.</p>
 <tr>
 <td>No two live rows alias</td>
 <td>The assigner fuzzed as a pure function over random rows and orders</td>
+<td>3</td>
+</tr>
+<tr>
+<td>The block is within 3% of its lower bound on every committed golden</td>
+<td>Every golden's text read, each table's total against its live rows' padded bytes at their largest, each loop's region against its body's</td>
 <td>3</td>
 </tr>
 <tr>
