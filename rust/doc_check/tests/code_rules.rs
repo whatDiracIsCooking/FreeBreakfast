@@ -17,7 +17,7 @@
 //!   node** (`docs/memory.md`, "The table"): an `impl GpuTask` whose `run`
 //!   calls `memcpy_p2d` or `memcpy_d2p` and no other free function, its
 //!   other calls the views' and iterators' methods, is in [`COPY_TASKS`]:
-//!   the planner's own two and the three-center download (#1617).
+//!   the planner's own three.
 //!
 //! Every member's `.rs` is read, and the two at `rust/`'s top that the
 //! `build.rs` files include. Tier 3: it reads files and nothing else.
@@ -126,20 +126,13 @@ const LAUNCH_SHAPE: &[&str] = &[
 
 /// The `GpuTask`s whose whole work is a copy between kinds, as `(file, how
 /// many, why)`, counted as [`ERROR_LOGS`] is, in non-test code: everything
-/// else adds a copy node (`Dag::upload`, `Dag::download`). The list only
-/// shrinks.
-const COPY_TASKS: &[(&str, usize, &str)] = &[
-    (
-        "core/planner/src/copy.rs",
-        2,
-        "the planner's copy nodes themselves, `Dag::upload` and `Dag::download`",
-    ),
-    (
-        "integrals/sys/src/three_center.rs",
-        1,
-        "`three-center download`, each class's bra fields and offsets: a node per row cost the water plan +16-21% (#1617)",
-    ),
-];
+/// else adds a copy node (`Dag::upload`, `Dag::download`,
+/// `Dag::download_rows`). The list only shrinks.
+const COPY_TASKS: &[(&str, usize, &str)] = &[(
+    "core/planner/src/copy.rs",
+    3,
+    "the planner's copy nodes themselves, `Dag::upload`, `Dag::download` and `Dag::download_rows`",
+)];
 
 /// The checks that name what they forbid: this file, and
 /// `fb-device-check`'s scan of the C headers for a launch shape.

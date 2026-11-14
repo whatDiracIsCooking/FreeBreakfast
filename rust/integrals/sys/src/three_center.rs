@@ -1,12 +1,14 @@
 //! The three-center integrals' device path: (mn|P) of an orbital basis,
 //! whose records the records tasks formed ([`ClassRows`]), and an auxiliary
-//! one ([`AuxTable`]), as three tasks ([`add_three_center_tasks`]).
+//! one ([`AuxTable`]), as four tasks ([`add_three_center_tasks`]).
 //!
 //! The tasks, added in this order:
 //!
-//! - **`three-center download`**, on the worker's stream: each class's
-//!   bra fields (ζ, P, P − A, P − B, `s`) and its two AO offsets copied
-//!   into pinned rows, its outputs.
+//! - **`download three-center bra`** and **`download three-center
+//!   offsets`**, the planner's copy nodes ([`Dag::download_rows`]) on the
+//!   worker's stream: every class's bra fields (ζ, P, P − A, P − B, `s`),
+//!   then its two AO offsets, copied into pinned rows named after the
+//!   field and the class, one node and one event for each element type.
 //! - **`three-center tables`**, on the CPU: each class's records regrouped
 //!   by shell pair, the pairs in their first record's order and the
 //!   records' descending-ζ order kept within each, since an `eri3` thread
@@ -34,7 +36,7 @@
 use std::sync::Arc;
 
 use contracts::debug_requires;
-use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_p2d};
 use fb_core_error_handling::{Error, Status};
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
@@ -113,8 +115,9 @@ impl Staging {
 /// Cartesian-to-spherical transforms, U `n_cart` × `n_sph` and U_aux
 /// `aux.n_cart()` × `n_aux_sph`, column-major, written by earlier tasks of
 /// `dag` on `worker` (`fb_recipes_matrix_ao::add_harmonics`'s), and
-/// `[n_sph, n_aux_sph]` their column counts. The tasks are `three-center
-/// download` (stream), `three-center tables` (CPU) and `three-center`
+/// `[n_sph, n_aux_sph]` their column counts. The tasks are `download
+/// three-center bra` and `download three-center offsets` (stream, the
+/// planner's copy nodes), `three-center tables` (CPU) and `three-center`
 /// (stream), which reads U and U_aux and holds, as scratch, the
 /// Cartesian tensor (`n_cart² aux.n_cart()` doubles) and the transform's
 /// intermediate (`n_cart² n_aux_sph`), so all are in its table at
@@ -151,13 +154,7 @@ pub fn add_three_center_tasks(
     n_sph: [usize; 2],
 ) -> RowId<Device, f64> {
     let staging = Arc::new(staging(classes, n_pairs, aux, n_sph));
-    let downloaded = dag.add_gpu(
-        "three-center download",
-        worker,
-        Download {
-            classes: classes.to_vec(),
-        },
-    );
+    let downloaded = download(dag, worker, classes);
     let tables = dag.add_cpu(
         "three-center tables",
         worker,
@@ -284,51 +281,33 @@ struct Downloaded {
     off: [RowId<Pinned, i32>; 2],
 }
 
-/// GPU: each class's bra fields and offsets copied into pinned rows.
-struct Download {
-    classes: Vec<ClassRows>,
-}
-
-impl GpuTask for Download {
-    type Rows = Vec<Downloaded>;
-
-    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        self.classes
-            .iter()
-            .map(|c| {
-                let (la, lb, n) = (c.la(), c.lb(), c.n_rec() as usize);
-                let f64_rows = c.f64_rows();
-                let i32_rows = c.i32_rows();
-                let fields = std::array::from_fn(|f| {
-                    device.read(f64_rows[f]);
-                    host.output(&format!("{} ({la},{lb})", BRA_NAMES[f]), n)
-                });
-                let off = std::array::from_fn(|f| {
-                    device.read(i32_rows[f]);
-                    host.output(&format!("{} ({la},{lb})", ["off_a", "off_b"][f]), n)
-                });
-                Downloaded { fields, off }
-            })
-            .collect()
-    }
-
-    fn run(
-        &self,
-        rows: &Self::Rows,
-        device: &Bufs<'_, Device>,
-        host: &CopyOnly<'_, Pinned>,
-        stream: &DeviceStream,
-    ) -> Status {
-        for (c, d) in self.classes.iter().zip(rows) {
-            for (&src, &dst) in c.f64_rows().iter().zip(&d.fields) {
-                memcpy_d2p(host, dst, device.get(src), stream)?;
-            }
-            for (&src, &dst) in c.i32_rows().iter().zip(&d.off) {
-                memcpy_d2p(host, dst, device.get(src), stream)?;
-            }
-        }
-        Ok(())
-    }
+/// Each class's bra fields and offsets copied into pinned rows by two
+/// planner copy nodes, `download three-center bra` and `download
+/// three-center offsets`, each row named after its field and class.
+fn download(dag: &mut Dag<'_>, worker: usize, classes: &[ClassRows]) -> Vec<Downloaded> {
+    let name = |what: &str, c: &ClassRows| format!("{what} ({},{})", c.la(), c.lb());
+    let fields = classes
+        .iter()
+        .flat_map(|c| (0..BRA_FIELDS).map(move |f| (c, f)))
+        .map(|(c, f)| (c.f64_rows()[f], name(BRA_NAMES[f], c), c.n_rec() as usize));
+    let fields = dag.download_rows(worker, "three-center bra", fields);
+    let off = classes
+        .iter()
+        .flat_map(|c| (0..2).map(move |f| (c, f)))
+        .map(|(c, f)| {
+            (
+                c.i32_rows()[f],
+                name(["off_a", "off_b"][f], c),
+                c.n_rec() as usize,
+            )
+        });
+    let off = dag.download_rows(worker, "three-center offsets", off);
+    (0..classes.len())
+        .map(|c| Downloaded {
+            fields: std::array::from_fn(|f| fields[BRA_FIELDS * c + f]),
+            off: std::array::from_fn(|f| off[2 * c + f]),
+        })
+        .collect()
 }
 
 /// The records row (the bra records, then the aux records) and the cells

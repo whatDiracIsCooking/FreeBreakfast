@@ -31,9 +31,10 @@
 //!   iteration in flight, each body task reading its iteration from its
 //!   views ([`Bufs::iteration`]) to pick its batch. With `device`,
 //!   `Dag::upload` and `Dag::download` add a copy node, a pinned row to a
-//!   new device row or back, named after the new row: a copy that is a
-//!   node's whole work is never a hand-written task (`docs/memory.md`,
-//!   "The table").
+//!   new device row or back, named after the new row, and
+//!   `Dag::download_rows` one node for several device rows down, one
+//!   event for them all: a copy that is a node's whole work is never a
+//!   hand-written task (`docs/memory.md`, "The table").
 //!
 //! [`Bufs::iteration`]: fb_core_arena::Bufs::iteration
 //! - [`Planned`] ([`Dag::plan`]): each worker's device and host tables and
