@@ -318,6 +318,16 @@ before the abort, which runs no exit handlers. A panic in a test binary goes
 through the same hook, so a tripped contract reads the same in a log as in the
 test's output.
 
+**A panic's message is never lost.** `set_level(Off)` silences `critical`, as
+in the C++ tree, and that would leave an aborting release build printing a
+bare backtrace with nothing saying what panicked. So when the logger would
+drop the hook's line (the level is off, or the panicking thread holds the
+sinks, which it cannot lock again), the hook writes it to stderr instead, as
+one line, `thread '<name>' panicked at <file>:<line>:<col>: <message>`, before
+the backtrace. At every level where the critical line is written there is no
+stderr copy of it; the only other copy is std's own hook, which follows ours
+in an unwinding build.
+
 The hook is `fb-core-log`'s, installed with the logger: by `init`, which each
 binary's `main` calls first, and by every other function of the crate, so a
 test binary has it from its first call into the logger. Under abort it always
@@ -326,7 +336,8 @@ panic may be caught, std's hook follows it, so a test harness still shows a
 failing test's panic in its report and prints the backtrace when
 `RUST_BACKTRACE` asks. Cargo builds test targets unwinding even under `--release`, so `cargo
 test --release` keeps `#[should_panic]`. `doc_check/tests/panic_profile.rs`
-checks the profile line and `core/log/tests/panic_hook.rs` the hook.
+checks the profile line and `core/log/tests/panic_hook.rs` the hook, at
+level off as at info.
 
 **Contracts are debug-only**, as the crate already has them, so a release
 build pays nothing for a check and a debug build fails loudly on one.
