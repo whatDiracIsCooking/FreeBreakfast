@@ -12,7 +12,7 @@ use fb_core_arena::{
     Bufs, CopyOnly, Device, Element, HostKind, Pinned, RowId, Table, TableBuilder,
 };
 use fb_core_error_handling::{Result, Status};
-use fb_core_thread_pool::{DeviceStream, Placement};
+use fb_core_thread_pool::{DeviceStream, LaneId, Placement};
 
 /// A GPU task's `run` with its rows bound: what the executor's stream
 /// node calls.
@@ -55,7 +55,7 @@ where
 }
 
 /// What a node runs: a task of either sort, or a loop's decision. The
-/// sort is where it runs: a GPU task on its worker's stream, the rest on
+/// sort is where it runs: a GPU task on its lane's stream, the rest on
 /// the CPU pool.
 pub(super) enum Work<'a, H: HostKind, S> {
     Gpu(GpuRun<'a, H, S>),
@@ -73,7 +73,9 @@ pub(super) enum Work<'a, H: HostKind, S> {
 pub(super) struct Declared<'a, H: HostKind, S> {
     pub(super) name: String,
     pub(super) dims: Vec<(&'static str, usize)>,
-    pub(super) worker: usize,
+    /// The worker whose tables hold its rows, and for a GPU task the lane
+    /// it runs on; 0 for the rest.
+    pub(super) at: LaneId,
     pub(super) work: Work<'a, H, S>,
 }
 
@@ -81,18 +83,20 @@ impl<H: HostKind, S> Declared<'_, H, S> {
     /// Where it runs, which its work's sort decides.
     pub(super) fn placement(&self) -> Placement {
         match self.work {
-            Work::Gpu(_) => Placement::Stream(self.worker),
+            Work::Gpu(_) => Placement::Stream(self.at),
             Work::Cpu(_) | Work::Decide { .. } => Placement::Cpu,
         }
     }
 }
 
-/// One GPU worker's rows, of both kinds, and its BLAS workspace row if
-/// one is declared.
+/// One GPU worker's rows, of both kinds, shared by its lanes; its lane
+/// count, one past the highest a GPU task named; and its BLAS workspace
+/// rows, one per lane once declared.
 struct Worker<H> {
     device: TableBuilder<Device>,
     host: TableBuilder<H>,
-    blas_workspace: Option<RowId<Device, u8>>,
+    lanes: usize,
+    blas_workspace: Vec<RowId<Device, u8>>,
 }
 
 /// Tasks declared in plan order, each on a GPU worker: the planner's input.
@@ -136,8 +140,15 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         self.nodes.is_empty()
     }
 
-    /// Add a GPU task on GPU worker `worker`, to run on its stream, call
-    /// its layout, and return its rows.
+    /// Add a GPU task on lane `at` of a GPU worker, to run on that lane's
+    /// stream, call its layout, and return its rows. A bare worker index is
+    /// its lane 0 ([`LaneId`]).
+    ///
+    /// Its rows are the worker's, in tables its lanes share, so a task may
+    /// read a row a task on another lane of the worker wrote: the executor
+    /// orders the two by an event on the device, with no host wait, and the
+    /// reader reads the row in place. The lanes a worker has are the ones
+    /// its tasks name, fixed when the DAG is planned.
     ///
     /// The layout's declarations are held to the worker's tables'
     /// contracts ([`TableBuilder::read`], [`TableBuilder::write`]).
@@ -148,19 +159,21 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
     /// yet): here, by the table's contract, in a debug build; in every
     /// build, when the task's run asks for the row, by the view's checks
     /// ([`Bufs`]).
-    pub fn add_gpu<T>(&mut self, name: impl Into<String>, worker: usize, task: T) -> T::Rows
+    pub fn add_gpu<T>(&mut self, name: impl Into<String>, at: impl Into<LaneId>, task: T) -> T::Rows
     where
         T: GpuTask<H, S> + 'a,
         T::Rows: 'a,
     {
+        let at = at.into();
         let pos = self.nodes.len();
-        let w = self.worker(worker);
+        let w = self.worker(at.worker);
+        w.lanes = w.lanes.max(at.lane + 1);
         let rows = task.layout(&mut w.device.node(pos), &mut w.host.node(pos));
         let kept = rows.clone();
         self.nodes.push(Declared {
             name: name.into(),
             dims: task.dims(),
-            worker,
+            at,
             work: Work::Gpu(erase_gpu(move |d, p, stream| task.run(&kept, d, p, stream))),
         });
         rows
@@ -186,7 +199,7 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         self.nodes.push(Declared {
             name: name.into(),
             dims: task.dims(),
-            worker,
+            at: worker.into(),
             work: Work::Cpu(erase_cpu(move |h| task.run(&kept, h))),
         });
         rows
@@ -240,7 +253,7 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         self.nodes.push(Declared {
             name: name.into(),
             dims: Vec::new(),
-            worker,
+            at: worker.into(),
             work: Work::Decide {
                 body,
                 max_iterations,
@@ -255,7 +268,8 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
     /// workspace is [`Dag::blas_workspace`]'s, not this). Any task on the worker
     /// may write it through the returned id, with no declaration in its
     /// layout; two such tasks are not ordered by it, so they must be
-    /// ordered by something else (one stream does).
+    /// ordered by something else (one lane does; two lanes of the worker
+    /// need an edge).
     #[must_use]
     pub fn device_worker_row<T: Element>(
         &mut self,
@@ -266,20 +280,24 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         self.worker(worker).device.worker(name, len)
     }
 
-    /// Declare worker `worker`'s BLAS workspace: a worker row of
-    /// [`BLAS_WORKSPACE_BYTES`], `blas workspace` in its device table,
-    /// which admission counts like any other row, and which the instance's
-    /// backend hands the worker's BLAS handle when it is made
+    /// Declare worker `worker`'s BLAS workspaces: one worker row of
+    /// [`BLAS_WORKSPACE_BYTES`] per lane, since each lane has a BLAS handle
+    /// of its own and two lanes run at once. Lane 0's is `blas workspace`
+    /// in the worker's device table, declared here; lane `l`'s, `blas
+    /// workspace lane <l>`, when the DAG is planned and its lanes are
+    /// known. Admission counts them like any other row, and the instance's
+    /// backend hands each to its lane's BLAS handle when it is made
     /// (`Instance::backend`), so no BLAS call allocates behind the table.
-    /// No task can name the row, so it is the handle's alone. Declaring it
-    /// again for the same worker does nothing.
+    /// No task can name the rows, so each is its handle's alone. Declaring
+    /// them again for the same worker does nothing.
     ///
     /// A plan that declares none still runs, every BLAS call on the
     /// workspace the handle allocated for itself, outside the count.
     pub fn blas_workspace(&mut self, worker: usize) {
         let w = self.worker(worker);
-        if w.blas_workspace.is_none() {
-            w.blas_workspace = Some(w.device.worker("blas workspace", BLAS_WORKSPACE_BYTES));
+        if w.blas_workspace.is_empty() {
+            let row = w.device.worker("blas workspace", BLAS_WORKSPACE_BYTES);
+            w.blas_workspace.push(row);
         }
     }
 
@@ -300,8 +318,22 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
     /// every handoff into it; a loop's decision also runs after every task
     /// of its body. Pure: no device. The rows a loop carries are held to
     /// the tables' contracts ([`TableBuilder::build`]).
-    pub fn plan(self) -> Planned<'a, H, S> {
-        let blas_workspaces = self.workers.iter().map(|w| w.blas_workspace).collect();
+    pub fn plan(mut self) -> Planned<'a, H, S> {
+        for w in &mut self.workers {
+            if !w.blas_workspace.is_empty() {
+                for lane in w.blas_workspace.len()..w.lanes {
+                    let name = format!("blas workspace lane {lane}");
+                    let row = w.device.worker(&name, BLAS_WORKSPACE_BYTES);
+                    w.blas_workspace.push(row);
+                }
+            }
+        }
+        let blas_workspaces = self
+            .workers
+            .iter_mut()
+            .map(|w| std::mem::take(&mut w.blas_workspace))
+            .collect();
+        let lanes = self.workers.iter().map(|w| w.lanes).collect();
         let loops = &self.loops;
         let tables: Vec<(Table<Device>, Table<H>)> = self
             .workers
@@ -336,6 +368,7 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
         }
         Planned {
             tables,
+            lanes,
             blas_workspaces,
             nodes: self.nodes,
             deps: deps.into_iter().map(|d| d.into_iter().collect()).collect(),
@@ -347,7 +380,8 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
             self.workers.push(Worker {
                 device: TableBuilder::new(),
                 host: TableBuilder::new(),
-                blas_workspace: None,
+                lanes: 0,
+                blas_workspace: Vec::new(),
             });
         }
         &mut self.workers[worker]
@@ -361,11 +395,15 @@ impl<'a, H: HostKind, S> Dag<'a, H, S> {
 ///
 /// Its text ([`fmt::Display`]) is the plan's golden: each task's worker,
 /// lane and dependencies, each loop's span and bound on its decision's
-/// line, then every non-empty table, a loop's region and body in it.
+/// line, then every non-empty table, a loop's region and body in it. A GPU
+/// task's lane reads `stream` on a worker of one lane and `stream<l>` on a
+/// worker of several; any other task's, `cpu`.
 pub struct Planned<'a, H: HostKind = Pinned, S = DeviceStream> {
     pub(super) tables: Vec<(Table<Device>, Table<H>)>,
-    /// Per worker, its BLAS workspace row, if declared.
-    pub(super) blas_workspaces: Vec<Option<RowId<Device, u8>>>,
+    /// Per worker, its lane count: one past the highest a GPU task named.
+    pub(super) lanes: Vec<usize>,
+    /// Per worker, its BLAS workspace rows, one per lane, if declared.
+    pub(super) blas_workspaces: Vec<Vec<RowId<Device, u8>>>,
     pub(super) nodes: Vec<Declared<'a, H, S>>,
     pub(super) deps: Vec<Vec<usize>>,
 }
@@ -384,6 +422,12 @@ impl<H: HostKind, S> Planned<'_, H, S> {
     /// The GPU workers the plan uses: one past the highest declared.
     pub fn n_workers(&self) -> usize {
         self.tables.len()
+    }
+
+    /// Worker `worker`'s lanes: one past the highest a GPU task on it
+    /// named, 0 for a worker with no GPU task.
+    pub fn n_lanes(&self, worker: usize) -> usize {
+        self.lanes[worker]
     }
 
     /// Worker `worker`'s device table.
@@ -422,10 +466,15 @@ impl<H: HostKind, S> fmt::Display for Planned<'_, H, S> {
         )?;
         for (pos, (node, deps)) in self.nodes.iter().zip(&self.deps).enumerate() {
             let lane = match node.placement() {
-                Placement::Stream(_) => "stream",
-                Placement::Cpu => "cpu",
+                Placement::Stream(at) if self.lanes[at.worker] > 1 => format!("stream{}", at.lane),
+                Placement::Stream(_) => "stream".to_string(),
+                Placement::Cpu => "cpu".to_string(),
             };
-            write!(f, "{pos:>5}  {:>6}  {lane:<6}  {}", node.worker, node.name)?;
+            write!(
+                f,
+                "{pos:>5}  {:>6}  {lane:<6}  {}",
+                node.at.worker, node.name
+            )?;
             if !deps.is_empty() {
                 let deps: Vec<String> = deps.iter().map(usize::to_string).collect();
                 write!(f, ": after {}", deps.join(" "))?;

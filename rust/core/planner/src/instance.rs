@@ -8,6 +8,8 @@ use contracts::debug_requires;
 use fb_core_arena::{Block, CopyOnly, Device, HostKind, Kind, Pinned, RowId};
 #[cfg(feature = "device")]
 use fb_core_error_handling::check_or_abort;
+#[cfg(feature = "device")]
+use fb_core_thread_pool::LaneId;
 use fb_core_thread_pool::{
     self as thread_pool, ArenaSize, Backend, DeviceStream, Lane, NodeId, Plan, Record,
 };
@@ -26,9 +28,9 @@ pub struct Instance<'a, H: HostKind = Pinned, S = DeviceStream> {
     /// that partition it and, for the device one, with a backend's handle
     /// that holds its BLAS workspace row.
     pub(super) blocks: Vec<WorkerBlocks<H>>,
-    /// Per worker, its BLAS workspace row, if declared.
+    /// Per worker, its BLAS workspace rows, one per lane, if declared.
     #[cfg_attr(not(feature = "device"), allow(dead_code))]
-    pub(super) blas_workspaces: Vec<Option<RowId<Device, u8>>>,
+    pub(super) blas_workspaces: Vec<Vec<RowId<Device, u8>>>,
 }
 
 /// A worker's device block and host block.
@@ -61,7 +63,7 @@ impl<'a, H: HostKind, S: 'a> Planned<'a, H, S> {
         let mut ids: Vec<NodeId> = Vec::with_capacity(self.nodes.len());
         for (pos, (node, deps)) in self.nodes.into_iter().zip(self.deps).enumerate() {
             let preds: Vec<NodeId> = deps.iter().map(|&u| ids[u]).collect();
-            let (device, host) = &blocks[node.worker];
+            let (device, host) = &blocks[node.at.worker];
             let (device, host) = (Arc::clone(device), Arc::clone(host));
             let placement = node.placement();
             let id = match node.work {
@@ -105,7 +107,7 @@ impl<'a, H: HostKind, S> Instance<'a, H, S> {
         &self.blocks[worker].1
     }
 
-    /// Run every task once on `n_cpu` CPU workers and `backend`'s stream
+    /// Run every task once on `n_cpu` CPU workers and `backend`'s GPU
     /// workers: [`thread_pool::run`], whose [`Record`] times each task under
     /// the name it was added with and the dimensions its
     /// [`GpuTask::dims`](super::GpuTask::dims) or
@@ -148,10 +150,11 @@ impl<'a, H: HostKind, S> Instance<'a, H, S> {
 #[cfg(feature = "device")]
 impl<H: HostKind> Instance<'_, H, DeviceStream> {
     /// The backend this instance's GPU tasks run on: a
-    /// [`thread_pool::Device`] whose stream worker `w` is on worker `w`'s
-    /// device, with an event pair for every GPU node of this plan, and
-    /// each worker's declared BLAS workspace ([`Dag::blas_workspace`])
-    /// handed to its BLAS handle. The handle holds the row as a
+    /// [`thread_pool::Device`] whose GPU worker `w` is on worker `w`'s
+    /// device with the lanes its tasks name, with an event pair for every
+    /// GPU node of this plan, and each lane's declared BLAS workspace
+    /// ([`Dag::blas_workspace`]) handed to its BLAS handle. A handle holds
+    /// its row as a
     /// [`HeldRow`](fb_core_arena::HeldRow) for as long as the backend
     /// lives, which keeps the block alive with it, so the backend may
     /// outlive the instance; a second backend made while the first lives
@@ -160,18 +163,18 @@ impl<H: HostKind> Instance<'_, H, DeviceStream> {
     /// Aborts, as a failed create does, if a handle refuses its workspace.
     ///
     /// # Panics
-    /// If a worker's workspace row is already held: a backend made from
-    /// this instance before still lives.
+    /// If a lane's workspace row is already held: a backend made from this
+    /// instance before still lives.
     ///
     /// [`Dag::blas_workspace`]: super::Dag::blas_workspace
     #[track_caller]
     pub fn backend(&self) -> thread_pool::Device {
         let devices: Vec<i32> = self.blocks.iter().map(|(d, _)| d.dev_idx()).collect();
         let mut backend = thread_pool::Device::new(&devices, &self.plan);
-        for (worker, row) in self.blas_workspaces.iter().enumerate() {
-            if let Some(row) = *row {
+        for (worker, rows) in self.blas_workspaces.iter().enumerate() {
+            for (lane, &row) in rows.iter().enumerate() {
                 let held = self.blocks[worker].0.hold(row);
-                check_or_abort(backend.bind_blas_workspace(worker, held));
+                check_or_abort(backend.bind_blas_workspace(LaneId { worker, lane }, held));
             }
         }
         backend

@@ -200,8 +200,8 @@ sticky fault stops everything after it anyway.
 **The current device is the stream's, and the caller made it so.** A launch
 on a stream of a device that is not current fails at the runtime. Today the
 C++ pipeline runs on one device and never changes it; the orchestrator places
-tasks on many, so each stream worker is a thread of its own with its device
-made current for the life of the run (`ScopedDeviceIndex`, which the crate
+tasks on many, so each GPU worker is a thread of its own, every lane's
+stream on its device, with that device made current for the life of the run (`ScopedDeviceIndex`, which the crate
 already has, held by that thread; [`programming_model.md`](programming_model.md),
 "CPU workers"), and every wrapper a task calls runs on it. The wrapper does
 not check, because it cannot without a runtime call
@@ -226,10 +226,11 @@ out, which costs a caller three arguments and no second name to learn.
 `fb-doc-check` holds it (`tests/source_rules.rs`): no public function of
 `fb-recipes-blas` shares a name with one of `fb_core_wwr::blas`.
 
-**A library handle is the stream worker's, made before the run.** Each
-stream worker owns one handle per library, bound to its stream and on its
-device: `fb_core_thread_pool::DeviceStream`, what a GPU task's `run` is handed
-as its stream, is the worker's stream (it derefs to `fb_core_wwr::runtime::Stream`)
+**A library handle is the lane's, made before the run.** Each lane of a
+GPU worker owns one handle per library, bound to its stream and on its
+device, since two lanes run at once and a handle's state and workspace are
+one stream's at a time: `fb_core_thread_pool::DeviceStream`, what a GPU
+task's `run` is handed as its stream, is the lane's stream (it derefs to `fb_core_wwr::runtime::Stream`)
 and its handles (`blas()`, an `fb_core_wwr::blas::BlasHandle`, and
 `solver()`, an `fb_core_wwr::solver::SolverHandle`, the dense solver's). The
 `Device` backend makes them when it is built over an instance's plan, with
@@ -240,11 +241,11 @@ device: a task names no handle in its layout, and the tier-3 planner tests
 run on `HostOnly` workers under `--no-default-features`, with no wwr crate
 in their graph. BLAS and the
 dense solver are the libraries so far.
-Every task of the worker shares the handles, so a task that changes one's
+Every task of the lane shares the handles, so a task that changes one's
 state (its pointer mode) sets it back before it returns. A run borrows the
 backend exclusively (`Instance::run` takes it by `&mut`), so the handles
-serve one run at a time, and within it each is called only from its own
-stream worker's thread.
+serve one run at a time, and within it each is called only from its
+worker's thread.
 
 **A library's workspace is part of the layout.** The solvers' is
 already a dimension: the pipeline treats `syevd_lwork` as one, and a layout
@@ -256,10 +257,11 @@ HIP twin), so the design hands every handle a worker row of the arena
 ([`memory.md`](memory.md), "The table"), and a run allocates nothing through
 a library either. The planner declares it: `Dag::blas_workspace(worker)`
 adds `blas workspace`, a worker row of `fb_core_planner::BLAS_WORKSPACE_BYTES`
-(32 MiB), to the worker's device table, where admission counts it like any
-other row, and keeps its id, so no task can name it. It is bound where the
+(32 MiB), to the worker's device table, and one more, `blas workspace lane
+<l>`, per further lane its tasks name, where admission counts them like any
+other row, and keeps their ids, so no task can name them. They are bound where the
 backend and the instance meet: `Instance::backend` builds the `Device` over
-the instance's plan and hands each worker's handle its row, once, as an
+the instance's plan and hands each lane's handle its row, once, as an
 `fb_core_arena::HeldRow`, which holds the row's writer flag and keeps the
 block alive. The library keeps the pointer for every later call, beyond any
 borrow, so the handle owns the memory: `BlasHandle::bind_workspace` takes it
@@ -416,7 +418,7 @@ C++ `diagonalize_footprint(lwork)` already does: `add_diagonalize` takes
 `lwork` as a number, and the layout declares the `syevd work` scratch row
 at exactly that many doubles. A run asks first, `syevd_lwork` on a solver
 handle of the device it will run on, made and dropped before planning (the
-stream workers' handles do not exist until the `Device` backend is built
+lanes' handles do not exist until the `Device` backend is built
 over the plan); a tier-3 plan test passes any number, and its golden shows
 the row at that number. A number too small is the solver's refused argument,
 a negative flag, which the `syevd check` task returns as `GpuRuntime`. The

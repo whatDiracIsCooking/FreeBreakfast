@@ -34,17 +34,22 @@ impl Rng {
 struct Shape {
     placements: Vec<Placement>,
     preds: Vec<Vec<usize>>,
-    n_streams: usize,
+    n_gpu: usize,
+}
+
+/// A lane: `lane` of GPU worker `worker`.
+fn on(worker: usize, lane: usize) -> Placement {
+    Placement::Stream(LaneId { worker, lane })
 }
 
 fn random_shape(rng: &mut Rng) -> Shape {
     let n = 1 + rng.below(40);
-    let n_streams = rng.below(4);
+    let n_gpu = rng.below(4);
     let mut placements = Vec::new();
     let mut preds = Vec::new();
     for id in 0..n {
-        placements.push(if n_streams > 0 && rng.chance(50) {
-            Placement::Stream(rng.below(n_streams))
+        placements.push(if n_gpu > 0 && rng.chance(50) {
+            on(rng.below(n_gpu), rng.below(3))
         } else {
             Placement::Cpu
         });
@@ -53,7 +58,7 @@ fn random_shape(rng: &mut Rng) -> Shape {
     Shape {
         placements,
         preds,
-        n_streams,
+        n_gpu,
     }
 }
 
@@ -65,8 +70,9 @@ struct Observed {
     clock: AtomicUsize,
     cpu_running: AtomicUsize,
     cpu_peak: AtomicUsize,
-    lane_running: [AtomicUsize; 4],
-    lane_peak: [AtomicUsize; 4],
+    /// Per GPU worker, the nodes running on its thread now and at most.
+    gpu_running: [AtomicUsize; 4],
+    gpu_peak: [AtomicUsize; 4],
 }
 
 fn track(running: &AtomicUsize, peak: &AtomicUsize) {
@@ -93,8 +99,8 @@ fn run_shape(shape: &Shape, n_cpu: usize, fail: &[usize]) -> (Observed, Status) 
                 move |lane: Lane<'_, ()>| {
                     let (running, peak) = match lane {
                         Lane::Cpu => (&obs.cpu_running, &obs.cpu_peak),
-                        Lane::Stream { index, .. } => {
-                            (&obs.lane_running[index], &obs.lane_peak[index])
+                        Lane::Stream { lane, .. } => {
+                            (&obs.gpu_running[lane.worker], &obs.gpu_peak[lane.worker])
                         }
                     };
                     track(running, peak);
@@ -112,7 +118,7 @@ fn run_shape(shape: &Shape, n_cpu: usize, fail: &[usize]) -> (Observed, Status) 
             );
             ids.lock().unwrap().push(node);
         }
-        run(&mut plan, &mut HostOnly::new(shape.n_streams), n_cpu).result
+        run(&mut plan, &mut HostOnly::new(shape.n_gpu), n_cpu).result
     };
     (obs, result)
 }
@@ -149,8 +155,9 @@ fn every_node_runs_once_after_its_predecessors_within_the_worker_counts() {
             }
         }
         assert!(obs.cpu_peak.load(Ordering::SeqCst) <= n_cpu, "seed {seed}");
-        for lane in &obs.lane_peak {
-            assert!(lane.load(Ordering::SeqCst) <= 1, "seed {seed}");
+        // One thread per GPU worker, whatever its lanes.
+        for worker in &obs.gpu_peak {
+            assert!(worker.load(Ordering::SeqCst) <= 1, "seed {seed}");
         }
     }
 }
@@ -195,14 +202,14 @@ fn a_failure_skips_its_descendants_and_reports_the_lowest_rank() {
 fn an_error_names_its_task_and_worker_and_carries_the_others() {
     let mut plan = Plan::new();
     plan.add("first", Placement::Cpu, &[], |_| Err(Error::io("disk")));
-    plan.add("second", Placement::Stream(0), &[], |_: Lane<'_, ()>| {
+    plan.add("second", on(0, 0), &[], |_: Lane<'_, ()>| {
         Err(Error::numerical("nan"))
     });
     let error = run(&mut plan, &mut HostOnly::new(1), 1).result.unwrap_err();
     assert_eq!(error.kind, ErrorKind::Io);
     assert_eq!(
         error.to_string(),
-        "disk [first@cpu0] [also: nan [second@stream0]]"
+        "disk [first@cpu0] [also: nan [second@gpu0.0]]"
     );
 }
 
@@ -214,14 +221,14 @@ fn a_node_runs_inside_its_task_record() {
         seen.lock().unwrap().push(log::current_task());
         Ok(())
     });
-    plan.add("b", Placement::Stream(0), &[a], |_: Lane<'_, ()>| {
+    plan.add("b", on(0, 0), &[a], |_: Lane<'_, ()>| {
         seen.lock().unwrap().push(log::current_task());
         Ok(())
     });
     run(&mut plan, &mut HostOnly::new(1), 1).result.unwrap();
     assert_eq!(
         *seen.lock().unwrap(),
-        [Some("a@cpu0".to_string()), Some("b@stream0".to_string())]
+        [Some("a@cpu0".to_string()), Some("b@gpu0.0".to_string())]
     );
     assert_eq!(log::current_task(), None);
 }
@@ -235,7 +242,7 @@ fn a_panicking_node_fails_the_run_instead_of_hanging_it() {
     });
     // Waiting on `a`: without the abort these workers would wait forever.
     plan.add("b", Placement::Cpu, &[a], |_| Ok(()));
-    plan.add("c", Placement::Stream(0), &[a], |_| Ok(()));
+    plan.add("c", on(0, 0), &[a], |_| Ok(()));
     let _ = run(&mut plan, &mut HostOnly::new(1), 3);
 }
 
@@ -243,7 +250,7 @@ fn a_panicking_node_fails_the_run_instead_of_hanging_it() {
 fn a_plan_the_workers_cannot_run_is_refused_before_anything_runs() {
     let ran = AtomicUsize::new(0);
     let mut plan = Plan::new();
-    plan.add("a", Placement::Stream(1), &[], |_: Lane<'_, ()>| {
+    plan.add("a", on(1, 0), &[], |_: Lane<'_, ()>| {
         ran.fetch_add(1, Ordering::SeqCst);
         Ok(())
     });
@@ -264,6 +271,61 @@ fn a_plan_the_workers_cannot_run_is_refused_before_anything_runs() {
 fn an_empty_plan_runs() {
     let mut plan: Plan<'_, ()> = Plan::new();
     run(&mut plan, &mut HostOnly::new(2), 1).result.unwrap();
+}
+
+/// Lanes of one worker: an edge between two of them is a wait on the
+/// device, not a sync point, so the record holds only the CPU node's wait
+/// on the lane it reads and each lane's exit sync; and every node is timed
+/// under its lane, `gpu<w>.<l>`, though one thread ran them all.
+#[test]
+fn an_edge_between_lanes_is_no_sync_point() {
+    let threads = Mutex::new(Vec::new());
+    let thread = |_: Lane<'_, ()>| {
+        let name = std::thread::current().name().map(str::to_owned);
+        threads.lock().unwrap().push(name);
+        Ok(())
+    };
+    let mut plan = Plan::new();
+    let a = plan.add("a", on(0, 0), &[], thread);
+    let b = plan.add("b", on(0, 1), &[a], thread);
+    let c = plan.add("c", on(0, 0), &[a, b], thread);
+    let d = plan.add("d", Placement::Cpu, &[b], |_| Ok(()));
+    assert_eq!(plan.lanes(), [2]);
+    let record = run(&mut plan, &mut HostOnly::new(1), 1);
+    record.result.unwrap();
+    let workers: Vec<_> = record.tasks.iter().map(|t| t.worker.as_str()).collect();
+    assert_eq!(workers, ["gpu0.0", "gpu0.1", "gpu0.0", "cpu0"]);
+    assert_eq!(
+        *threads.lock().unwrap(),
+        vec![Some("fb-gpu0".to_string()); 3],
+        "one thread per GPU worker"
+    );
+    let syncs: Vec<_> = record
+        .syncs
+        .iter()
+        .map(|s| (s.node, s.worker.as_str(), s.waited_for))
+        .collect();
+    assert_eq!(
+        syncs,
+        [
+            (Some(d), "cpu0", b),
+            (None, "gpu0.1", b),
+            (None, "gpu0.0", c)
+        ]
+    );
+}
+
+/// A lane the backend lacks is refused before anything runs, as a worker
+/// it lacks is: a `HostOnly` worker has every lane, so the case is a
+/// worker past its count.
+#[test]
+fn a_lane_the_backend_lacks_is_refused() {
+    let mut plan = Plan::new();
+    plan.add("a", on(0, 3), &[], |_: Lane<'_, ()>| Ok(()));
+    plan.add("b", on(2, 1), &[], |_| Ok(()));
+    let error = run(&mut plan, &mut HostOnly::new(1), 1).result.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidConfig);
+    assert!(error.message.contains("lane gpu2.1"), "{error}");
 }
 
 #[test]
@@ -292,8 +354,8 @@ fn every_node_is_timed_by_its_worker() {
     }
     let mut plan = Plan::new();
     let a = plan.add("a", Placement::Cpu, &[], sleep(5));
-    let b = plan.add("b", Placement::Stream(0), &[a], sleep(10));
-    let c = plan.add("c", Placement::Stream(1), &[a], sleep(15));
+    let b = plan.add("b", on(0, 0), &[a], sleep(10));
+    let c = plan.add("c", on(1, 0), &[a], sleep(15));
     plan.add("d", Placement::Cpu, &[b, c], sleep(20));
     let record = run(&mut plan, &mut HostOnly::new(2), 1);
     record.result.unwrap();
@@ -306,8 +368,8 @@ fn every_node_is_timed_by_its_worker() {
         got,
         [
             (0, "a", "cpu0", None),
-            (1, "b", "stream0", None),
-            (2, "c", "stream1", None),
+            (1, "b", "gpu0.0", None),
+            (2, "c", "gpu1.0", None),
             (3, "d", "cpu0", None),
         ]
     );
@@ -327,7 +389,7 @@ fn a_failed_run_still_returns_its_times() {
         std::thread::sleep(ms);
         Ok(())
     });
-    let b = plan.add("b", Placement::Stream(0), &[a], |_| {
+    let b = plan.add("b", on(0, 0), &[a], |_| {
         std::thread::sleep(ms);
         Err(Error::numerical("nan"))
     });
@@ -352,8 +414,8 @@ fn a_failed_run_still_returns_its_times() {
 fn a_record_reads_back_from_its_json() {
     let mut plan = Plan::new();
     let a = plan.add("a", Placement::Cpu, &[], |_: Lane<'_, ()>| Ok(()));
-    let b = plan.add("b", Placement::Stream(0), &[a], |_| Ok(()));
-    let c = plan.add("c", Placement::Stream(1), &[a], |_| Ok(()));
+    let b = plan.add("b", on(0, 0), &[a], |_| Ok(()));
+    let c = plan.add("c", on(1, 0), &[a], |_| Ok(()));
     let d = plan.add("d", Placement::Cpu, &[b, c], |_| Ok(()));
     plan.set_dims(b, &[("n", 24), ("m", 3)]);
     plan.set_dims(d, &[("n", 24)]);
@@ -391,8 +453,8 @@ fn a_record_reads_back_from_its_json() {
         [
             (Some(d), "cpu0", b),
             (Some(d), "cpu0", c),
-            (None, "stream0", b),
-            (None, "stream1", c),
+            (None, "gpu0.0", b),
+            (None, "gpu1.0", c),
         ]
     );
     let expected = if cfg!(debug_assertions) {
@@ -421,7 +483,7 @@ fn a_record_reads_back_from_its_json() {
 #[test]
 fn a_failed_record_reads_back_without_its_origin() {
     let mut plan = Plan::new();
-    let a = plan.add("a", Placement::Stream(0), &[], |_: Lane<'_, ()>| Ok(()));
+    let a = plan.add("a", on(0, 0), &[], |_: Lane<'_, ()>| Ok(()));
     plan.add("b", Placement::Cpu, &[a], |_| Err(Error::numerical("nan")));
     let mut record = run(&mut plan, &mut HostOnly::new(1), 1);
     let mut back: Record = serde_json::from_str(&record.to_json()).unwrap();
@@ -467,7 +529,7 @@ fn fixed_point_plan<'a>(
         *it.lock().unwrap() = Iterate::default();
         Ok(())
     });
-    let ax = plan.add("A x", Placement::Stream(0), &[x0], move |_| {
+    let ax = plan.add("A x", on(0, 0), &[x0], move |_| {
         if Some(calls.fetch_add(1, Ordering::SeqCst) + 1) == fail_on {
             return Err(Error::numerical("injected"));
         }
@@ -481,7 +543,7 @@ fn fixed_point_plan<'a>(
         it.next = [it.ax[0] + B[0], it.ax[1] + B[1]];
         Ok(())
     });
-    plan.add("|dx|", Placement::Stream(1), &[plus, x0], |_| {
+    plan.add("|dx|", on(1, 0), &[plus, x0], |_| {
         let mut it = it.lock().unwrap();
         let (x, next) = (it.x, it.next);
         it.moved = (next[0] - x[0]).hypot(next[1] - x[1]);
@@ -600,7 +662,7 @@ fn a_failed_body_node_ends_the_loop_and_the_run() {
         (error.kind, error.message.as_str()),
         (ErrorKind::Numerical, "injected")
     );
-    assert_eq!(error.context, ["A x@stream0"]);
+    assert_eq!(error.context, ["A x@gpu0.0"]);
     assert_eq!(record.iterations, BTreeMap::from([(decision, 2)]));
     assert_eq!(iterations_of(&record, "A x"), [Some(0), Some(1)]);
     assert_eq!(iterations_of(&record, "converged"), [Some(0)]);
@@ -645,20 +707,22 @@ fn a_node_after_a_loop_cannot_read_its_body() {
 }
 
 #[test]
-fn default_n_cpu_leaves_the_stream_threads_and_keeps_one() {
+fn default_n_cpu_leaves_the_gpu_threads_and_keeps_one() {
     assert!(default_n_cpu(0) >= 1);
     assert_eq!(default_n_cpu(usize::MAX), 1);
 }
 
-/// Device 0: each stream worker's device is current, work still running on
-/// one stream is waited for by a node on another stream and by a CPU node,
-/// and the run returns with nothing outstanding.
+/// Device 0: the GPU worker's device is current, work still running on one
+/// lane is waited for by a node on another lane of the same worker, on the
+/// device, and by a CPU node, on the host, and the run returns with nothing
+/// outstanding.
 ///
-/// Stream 0's node enqueues a chain of device-to-device copies that ends by
-/// writing `src`, so it is still running when the node on stream 1 copies
+/// Lane 0's node enqueues a chain of device-to-device copies that ends by
+/// writing `src`, so it is still running when the node on lane 1 copies
 /// `src` on. Without the wait the copy reads the zeros `src` started as;
 /// without the CPU node's event sync the read sees `dst` before the copy
-/// lands. Either fault fails the comparison.
+/// lands. Either fault fails the comparison. The lane-to-lane edge adds no
+/// sync point: the record's are the CPU node's and the two lanes' exits.
 #[cfg(feature = "device-tests")]
 #[test]
 #[ignore = "tier 4: needs a GPU"]
@@ -696,7 +760,7 @@ fn device_edges_wait_for_the_work_they_consume() {
     let devices_seen = Mutex::new(Vec::new());
 
     let mut plan: Plan<'_, DeviceStream> = Plan::new();
-    let produce = plan.add("produce", Placement::Stream(0), &[], |lane| {
+    let produce = plan.add("produce", on(0, 0), &[], |lane| {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!()
         };
@@ -711,32 +775,46 @@ fn device_edges_wait_for_the_work_they_consume() {
         d2d(&src, &a, stream);
         Ok(())
     });
-    let copy = plan.add("copy", Placement::Stream(1), &[produce], |lane| {
+    let copy = plan.add("copy", on(0, 1), &[produce], |lane| {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!()
         };
         d2d(&dst, &src, stream);
         Ok(())
     });
-    plan.add("read", Placement::Cpu, &[copy], |_| {
+    let read = plan.add("read", Placement::Cpu, &[copy], |_| {
         // A blocking copy on the legacy stream would hide a missing wait, so
         // read on a fresh non-blocking stream, synced alone; the edge's
         // event sync is all that orders the copy before this read.
         *seen_by_cpu.lock().unwrap() = dst.read(&Stream::new(0));
         Ok(())
     });
-    let mut device = Device::new(&[0, 0], &plan);
-    run(&mut plan, &mut device, 1).result.unwrap();
+    let mut device = Device::new(&[0], &plan);
+    let record = run(&mut plan, &mut device, 1);
+    record.result.as_ref().unwrap();
     assert_eq!(*devices_seen.lock().unwrap(), [0]);
     assert!(
         *seen_by_cpu.lock().unwrap() == pattern,
         "a device edge did not wait"
     );
+    let syncs: Vec<_> = record
+        .syncs
+        .iter()
+        .map(|s| (s.node, s.worker.as_str(), s.waited_for))
+        .collect();
+    assert_eq!(
+        syncs,
+        [
+            (Some(read), "cpu0", copy),
+            (None, "gpu0.0", produce),
+            (None, "gpu0.1", copy),
+        ]
+    );
 }
 
-/// Device 0: each stream worker's BLAS and dense-solver handles are made
-/// with the backend, on the worker's device and bound to its stream, and
-/// are the same handles at every run, so no task makes one.
+/// Device 0: each lane's BLAS and dense-solver handles are made with the
+/// backend, on the worker's device and bound to the lane's stream, one per
+/// lane, and are the same handles at every run, so no task makes one.
 #[cfg(feature = "device-tests")]
 #[test]
 #[ignore = "tier 4: needs a GPU"]
@@ -747,8 +825,8 @@ fn device_library_handles_are_the_workers_made_before_the_run() {
     let seen = Mutex::new(Vec::new());
     let mut plan: Plan<'_, DeviceStream> = Plan::new();
     for s in 0..2 {
-        plan.add(format!("blas{s}"), Placement::Stream(s), &[], |lane| {
-            let Lane::Stream { index, stream } = lane else {
+        plan.add(format!("blas{s}"), on(0, s), &[], |lane| {
+            let Lane::Stream { lane, stream } = lane else {
                 unreachable!()
             };
             let blas = stream.blas();
@@ -768,11 +846,11 @@ fn device_library_handles_are_the_workers_made_before_the_run() {
             assert_eq!(solver.dev_idx(), stream.dev_idx());
             seen.lock()
                 .unwrap()
-                .push((index, blas.get() as usize, solver.get() as usize));
+                .push((lane, blas.get() as usize, solver.get() as usize));
             Ok(())
         });
     }
-    let mut device = Device::new(&[0, 0], &plan);
+    let mut device = Device::new(&[0], &plan);
     let mut runs = Vec::new();
     for _ in 0..2 {
         run(&mut plan, &mut device, 1).result.unwrap();
@@ -781,14 +859,8 @@ fn device_library_handles_are_the_workers_made_before_the_run() {
         runs.push(handles);
     }
     assert_eq!(runs[0].len(), 2);
-    assert_ne!(
-        runs[0][0].1, runs[0][1].1,
-        "one BLAS handle per stream worker"
-    );
-    assert_ne!(
-        runs[0][0].2, runs[0][1].2,
-        "one solver handle per stream worker"
-    );
+    assert_ne!(runs[0][0].1, runs[0][1].1, "one BLAS handle per lane");
+    assert_ne!(runs[0][0].2, runs[0][1].2, "one solver handle per lane");
     assert_eq!(runs[0], runs[1], "a run made a handle of its own");
 }
 
@@ -820,7 +892,7 @@ fn device_loop_reads_each_iterations_stream_scope() {
     let host_ran = AtomicUsize::new(0);
 
     let mut plan: Plan<'_, DeviceStream> = Plan::new();
-    let copies = plan.add("copies", Placement::Stream(0), &[], |lane| {
+    let copies = plan.add("copies", on(0, 0), &[], |lane| {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!()
         };

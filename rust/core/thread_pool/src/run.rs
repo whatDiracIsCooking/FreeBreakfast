@@ -9,20 +9,20 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::backend::Backend;
-use super::plan::{Lane, NodeId, Placement, Plan, Work};
+use super::plan::{Lane, LaneId, NodeId, Placement, Plan, Work};
 use fb_core_error_handling::{Error, Status};
 use fb_core_log::TaskScope;
 use log::debug;
 use serde::{Deserialize, Serialize};
 
-/// The default CPU worker count beside `n_streams` stream workers: the
-/// host's available parallelism less the stream workers' threads, and at
-/// least one.
-pub fn default_n_cpu(n_streams: usize) -> usize {
+/// The default CPU worker count beside `n_gpu` GPU workers: the host's
+/// available parallelism less the GPU workers' threads, one each whatever
+/// its lanes, and at least one.
+pub fn default_n_cpu(n_gpu: usize) -> usize {
     thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
-        .saturating_sub(n_streams)
+        .saturating_sub(n_gpu)
         .max(1)
 }
 
@@ -33,8 +33,9 @@ pub struct TaskTime {
     pub node: NodeId,
     /// Its name, as the plan gave it.
     pub name: String,
-    /// The worker that ran it: `cpu<i>` or `stream<s>`, as its log lines
-    /// and errors name it.
+    /// The worker that ran it: `cpu<i>`, or for a GPU node its lane,
+    /// `gpu<w>.<l>` ([`LaneId`](super::LaneId)), as its log lines and
+    /// errors name it.
     pub worker: String,
     /// Its dimensions by name, as [`Plan::set_dims`] gave them; empty when
     /// none were.
@@ -60,16 +61,17 @@ pub struct TaskTime {
 /// device until a GPU node's work completed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncPoint {
-    /// The CPU node that waited before it ran, or `None` for a stream
-    /// worker's sync as it exits.
+    /// The CPU node that waited before it ran, or `None` for a GPU
+    /// worker's sync of one of its lanes as it exits.
     pub node: Option<NodeId>,
     /// The iteration that node ran in, when it is a loop's body node or
     /// decision; `None` otherwise.
     pub iteration: Option<usize>,
-    /// The worker that waited: `cpu<i>` or `stream<s>`.
+    /// What waited: the CPU worker `cpu<i>`, or the lane `gpu<w>.<l>` its
+    /// GPU worker synced.
     pub worker: String,
     /// What it waited for: the GPU predecessor whose event the CPU node
-    /// waited on, or the last node the exiting stream worker ran.
+    /// waited on, or the last node the exiting GPU worker ran on the lane.
     pub waited_for: NodeId,
     /// Wall time of the wait.
     #[serde(rename = "host_ns", with = "nanos")]
@@ -101,7 +103,7 @@ pub struct ArenaSize {
 ///   "error": null | {"kind": "Numerical", "message": "...", "context": ["name@worker", ...]},
 ///   "profile": "debug" | "release",
 ///   "wall_ns": 1234,
-///   "tasks": [{"node": 0, "name": "S", "worker": "stream0", "dims": {"n": 24},
+///   "tasks": [{"node": 0, "name": "S", "worker": "gpu0.0", "dims": {"n": 24},
 ///              "iteration": null | 0, "host_ns": 10, "device_ns": 20 | null}, ...],
 ///   "syncs": [{"node": 3 | null, "iteration": null | 0, "worker": "cpu0",
 ///              "waited_for": 2, "host_ns": 5}, ...],
@@ -124,8 +126,8 @@ pub struct Record {
     /// (`cfg!(debug_assertions)`): a debug build's times are not compared
     /// with a release build's.
     pub profile: String,
-    /// Wall time from the workers' start to their join, every stream
-    /// synced: what the device times of one stream sum to at most.
+    /// Wall time from the workers' start to their join, every lane
+    /// synced: what the device times of one lane sum to at most.
     #[serde(rename = "wall_ns", with = "nanos")]
     pub wall: Duration,
     /// One entry per node that ran, by rank and then iteration, failed
@@ -134,9 +136,10 @@ pub struct Record {
     pub tasks: Vec<TaskTime>,
     /// Every sync point of the run: each CPU node's wait on each GPU
     /// predecessor, by the node's rank, its iteration and then the
-    /// predecessor's rank, then each stream worker's sync as it exits, by
-    /// the node it waited for. A stream worker that ran nothing waited for
-    /// nothing, and has none.
+    /// predecessor's rank, then each GPU worker's sync of each lane as it
+    /// exits, by the node it waited for. A lane that ran nothing is not
+    /// synced, and has none. An edge between two lanes is a wait on the
+    /// device, and has none either.
     pub syncs: Vec<SyncPoint>,
     /// Each loop that began, by its decision node ([`Plan::add_loop`]): the
     /// number of iterations its body began. For a loop that stopped, its
@@ -270,7 +273,7 @@ mod status {
     }
 }
 
-/// Run every node of `plan` on `n_cpu` CPU workers and `backend`'s stream
+/// Run every node of `plan` on `n_cpu` CPU workers and `backend`'s GPU
 /// workers, and join them all before returning; see
 /// [`thread_pool`](super) for what that promises. Every node is timed
 /// whatever the outcome, so a failed run still returns the times of the
@@ -279,8 +282,8 @@ mod status {
 /// # Errors
 /// In [`Record::result`]:
 /// [`InvalidConfig`](fb_core_error_handling::ErrorKind::InvalidConfig)
-/// before anything runs, if the plan places a node on a stream worker
-/// `backend` lacks, or has CPU nodes and `n_cpu` is zero. Otherwise the
+/// before anything runs, if the plan places a node on a lane `backend`
+/// lacks, or has CPU nodes and `n_cpu` is zero. Otherwise the
 /// failure lowest in rank, with `name@worker` and any other failures
 /// (`also: ...`) on its context: a node's own error, or
 /// [`MaxIterationsExceeded`](fb_core_error_handling::ErrorKind::MaxIterationsExceeded)
@@ -288,7 +291,7 @@ mod status {
 ///
 /// Both are borrowed exclusively, so a plan and a backend are each in at
 /// most one run at a time: a backend's events are its plan's and its
-/// streams and handles are its stream workers', and a plan's nodes reach
+/// streams and handles are its lanes', and a plan's nodes reach
 /// whatever its closures captured, an instance's blocks among them
 /// ([`thread_pool`](super), "One run at a time"). Inside the run the
 /// workers share both by reference.
@@ -297,11 +300,14 @@ mod status {
 /// If a node panics, after every worker has stopped; see "Failure".
 pub fn run<B: Backend>(plan: &mut Plan<'_, B::Stream>, backend: &mut B, n_cpu: usize) -> Record {
     let (plan, backend) = (&*plan, &*backend);
-    let n_streams = backend.n_streams();
-    if plan.n_streams() > n_streams {
+    let n_gpu = backend.n_workers();
+    if let Some(lane) = plan.nodes.iter().find_map(|n| match n.placement {
+        Placement::Stream(at) if !backend.has_lane(at) => Some(at),
+        _ => None,
+    }) {
         return Record::new(Err(Error::config(format!(
-            "the plan places a node on stream worker {} of {n_streams}",
-            plan.n_streams() - 1
+            "the plan places a node on lane {lane}, which the backend's \
+             {n_gpu} GPU workers lack"
         ))));
     }
     if n_cpu == 0 && plan.nodes.iter().any(|n| n.placement == Placement::Cpu) {
@@ -313,23 +319,23 @@ pub fn run<B: Backend>(plan: &mut Plan<'_, B::Stream>, backend: &mut B, n_cpu: u
         return Record::new(Ok(()));
     }
     debug!(
-        "run: {} nodes on {n_cpu} CPU and {n_streams} stream workers",
+        "run: {} nodes on {n_cpu} CPU and {n_gpu} GPU workers",
         plan.len()
     );
-    let shared = Shared::new(plan, n_streams);
+    let shared = Shared::new(plan, n_gpu);
     let backend = &RunBackend(backend);
     let start = Instant::now();
     thread::scope(|scope| {
         let shared = &shared;
-        let mut workers = Vec::with_capacity(n_cpu + n_streams);
+        let mut workers = Vec::with_capacity(n_cpu + n_gpu);
         for i in 0..n_cpu {
             workers.push(spawn(scope, format!("cpu{i}"), move |name| {
                 cpu_worker(plan, &**backend, shared, name)
             }));
         }
-        for lane in 0..n_streams {
-            workers.push(spawn(scope, format!("stream{lane}"), move |name| {
-                stream_worker(plan, &**backend, shared, name, lane)
+        for worker in 0..n_gpu {
+            workers.push(spawn(scope, format!("gpu{worker}"), move |_| {
+                gpu_worker(plan, &**backend, shared, worker)
             }));
         }
         // Joined here rather than by the scope, so a node's panic is
@@ -411,7 +417,7 @@ struct RunBackend<'a, B>(&'a B);
 // API is thread-safe for every call made here through a shared reference
 // (record, wait, synchronize, elapsed time), on events that are this plan's
 // and no other run's. A library handle is called through only by the nodes
-// of its own stream worker, one node at a time on one thread, and cuBLAS,
+// of its own lane, one node at a time on its GPU worker's thread, and cuBLAS,
 // hipBLAS, cuSOLVER and hipSOLVER allow a handle to be used from any thread
 // one call at a time; a `DeviceStream` is not `Sync`, so a node cannot hand
 // its stream or handles to another thread. Every handle and every `Rc` a
@@ -448,7 +454,8 @@ enum Mark {
 #[derive(Clone, Copy)]
 enum Queue {
     Cpu,
-    Lane(usize),
+    /// A GPU worker's, every lane of it in one rank order.
+    Gpu(usize),
 }
 
 struct State {
@@ -456,7 +463,7 @@ struct State {
     waiting: Vec<usize>,
     mark: Vec<Mark>,
     cpu_ready: BinaryHeap<Reverse<usize>>,
-    lane_ready: Vec<BinaryHeap<Reverse<usize>>>,
+    gpu_ready: Vec<BinaryHeap<Reverse<usize>>>,
     /// Nodes neither finished nor skipped.
     remaining: usize,
     /// Each failure with the rank it is reported at.
@@ -480,17 +487,17 @@ struct State {
 struct Shared {
     state: Mutex<State>,
     cpu: Condvar,
-    lanes: Vec<Condvar>,
+    gpus: Vec<Condvar>,
 }
 
 impl Shared {
-    fn new<S>(plan: &Plan<'_, S>, n_streams: usize) -> Self {
+    fn new<S>(plan: &Plan<'_, S>, n_gpu: usize) -> Self {
         let n = plan.len();
         let mut state = State {
             waiting: plan.nodes.iter().map(|node| node.preds.len()).collect(),
             mark: vec![Mark::Pending; n],
             cpu_ready: BinaryHeap::new(),
-            lane_ready: (0..n_streams).map(|_| BinaryHeap::new()).collect(),
+            gpu_ready: (0..n_gpu).map(|_| BinaryHeap::new()).collect(),
             remaining: n,
             failures: Vec::new(),
             tasks: Vec::with_capacity(n),
@@ -508,7 +515,7 @@ impl Shared {
         Shared {
             state: Mutex::new(state),
             cpu: Condvar::new(),
-            lanes: (0..n_streams).map(|_| Condvar::new()).collect(),
+            gpus: (0..n_gpu).map(|_| Condvar::new()).collect(),
         }
     }
 
@@ -522,13 +529,13 @@ impl Shared {
     fn condvar(&self, queue: Queue) -> &Condvar {
         match queue {
             Queue::Cpu => &self.cpu,
-            Queue::Lane(l) => &self.lanes[l],
+            Queue::Gpu(w) => &self.gpus[w],
         }
     }
 
     fn wake_all(&self) {
         self.cpu.notify_all();
-        self.lanes.iter().for_each(Condvar::notify_all);
+        self.gpus.iter().for_each(Condvar::notify_all);
     }
 
     /// The next node for `queue` and its iteration, waiting for one; `None`
@@ -541,7 +548,7 @@ impl Shared {
             }
             let ready = match queue {
                 Queue::Cpu => &mut state.cpu_ready,
-                Queue::Lane(l) => &mut state.lane_ready[l],
+                Queue::Gpu(w) => &mut state.gpu_ready[w],
             };
             if let Some(Reverse(id)) = ready.pop() {
                 // Fixed until the node finishes: its loop's decision is after it.
@@ -655,7 +662,7 @@ impl State {
     fn queue(&mut self, placement: Placement) -> &mut BinaryHeap<Reverse<usize>> {
         match placement {
             Placement::Cpu => &mut self.cpu_ready,
-            Placement::Stream(l) => &mut self.lane_ready[l],
+            Placement::Stream(at) => &mut self.gpu_ready[at.worker],
         }
     }
 }
@@ -664,7 +671,7 @@ impl From<Placement> for Queue {
     fn from(placement: Placement) -> Self {
         match placement {
             Placement::Cpu => Queue::Cpu,
-            Placement::Stream(l) => Queue::Lane(l),
+            Placement::Stream(at) => Queue::Gpu(at.worker),
         }
     }
 }
@@ -690,42 +697,48 @@ fn cpu_worker<B: Backend>(plan: &Plan<'_, B::Stream>, backend: &B, shared: &Shar
     }
 }
 
-fn stream_worker<B: Backend>(
-    plan: &Plan<'_, B::Stream>,
-    backend: &B,
-    shared: &Shared,
-    name: &str,
-    lane: usize,
-) {
+/// GPU worker `worker`: its device current for the whole run, it enqueues
+/// its ready nodes in rank order across all its lanes, each on its lane's
+/// stream, and never waits on the device until it exits.
+fn gpu_worker<B: Backend>(plan: &Plan<'_, B::Stream>, backend: &B, shared: &Shared, worker: usize) {
     let _abort = AbortOnUnwind(shared);
-    let _binding = backend.bind(lane);
-    let mut last = None;
-    while let Some((id, iteration)) = shared.next(plan, Queue::Lane(lane)) {
-        let ran = execute(plan, backend, (id, iteration), name, Some(lane));
+    let _binding = backend.bind(worker);
+    // Per lane that ran a node, the last one.
+    let mut last: BTreeMap<LaneId, usize> = BTreeMap::new();
+    while let Some((id, iteration)) = shared.next(plan, Queue::Gpu(worker)) {
+        let Placement::Stream(lane) = plan.nodes[id].placement else {
+            unreachable!("a GPU worker's queue holds its lanes' nodes")
+        };
+        let ran = execute(
+            plan,
+            backend,
+            (id, iteration),
+            &lane.to_string(),
+            Some(lane),
+        );
         shared.finish(plan, id, ran);
-        last = Some(id);
+        last.insert(lane, id);
     }
-    // The end of the run is a sync point: nothing is left enqueued, and a
-    // fault surfacing here is the stream's, reported against its last node.
-    let start = Instant::now();
-    let synced = backend.sync(lane);
-    let host = start.elapsed();
-    if let Some(id) = last {
-        shared.lock().syncs.push(SyncPoint {
+    // The end of the run is a sync point on each lane: nothing is left
+    // enqueued, and a fault surfacing here is the lane's, reported against
+    // its last node.
+    for (lane, id) in last {
+        let name = lane.to_string();
+        let start = Instant::now();
+        let synced = backend.sync(lane);
+        let host = start.elapsed();
+        let mut state = shared.lock();
+        state.syncs.push(SyncPoint {
             node: None,
             iteration: None,
-            worker: name.to_string(),
+            worker: name.clone(),
             waited_for: NodeId(id),
             host,
         });
-    }
-    if let Err(error) = synced {
-        let rank = last.unwrap_or(usize::MAX);
-        let error = match last {
-            Some(id) => error.with_context(format!("sync after {}@{name}", plan.nodes[id].name)),
-            None => error.with_context(format!("sync@{name}")),
-        };
-        shared.lock().failures.push((rank, error));
+        if let Err(error) = synced {
+            let error = error.with_context(format!("sync after {}@{name}", plan.nodes[id].name));
+            state.failures.push((id, error));
+        }
     }
 }
 
@@ -755,7 +768,7 @@ fn execute<B: Backend>(
     backend: &B,
     (id, iteration): (usize, Option<usize>),
     worker: &str,
-    lane: Option<usize>,
+    lane: Option<LaneId>,
 ) -> Ran {
     let node = &plan.nodes[id];
     let _task = TaskScope::enter(&node.name, worker);
@@ -819,16 +832,16 @@ fn execute<B: Backend>(
                 host = start.elapsed();
                 result
             }
-            (Work::Task(run), Some(index)) => {
-                backend.begin(index, NodeId(id))?;
+            (Work::Task(run), Some(lane)) => {
+                backend.begin(lane, NodeId(id))?;
                 let start = Instant::now();
                 let result = run(Lane::Stream {
-                    index,
-                    stream: backend.stream(index),
+                    lane,
+                    stream: backend.stream(lane),
                 });
                 host = start.elapsed();
                 result?;
-                backend.record(index, NodeId(id))
+                backend.record(lane, NodeId(id))
             }
         }
     })();

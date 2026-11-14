@@ -346,20 +346,53 @@ fn random_order(n: usize, edges: &[(usize, usize)], mut seed: u64) -> Vec<usize>
     time
 }
 
+/// When each node runs on the device, `[start, end)`, enqueued in `order`
+/// by one GPU worker over `lanes`, node `v` on lane `lane[v]` for `dur[v]`:
+/// it starts once every predecessor in `edges` has ended (an event, on its
+/// lane or another's) and its lane has finished what was enqueued on it
+/// before (the stream's order).
+fn on_lanes(
+    order: &[usize],
+    edges: &[(usize, usize)],
+    lane: &[usize],
+    dur: &[usize],
+) -> Vec<(usize, usize)> {
+    let mut span = vec![(0, 0); order.len()];
+    let mut free = [0usize; 3];
+    for &v in order {
+        let ready = edges
+            .iter()
+            .filter(|&&(_, to)| to == v)
+            .map(|&(u, _)| span[u].1)
+            .max()
+            .unwrap_or(0);
+        let start = ready.max(free[lane[v]]);
+        span[v] = (start, start + dur[v]);
+        free[lane[v]] = span[v].1;
+    }
+    span
+}
+
 proptest! {
-    /// The handoffs are enough: in a plan with an edge from every output's
-    /// producer to its readers, plus some edges of its own, plus the
-    /// handoffs, any order the plan may run in keeps two rows that share
-    /// bytes apart in time. This is the property that makes packing
-    /// against the ranks safe when the run does not follow them. Also: a
-    /// handoff points forward in rank, so it can be added as a dependency
-    /// when the plan is built, and the peak is within the total.
+    /// The handoffs are enough, over any lanes: in a plan with an edge from
+    /// every output's producer to its readers, plus some edges of its own,
+    /// plus the handoffs, any order the plan may enqueue in, over one to
+    /// three lanes of one worker, each node a random time on the device,
+    /// keeps two rows that share bytes apart in time. Lanes run at once, so
+    /// a row's bytes are held from its first user's start to its last
+    /// user's end, and only the edges, each an event on the device, order
+    /// two lanes. This is the property that makes packing against the
+    /// ranks safe when the run does not follow them. Also: a handoff points
+    /// forward in rank, so it can be added as a dependency when the plan is
+    /// built, and the peak is within the total.
     #[test]
     fn handoffs_order_every_reuse(
         n in 2usize..12,
         drawn in prop::collection::vec((0usize..64, any::<u16>(), 0usize..1024, any::<bool>()), 0..24),
         extra in prop::collection::vec((0usize..64, 0usize..64), 0..16),
         seed in any::<u64>(),
+        n_lanes in 1usize..=3,
+        lanes in prop::collection::vec((0usize..3, 1usize..8), 12),
     ) {
         let mut b = TableBuilder::<Device>::new();
         let mut edges = Vec::new();
@@ -388,11 +421,17 @@ proptest! {
         edges.extend(extra.iter().map(|&(u, v)| (u % n, v % n)).filter(|(u, v)| u < v));
         edges.extend_from_slice(&handoffs);
         let time = random_order(n, &edges, seed);
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by_key(|&v| time[v]);
+        let lane: Vec<usize> = lanes.iter().map(|&(l, _)| l % n_lanes).collect();
+        let dur: Vec<usize> = lanes.iter().map(|&(_, d)| d).collect();
+        let span = on_lanes(&order, &edges, &lane, &dur);
 
         let interval = |i: usize| {
             let users = &table.rows[i].users;
-            let ts = users.iter().map(|&(p, _)| time[p]);
-            (ts.clone().min().unwrap(), ts.max().unwrap())
+            let first = users.iter().map(|&(p, _)| span[p].0).min().unwrap();
+            let last = users.iter().map(|&(p, _)| span[p].1).max().unwrap();
+            (first, last)
         };
         for i in 0..table.rows.len() {
             for j in (i + 1)..table.rows.len() {
@@ -403,9 +442,9 @@ proptest! {
                 }
                 let ((a0, a1), (c0, c1)) = (interval(i), interval(j));
                 prop_assert!(
-                    a1 < c0 || c1 < a0,
-                    "rows {} and {} share bytes and run at times {}..{} and {}..{}",
-                    i, j, a0, a1, c0, c1
+                    a1 <= c0 || c1 <= a0,
+                    "rows {} and {} share bytes and are held at times {}..{} and {}..{} on lanes {:?}",
+                    i, j, a0, a1, c0, c1, lane
                 );
             }
         }

@@ -31,7 +31,7 @@ pub(super) enum Owner {
     Task,
     /// A node's output: written by its producer, read by later nodes.
     Edge,
-    /// The stream worker's: live for the whole plan.
+    /// The GPU worker's, every lane of it: live for the whole plan.
     Worker,
 }
 
@@ -156,7 +156,7 @@ impl<K: Kind> TableBuilder<K> {
         self.push::<T>(name, Owner::Edge, len, vec![(pos, Access::Write)])
     }
 
-    /// A row the stream worker holds for the whole plan, such as a library
+    /// A row the GPU worker holds for the whole plan, such as a library
     /// handle's workspace or a solver's `info` flag. Any node may write it.
     #[must_use]
     pub fn worker<T: Element>(&mut self, name: &str, len: usize) -> RowId<K, T> {
@@ -530,11 +530,13 @@ impl<K: Kind> Table<K> {
     /// producer. Sorted, without repeats.
     ///
     /// The layout packs rows against the positions, but a plan runs a
-    /// ready node whatever its rank, so the positions alone do not order
-    /// two rows that share bytes. Every pair returned must therefore be an
-    /// edge of the plan, or implied by its edges: the previous owner of an
-    /// offset is a predecessor of the next (`docs/memory.md`,
-    /// "Lifetimes").
+    /// ready node whatever its rank, and the lanes of a worker run at once,
+    /// so the positions alone do not order two rows that share bytes. Every
+    /// pair returned must therefore be an edge of the plan, or implied by
+    /// its edges: the previous owner of an offset is a predecessor of the
+    /// next (`docs/memory.md`, "Lifetimes"). Between two lanes that edge is
+    /// an event on the device, so every reuse across lanes serializes them:
+    /// the table trades concurrency for bytes, always.
     ///
     /// Two rows of one loop's body share bytes within an iteration, and the
     /// pair orders them there; the next iteration starts after the loop's

@@ -1,5 +1,5 @@
 //! The planner on a real card (device 0): tasks declared once, planned,
-//! instantiated and run on a stream worker and the CPU pool.
+//! instantiated and run on a GPU worker's lanes and the CPU pool.
 //!
 //! A binary of its own, its cases taking turns: the checks that a run
 //! allocates nothing read `fb_core_arena::allocations`, this process's
@@ -24,9 +24,11 @@ use fb_core_arena::{
 };
 use fb_core_error_handling::{Result, Status};
 use fb_core_planner::{CpuTask, Dag, Decision, GpuTask};
-use fb_core_thread_pool::{DeviceStream, Placement};
+use fb_core_thread_pool::{DeviceStream, LaneId, NodeId, Placement};
 use fb_core_wwr::blas::gemm;
 use fb_core_wwr::common::ScopedDeviceIndex;
+use fb_core_wwr::copy;
+use fb_core_wwr::device_slice::split_at_mut;
 use fb_core_wwr::memset;
 use wwr_sys::wwr_blas_operation::WWR_BLAS_OP_N as OP_N;
 use wwr_sys::wwr_status;
@@ -212,6 +214,189 @@ fn a_round_trip_through_the_planner() {
     );
 }
 
+/// The elements of each half of a [`delay`] row, and the copies between
+/// them: 32 copies of 32 MiB, milliseconds of device time on any card, so
+/// the work enqueued after it on its lane is still pending when the other
+/// lane's next node is enqueued.
+const DELAY: usize = 4 << 20;
+const DELAY_HOPS: usize = 32;
+
+/// Copies between the two halves of the worker's delay row, `DELAY_HOPS`
+/// times, on `stream`: device time and nothing else, before the work that
+/// follows it on its lane.
+fn delay(row: RowId<Device, f64>, d: &Bufs<'_, Device>, stream: &DeviceStream) -> Status {
+    let mut row = d.take_mut(row);
+    let (mut a, mut b) = split_at_mut(&mut row, DELAY);
+    for hop in 0..DELAY_HOPS {
+        if hop % 2 == 0 {
+            copy::d2d(&mut b, &a, stream)?;
+        } else {
+            copy::d2d(&mut a, &b, stream)?;
+        }
+    }
+    Ok(())
+}
+
+/// GPU: a delay, then a pinned row copied up into a device row. The delay
+/// row is the worker's, so no row of the plan takes its bytes.
+struct SlowUpload(RowId<Device, f64>, RowId<Pinned, f64>);
+
+impl GpuTask for SlowUpload {
+    type Rows = RowId<Device, f64>;
+
+    fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
+        h.read(self.1);
+        d.output("x", N)
+    }
+
+    fn run(
+        &self,
+        x: &Self::Rows,
+        d: &Bufs<'_, Device>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
+    ) -> Status {
+        delay(self.0, d, stream)?;
+        memcpy_p2d(&mut d.take_mut(*x), h, self.1, stream)
+    }
+}
+
+/// GPU: a delay, then a device row another lane wrote copied down.
+struct SlowDownload(RowId<Device, f64>, RowId<Device, f64>);
+
+impl GpuTask for SlowDownload {
+    type Rows = RowId<Pinned, f64>;
+
+    fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
+        d.read(self.1);
+        h.output("down", N)
+    }
+
+    fn run(
+        &self,
+        down: &Self::Rows,
+        d: &Bufs<'_, Device>,
+        h: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
+    ) -> Status {
+        delay(self.0, d, stream)?;
+        memcpy_d2p(h, *down, d.get(self.1), stream)
+    }
+}
+
+/// GPU: zeroes a row of its own, which takes the bytes of the row the
+/// download reads.
+struct Overwrite;
+
+impl GpuTask for Overwrite {
+    type Rows = RowId<Device, f64>;
+
+    fn layout(&self, d: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
+        d.output("y", N)
+    }
+
+    fn run(
+        &self,
+        y: &Self::Rows,
+        d: &Bufs<'_, Device>,
+        _: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
+    ) -> Status {
+        memset::zero(&mut d.take_mut(*y), stream)
+    }
+}
+
+/// Two lanes of one worker sharing a row, twice, with no host wait between
+/// them: lane 0 uploads `x` after a delay, lane 1 reads `x` in place after
+/// a delay of its own and copies it down, and lane 0 then zeroes `y`, which
+/// takes `x`'s bytes. Only the read orders the download after the upload,
+/// an event on the device, and only the handoff orders the zero after the
+/// download, an event from lane 1 back to lane 0; the CPU check reads what
+/// came down.
+///
+/// The delays make either fault show: without the read's wait, lane 1's
+/// copy runs while lane 0 is still in its delay, and brings down what `x`
+/// held before the upload; without the handoff, lane 0 zeroes `x` while
+/// lane 1 is still in its delay, and lane 1 brings down zeros. `x` holds
+/// zeros at the start of the second run, the first run's `y`, so the second
+/// run checks the read again. The record holds no sync point for either
+/// edge between the lanes: its only host waits are the check's on the
+/// download and each lane's exit.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn two_lanes_share_a_row_with_no_host_wait() {
+    let _turn = TURN.lock().unwrap_or_else(|p| p.into_inner());
+    let lane = |lane| LaneId { worker: 0, lane };
+    let mut dag = Dag::new();
+    // The two delays are ordered by the read, so they may share a row.
+    let wait = dag.device_worker_row(0, "delay", 2 * DELAY);
+    let up = dag.add_cpu("fill", 0, Fill);
+    let x = dag.add_gpu("upload", lane(0), SlowUpload(wait, up));
+    let down = dag.add_gpu("download", lane(1), SlowDownload(wait, x));
+    let y = dag.add_gpu("overwrite", lane(0), Overwrite);
+    dag.add_cpu("check", 0, Check(down));
+    let planned = dag.plan();
+    assert_eq!(planned.n_lanes(0), 2);
+    let table = planned.device_table(0);
+    assert_eq!(table.offset(y), table.offset(x), "y takes x's bytes");
+    // The download's pinned row takes the fill's bytes: a handoff from the
+    // CPU, beside the read.
+    assert_eq!(
+        planned.predecessors(2),
+        &[0, 1],
+        "the read, lane 0 to lane 1"
+    );
+    assert!(
+        planned.predecessors(3).contains(&2),
+        "the handoff, lane 1 to lane 0: {:?}",
+        planned.predecessors(3)
+    );
+
+    let mut instance = planned.instantiate(&[0]);
+    let mut backend = instance.backend();
+    for run in 0..2 {
+        let record = instance.run(&mut backend, 1);
+        record.result.as_ref().unwrap();
+        let workers: Vec<_> = record
+            .tasks
+            .iter()
+            .map(|t| (t.name.as_str(), t.worker.as_str()))
+            .collect();
+        assert_eq!(
+            workers,
+            [
+                ("fill", "cpu0"),
+                ("upload", "gpu0.0"),
+                ("download", "gpu0.1"),
+                ("overwrite", "gpu0.0"),
+                ("check", "cpu0"),
+            ],
+            "run {run}"
+        );
+        let syncs: Vec<_> = record
+            .syncs
+            .iter()
+            .map(|s| {
+                (
+                    s.node.map(NodeId::index),
+                    s.worker.as_str(),
+                    s.waited_for.index(),
+                )
+            })
+            .collect();
+        // Ranks: the download 2, the overwrite 3, the check 4.
+        assert_eq!(
+            syncs,
+            [
+                (Some(4), "cpu0", 2),
+                (None, "gpu0.1", 2),
+                (None, "gpu0.0", 3)
+            ],
+            "run {run}: no host wait between the lanes"
+        );
+    }
+}
+
 /// The length of a [`Stage`]'s row: big enough that its copy is real device
 /// time.
 const BIG: usize = 4 << 20;
@@ -272,7 +457,7 @@ fn every_gpu_task_has_a_stream_scope() {
         names,
         expected
             .iter()
-            .map(|n| (n.as_str(), "stream0"))
+            .map(|n| (n.as_str(), "gpu0.0"))
             .collect::<Vec<_>>()
     );
     let device: Vec<Duration> = record
