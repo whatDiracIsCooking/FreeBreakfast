@@ -40,10 +40,16 @@ pub struct TaskTime {
     /// Its dimensions by name, as [`Plan::set_dims`] gave them; empty when
     /// none were.
     pub dims: BTreeMap<String, usize>,
-    /// For a loop's body node or decision, the iteration it ran in, from 0:
-    /// such a node has one entry per iteration, a counted loop's body node
-    /// one per trip. `None` for a node outside every loop.
+    /// For a loop's body node or decision, the iteration of its innermost
+    /// loop it ran in, from 0: such a node has one entry per iteration, a
+    /// counted loop's body node one per trip. `None` for a node outside
+    /// every loop.
     pub iteration: Option<usize>,
+    /// For a body node of a counted loop inside a decision loop, the
+    /// decision loop's iteration it ran in, from 0, beside its trip in
+    /// `iteration`: such a node has one entry per (iteration, trip).
+    /// `None` for any other node.
+    pub outer: Option<usize>,
     /// Wall time of its callable alone, not the waits before it: a CPU
     /// node's compute, a GPU node's enqueueing.
     #[serde(rename = "host_ns", with = "nanos")]
@@ -65,8 +71,12 @@ pub struct SyncPoint {
     /// worker's sync of one of its lanes as it exits.
     pub node: Option<NodeId>,
     /// The iteration that node ran in, when it is a loop's body node or
-    /// decision; `None` otherwise.
+    /// decision, as [`TaskTime::iteration`]; `None` otherwise.
     pub iteration: Option<usize>,
+    /// The decision loop's iteration that node ran in, when it is a body
+    /// node of a counted loop inside one, as [`TaskTime::outer`]; `None`
+    /// otherwise.
+    pub outer: Option<usize>,
     /// What waited: the CPU worker `cpu<i>`, or the lane `gpu<w>.<l>` its
     /// GPU worker synced.
     pub worker: String,
@@ -97,7 +107,9 @@ pub struct ArenaSize {
 ///
 /// [`Record::to_json`] is the record as the `timing.json` text, one JSON
 /// object; deserializing that text gives the record back. Times are integer
-/// nanoseconds, in fields named `*_ns`; nodes are their ranks.
+/// nanoseconds, in fields named `*_ns`; nodes are their ranks. A loop's
+/// node carries the iteration of its innermost loop, and a counted loop's
+/// body node inside a decision loop the decision loop's too, as `outer`.
 ///
 /// ```text
 /// {
@@ -105,9 +117,10 @@ pub struct ArenaSize {
 ///   "profile": "debug" | "release",
 ///   "wall_ns": 1234,
 ///   "tasks": [{"node": 0, "name": "S", "worker": "gpu0.0", "dims": {"n": 24},
-///              "iteration": null | 0, "host_ns": 10, "device_ns": 20 | null}, ...],
-///   "syncs": [{"node": 3 | null, "iteration": null | 0, "worker": "cpu0",
-///              "waited_for": 2, "host_ns": 5}, ...],
+///              "iteration": null | 0, "outer": null | 0,
+///              "host_ns": 10, "device_ns": 20 | null}, ...],
+///   "syncs": [{"node": 3 | null, "iteration": null | 0, "outer": null | 0,
+///              "worker": "cpu0", "waited_for": 2, "host_ns": 5}, ...],
 ///   "iterations": {"7": 12, ...},
 ///   "arena": [{"worker": 0, "kind": "device", "bytes": 4608}, ...]
 /// }
@@ -131,13 +144,14 @@ pub struct Record {
     /// synced: what the device times of one lane sum to at most.
     #[serde(rename = "wall_ns", with = "nanos")]
     pub wall: Duration,
-    /// One entry per node that ran, by rank and then iteration, failed
-    /// nodes included: a loop's body nodes and decision have one per
-    /// iteration they ran in. A skipped node has none.
+    /// One entry per node that ran, by rank, then outer iteration, then
+    /// iteration, failed nodes included: a loop's body nodes and decision
+    /// have one per iteration they ran in, a counted loop's body node in a
+    /// decision loop one per iteration and trip. A skipped node has none.
     pub tasks: Vec<TaskTime>,
     /// Every sync point of the run: each CPU node's wait on each GPU
-    /// predecessor, by the node's rank, its iteration and then the
-    /// predecessor's rank, then each GPU worker's sync of each lane as it
+    /// predecessor, by the node's rank, its outer iteration, its iteration
+    /// and then the predecessor's rank, then each GPU worker's sync of each lane as it
     /// exits, by the node it waited for. A lane that ran nothing is not
     /// synced, and has none. An edge between two lanes is a wait on the
     /// device, and has none either.
@@ -365,10 +379,18 @@ pub fn run<B: Backend>(plan: &mut Plan<'_, B::Stream>, backend: &mut B, n_cpu: u
     // sync of its own. A read that fails after another failure is an echo
     // of it (a sticky fault reads back as itself), so only a run that
     // otherwise succeeded reports one, and only the first.
-    tasks.sort_by_key(|t| (t.node, t.iteration));
-    for (id, iteration, trip) in scoped {
+    tasks.sort_by_key(|t| (t.node, t.outer, t.iteration));
+    for Scoped {
+        node: id,
+        iteration,
+        outer,
+        trip,
+    } in scoped
+    {
         let at = tasks
-            .binary_search_by_key(&(NodeId(id), iteration), |t| (t.node, t.iteration))
+            .binary_search_by_key(&(NodeId(id), outer, iteration), |t| {
+                (t.node, t.outer, t.iteration)
+            })
             .expect("a scoped node has an entry");
         match backend.elapsed(NodeId(id), trip) {
             Ok(device) => tasks[at].device = device,
@@ -389,7 +411,7 @@ pub fn run<B: Backend>(plan: &mut Plan<'_, B::Stream>, backend: &mut B, n_cpu: u
             Err(failures.fold(first, |e, other| e.with_context(format!("also: {other}"))))
         }
     };
-    syncs.sort_by_key(|s| (s.node.is_none(), s.node, s.iteration, s.waited_for));
+    syncs.sort_by_key(|s| (s.node.is_none(), s.node, s.outer, s.iteration, s.waited_for));
     let iterations = plan
         .loops
         .iter()
@@ -457,7 +479,8 @@ fn spawn<'scope, 'env>(
 /// node's after itself in the trip before; and the ring, each source of
 /// trip `k` of a counted body after each of its sinks in trip
 /// `k - depth`. A decision loop's body is a run of instances its decision
-/// readies again. Built once per run, before the workers start.
+/// readies again, a counted loop in it unrolled whole. Built once per run,
+/// before the workers start.
 struct Graph {
     /// Per instance, its node.
     node: Vec<usize>,
@@ -575,10 +598,10 @@ struct State {
     tasks: Vec<TaskTime>,
     /// Each sync point, in the order they ended.
     syncs: Vec<SyncPoint>,
-    /// The GPU nodes whose stream scope closed, those that succeeded, each
-    /// with its iteration and trip, and not yet read: a decision loop's
-    /// are read by its decision before the body is replayed.
-    scoped: Vec<(usize, Option<usize>, usize)>,
+    /// The GPU nodes whose stream scope closed, those that succeeded, and
+    /// not yet read: a decision loop's are read by its decision before the
+    /// body is replayed.
+    scoped: Vec<Scoped>,
     /// Per loop, the index of the iteration a decision loop's body is in.
     iteration: Vec<usize>,
     /// Per loop, the iterations a decision loop's body began.
@@ -594,12 +617,24 @@ struct Shared {
 }
 
 /// An instance a worker took to run: the instance, its node, the
-/// iteration it runs in (`None` outside every loop) and its trip.
+/// iteration of its innermost loop it runs in (`None` outside every loop),
+/// the decision loop's iteration when that loop is a counted one inside a
+/// decision loop, and its trip.
 #[derive(Clone, Copy)]
 struct Job {
     instance: usize,
     node: usize,
     iteration: Option<usize>,
+    outer: Option<usize>,
+    trip: usize,
+}
+
+/// A GPU node's closed stream scope, not yet read: the node, its record
+/// entry's indices, and the trip whose event pair holds it.
+struct Scoped {
+    node: usize,
+    iteration: Option<usize>,
+    outer: Option<usize>,
     trip: usize,
 }
 
@@ -666,20 +701,24 @@ impl Shared {
             };
             if let Some(Reverse(instance)) = ready.pop() {
                 let (node, trip) = (graph.node[instance], graph.trip[instance]);
-                let iteration = plan.nodes[node].in_loop.map(|l| {
-                    match plan.loops[l].kind {
-                        // Fixed until the node finishes: its decision is after it.
-                        LoopKind::Decide { .. } => {
-                            state.began[l] = state.iteration[l] + 1;
-                            state.iteration[l]
-                        }
-                        LoopKind::Counted { .. } => trip,
-                    }
-                });
+                // A decision loop's index is fixed until the node finishes:
+                // its decision is after it.
+                let mut began = |l: usize| {
+                    state.began[l] = state.iteration[l] + 1;
+                    state.iteration[l]
+                };
+                let (iteration, outer) = match plan.nodes[node].in_loop {
+                    None => (None, None),
+                    Some(l) => match plan.loops[l].kind {
+                        LoopKind::Decide { .. } => (Some(began(l)), None),
+                        LoopKind::Counted { .. } => (Some(trip), plan.loops[l].parent.map(began)),
+                    },
+                };
                 return Some(Job {
                     instance,
                     node,
                     iteration,
+                    outer,
                     trip,
                 });
             }
@@ -705,6 +744,7 @@ impl Shared {
             instance,
             node: id,
             iteration,
+            outer,
             trip,
         } = job;
         let mut state = self.lock();
@@ -712,22 +752,33 @@ impl Shared {
         state.mark[instance] = Mark::Done;
         state.remaining -= 1;
         if result.is_ok() && matches!(plan.nodes[id].placement, Placement::Stream(_)) {
-            state.scoped.push((id, iteration, trip));
+            state.scoped.push(Scoped {
+                node: id,
+                iteration,
+                outer,
+                trip,
+            });
         }
         state.tasks.push(time);
         if let Work::Decide(l, _) = plan.nodes[id].work
             && result.is_ok()
         {
-            // The decision read every body scope of this iteration.
+            // The decision read every body scope of this iteration, each
+            // trip's of a counted loop in the body.
             let body = &plan.loops[l].body;
-            state.scoped.retain(|(n, _, _)| !body.contains(n));
-            let iteration = Some(state.iteration[l]);
-            for (node, device) in scopes {
+            state.scoped.retain(|s| !body.contains(&s.node));
+            let k = Some(state.iteration[l]);
+            for (node, trip, device) in scopes {
+                let (iteration, outer) = if plan.nodes[node].in_loop == Some(l) {
+                    (k, None)
+                } else {
+                    (Some(trip), k)
+                };
                 let task = state
                     .tasks
                     .iter_mut()
                     .rev()
-                    .find(|t| t.node.0 == node && t.iteration == iteration)
+                    .find(|t| t.node.0 == node && t.iteration == iteration && t.outer == outer)
                     .expect("a scoped node has an entry");
                 task.device = Some(device);
             }
@@ -740,8 +791,8 @@ impl Shared {
                 let lp = &plan.loops[l];
                 state.iteration[l] += 1;
                 debug!("{}: iteration {}", plan.nodes[id].name, state.iteration[l]);
-                // A decision loop's body holds no counted loop, so its
-                // instances are a run ending at the decision's.
+                // Its instances are a run ending at the decision's, a
+                // counted loop in the body unrolled whole within it.
                 let start = graph.first[lp.body.start];
                 state.remaining += instance + 1 - start;
                 for i in start..=instance {
@@ -865,6 +916,7 @@ fn gpu_worker<B: Backend>(
         state.syncs.push(SyncPoint {
             node: None,
             iteration: None,
+            outer: None,
             worker: name.clone(),
             waited_for: NodeId(id),
             host,
@@ -887,8 +939,8 @@ struct Ran {
     /// A decision that said `Continue` within its bound.
     replay: bool,
     /// From a decision: the device time of each GPU body node of its
-    /// iteration, read once the whole body had completed.
-    scopes: Vec<(usize, Duration)>,
+    /// iteration, in each trip, read once the whole body had completed.
+    scopes: Vec<(usize, usize, Duration)>,
 }
 
 /// Wait for the instance's GPU predecessors as its edges need, and run it
@@ -908,6 +960,7 @@ fn execute<B: Backend>(
         instance,
         node: id,
         iteration,
+        outer,
         trip,
     } = job;
     let node = &plan.nodes[id];
@@ -930,6 +983,7 @@ fn execute<B: Backend>(
                     syncs.push(SyncPoint {
                         node: Some(NodeId(id)),
                         iteration,
+                        outer,
                         worker: worker.to_string(),
                         waited_for: NodeId(p),
                         host: start.elapsed(),
@@ -950,10 +1004,12 @@ fn execute<B: Backend>(
                     if plan.nodes[n].placement == Placement::Cpu {
                         continue;
                     }
-                    let read = backend.elapsed(NodeId(n), 0).map_err(|e| {
-                        e.with_context(format!("stream scope of {}", plan.nodes[n].name))
-                    })?;
-                    scopes.extend(read.map(|device| (n, device)));
+                    for trip in 0..plan.trips(&plan.nodes[n]) {
+                        let read = backend.elapsed(NodeId(n), trip).map_err(|e| {
+                            e.with_context(format!("stream scope of {}", plan.nodes[n].name))
+                        })?;
+                        scopes.extend(read.map(|device| (n, trip, device)));
+                    }
                 }
                 let index = iteration.expect("a decision is in its loop");
                 let start = Instant::now();
@@ -1001,6 +1057,7 @@ fn execute<B: Backend>(
         worker: worker.to_string(),
         dims: node.dims.clone(),
         iteration,
+        outer,
         host,
         device: None,
     };

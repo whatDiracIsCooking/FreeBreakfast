@@ -231,15 +231,27 @@ impl<K: Kind> TableBuilder<K> {
     /// A loop of the plan over `positions`: its body's nodes and, last, its
     /// decision, the whole replayed once per iteration
     /// (`docs/memory.md`, "Nested plans"). A row all of whose users lie in
-    /// it is the body's: the body's rows are laid out as a table of their
-    /// own, in a region the rest of the table holds for the loop's whole
-    /// span, sized to the body's peak once. Every other row used in the
-    /// loop, or live across it, is live for the whole loop, so no body row
-    /// takes its bytes.
+    /// it, and in no loop it holds, is the body's: the body's rows are laid
+    /// out as a table of their own, in a region the rest of the table holds
+    /// for the loop's whole span, sized to the body's peak once. Every other
+    /// row used in the loop, or live across it, is live for the whole loop,
+    /// so no body row takes its bytes.
+    ///
+    /// Its body may hold counted loops, declared before it: each one's
+    /// region is a row of this body's table, live over the counted loop's
+    /// span, and the rows of this body live across it are live over the
+    /// whole of it.
     #[debug_requires(positions.start() <= positions.end(), "a loop has a position")]
     #[debug_requires(
-        self.loops.last().is_none_or(|l| l.positions.end() < positions.start()),
-        "loops are added in plan order, and none holds another"
+        self.loops.iter().all(|l| l.positions.end() < positions.start() || !l.decides),
+        "a decision loop holds no decision loop"
+    )]
+    #[debug_requires(
+        self.loops.iter().all(|l| {
+            l.positions.end() < positions.start()
+                || (positions.start() <= l.positions.start() && l.positions.end() < positions.end())
+        }),
+        "loops are added as they close, each holding an earlier one in its body whole or not at all"
     )]
     pub fn add_loop(&mut self, positions: RangeInclusive<usize>) {
         self.loops.push(LoopDecl {
@@ -264,11 +276,15 @@ impl<K: Kind> TableBuilder<K> {
     /// read after the loop, is used by one body node alone, since two
     /// iterations in flight would otherwise reach its one copy in no
     /// order; [`TableBuilder::build`] holds that.
+    ///
+    /// It may lie in a decision loop's body, declared before that loop
+    /// ([`TableBuilder::add_loop`]): its region is then a row of that
+    /// body's table.
     #[debug_requires(positions.start() <= positions.end(), "a loop has a position")]
     #[debug_requires(depth > 0, "a counted loop has a copy")]
     #[debug_requires(
         self.loops.last().is_none_or(|l| l.positions.end() < positions.start()),
-        "loops are added in plan order, and none holds another"
+        "loops are added as they close, and a counted loop holds no loop"
     )]
     pub fn add_counted(&mut self, positions: RangeInclusive<usize>, depth: usize) {
         self.loops.push(LoopDecl {
@@ -290,8 +306,9 @@ impl<K: Kind> TableBuilder<K> {
 
     /// Lay the rows out: each loop's body rows in a table of their own, at
     /// offsets inside the loop's region (a counted loop's region that
-    /// table's copies), and the rest, the regions among them, with
-    /// [`assign`].
+    /// table's copies), a counted loop's region inside a decision loop's
+    /// laid out as a row of that loop's body, and the rest, the outermost
+    /// regions among them, with [`assign`].
     #[debug_requires(
         self.loops.iter().filter(|l| !l.decides).all(|l| self.rows.iter().all(|r| {
             let inside = r.users.iter().filter(|(p, _)| l.positions.contains(p)).count();
@@ -316,6 +333,27 @@ impl<K: Kind> TableBuilder<K> {
         "a carried row's writer is its last user in the loop"
     )]
     pub fn build(self) -> Table<K> {
+        // Each loop's parent, the decision loop whose body holds it, which
+        // was declared after it.
+        let parent: Vec<Option<usize>> = (0..self.loops.len())
+            .map(|i| {
+                let p = &self.loops[i].positions;
+                (i + 1..self.loops.len()).find(|&j| self.loops[j].positions.contains(p.start()))
+            })
+            .collect();
+        // Whether loop `a` is loop `b` or holds it.
+        let holds = |a: usize, b: usize| {
+            let mut at = Some(b);
+            while let Some(x) = at {
+                if x == a {
+                    return true;
+                }
+                at = parent[x];
+            }
+            false
+        };
+        // Each row's loop, the innermost holding every user: a child is
+        // declared before its parent, so the first found.
         let body: Vec<Option<usize>> = self
             .rows
             .iter()
@@ -327,27 +365,28 @@ impl<K: Kind> TableBuilder<K> {
                     .position(|l| r.users.iter().all(|(p, _)| l.positions.contains(p))),
             })
             .collect();
+        // A row's span extended over every loop it overlaps but its own and
+        // the loops holding that one.
         let lives: Vec<Life> = self
             .rows
             .iter()
             .zip(&body)
-            .map(|(r, b)| match (r.life(), b) {
-                (
-                    Life::Span {
-                        mut first,
-                        mut last,
-                    },
-                    None,
-                ) => {
-                    for l in self.loops.iter().map(|l| &l.positions) {
-                        if first <= *l.end() && *l.start() <= last {
+            .map(|(r, &b)| match r.life() {
+                Life::Span {
+                    mut first,
+                    mut last,
+                } => {
+                    for (i, l) in self.loops.iter().enumerate() {
+                        let mine = b.is_some_and(|b| holds(i, b));
+                        let l = &l.positions;
+                        if !mine && first <= *l.end() && *l.start() <= last {
                             first = first.min(*l.start());
                             last = last.max(*l.end());
                         }
                     }
                     Life::Span { first, last }
                 }
-                (life, _) => life,
+                life => life,
             })
             .collect();
         let as_row = |i: usize| Row {
@@ -355,17 +394,34 @@ impl<K: Kind> TableBuilder<K> {
             align: DEVICE_ALIGNMENT,
             life: lives[i],
         };
-        // Each body laid out alone, from offset 0 of its region, and a
-        // counted loop's repeated at a stride, the body's total aligned.
+        let span = |l: &LoopDecl| Life::Span {
+            first: *l.positions.start(),
+            last: *l.positions.end(),
+        };
+        // Each body laid out alone, from offset 0 of its region, a child's
+        // region one of its rows, and a counted loop's repeated at a
+        // stride, the body's total aligned. A child comes before its
+        // parent, so its region's bytes are known when the parent's body is
+        // laid out; the offsets are made absolute below.
         let mut offsets = vec![0; self.rows.len()];
-        let mut regions = Vec::with_capacity(self.loops.len());
+        let mut regions: Vec<Region> = Vec::with_capacity(self.loops.len());
         for (index, l) in self.loops.iter().enumerate() {
             let members: Vec<usize> = (0..self.rows.len())
                 .filter(|&i| body[i] == Some(index))
                 .collect();
-            let local = assign(&members.iter().map(|&i| as_row(i)).collect::<Vec<_>>());
+            let children: Vec<usize> = (0..index).filter(|&c| parent[c] == Some(index)).collect();
+            let mut rows: Vec<Row> = members.iter().map(|&i| as_row(i)).collect();
+            rows.extend(children.iter().map(|&c| Row {
+                bytes: regions[c].bytes,
+                align: DEVICE_ALIGNMENT,
+                life: span(&self.loops[c]),
+            }));
+            let local = assign(&rows);
             for (&i, &o) in members.iter().zip(&local.offsets) {
                 offsets[i] = o;
+            }
+            for (&c, &o) in children.iter().zip(&local.offsets[members.len()..]) {
+                regions[c].offset = o;
             }
             let stride = local.total.next_multiple_of(DEVICE_ALIGNMENT);
             regions.push(Region {
@@ -376,27 +432,34 @@ impl<K: Kind> TableBuilder<K> {
                 copies: l.copies,
                 stride,
                 decides: l.decides,
+                parent: parent[index],
             });
         }
-        // The rest, each region a row live for its loop's span.
-        let parent: Vec<usize> = (0..self.rows.len())
+        // The rest, each outermost region a row live for its loop's span.
+        let outside: Vec<usize> = (0..self.rows.len())
             .filter(|&i| body[i].is_none())
             .collect();
-        let mut rows: Vec<Row> = parent.iter().map(|&i| as_row(i)).collect();
-        rows.extend(regions.iter().map(|g| Row {
-            bytes: g.bytes,
+        let outermost: Vec<usize> = (0..regions.len())
+            .filter(|&g| parent[g].is_none())
+            .collect();
+        let mut rows: Vec<Row> = outside.iter().map(|&i| as_row(i)).collect();
+        rows.extend(outermost.iter().map(|&g| Row {
+            bytes: regions[g].bytes,
             align: DEVICE_ALIGNMENT,
-            life: Life::Span {
-                first: *g.positions.start(),
-                last: *g.positions.end(),
-            },
+            life: span(&self.loops[g]),
         }));
         let assignment = assign(&rows);
-        for (&i, &o) in parent.iter().zip(&assignment.offsets) {
+        for (&i, &o) in outside.iter().zip(&assignment.offsets) {
             offsets[i] = o;
         }
-        for (g, &o) in regions.iter_mut().zip(&assignment.offsets[parent.len()..]) {
-            g.offset = o;
+        for (&g, &o) in outermost.iter().zip(&assignment.offsets[outside.len()..]) {
+            regions[g].offset = o;
+        }
+        // A region's offset made absolute, a parent's first.
+        for g in (0..regions.len()).rev() {
+            if let Some(p) = parent[g] {
+                regions[g].offset += regions[p].offset;
+            }
         }
         for (i, b) in body.iter().enumerate() {
             if let Some(b) = *b {
@@ -416,7 +479,7 @@ impl<K: Kind> TableBuilder<K> {
     }
 
     /// Every write after a row's producer: the row, the writer's position,
-    /// and the loop the write is in, if any.
+    /// and the innermost loop the write is in, if any.
     fn carried(&self) -> impl Iterator<Item = (&RowInfo, usize, Option<&RangeInclusive<usize>>)> {
         self.rows.iter().flat_map(move |r| {
             r.users
@@ -424,6 +487,7 @@ impl<K: Kind> TableBuilder<K> {
                 .skip(1)
                 .filter(|&&(_, a)| a == Access::Write)
                 .map(move |&(w, _)| {
+                    // A child is declared before its parent.
                     let l = self
                         .loops
                         .iter()
@@ -529,7 +593,8 @@ pub struct Table<K> {
     /// Per row, the span its bytes are held: a body row's within its
     /// loop, any other row used in or across a loop spanning it whole.
     pub(super) lives: Vec<Life>,
-    /// Per row, the loop whose body it is, by index into `regions`.
+    /// Per row, the innermost loop whose body it is, by index into
+    /// `regions`.
     pub(super) body: Vec<Option<usize>>,
     /// Per loop, its region.
     pub(super) regions: Vec<Region>,
@@ -553,6 +618,9 @@ pub(super) struct Region {
     pub(super) stride: usize,
     /// Whether the loop ends at a decision.
     pub(super) decides: bool,
+    /// The decision loop whose body holds it, by index into `regions`:
+    /// its region is then a row of that body's table.
+    pub(super) parent: Option<usize>,
 }
 
 /// The instant a table's live rows are largest: [`Table::peak`].
@@ -563,7 +631,7 @@ pub struct Peak<'t> {
     /// The bytes live there.
     pub bytes: usize,
     /// The rows live there, by name and bytes, in declaration order, then
-    /// each loop's region live there, named `loop first-last`.
+    /// each outermost loop's region live there, named `loop first-last`.
     pub rows: Vec<(&'t str, usize)>,
 }
 
@@ -631,7 +699,9 @@ impl<K: Kind> Table<K> {
     /// after a loop may follow and a body node, replayed, may not; after
     /// a counted loop, as it is, from the body node's last iteration.
     /// A row outside a counted loop's body is held against every copy of
-    /// it.
+    /// it, a row of the decision loop holding it among them; a pair from
+    /// a body node of a counted loop to a later node of the decision loop
+    /// holding it is from that node's last trip.
     pub fn handoffs(&self) -> Vec<(usize, usize)> {
         let mut pairs = BTreeSet::new();
         // A row's bytes, every copy of it from the first to the last.
@@ -670,9 +740,16 @@ impl<K: Kind> Table<K> {
 
     /// The pair `(u, v)` as a plan may hold it: from the decision of the
     /// decision loop `u` is in when `v` is after that loop, else as it is.
+    /// A pair leaving only a counted loop, to a node of the decision loop
+    /// holding it or after it, stays as it is: the plan runs it from the
+    /// writer's last trip.
     fn after_loop(&self, u: usize, v: usize) -> (usize, usize) {
-        match self.regions.iter().find(|g| g.positions.contains(&u)) {
-            Some(g) if g.decides && v > *g.positions.end() => (*g.positions.end(), v),
+        match self
+            .regions
+            .iter()
+            .find(|g| g.decides && g.positions.contains(&u))
+        {
+            Some(g) if v > *g.positions.end() => (*g.positions.end(), v),
             _ => (u, v),
         }
     }
@@ -706,8 +783,9 @@ impl<K: Kind> Table<K> {
     }
 
     /// The position at which the live rows' bytes are largest, the lowest
-    /// on a tie, a loop's region counted whole, once, at each of its
-    /// positions, and its body's rows not again. The total is at least
+    /// on a tie, an outermost loop's region counted whole, once, at each of
+    /// its positions, and its body's rows, and the regions of the loops it
+    /// holds, not again. The total is at least
     /// this; alignment and the greedy layout's gaps are the difference.
     pub fn peak(&self) -> Peak<'_> {
         let positions: BTreeSet<usize> = self
@@ -723,7 +801,7 @@ impl<K: Kind> Table<K> {
             .zip(&self.body)
             .filter(|(_, b)| b.is_none())
             .map(|((r, &life), _)| (r.name.as_str(), r.bytes, life))
-            .chain(self.regions.iter().map(|g| {
+            .chain(self.regions.iter().filter(|g| g.parent.is_none()).map(|g| {
                 let life = Life::Span {
                     first: *g.positions.start(),
                     last: *g.positions.end(),
@@ -814,6 +892,9 @@ impl<K: Kind> fmt::Display for Table<K> {
             write!(f, "{}: region of {} bytes at {}", g.name, g.bytes, g.offset)?;
             if !g.decides {
                 write!(f, ", {} copies {} bytes apart", g.copies, g.stride)?;
+            }
+            if let Some(p) = g.parent {
+                write!(f, ", in {}'s body", self.regions[p].name)?;
             }
             writeln!(f, ", its body's rows:")?;
             for i in in_body(Some(index)) {

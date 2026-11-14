@@ -1068,3 +1068,165 @@ fn batches_reduce_bitwise() {
         );
     }
 }
+
+/// The decision loops [`batches_reduce_bitwise_every_iteration`] runs.
+const OUTER: usize = 3;
+
+/// The decision over the nested reduce: each iteration, how many elements
+/// of the downloaded sum differ in their bits from the host's ordered
+/// reduce, and the arena's count of this process's blocks; stops after
+/// [`OUTER`] iterations.
+struct CheckSum {
+    sum: RowId<Pinned, f64>,
+    expect: Arc<Vec<f64>>,
+    samples: Arc<Mutex<Vec<(usize, u64)>>>,
+}
+
+impl Decision for CheckSum {
+    type Rows = ();
+
+    fn layout(&self, h: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
+        h.read(self.sum);
+    }
+
+    fn decide(
+        &self,
+        _: &(),
+        h: &Bufs<'_, Pinned>,
+        _: &Bufs<'_, Heap>,
+        iteration: usize,
+    ) -> Result<ControlFlow<()>> {
+        let sum = h.get(self.sum);
+        let wrong = sum
+            .iter()
+            .zip(self.expect.iter())
+            .filter(|(a, b)| a.to_bits() != b.to_bits())
+            .count();
+        self.samples
+            .lock()
+            .unwrap()
+            .push((wrong, fb_core_arena::allocations()));
+        Ok(if iteration + 1 < OUTER {
+            ControlFlow::Continue(())
+        } else {
+            ControlFlow::Break(())
+        })
+    }
+}
+
+/// [`batches_reduce_bitwise`]'s counted loop inside a decision loop's body,
+/// as J and K over a streamed tensor run every SCF iteration
+/// (`docs/programming_model.md`, "Plan once, run many"; `docs/memory.md`,
+/// "Nested plans"): each iteration zeroes the accumulator, a row of the
+/// decision loop's body, on lane 0, uploads and reduces the eight batches
+/// in the counted loop on lanes 1 and 0 at depth 2, downloads the sum, and
+/// the decision compares it with the host's ordered reduce. Three
+/// iterations.
+///
+/// The bar is exact, by analysis, as there: each element is the batches
+/// added in order from zero, each addition rounded once, so every
+/// iteration's sum is bitwise the host's. A replay that left a trip out,
+/// or started from the last iteration's sum, or a staged copy sharing bytes
+/// with the accumulator, changes the bits of every element; the delay
+/// keeps the ring load-bearing in every iteration. The counted loop adds
+/// no host wait: the record's sync points are the decision's on the
+/// download, once per iteration, and each lane's exit, none waiting for a
+/// body node of the counted loop though the decision follows them all.
+/// Each body task has an entry per (iteration, trip) with its device time,
+/// read by the decision before each replay. The arena's count of this
+/// process's blocks is the same at every iteration, and the count before
+/// the run: the nested loop allocates nothing.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn batches_reduce_bitwise_every_iteration() {
+    let _turn = TURN.lock().unwrap_or_else(|p| p.into_inner());
+    let lane = |lane| LaneId { worker: 0, lane };
+    let mut expect = vec![0.0f64; BATCH];
+    for k in 0..TRIPS {
+        for (i, e) in expect.iter_mut().enumerate() {
+            *e += batch_value(k, i);
+        }
+    }
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let mut dag = Dag::new();
+    dag.blas_workspace(0);
+    let wait = dag.device_worker_row(0, "delay", 2 * DELAY);
+    let (batches, one) = dag.add_cpu("tensor", 0, Tensor);
+    let outer = dag.len();
+    let sum = dag.add_gpu("zero", lane(0), Zero(one));
+    let body = dag.len();
+    let staged = dag.add_gpu("stage", lane(1), StageBatch(batches));
+    dag.add_gpu(
+        "reduce",
+        lane(0),
+        Reduce {
+            delay: wait,
+            staged,
+            sum,
+        },
+    );
+    dag.add_counted(body, TRIPS, 2);
+    let down = dag.add_gpu("download", lane(0), DownSum(sum.acc));
+    dag.add_loop(
+        "check",
+        0,
+        outer,
+        OUTER,
+        CheckSum {
+            sum: down,
+            expect: Arc::new(expect),
+            samples: Arc::clone(&samples),
+        },
+    );
+    let planned = dag.plan();
+    let text = planned.to_string();
+    for line in [
+        "closes counted loop 2-3, 8 trips, depth 2",
+        "decides loop 1-5, at most 3 iterations",
+        "2 copies 8388608 bytes apart, in loop 1-5's body",
+    ] {
+        assert!(text.contains(line), "{line}: {text}");
+    }
+
+    let mut instance = planned.instantiate(&[0]);
+    let mut backend = instance.backend();
+    let blocks = fb_core_arena::allocations();
+    let record = instance.run(&mut backend, 1);
+    record.result.as_ref().unwrap();
+    let samples = std::mem::take(&mut *samples.lock().unwrap());
+    let each: Vec<_> = (0..OUTER).map(|_| (0, blocks)).collect();
+    assert_eq!(
+        samples, each,
+        "per iteration: elements off the ordered reduce, and the arena's blocks"
+    );
+    assert_eq!(fb_core_arena::allocations(), blocks);
+
+    for name in ["stage", "reduce"] {
+        let entries: Vec<_> = record
+            .tasks
+            .iter()
+            .filter(|t| t.name == name)
+            .map(|t| (t.outer, t.iteration, t.device.is_some()))
+            .collect();
+        let each: Vec<_> = (0..OUTER)
+            .flat_map(|k| (0..TRIPS).map(move |t| (Some(k), Some(t), true)))
+            .collect();
+        assert_eq!(entries, each, "{name}");
+    }
+    let syncs: Vec<_> = record
+        .syncs
+        .iter()
+        .map(|s| {
+            (
+                s.node.map(NodeId::index),
+                s.iteration,
+                s.worker.as_str(),
+                s.waited_for.index(),
+            )
+        })
+        .collect();
+    // Ranks: the last upload 2, the download 4, the decision 5.
+    let mut want: Vec<_> = (0..OUTER).map(|k| (Some(5), Some(k), "cpu0", 4)).collect();
+    want.extend([(None, None, "gpu0.1", 2), (None, None, "gpu0.0", 4)]);
+    assert_eq!(syncs, want, "no host wait in the counted loop");
+}

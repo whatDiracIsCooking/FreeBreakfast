@@ -41,9 +41,10 @@ impl<K: Kind> Bufs<'_, K> {
         self.pos
     }
 
-    /// The iteration of the loop the node is in that this view is for,
-    /// from 0, and 0 outside every loop: how a counted loop's body task
-    /// picks its batch.
+    /// The iteration of the innermost loop the node is in that this view
+    /// is for, from 0, and 0 outside every loop: how a counted loop's body
+    /// task picks its batch, inside a decision loop too, where it is the
+    /// trip.
     pub fn iteration(&self) -> usize {
         self.iteration
     }

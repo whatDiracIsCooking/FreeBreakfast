@@ -29,7 +29,8 @@
 //!   counted loop: the body run a trip count fixed at planning, no
 //!   decision and no host wait between iterations, its rows held once per
 //!   iteration in flight, each body task reading its iteration from its
-//!   views ([`Bufs::iteration`]) to pick its batch. With `device`,
+//!   views ([`Bufs::iteration`]) to pick its batch; it may lie in a
+//!   decision loop's body, replayed whole every iteration. With `device`,
 //!   `Dag::upload` and `Dag::download` add a copy node, a pinned row to a
 //!   new device row or back, named after the new row, and
 //!   `Dag::download_rows` one node for several device rows down, one
@@ -131,7 +132,8 @@
 //! reads only rows of its own worker; an edge between workers needs a
 //! transport row, which placement would add. No partition or reduce: every
 //! edge is one producer's output. No adaptive widths, no sub-DAG with
-//! dimensions of its own, and no loop in a loop's body (#1613). Every
+//! dimensions of its own, and of loops in a loop's body only a counted
+//! loop in a decision loop's. Every
 //! dependency is a row: an ordering with no buffer behind it has no way to
 //! be declared until a task needs one.
 

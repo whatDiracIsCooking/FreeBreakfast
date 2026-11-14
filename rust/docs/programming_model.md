@@ -383,8 +383,9 @@ reaching a minimum) whose output is read on the host.
 `fb_core_thread_pool`, a loop is its body, the nodes added after a given
 one, and a decision node `Plan::add_loop` adds after the body's sinks and
 any node before the body it is given, so after every body node. The decision is a CPU node, so a worker has waited
-on the host for every GPU body node before it runs: the body's work has
-completed, and its rows and events are free to be used again, when the
+on the host for the body's sinks before it runs, and every GPU body node's
+work precedes theirs on the device, so it waits on no other: the body's
+work has completed, and its rows and events are free to be used again, when the
 decision returns. Its `Continue` readies the body again, under the run's
 one lock, in the same scope and on the same workers, so a replay spawns no
 thread and allocates nothing; its `Break` readies what follows the loop,
@@ -393,9 +394,7 @@ handed the iteration's index. The iteration count has a bound, fixed at
 planning beside the dimensions: a decision that would start one iteration
 past it fails the run with `MaxIterationsExceeded`, and a failed body node
 ends the loop and skips what follows it, as any failure skips its
-descendants. A loop in a loop's body is not built: a counted loop inside a
-decision loop, which J and K over a streamed tensor need every SCF
-iteration, is #1613.
+descendants.
 
 **The planner closes a loop the same way.** `fb_core_planner::Dag::add_loop`
 takes the position of the body's first task, its bound and a `Decision`: a
@@ -441,6 +440,24 @@ GEMMs on a compute lane, with `R = 2`: the next batch's upload runs under
 this one's GEMMs, ordered against the GEMMs two batches back by the ring.
 A node after a counted loop may follow a body node directly, and runs
 after its last iteration.
+
+**A counted loop may lie in a decision loop's body.** J and K over a
+streamed B run every SCF iteration, so the SCF's body holds a counted
+loop over B's batches; that is the one nesting built. A counted loop holds
+no loop, and a decision loop no decision loop. The counted loop is closed
+before the decision, and the executor unrolls its trips inside the
+decision loop's run of nodes, so the decision's `Continue` readies it
+whole: every trip again, overlapped as at the top level, with no host
+wait between trips. The decision runs after the body's sinks, which
+every trip precedes, and before its replay reads the stream scope of each
+trip of each GPU body node, its events about to be recorded again. A body
+node of the counted loop is handed its trip; the decision loop's
+iteration is the timing record's
+([`diagnostics.md`](diagnostics.md), "The timing record"). An edge
+leaving only the counted loop, to a later node of the decision loop's
+body, runs from its last trip; one leaving the decision loop runs from
+the decision. The counted loop's region is a row of the decision loop's
+body table ([`memory.md`](memory.md), "Nested plans").
 
 **A wait on an event binds to its recording at the time the wait is
 enqueued**, on both backends: record an event, enqueue a wait for it on

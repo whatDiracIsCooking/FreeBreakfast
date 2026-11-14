@@ -81,8 +81,10 @@ impl NodeId {
 }
 
 /// What a node is handed when it runs: where, and in which iteration of
-/// the loop it is in, from 0, or 0 outside every loop. A counted loop's
-/// body node picks its batch by it ([`Plan::add_counted`]).
+/// the innermost loop it is in, from 0, or 0 outside every loop. A counted
+/// loop's body node picks its batch by it ([`Plan::add_counted`]), inside
+/// a decision loop too: there it is the trip, and the decision loop's
+/// iteration is the record's ([`TaskTime::outer`](super::TaskTime::outer)).
 pub enum Lane<'r, S> {
     /// A CPU worker: compute on the host.
     Cpu {
@@ -118,15 +120,17 @@ pub(super) struct Node<'a, S> {
     pub(super) placement: Placement,
     pub(super) preds: Vec<usize>,
     pub(super) dims: BTreeMap<String, usize>,
-    /// The loop whose body or decision it is.
+    /// The innermost loop whose body or decision it is.
     pub(super) in_loop: Option<usize>,
     pub(super) work: Work<'a, S>,
 }
 
-/// A loop of a [`Plan`]: its body's ranks, and how it ends.
+/// A loop of a [`Plan`]: its body's ranks, how it ends, and the decision
+/// loop whose body holds it, if any.
 pub(super) struct Loop {
     pub(super) body: Range<usize>,
     pub(super) kind: LoopKind,
+    pub(super) parent: Option<usize>,
 }
 
 /// How a loop ends: at a decision, or after a trip count.
@@ -235,15 +239,21 @@ impl<'a, S> Plan<'a, S> {
     /// Returns the decision node, which is what a node after the loop
     /// depends on to read the loop's outcome.
     ///
-    /// The decision is a CPU node after every node of the body and after
-    /// `deps`, which may name nodes before the body that no body node
-    /// follows (a row the decision reads, or whose bytes it takes over): it
-    /// runs once per iteration, when the whole body has finished and every
+    /// The decision is a CPU node after the body's sinks, so after every
+    /// node of the body, and after `deps`, which may name nodes before the
+    /// body that no body node follows (a row the decision reads, or whose
+    /// bytes it takes over); a body node in `deps` adds no edge and no host
+    /// wait, the sinks being after it already. It runs once per iteration, when the whole body has finished and every
     /// GPU body node's work has completed, and is handed the iteration's
     /// index from 0. Its `Continue` readies the body again, inside the same run, with
     /// nothing spawned and nothing allocated by the executor; its `Break`
     /// readies the nodes after the loop. A body node's predecessors before
     /// the body are satisfied once, by their single run.
+    ///
+    /// The body may hold counted loops ([`Plan::add_counted`]), closed
+    /// before this one: each is replayed whole every iteration, its trips
+    /// overlapped as anywhere, and the decision reads each trip's stream
+    /// scopes before the replay.
     ///
     /// The body runs at most `max_iterations` times, a bound fixed here, at
     /// planning: a decision that still says `Continue` at index
@@ -279,8 +289,12 @@ impl<'a, S> Plan<'a, S> {
     /// ```
     #[debug_requires(body.0 < self.nodes.len(), "the body has a node")]
     #[debug_requires(
-        self.loops.last().is_none_or(|l| l.last() < body.0),
-        "a body holds no loop"
+        self.loops.iter().all(|l| l.last() < body.0 || l.decision().is_none()),
+        "a decision loop holds no decision loop"
+    )]
+    #[debug_requires(
+        self.loops.iter().all(|l| l.last() < body.0 || l.body.start >= body.0),
+        "a loop holds another whole or not at all"
     )]
     #[debug_requires(max_iterations > 0, "the bound admits an iteration")]
     #[debug_requires(
@@ -298,17 +312,22 @@ impl<'a, S> Plan<'a, S> {
         let body = body.0..self.nodes.len();
         let index = self.loops.len();
         // The body's sinks: every body node is one or an ancestor of one,
-        // so after them is after the whole body.
+        // so after them is after the whole body, and a body node given in
+        // `deps` adds nothing, not even a host wait.
         let mut preds: Vec<NodeId> = body
             .clone()
             .filter(|&n| self.succs[n].is_empty())
             .map(NodeId)
             .collect();
-        preds.extend_from_slice(deps);
+        preds.extend(deps.iter().filter(|d| !body.contains(&d.0)));
         let decision = self.add(name, Placement::Cpu, &preds, |_| Ok(()));
         self.nodes[decision.0].work = Work::Decide(index, Box::new(decide));
+        // A counted loop in the body keeps its nodes, and is held by this one.
         for n in body.start..=decision.0 {
-            self.nodes[n].in_loop = Some(index);
+            self.nodes[n].in_loop.get_or_insert(index);
+        }
+        for l in self.loops.iter_mut().filter(|l| l.body.start >= body.start) {
+            l.parent = Some(index);
         }
         self.loops.push(Loop {
             body,
@@ -316,6 +335,7 @@ impl<'a, S> Plan<'a, S> {
                 decision: decision.0,
                 max_iterations,
             },
+            parent: None,
         });
         decision
     }
@@ -342,6 +362,9 @@ impl<'a, S> Plan<'a, S> {
     /// A node added after the loop may follow a body node, and then runs
     /// after its last iteration, so after all of them. A failed body node
     /// skips its descendants, every later iteration among them.
+    ///
+    /// A counted loop may lie in a decision loop's body, closed before the
+    /// decision ([`Plan::add_loop`]); it holds no loop itself.
     ///
     /// ```
     /// use std::sync::Mutex;
@@ -372,7 +395,7 @@ impl<'a, S> Plan<'a, S> {
     #[debug_requires(body.0 < self.nodes.len(), "the body has a node")]
     #[debug_requires(
         self.loops.last().is_none_or(|l| l.last() < body.0),
-        "a body holds no loop"
+        "a counted loop holds no loop"
     )]
     #[debug_requires(trips > 0, "the loop has an iteration")]
     #[debug_requires(0 < depth && depth <= trips, "the depth is from 1 to the trip count")]
@@ -385,6 +408,7 @@ impl<'a, S> Plan<'a, S> {
         self.loops.push(Loop {
             body,
             kind: LoopKind::Counted { trips, depth },
+            parent: None,
         });
     }
 
@@ -419,7 +443,6 @@ impl<'a, S> Plan<'a, S> {
 
     /// How many trips `node` runs per run of its loop: its counted loop's
     /// trip count, else 1.
-    #[cfg_attr(not(feature = "device"), allow(dead_code))]
     pub(super) fn trips(&self, node: &Node<'_, S>) -> usize {
         match node.in_loop.map(|l| self.loops[l].kind) {
             Some(LoopKind::Counted { trips, .. }) => trips,

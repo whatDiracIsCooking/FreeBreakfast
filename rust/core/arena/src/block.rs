@@ -155,8 +155,9 @@ impl<K: Kind> Block<K> {
         self.dev_idx
     }
 
-    /// The rows of node `pos` in iteration `iteration` of the loop it is
-    /// in, 0 outside every loop: what the orchestrator hands the node when
+    /// The rows of node `pos` in iteration `iteration` of the innermost
+    /// loop it is in (a counted loop's trip, inside a decision loop too),
+    /// 0 outside every loop: what the orchestrator hands the node when
     /// it runs. A row is borrowed when the node first asks for it and
     /// returned when the [`Bufs`] drops.
     ///

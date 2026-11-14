@@ -112,8 +112,11 @@ the run's result; the profile that built it (`debug` or `release`, from
 `cfg!(debug_assertions)`); its wall time; per task its node's rank, its
 name, its worker, its dimensions (a task's `GpuTask::dims` or `CpuTask::dims`, empty by default),
 its host time and its device time, and for a loop's body node or decision
-the iteration it ran in, one entry per iteration; every sync point, with
-the worker that waited, the node it waited for, the iteration of the node
+the iteration of its innermost loop it ran in, one entry per iteration;
+for a body node of a counted loop inside a decision loop, both indices,
+its trip as the iteration and the decision loop's iteration as `outer`,
+one entry per pair; every sync point, with
+the worker that waited, the node it waited for, the indices of the node
 that waited and the host time of the wait; each loop's iteration count, by
 its decision node; and, from
 `Instance::run`, the plan's block sizes per worker and kind. `Record::to_json`
