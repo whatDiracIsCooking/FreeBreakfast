@@ -17,11 +17,11 @@ fb-core-planner.workspace = true
 fb-core-thread-pool = { workspace = true, features = ["device"] }
 fb-core-wwr.workspace = true
 fb-integrals-mmd.workspace = true
+fb-integrals-sys.workspace = true
 fb-integrals-one-electron-kinetic.workspace = true
 fb-integrals-one-electron-potential-en.workspace = true
 fb-molecule-nuclei.workspace = true
 fb-recipes-matrix-ao.workspace = true
-wwr-sys.workspace = true
 
 [dev-dependencies]
 fb-io-basis.workspace = true

@@ -19,7 +19,6 @@ fb-core-wwr.workspace = true
 fb-integrals-mmd.workspace = true
 fb-integrals-sys.workspace = true
 fb-recipes-matrix-ao.workspace = true
-wwr-sys.workspace = true
 
 [dev-dependencies]
 fb-io-basis.workspace = true

@@ -87,6 +87,7 @@ in `clippy.toml`); `unsafe_code` is forbidden per crate root, which
 | An `unsafe` block holds one operation | [`programming_model.md`](programming_model.md), "Capabilities are enforced by lints" | lint `multiple_unsafe_ops_per_block` |
 | A crate above `core` reaches a library through a safe wrapper, not `wwr-sys` | [`programming_model.md`](programming_model.md), "Capabilities are enforced by lints" | `doc_check/tests/unsafe_code.rs` (an FFI call needs `unsafe`, so an unlisted crate cannot make one; a listed one still can) |
 | A checked library call (`gemm`, `dgmm`, `syevd`) holds each extent to its `DeviceSlice` in every build | [`programming_model.md`](programming_model.md), "Capabilities are enforced by lints", [`gpu_layer.md`](gpu_layer.md), "The safe wrapper" | `core/wwr/src/blas.rs::an_extent_one_past_the_slice_panics`; `core/wwr/src/solver/syevd.rs`; `recipes/blas/tests/gemm.rs`; `recipes/blas/tests/dgmm.rs`; type `DeviceSlice` |
+| What a launch trusts in device data reaches a safe call only as a type the path that wrote it alone makes (`ClassRows`, from `add_record_tasks`, over tables checked on the host) | [`gpu_layer.md`](gpu_layer.md), "The safe wrapper" | type `ClassRows` (private fields); `integrals/sys/src/records.rs::a_block_past_the_matrix_panics`; `integrals/one_electron/overlap/tests/launcher.rs::a_matrix_short_of_n_cart_squared_panics` |
 | No thread-pool crate is a dependency | [`programming_model.md`](programming_model.md), "Capabilities are enforced by lints", "CPU workers" | **unenforced** |
 
 ## Orchestration

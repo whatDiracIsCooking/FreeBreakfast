@@ -23,7 +23,8 @@ use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_integrals_mmd::{ClassRows, add_records};
+use fb_integrals_mmd::add_records;
+use fb_integrals_sys::ClassRows;
 
 /// The double fields, in the reference file's order.
 const F64_FIELDS: [&str; 16] = [
@@ -47,17 +48,15 @@ struct HostClass {
     i32s: Vec<Vec<i32>>,
 }
 
-/// The class's double rows, in the reference file's order.
+/// The class's double rows, in the reference file's order, which is
+/// [`ClassRows::f64_rows`]'s.
 fn f64_fields(c: &ClassRows) -> [RowId<Device, f64>; 16] {
-    [
-        c.zeta, c.p_x, c.p_y, c.p_z, c.pa_x, c.pa_y, c.pa_z, c.pb_x, c.pb_y, c.pb_z, c.s, c.ea,
-        c.eb, c.bound, c.bound_ab, c.bound_ba,
-    ]
+    c.f64_rows()
 }
 
 /// Its integer rows, likewise.
 fn i32_fields(c: &ClassRows) -> [RowId<Device, i32>; 4] {
-    [c.off_a, c.off_b, c.rank_a, c.rank_b]
+    c.i32_rows()
 }
 
 /// A class's pinned copies.
@@ -79,7 +78,7 @@ impl Task for Download {
         self.0
             .iter()
             .map(|c| {
-                let n = c.n_rec as usize;
+                let n = c.n_rec() as usize;
                 let (f, i) = (f64_fields(c), i32_fields(c));
                 PinnedClass {
                     f64s: f
@@ -156,9 +155,9 @@ impl Task for Collect {
             .iter()
             .zip(&self.down)
             .map(|(c, down)| HostClass {
-                la: c.la,
-                lb: c.lb,
-                n_rec: c.n_rec,
+                la: c.la(),
+                lb: c.lb(),
+                n_rec: c.n_rec(),
                 f64s: down.f64s.iter().map(|&r| h.get(r).to_vec()).collect(),
                 i32s: down.i32s.iter().map(|&r| h.get(r).to_vec()).collect(),
             })

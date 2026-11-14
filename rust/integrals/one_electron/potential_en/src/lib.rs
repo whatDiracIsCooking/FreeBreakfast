@@ -7,11 +7,9 @@
 //!
 //! Two layers:
 //!
-//! - [`potential_en_classes`], the safe layer over [`fb_potential_en_class`]:
-//!   every class's launch on one stream, each adding into a Cartesian matrix
-//!   the caller zeroed (or filled), the wrapper's [`fb_nuclei_view`] formed
-//!   from the [`NucleiRows`]' device rows, with the launcher's requirements
-//!   as `debug_requires`. It neither zeroes nor transforms, so a task that
+//! - [`potential_en_classes`]: every class's [`potential_en_class`] launch
+//!   on one stream, each adding into a Cartesian matrix the caller zeroed
+//!   (or filled), over the [`NucleiRows`]' device rows. It neither zeroes nor transforms, so a task that
 //!   launches several families on one stream into one matrix (the core
 //!   Hamiltonian's, T and then V on top) calls it after
 //!   `fb_integrals_one_electron_kinetic::kinetic_classes`.
@@ -31,108 +29,65 @@
 //!
 //! | C++ | Here |
 //! |---|---|
-//! | `potential_en_class(stream, cls, nuclei, n_ao, v)` (`potential_en_bridge.h`), one class | [`potential_en_classes`]`(stream, device, classes, nuclei, n_cart, v)`, every class in order on one stream, the `fb_nuclei_view` formed from the [`NucleiRows`], its requirements as `debug_requires` |
+//! | `potential_en_class(stream, cls, nuclei, n_ao, v)` (`potential_en_bridge.h`), one class | [`potential_en_class`], `fb-integrals-sys`'s safe launcher over a [`ClassRows`] and the nuclei's two rows; [`potential_en_classes`]`(stream, device, classes, nuclei, v)`, every class in order on one stream, over the [`NucleiRows`] |
 //! | `nuclear_attraction(res, classes, molecule, v)`: zeroed, then one launch per class, each on a stream forked from `res.stream()` | the `potential en` task of [`add_nuclear_attraction`]: zeroed, then [`potential_en_classes`] on the worker's one stream, the records' [`ClassRows`] passed in by the caller |
 //! | `add_nuclear_attraction(res, classes, molecule, m)`, V added into `m` unzeroed | [`potential_en_classes`], called by the task that zeroed the matrix |
-//! | `molecule.view()`, the `NucleiView` | [`NucleiRows`] from [`fb_molecule_nuclei::add_nuclei`], passed in; the view formed from its rows' pointers in [`potential_en_classes`] |
+//! | `molecule.view()`, the `NucleiView` | [`NucleiRows`] from [`fb_molecule_nuclei::add_nuclei`], passed in; its rows handed to [`potential_en_class`] by [`potential_en_classes`] |
 //! | `check_nuclei`'s `InvalidConfig` for nuclei on another device | [`add_nuclear_attraction`]'s `InvalidConfig` at planning for [`NucleiRows`] with no nucleus (the wrapper's `n_nuc >= 1`), adding nothing; nuclei of another worker are another table's rows, which [`Dag::add`] refuses with a panic |
-//! | `check_one_electron_build`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | [`potential_en_classes`]' `debug_requires`; [`add_nuclear_attraction`] asserts the `i32` bound at planning, and the records hold only `la <= lb` |
+//! | `check_one_electron_build`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | [`potential_en_class`]'s contract for the class, and its always-on `assert!` of the matrix's `n_cart²` and the `i32` bound; [`add_nuclear_attraction`] asserts the `i32` bound at planning too, and the records hold only `la <= lb` |
 //! | `upload_spherical_transform_matrix`, `MatrixAOPair::cartesian_to_spherical` | [`fb_recipes_matrix_ao::add_cartesian_to_spherical`], U's slot passed in by the caller |
 //! | `res.dev_idx()` made current for the call | nothing: a stream task runs with its worker's device current |
 //!
 //! [`BasisSet`]: fb_basis::BasisSet
 
+#![forbid(unsafe_code)]
+
 use contracts::debug_requires;
 use fb_basis::BasisSet;
-use fb_core_arena::{Bufs, Device, DeviceMut, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::handle::DeviceHandleStream;
+use fb_core_wwr::device_slice::DeviceSliceMut;
 use fb_core_wwr::memset;
-use fb_integrals_mmd::{ClassRows, launch};
-use fb_integrals_sys::{FB_POTENTIAL_EN_MAX_MOMENTUM, fb_nuclei_view, fb_potential_en_class};
+use fb_core_wwr::runtime::Stream;
+use fb_integrals_sys::{ClassRows, potential_en_class};
 use fb_molecule_nuclei::NucleiRows;
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 
 /// Add every class's nuclear-attraction contributions over `nuclei` into the
 /// Cartesian matrix `v`, `n_cart` × `n_cart`, on `stream`: one
-/// [`fb_potential_en_class`] launch per class, in order, each adding at
+/// [`potential_en_class`] launch per class, in order, each adding at
 /// `(m, n)` and `(n, m)`. Enqueues only, and zeroes nothing: `v` must be
 /// zeroed (or hold what the caller adds V to) before the call, and is
 /// symmetric after it when it was before.
 ///
-/// Over the C call, the types carry what its header asks in words: every
-/// class's fields, the nuclei's two rows and `v` are rows of `device`'s
-/// view, declared by the calling task's layout ([`ClassRows::read`],
-/// [`NucleiRows::read`], an output for `v`), so none is null and none
-/// overlaps another; `v` is the row's only writer while the call lasts.
-/// Its contracts hold the bounds. Not checked: that the records
-/// are of the basis `v` is the matrix of, since their AO offsets are device
-/// data.
+/// `stream` is the calling task's, `device` its view, and every class's
+/// fields and the nuclei's two rows were declared read by its layout
+/// ([`ClassRows::read`], [`NucleiRows::read`]).
 ///
 /// # Errors
-/// The first launch's refusal or launch error, as
-/// [`fb_integrals_mmd::launch`] names it with the class; the classes before
-/// it are enqueued, and `v` is then unspecified. The kernels' own faults
-/// surface at the stream's next synchronization.
+/// The first launch's refusal or launch error, as [`potential_en_class`]
+/// names it with the class; the classes before it are enqueued, and `v` is
+/// then unspecified. The kernels' own faults surface at the stream's next
+/// synchronization.
 ///
 /// # Panics
-/// If a class's field or a nuclei row was not declared by the task's layout
-/// ([`Bufs::get`]), or the nuclei's rows are not `n_nuc` and `3 n_nuc`
-/// doubles long.
-#[debug_requires(n_cart > 0, "a matrix of at least one AO")]
-#[debug_requires(
-    n_cart.checked_mul(n_cart).is_some_and(|n2| i32::try_from(n2).is_ok()),
-    "n_cart² fits the kernels' 32-bit index"
-)]
-#[debug_requires(v.len() == n_cart * n_cart, "v is n_cart² doubles")]
-#[debug_requires(nuclei.n_nuc > 0, "at least one nucleus")]
-#[debug_requires(
-    classes.iter().all(|c| 0 <= c.la && c.la <= c.lb && c.lb <= FB_POTENTIAL_EN_MAX_MOMENTUM),
-    "every class has la <= lb <= FB_POTENTIAL_EN_MAX_MOMENTUM"
-)]
-#[debug_requires(classes.iter().all(|c| c.n_rec > 0), "every class has records")]
+/// If a nuclei row was not declared by the task's layout ([`Bufs::get`]);
+/// or as [`potential_en_class`]: `v` is not the records' `n_cart²` doubles,
+/// the nuclei's coordinates are not three per charge, or a class's field
+/// was not declared.
+#[track_caller]
 pub fn potential_en_classes(
-    stream: &DeviceStream,
+    stream: &Stream,
     device: &Bufs<'_, Device>,
     classes: &[ClassRows],
     nuclei: &NucleiRows,
-    n_cart: usize,
-    v: &DeviceMut<'_, f64>,
+    v: &mut impl DeviceSliceMut<f64>,
 ) -> Status {
     let (z, c) = (device.get(nuclei.z), device.get(nuclei.c));
-    let n_nuc = nuclei.n_nuc as usize;
-    // The kernels read n_nuc charges and 3 n_nuc coordinates through the
-    // view's pointers, so these lengths are what the launch trusts: always
-    // on (docs/testing.md, "Contracts are part of the spec").
-    assert!(
-        z.len() == n_nuc && c.len() == 3 * n_nuc,
-        "the nuclei's rows are n_nuc and 3 n_nuc long"
-    );
-    let view = fb_nuclei_view {
-        n_nuc: nuclei.n_nuc,
-        z: z.as_ptr(),
-        c: c.as_ptr(),
-    };
     for cls in classes {
-        let records = cls.view(device);
-        // SAFETY: the records' arrays are the class's n_rec-long device rows,
-        // and the nuclei's the n_nuc- and 3 n_nuc-long rows, all declared read
-        // by the calling task, which the plan orders after the tasks that
-        // write them; `v` is n_cart² doubles on the device, the task's own
-        // output, and every offset the records hold is a Cartesian AO of their
-        // basis, the one `v` is the matrix of. Both views are host structs
-        // that outlive the call, which only enqueues.
-        launch("fb_potential_en_class", cls, unsafe {
-            fb_potential_en_class(
-                stream.stream(),
-                &records,
-                &view,
-                n_cart as i32,
-                v.as_mut_ptr(),
-            )
-        })?;
+        potential_en_class(stream, device, cls, &z, &c, v)?;
     }
     Ok(())
 }
@@ -228,6 +183,6 @@ impl Task for PotentialEn {
         };
         let mut v = device.take_mut(*v);
         memset::zero(&mut v, stream)?;
-        potential_en_classes(stream, device, &self.classes, &self.nuclei, self.n_cart, &v)
+        potential_en_classes(stream, device, &self.classes, &self.nuclei, &mut v)
     }
 }

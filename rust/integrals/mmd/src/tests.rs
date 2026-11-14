@@ -5,7 +5,9 @@
 use fb_basis::{BasisSet, Shell};
 use fb_core_types::Double3;
 
-use super::tables::{ClassPairs, ShellTable, Tables};
+use fb_integrals_sys::{ClassPairs, ShellTable};
+
+use super::tables::tables;
 
 /// Four shells on two centres, a p before the s shells so the swap is
 /// needed: 0 p on A (2 primitives), 1 s on B (3), 2 s on A (1), 3 d on B (1).
@@ -43,9 +45,9 @@ fn class(la: i32, lb: i32, bra: &[u32], ket: &[u32], rec_begin: &[i32]) -> Class
 /// (0,3) stays (p|d). Each prefix sums `K_a K_b` in sweep order.
 #[test]
 fn tables_of_a_hand_built_basis() {
-    let t = Tables::new(&basis());
+    let t = tables(&basis());
     assert_eq!(
-        t.shells,
+        *t.shells(),
         ShellTable {
             prim_begin: vec![0, 2, 5, 6, 7],
             exponent: vec![3.0, 0.5, 10.0, 2.0, 0.25, 0.75, 1.5],
@@ -60,7 +62,7 @@ fn tables_of_a_hand_built_basis() {
         }
     );
     assert_eq!(
-        t.classes,
+        t.classes(),
         vec![
             // (1,1) K 9, (1,2) K 3, (2,2) K 1.
             class(0, 0, &[1, 1, 2], &[1, 2, 2], &[0, 9, 12, 13]),
@@ -76,6 +78,7 @@ fn tables_of_a_hand_built_basis() {
             class(2, 2, &[3], &[3], &[0, 1]),
         ]
     );
+    assert_eq!(t.n_cart(), 11);
     assert_eq!(t.n_pairs(), 10);
     assert_eq!(t.n_max(), 13);
 }

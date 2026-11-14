@@ -7,10 +7,8 @@ use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::memset;
-use fb_integrals_mmd::{ClassRows, launch};
-use fb_integrals_sys::fb_overlap_class;
+use fb_integrals_sys::{ClassRows, overlap_class};
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 
 /// Add the spherical AO overlap of `basis` to `dag` on GPU worker
@@ -18,7 +16,7 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// column-major, symmetric up to rounding.
 ///
 /// `overlap` (stream: the Cartesian matrix zeroed and one
-/// `fb_overlap_class` launch per class, reading the records as an edge),
+/// [`overlap_class`] launch per class, reading the records as an edge),
 /// then the spherical transform of [`add_cartesian_to_spherical`]:
 /// `harmonics` (CPU: U into a pinned row), only when `u` is `None`, and
 /// `spherical transform` (stream: `S = Uᵀ S_cart U`). `classes` are the
@@ -87,16 +85,8 @@ impl Task for Overlap {
         };
         let mut s = device.take_mut(*s);
         memset::zero(&mut s, stream)?;
-        let stream = stream.stream();
         for c in &self.classes {
-            let view = c.view(device);
-            // SAFETY: the view's arrays are the class's n_rec-long rows,
-            // written by the records task this one is ordered after, and
-            // `s` is n_cart² doubles, zeroed above on this stream; every
-            // offset the records hold is a Cartesian AO of the basis.
-            launch("fb_overlap_class", c, unsafe {
-                fb_overlap_class(stream, &view, self.n_cart as i32, s.as_mut_ptr())
-            })?;
+            overlap_class(stream, device, c, &mut s)?;
         }
         Ok(())
     }
