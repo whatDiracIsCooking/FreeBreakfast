@@ -120,7 +120,7 @@ most of their card time:
 
 | Run | Tiers | Runs |
 |---|---|---|
-| **PR** (`test.py push`, `test.py pr`) | 1, 2, 3 in full; 4 for the affected crates | `cargo test --no-default-features` of every link-free crate in debug, so every contract is on, and `cargo doc`. Then, over the affected crates that link a library, `cargo clippy --all-targets -D warnings` and every test, on the gate's card ("Selecting GPU tiers in cargo", below). |
+| **PR** (`test.py push`, `test.py pr`) | 1, 2, 3 in full; 4 for the affected crates | `cargo test --no-default-features` of every link-free crate in debug, so every contract is on, and `cargo doc`. Then, over the affected crates that link a library, `cargo clippy --all-targets -D warnings`, `cargo doc --no-deps` with `RUSTDOCFLAGS=-D warnings`, and every test, on the gate's card ("Selecting GPU tiers in cargo", below). |
 | **Nightly** | 4 in full; performance | Every GPU case. A release build, so the timings it records are real ("Performance", below). |
 | **Weekly** | sanitizers, fuzz, mutants, 5 | compute-sanitizer over tier 4. Miri and ASan over tier 3. The fuzzers and property tests with their large case counts. `cargo-mutants` over tier 3. Tier 5 on a multi-GPU VM. |
 
@@ -253,7 +253,11 @@ Before those tests, and before the card is taken, tier 4 runs `cargo
 clippy --all-targets -- -D warnings` over the same crates, in the same
 target directory and environment. It is the only gate of the workspace
 lints on a crate that links, since `cargo-lint` builds no library; a lint
-error is a `tier 4 clippy: FAILED` line and runs no test.
+error is a `tier 4 clippy: FAILED` line and runs no test. Then `cargo doc
+--no-deps` over them with `RUSTDOCFLAGS=-D warnings`, the only gate of
+rustdoc's lints (a broken intra-doc link) on a crate that links, since the
+tiers-1-to-3 `cargo doc` documents only the link-free members; a failure is
+a `tier 4 rustdoc: FAILED` line and runs no test either.
 
 Tier 5 needs a second device, which no case asks for yet; when one does,
 the same rule extends with a reason of its own and a count in the probe.
