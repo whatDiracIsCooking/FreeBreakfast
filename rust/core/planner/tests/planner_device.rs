@@ -1,15 +1,18 @@
 //! The planner on a real card (device 0): tasks declared once, planned,
 //! instantiated and run on a stream worker and the CPU pool.
 //!
-//! A binary of its own: a case measures the card's free memory, which
-//! another test allocating beside it would move, so the cases take turns.
+//! A binary of its own, its cases taking turns: the checks that a run
+//! allocates nothing read `fb_core_arena::allocations`, this process's
+//! count of the arena's blocks, which a case allocating beside them would
+//! move.
 //!
-//! The reading is the device's, every tenant of the card counted, and a
-//! process outside the gates' card lock can free memory mid-case (#1553).
-//! So the checks that a run allocates nothing ask that free memory never
-//! fall: an allocation of this process lowers it, another tenant's free
-//! cannot. `fb-pipeline-scf`'s `tests/scf.rs` says what that gives up
-//! against equality, and why nothing narrower can be read.
+//! Not the card's free memory (#1589): that reading is the device's, every
+//! tenant counted, and on the RTX 3080, which drives a display, a client
+//! outside the container moves it mid-case in either direction (#1573). It
+//! is still read and printed beside the count, to be read against the
+//! card's other tenants, but nothing is asserted of it. What the count does
+//! not see is a library allocating behind the arena, the gemm's cuBLAS
+//! among them: #1574.
 
 use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
@@ -32,10 +35,10 @@ const N: usize = 4096;
 /// Held by each case for its whole length.
 static TURN: Mutex<()> = Mutex::new(());
 
-/// Device 0's free memory, with it made current.
+/// Device 0's free memory, with it made current: printed, never asserted.
 #[allow(
     clippy::disallowed_methods,
-    reason = "a test measuring a plan's blocks on the card reads free memory; no width is sized from it"
+    reason = "a test prints the card's free memory beside the arena's count, to read against other tenants; no width is sized from it"
 )]
 fn free_bytes() -> usize {
     let _device = ScopedDeviceIndex::new(0);
@@ -159,8 +162,9 @@ impl Task for Check {
 /// A round trip through the planner: a CPU task fills a pinned row, a
 /// stream task copies it up, another copies it down into a second pinned
 /// row that takes the first's bytes, and a CPU task compares. Nothing but
-/// the derived dependencies orders the reuse. The plan runs twice with the
-/// card's free memory not fallen between: a run allocates nothing.
+/// the derived dependencies orders the reuse. The plan runs twice, the
+/// arena's count of this process's blocks the same across the second run:
+/// a run allocates nothing.
 ///
 /// The record carries the plan's device and pinned block sizes, the
 /// tables' own, and a host wait for every CPU task's GPU predecessor: the
@@ -216,12 +220,16 @@ fn a_round_trip_through_the_planner() {
             .unwrap_or_else(|| panic!("no host wait of task {pos} on task {u}"));
         assert!(sync.host >= Duration::ZERO, "{sync:?}");
     }
-    let between = free_bytes();
+    let (blocks, free) = (fb_core_arena::allocations(), free_bytes());
     instance.run(&mut backend, 1).result.unwrap();
-    let after = free_bytes();
-    assert!(
-        after >= between,
-        "a run allocated device memory: free {between} before, {after} after"
+    println!(
+        "the card's free memory across the second run: {free} before, {} after",
+        free_bytes()
+    );
+    assert_eq!(
+        fb_core_arena::allocations(),
+        blocks,
+        "the second run allocated a block"
     );
 }
 
@@ -484,12 +492,12 @@ impl Task for CarryX {
 }
 
 /// The decision: stops when `y` moved at most [`STEP`] from the last
-/// iterate, which it carries in `prev`. Also reads the card's free memory
-/// every iteration.
+/// iterate, which it carries in `prev`. Also reads the arena's count of
+/// this process's blocks and the card's free memory every iteration.
 struct Moved {
     y: RowId<Pinned, f64>,
     prev: RowId<Pinned, f64>,
-    free: Arc<Mutex<Vec<usize>>>,
+    samples: Arc<Mutex<Vec<(u64, usize)>>>,
 }
 
 /// The step below which the decision stops: the iterate is then within
@@ -505,7 +513,10 @@ impl Decision for Moved {
     }
 
     fn decide(&self, _: &(), h: &Bufs<'_, Pinned>, _: usize) -> Result<ControlFlow<()>> {
-        self.free.lock().unwrap().push(free_bytes());
+        self.samples
+            .lock()
+            .unwrap()
+            .push((fb_core_arena::allocations(), free_bytes()));
         let y = h.get(self.y);
         let prev = h.take_mut(self.prev);
         let moved = y
@@ -584,14 +595,15 @@ impl Task for Keep {
 /// So `1e-12` holds with margin. The iteration count is the plan's bound's
 /// business, not a bar.
 ///
-/// And replay allocates nothing: the card's free memory, read by the
-/// decision every iteration, never falls from one iteration to the next,
-/// with the gemm's workspace the plan's declared row.
+/// And replay allocates nothing: the arena's count of this process's
+/// blocks, read by the decision every iteration, is the same at every one,
+/// with the gemm's workspace the plan's declared row. A cuBLAS allocation
+/// behind it is not in the count (#1574).
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn a_device_loop_to_its_fixed_point() {
     let _turn = TURN.lock().unwrap_or_else(|p| p.into_inner());
-    let (free, out) = (
+    let (samples, out) = (
         Arc::new(Mutex::new(Vec::new())),
         Arc::new(Mutex::new(Vec::new())),
     );
@@ -610,7 +622,7 @@ fn a_device_loop_to_its_fixed_point() {
         Moved {
             y: y_host,
             prev: host.prev,
-            free: Arc::clone(&free),
+            samples: Arc::clone(&samples),
         },
     );
     let x = dag.add("down", 0, DownX(dev.x));
@@ -636,12 +648,14 @@ fn a_device_loop_to_its_fixed_point() {
         .fold(0.0, f64::max);
     assert!(residual <= 1e-12, "|A x + b - x| = {residual:e}");
 
-    let free = free.lock().unwrap();
-    assert_eq!(free.len(), iterations[0]);
-    let fell = free.windows(2).position(|w| w[1] < w[0]);
+    let samples = samples.lock().unwrap();
+    assert_eq!(samples.len(), iterations[0]);
+    let (blocks, free): (Vec<u64>, Vec<usize>) = samples.iter().copied().unzip();
+    println!("the card's free memory at each iteration: {free:?}");
+    let grew = blocks.windows(2).position(|w| w[1] != w[0]);
     assert!(
-        fell.is_none(),
-        "free memory fell after iteration {}: {free:?}",
-        fell.map_or(0, |i| i + 1)
+        grew.is_none(),
+        "the arena allocated after iteration {}: blocks {blocks:?}",
+        grew.map_or(0, |i| i + 1)
     );
 }

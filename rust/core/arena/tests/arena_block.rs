@@ -57,6 +57,12 @@ fn warm_up() {
 /// two-sided, unlike the replay checks', because both of its sides are the
 /// rule: less than the table is a block too small for its rows, and more
 /// is a hidden allocation. Its window is one allocation, not a run.
+///
+/// The one tier-4 case left asserting the device-wide reading (#1589): the
+/// replay checks moved to `allocations()`, this process's own count, but
+/// the driver's cost of a block is in no per-process count wwr reaches on
+/// CUDA. A client of the RTX 3080's display allocating inside the window
+/// fails it; the readings are printed so such a failure can be told apart.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn declared_equals_allocated() {
@@ -74,7 +80,8 @@ fn declared_equals_allocated() {
     let during = free_bytes();
     drop(block);
     let after = free_bytes();
-    let taken = before - during;
+    println!("the card's free memory: {before} before the block, {during} with it, {after} after");
+    let taken = before.saturating_sub(during);
     assert!(
         (bytes..=bytes + slack).contains(&taken),
         "the block took {taken} bytes for a table of {bytes}"
