@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane};
+use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::solver::SolverHandle;
 use fb_recipes_diagonalize::syevd_lwork;
@@ -175,7 +175,7 @@ fn orthogonalize(n: usize, s: Vec<f64>) -> Vec<f64> {
         },
     );
     let mut instance = dag.plan().instantiate(&[0]);
-    let mut backend = thread_pool::Device::new(&[0], instance.plan());
+    let mut backend = instance.backend();
     instance.run(&mut backend, 1).result.unwrap();
     std::mem::take(&mut *out.lock().unwrap())
 }

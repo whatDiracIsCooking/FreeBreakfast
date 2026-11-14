@@ -60,7 +60,6 @@ use fb_core_planner::{Dag, Planned};
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_overlap::add_overlap;
 use fb_pipeline_guess::{add_loaded_guess, add_sad_guess};
-use fb_recipes_matrix_ao::add_blas_workspace;
 use serde::Deserialize;
 
 pub use write::{add_write_host_npy, add_write_npy};
@@ -270,7 +269,7 @@ pub fn plan(config: &Config) -> Result<Planned<'static>> {
     let mut dag = Dag::new();
     match config.calculation {
         Calculation::Overlap => {
-            add_blas_workspace(&mut dag, 0);
+            dag.blas_workspace(0);
             let classes = add_records(&mut dag, 0, &basis)?;
             let s = add_overlap(&mut dag, 0, &basis, &classes, &mut None);
             let n = basis.nao_sphe() as usize;

@@ -479,3 +479,50 @@ fn two_workers_are_independent() {
         .unwrap();
     assert_eq!(ran.load(Ordering::Relaxed), 6);
 }
+
+/// A declared BLAS workspace is a worker row of `BLAS_WORKSPACE_BYTES` in
+/// the worker's device table, added once however often it is declared, no
+/// task, and counted by admission: a cap one byte short of the table with
+/// it is refused, naming it among the rows live at the peak.
+#[test]
+fn a_blas_workspace_is_a_worker_row_admission_counts() {
+    use Decl::*;
+    let n = 24 * 24;
+    let task = || Declares::<true>(vec![Out("S", n)]);
+    let mut bare = Dag::<Heap, ()>::new();
+    bare.add("S", 0, task());
+    let bare = bare.plan();
+
+    let mut dag = Dag::<Heap, ()>::new();
+    dag.blas_workspace(0);
+    dag.add("S", 0, task());
+    dag.blas_workspace(0);
+    dag.blas_workspace(1);
+    let planned = dag.plan();
+    assert_eq!(planned.len(), 1, "declaring a workspace adds no task");
+    assert_eq!(planned.n_workers(), 2);
+    let row = planned.blas_workspaces[0].expect("worker 0's workspace");
+    let table = planned.device_table(0);
+    assert_eq!(table.n_rows(), bare.device_table(0).n_rows() + 1);
+    assert_eq!(table.len(row), BLAS_WORKSPACE_BYTES);
+    assert_eq!(
+        table.total(),
+        bare.device_table(0).total() + BLAS_WORKSPACE_BYTES
+    );
+    assert!(planned.blas_workspaces[1].is_some());
+    assert_eq!(planned.device_table(1).total(), BLAS_WORKSPACE_BYTES);
+    let text = planned.to_string();
+    assert_eq!(text.matches("blas workspace").count(), 2, "{text}");
+    assert!(text.contains("worker  plan     blas workspace"), "{text}");
+
+    fb_core_arena::admit(table, table.total(), "gpu0").unwrap();
+    let refused = fb_core_arena::admit(table, table.total() - 1, "gpu0").unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::Allocation);
+    assert!(
+        refused
+            .message
+            .contains(&format!("blas workspace ({BLAS_WORKSPACE_BYTES} B)")),
+        "{}",
+        refused.message
+    );
+}

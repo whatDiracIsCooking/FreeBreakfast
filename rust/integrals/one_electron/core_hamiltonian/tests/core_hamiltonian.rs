@@ -28,7 +28,7 @@ fn core_hamiltonian_matches_pyscf() {
         let fixture = common::plan(xyz, basis);
         let n = fixture.n_ao;
         let mut instance = fixture.planned.instantiate(&[0]);
-        let mut backend = fb_core_thread_pool::Device::new(&[0], instance.plan());
+        let mut backend = instance.backend();
         let record = instance.run(&mut backend, 1);
         record.result.unwrap();
         for t in &record.tasks {

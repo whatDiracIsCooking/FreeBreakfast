@@ -12,7 +12,8 @@
 //! - [`Dag`]: tasks added in plan order, each on a GPU worker, on its
 //!   stream or the CPU pool. [`Dag::add`] calls the layout at once and
 //!   returns the task's rows, whose output ids the caller passes to the
-//!   tasks that read them.
+//!   tasks that read them. [`Dag::blas_workspace`] declares a worker's
+//!   BLAS workspace, a worker row no task can name.
 //! - [`Planned`] ([`Dag::plan`]): each worker's device and host tables laid
 //!   out, and each task's dependencies derived, all pure. A task runs after
 //!   the producer of every row it reads ([`Table::reads`]) and after every
@@ -25,7 +26,10 @@
 //!   [`Instance::run`] takes the instance and the backend by `&mut`
 //!   (`fb_core_thread_pool`, "One run at a time"). Each run returns the
 //!   executor's [`Record`](fb_core_thread_pool::Record), every task timed
-//!   by the executor and none by itself.
+//!   by the executor and none by itself. With `device`,
+//!   `Instance::backend` makes the `thread_pool::Device` it runs on and
+//!   hands each worker's BLAS handle its declared workspace, held for as
+//!   long as the backend lives.
 //!
 //! [`Table::reads`]: fb_core_arena::Table::reads
 //! [`Table::handoffs`]: fb_core_arena::Table::handoffs
@@ -104,6 +108,8 @@
 #![forbid(unsafe_code)]
 
 mod dag;
+#[cfg(all(test, feature = "device-tests"))]
+mod device_tests;
 mod instance;
 mod task;
 #[cfg(test)]
@@ -112,3 +118,10 @@ mod tests;
 pub use dag::{Dag, Planned};
 pub use instance::Instance;
 pub use task::Task;
+
+/// The bytes of device memory each worker's BLAS handle is handed as its
+/// workspace ([`Dag::blas_workspace`]): 32 MiB, cuBLAS's own default on
+/// sm_90, the largest it allocates for itself on any architecture (4 MiB
+/// below sm_90). Too little makes cuBLAS pick slower kernels rather than
+/// fail.
+pub const BLAS_WORKSPACE_BYTES: usize = 32 << 20;

@@ -193,3 +193,43 @@ fn copies_round_trip_through_every_kind() {
     }
     assert_eq!(memcpy_p2h(&pinned.partition(2), output), data);
 }
+
+/// Needs a GPU. A held worker row is the row's bytes and length, keeps its
+/// block alive past the block's last other owner, and is its only user: a
+/// view asking for it, or a second hold, panics until it drops. A node's
+/// row cannot be held at all.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn a_held_worker_row_is_alone_and_keeps_its_block() {
+    use fb_core_wwr::device_slice::DeviceSlice;
+    use fb_test_support::panic_message;
+    use std::sync::Arc;
+
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let mut d = TableBuilder::<Device>::new();
+    let out = d.output::<f64>(0, "out", 64);
+    let ws = d.worker::<u8>("ws", MIB);
+    let block = Arc::new(Block::new(0, d.build()));
+    assert!(panic_message(|| drop(block.hold(out))).contains("out is not a worker row"));
+
+    let held = block.hold(ws);
+    assert_eq!(held.len(), MIB);
+    assert_eq!(held.dev_idx(), 0);
+    assert!(panic_message(|| drop(block.hold(ws))).contains("ws is already held"));
+    assert!(
+        panic_message(|| {
+            block.partition(0).take_mut(ws);
+        })
+        .contains("ws is held by another node's view")
+    );
+    let at = held.as_ptr().addr();
+    drop(held);
+    assert_eq!(block.partition(0).take_mut(ws).as_ptr().addr(), at);
+
+    let held = block.hold(ws);
+    let weak = Arc::downgrade(&block);
+    drop(block);
+    assert!(weak.upgrade().is_some(), "the held row let its block go");
+    drop(held);
+    assert!(weak.upgrade().is_none());
+}

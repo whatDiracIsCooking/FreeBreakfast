@@ -7,12 +7,11 @@ use std::sync::{Arc, Mutex};
 use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2h};
 use fb_core_error_handling::{Result, Status};
 use fb_core_planner::{Dag, Planned, Task};
-use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane, Record};
+use fb_core_thread_pool::{DeviceStream, Lane, Record};
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_integrals_one_electron_overlap::add_overlap;
 use fb_molecule_nuclei::add_nuclei;
-use fb_recipes_matrix_ao::add_blas_workspace;
 use fb_recipes_orthogonalize::{ORTHOGONALIZE_EIGENVALUE_FLOOR, add_orthogonalize};
 
 use super::tasks::add_solve_fock;
@@ -58,7 +57,7 @@ impl Run {
         let n_ao = basis.nao_sphe() as usize;
         let lwork = lwork(n_ao)?;
         let mut dag = Dag::new();
-        add_blas_workspace(&mut dag, 0);
+        dag.blas_workspace(0);
         let nuclei = add_nuclei(&mut dag, 0, &molecule);
         let mut u = None;
         let classes = add_records(&mut dag, 0, &basis)?;
@@ -109,7 +108,7 @@ impl Run {
     /// empty unless the result is `Ok`.
     pub fn run(self, device: i32) -> (Record, (Vec<f64>, Vec<f64>)) {
         let mut instance = self.planned.instantiate(&[device]);
-        let mut backend = thread_pool::Device::new(&[device], instance.plan());
+        let mut backend = instance.backend();
         let record = instance.run(&mut backend, 1);
         let out = if record.result.is_ok() {
             std::mem::take(&mut *self.out.lock().unwrap_or_else(|e| e.into_inner()))

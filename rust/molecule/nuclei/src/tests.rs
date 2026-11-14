@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use super::*;
 use fb_atom::{Atom, Element};
 use fb_core_arena::Heap;
-use fb_core_thread_pool::{self as thread_pool, HostOnly};
+use fb_core_thread_pool::HostOnly;
 use fb_core_types::Double3;
 use fb_test_support::golden;
 
@@ -192,7 +192,7 @@ fn device_rows_are_the_staged_rows() {
             },
         );
         let mut instance = dag.plan().instantiate(&[0]);
-        let mut backend = thread_pool::Device::new(&[0], instance.plan());
+        let mut backend = instance.backend();
         instance.run(&mut backend, 1).result.unwrap();
         assert_eq!(*out.lock().unwrap(), expected(&molecule), "{stem}");
     }

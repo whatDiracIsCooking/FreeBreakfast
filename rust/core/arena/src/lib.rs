@@ -21,7 +21,9 @@
 //! - [`Block::partition`] is what a node is handed when it runs: a
 //!   [`Bufs`] that gives it its own rows and no others, as `&[T]` /
 //!   `&mut [T]` on the host and [`DeviceRef`] / [`DeviceMut`] pointers on
-//!   the device.
+//!   the device. With `device`, `Block::hold` holds a worker row outside
+//!   any view, as a `HeldRow` that keeps the block alive: memory a library
+//!   keeps beyond a node, a BLAS handle's workspace.
 //! - [`memcpy_h2p`], [`memcpy_p2h`] and, with `device`, `memcpy_p2d`,
 //!   `memcpy_d2p` and `memcpy_d2d` move a node's data between the host and
 //!   its rows, with no `unsafe` at the call (the `memcpy` module has why
@@ -87,6 +89,8 @@ mod tests;
 pub use admit::admit;
 pub use assign::{Assignment, Life, Row, assign};
 pub use block::Block;
+#[cfg(feature = "device")]
+pub use bufs::HeldRow;
 pub use bufs::{Bufs, DeviceMut, DeviceRef};
 #[cfg(any(test, feature = "test-support"))]
 pub use kind::Heap;

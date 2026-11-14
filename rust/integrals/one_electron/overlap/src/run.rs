@@ -6,8 +6,7 @@ use std::sync::{Arc, Mutex};
 use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2h};
 use fb_core_error_handling::{Result, Status};
 use fb_core_planner::{Dag, Planned, Task};
-use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane, Record};
-use fb_recipes_matrix_ao::add_blas_workspace;
+use fb_core_thread_pool::{DeviceStream, Lane, Record};
 
 use fb_integrals_mmd::add_records;
 
@@ -45,7 +44,7 @@ impl Run {
             .place(&molecule)?;
         let n_ao = basis.nao_sphe() as usize;
         let mut dag = Dag::new();
-        add_blas_workspace(&mut dag, 0);
+        dag.blas_workspace(0);
         let classes = add_records(&mut dag, 0, &basis)?;
         let s = add_overlap(&mut dag, 0, &basis, &classes, &mut None);
         let pinned = dag.add(
@@ -88,7 +87,7 @@ impl Run {
     /// `Ok`.
     pub fn run(self, device: i32) -> (Record, Vec<f64>) {
         let mut instance = self.planned.instantiate(&[device]);
-        let mut backend = thread_pool::Device::new(&[device], instance.plan());
+        let mut backend = instance.backend();
         let record = instance.run(&mut backend, 1);
         let s = if record.result.is_ok() {
             std::mem::take(&mut *self.s.lock().unwrap_or_else(|e| e.into_inner()))

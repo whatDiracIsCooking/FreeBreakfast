@@ -19,7 +19,11 @@
 //! **The workspace.** cuBLAS and hipBLAS allocate a workspace per handle
 //! unless handed one, and the tree's design hands each handle a worker row
 //! of the arena (`docs/gpu_layer.md`, "Layering"):
-//! [`BlasHandle::set_workspace`] hands it through, [`WORKSPACE_BYTES`] long.
+//! [`BlasHandle::bind_workspace`] hands it through. The library keeps the
+//! pointer for every later call, beyond any borrow, so the handle takes the
+//! memory by value, a [`DeviceSliceMut`] it owns until it is destroyed or
+//! handed another, and no borrow-scoped form exists: resetting a handle to
+//! no workspace at all is vendor-dependent.
 //!
 //! **The typed calls.** [`BlasScalar`] is wwr's typed dispatch: one trait
 //! method per routine, implemented for the four types the library computes
@@ -40,8 +44,8 @@
 //! row or column) and negative strides (x read backwards) are refused, as
 //! nothing in the tree asks for them.
 
-use std::ffi::c_void;
 use std::ops::Deref;
+use std::panic::Location;
 use std::rc::Rc;
 
 use wwr_sys::{
@@ -51,11 +55,11 @@ use wwr_sys::{
 
 use crate::common::ErrorCode;
 use crate::device_slice::{DeviceSlice, DeviceSliceMut};
-use crate::gpu_status;
 use crate::handle::{
     DeviceHandle, DeviceHandleStream, HandleKind, StreamBoundHandle, StreamBoundKind,
 };
 use crate::runtime::Stream;
+use crate::{gpu_log_error_at, gpu_status};
 use fb_core_error_handling::{Status, check_or_abort};
 
 /// `wwrblasStatus_t`, as the C ABI hands it back. The name is the
@@ -97,12 +101,6 @@ impl ErrorCode for wwr_blas_status {
     }
 }
 
-/// The bytes of device memory each BLAS handle is handed as its workspace:
-/// 32 MiB, cuBLAS's own default on sm_90, the largest it allocates for
-/// itself on any architecture (4 MiB below sm_90). Too little makes cuBLAS
-/// pick slower kernels rather than fail.
-pub const WORKSPACE_BYTES: usize = 32 << 20;
-
 /// A BLAS handle's create, destroy and stream bind.
 pub struct BlasKind;
 
@@ -134,51 +132,113 @@ impl StreamBoundKind for BlasKind {
 /// Like the stream it is bound to, it is neither `Send` nor `Sync`; an
 /// owner that shares it across threads makes sure no two call through it at
 /// once.
-pub struct BlasHandle(StreamBoundHandle<BlasKind, Stream>);
+pub struct BlasHandle {
+    // Fields drop in declaration order: the handle is destroyed before the
+    // workspace it was handed is released.
+    handle: StreamBoundHandle<BlasKind, Stream>,
+    /// The memory handed to the library as its workspace, owned while the
+    /// library holds its pointer; `None` while the handle is on the one it
+    /// allocated for itself.
+    workspace: Option<Box<dyn DeviceSliceMut<u8> + Send + Sync>>,
+}
 
 impl BlasHandle {
     /// A handle on `owner`'s device, bound to its stream. Aborts on
     /// failure, logging at critical against the caller.
     #[track_caller]
     pub fn new(owner: Rc<Stream>) -> Self {
-        BlasHandle(check_or_abort(StreamBoundHandle::try_new(owner)))
+        BlasHandle {
+            handle: check_or_abort(StreamBoundHandle::try_new(owner)),
+            workspace: None,
+        }
     }
 
-    /// Hand the handle `bytes` of device memory at `workspace` as its
-    /// workspace, in place of the one it allocates for itself:
-    /// `wwrblasSetWorkspace`. Every later call through the handle uses it.
+    /// Hand the handle `workspace` as its workspace, in place of the one it
+    /// allocated for itself or was handed before: `wwrblasSetWorkspace`.
+    /// Every later call through the handle uses it, and the handle owns it
+    /// until it is destroyed or handed another, since the library keeps the
+    /// pointer. A previous workspace is released only after the library has
+    /// the new pointer and the stream has finished every call enqueued
+    /// before, so nothing still running uses memory that is gone.
+    ///
+    /// `workspace` must be on the handle's device, as every
+    /// [`DeviceSlice`] a call through the handle takes must be; `'static`
+    /// because the handle keeps it, so it owns its memory rather than
+    /// borrowing it.
     ///
     /// # Errors
-    /// The library's refusal, as a `GpuRuntime` error naming the status:
-    /// cuBLAS refuses a pointer not 256-byte aligned.
-    ///
-    /// # Safety
-    /// `workspace` is `bytes` of device memory on the handle's device,
-    /// 256-byte aligned, and stays allocated, and written by nothing else,
-    /// for as long as any call through the handle may still run.
-    pub unsafe fn set_workspace(&self, workspace: *mut c_void, bytes: usize) -> Status {
-        // SAFETY: the handle is live; the caller's for the memory.
-        gpu_status(unsafe { wwr_sys::wwr_blas_set_workspace(self.get(), workspace, bytes) })
+    /// The library's refusal, as a `GpuRuntime` error naming the status
+    /// (cuBLAS refuses a pointer not 256-byte aligned), and the handle keeps
+    /// its previous workspace; or a failed sync of the stream before a
+    /// previous one is released, which keeps that one alive.
+    pub fn bind_workspace<W>(&mut self, workspace: W) -> Status
+    where
+        W: DeviceSliceMut<u8> + Send + Sync + 'static,
+    {
+        let mut workspace: Box<dyn DeviceSliceMut<u8> + Send + Sync> = Box::new(workspace);
+        let (ptr, bytes) = (workspace.as_mut_ptr(), workspace.len());
+        // SAFETY: the handle is live. `workspace` is `bytes` of device
+        // memory on the handle's device that nothing else reads or writes
+        // while it lives (`DeviceSliceMut`), and the handle owns it from
+        // here until after the library has stopped using the pointer: it
+        // is released only by the next bind, once the library holds that
+        // one's pointer and the stream has drained, or after the handle is
+        // destroyed (field order, and the sync in `Drop`). `&mut self`
+        // rules out a call through the handle on another thread meanwhile.
+        gpu_status(unsafe {
+            wwr_sys::wwr_blas_set_workspace(self.handle.get(), ptr.cast(), bytes)
+        })?;
+        if let Some(previous) = self.workspace.replace(workspace)
+            && let Err(e) = gpu_status(self.handle.owner().sync())
+        {
+            // A call still queued may use it: leak it rather than release
+            // memory the device may yet write.
+            std::mem::forget(previous);
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// The workspace the handle was last handed, if any.
+    pub fn workspace(&self) -> Option<&(dyn DeviceSliceMut<u8> + Send + Sync)> {
+        self.workspace.as_deref()
+    }
+}
+
+impl Drop for BlasHandle {
+    /// With a workspace handed to it: sync the stream first, so no call
+    /// through the handle is still running when the fields drop, the handle
+    /// and then its workspace. A failed sync is logged, as a failed destroy
+    /// is, and the workspace leaked rather than released under a call that
+    /// may still be running.
+    fn drop(&mut self) {
+        if self.workspace.is_some() {
+            let status = self.handle.owner().sync();
+            if gpu_status(status).is_err() {
+                gpu_log_error_at(status, Location::caller());
+                std::mem::forget(self.workspace.take());
+            }
+        }
     }
 }
 
 impl Deref for BlasHandle {
     type Target = StreamBoundHandle<BlasKind, Stream>;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.handle
     }
 }
 
 impl DeviceHandle for BlasHandle {
     fn dev_idx(&self) -> i32 {
-        self.0.dev_idx()
+        self.handle.dev_idx()
     }
 }
 
 impl DeviceHandleStream for BlasHandle {
     /// The bound stream.
     fn stream(&self) -> wwr_stream {
-        self.0.stream()
+        self.handle.stream()
     }
 }
 
@@ -530,20 +590,24 @@ mod tests {
         ok(owner.sync());
     }
 
-    /// Needs a GPU. A handle handed a [`WORKSPACE_BYTES`] workspace runs a
-    /// DGEMM through it to the exact product: small integers, so every
-    /// partial sum is exact in any order.
+    /// Needs a GPU. A handle handed a 32 MiB workspace (the size the
+    /// planner gives each worker's) owns it, and runs a DGEMM through it to
+    /// the exact product: small integers, so every partial sum is exact in
+    /// any order. Handed a second, it owns that one, and still computes.
     #[test]
     #[ignore = "tier 4: needs a GPU"]
     fn runs_a_gemm_on_a_workspace_it_was_handed() {
         const N: usize = 16;
+        const BYTES: usize = 32 << 20;
         let owner = Rc::new(Stream::new(0));
-        let blas = BlasHandle::new(owner.clone());
-        let workspace = DeviceBytes::new(WORKSPACE_BYTES);
-        assert_eq!(workspace.0 as usize % 256, 0);
-        // SAFETY: a live allocation of WORKSPACE_BYTES on device 0, which
-        // outlives every call through the handle below.
-        unsafe { blas.set_workspace(workspace.0, WORKSPACE_BYTES) }.unwrap();
+        let mut blas = BlasHandle::new(owner.clone());
+        assert!(blas.workspace().is_none());
+        let workspace = DeviceBytes::new(BYTES);
+        let at = workspace.0 as usize;
+        assert_eq!(at % 256, 0);
+        blas.bind_workspace(workspace).unwrap();
+        let held = blas.workspace().expect("a workspace");
+        assert_eq!((held.as_ptr() as usize, held.len()), (at, BYTES));
 
         let a: Vec<f64> = (0..N * N).map(|i| (i % 7) as f64 - 3.0).collect();
         let b: Vec<f64> = (0..N * N).map(|i| (i % 5) as f64 - 2.0).collect();
@@ -562,6 +626,17 @@ mod tests {
             DeviceBytes::upload(&a, &owner),
             DeviceBytes::upload(&b, &owner),
         );
+        let mut dc = DeviceBytes::new(N * N * size_of::<f64>());
+        gemm(
+            &blas, OP_N, OP_N, n, n, n, 1.0, &da, n, &db, n, 0.0, &mut dc, n,
+        )
+        .unwrap();
+        assert_eq!(download(&dc, &owner), want);
+
+        let second = DeviceBytes::new(BYTES);
+        let at = second.0 as usize;
+        blas.bind_workspace(second).unwrap();
+        assert_eq!(blas.workspace().map(|w| w.as_ptr() as usize), Some(at));
         let mut dc = DeviceBytes::new(N * N * size_of::<f64>());
         gemm(
             &blas, OP_N, OP_N, n, n, n, 1.0, &da, n, &db, n, 0.0, &mut dc, n,
