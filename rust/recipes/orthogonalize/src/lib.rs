@@ -13,7 +13,7 @@
 //!   [`fb_inverse_sqrt`] (an eigenvalue at or below the floor becomes 0,
 //!   which drops its mode), then `M = U diag(Λ^(-1/2))` by a BLAS `dgmm`
 //!   into scratch M and `X = M Uᵀ` by a `gemm` into the output row X, both
-//!   on the worker's handle: the dgmm through `wwr-sys`, the gemm through
+//!   on the worker's handle, through [`fb_recipes_blas::dgmm`] and
 //!   [`fb_recipes_blas::gemm`].
 //!
 //! **Conditioning.** As in the C++: the floor test comes before the square
@@ -43,12 +43,11 @@ use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::common::wwr_status_from_code;
+use fb_core_wwr::gpu_status_at;
 use fb_core_wwr::handle::DeviceHandleStream;
-use fb_core_wwr::{gpu_status, gpu_status_at};
-use fb_recipes_blas::{N, T, gemm};
+use fb_recipes_blas::{N, Right, T, dgmm, gemm};
 use fb_recipes_diagonalize::add_diagonalize;
 use fb_recipes_sys::fb_inverse_sqrt;
-use wwr_sys::wwr_blas_side_mode;
 
 /// The default eigenvalue floor, the C++ `kOrthogonalizeEigenvalueFloor`: an
 /// eigenvalue at or below it contributes 0 to X rather than `λ^(-1/2)`.
@@ -173,28 +172,13 @@ impl Task for InverseRoot {
 
         // The worker's handle, bound to `stream` when the backend was made.
         let handle = worker.blas();
-        let (u, m, mut x) = (
+        let (u, mut m, mut x) = (
             device.get(self.u),
             device.take_mut(rows.m),
             device.take_mut(rows.x),
         );
         // M = U diag(Λ): column j of U scaled by Λ[j].
-        // SAFETY: U and M are n × n device rows with ld n, Λ n doubles; the
-        // dgmm enqueues on `stream`.
-        gpu_status(unsafe {
-            wwr_sys::wwr_blas_ddgmm(
-                handle.get(),
-                wwr_blas_side_mode::WWR_BLAS_SIDE_RIGHT,
-                n,
-                n,
-                u.as_ptr(),
-                n,
-                lambda.as_ptr(),
-                1,
-                m.as_mut_ptr(),
-                n,
-            )
-        })?;
+        dgmm::<Right, f64>(handle, n, n, &u, &lambda, &mut m)?;
         // X = M Uᵀ, symmetric by construction.
         gemm::<N, T, f64>(handle, n, n, n, 1.0, &m, &u, 0.0, &mut x)
     }

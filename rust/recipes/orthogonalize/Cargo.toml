@@ -18,8 +18,6 @@ fb-recipes-blas.workspace = true
 fb-kernel-abi.workspace = true
 fb-recipes-diagonalize.workspace = true
 fb-recipes-sys.workspace = true
-# BLAS for the dgmm, beside the runtime.
-wwr-sys = { workspace = true, features = ["blas"] }
 
 [dev-dependencies]
 fb-io-npy.workspace = true
