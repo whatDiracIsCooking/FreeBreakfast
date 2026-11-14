@@ -183,7 +183,7 @@ fn the_backend_binds_each_instances_workspace_row() {
     }
 
     drop(backend_a);
-    let row = a.blas_workspaces[0][0];
+    let (_, row) = a.blas_workspaces[0][0];
     let held = a.blocks[0].0.hold(row);
     assert_eq!((held.as_ptr().addr(), held.len()), (at_a, len));
     drop(held);
@@ -195,7 +195,9 @@ fn the_backend_binds_each_instances_workspace_row() {
 
 /// Needs a GPU. Two lanes of one worker, a GEMM on each from one CPU fill:
 /// each lane's BLAS handle holds a workspace row of its own, the plan's
-/// row for that lane, and both products are exact.
+/// row for that lane, and both products are exact. A third lane, whose one
+/// task is an upload, calls no library, so it has no row and the backend
+/// made it no handles.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn each_lane_binds_its_own_workspace_row() {
@@ -208,9 +210,23 @@ fn each_lane_binds_its_own_workspace_row() {
     let (.., c1) = dag.add_gpu("gemm 1", LaneId { worker: 0, lane: 1 }, Gemm(ab));
     dag.add_cpu("collect 0", 0, Collect(c0, Arc::clone(&out_0)));
     dag.add_cpu("collect 1", 0, Collect(c1, Arc::clone(&out_1)));
+    let copy_lane = LaneId { worker: 0, lane: 2 };
+    let _ = dag.upload(copy_lane, ab.0, "A", N * N);
     let mut instance = dag.plan().instantiate(&[0]);
     let mut backend = instance.backend();
     let lanes = [bound_on(&backend, 0), bound_on(&backend, 1)];
+    assert_eq!(
+        instance.blas_workspaces[0].len(),
+        2,
+        "a row for the copy lane"
+    );
+    assert!(
+        panic_message(|| {
+            let _ = backend.stream(copy_lane).blas();
+        })
+        .contains("without library handles"),
+        "the copy lane has a BLAS handle"
+    );
     assert_ne!(lanes[0].0, lanes[1].0, "two lanes share a workspace");
     instance.run(&mut backend, 1).result.unwrap();
     let want = product(&operand(0), &operand(3));
@@ -218,7 +234,9 @@ fn each_lane_binds_its_own_workspace_row() {
     assert_eq!(*out_1.lock().unwrap(), want);
     drop(backend);
     for (lane, &bound) in lanes.iter().enumerate() {
-        let held = instance.blocks[0].0.hold(instance.blas_workspaces[0][lane]);
+        let held = instance.blocks[0]
+            .0
+            .hold(instance.blas_workspaces[0][lane].1);
         assert_eq!((held.as_ptr().addr(), held.len()), bound, "lane {lane}");
         assert_eq!(bound.1, BLAS_WORKSPACE_BYTES);
     }

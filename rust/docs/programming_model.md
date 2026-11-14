@@ -515,7 +515,9 @@ planned, before the backend makes one stream per lane.
 card, and a BLAS or solver handle's state and workspace are one stream's at
 a time, so the `Device` backend makes a BLAS and a dense-solver handle per
 lane, bound to its stream ([`gpu_layer.md`](gpu_layer.md), "Layering"),
-and a declared BLAS workspace is a worker row per lane.
+and a declared BLAS workspace is a worker row per lane. A lane above 0
+whose tasks all say they call no library (`GpuTask::uses_libraries`), as
+the mmd records' classes and the copy nodes do, has neither.
 
 **Reuse across lanes is a handoff, and every one serializes.** The assigner
 packs a worker's table to the fewest bytes against the plan's ranks,
@@ -803,7 +805,8 @@ itself, split it there.
 - **Lanes from the DAG's shape.** The builder names each GPU node's lane
   today, as the C++ mmd names a stream per class. Two nodes with no path
   between them could be put on two lanes by the planner instead, but a
-  lane is a stream, a library handle pair and a BLAS workspace row, so the
+  lane is a stream, and a library handle pair and a BLAS workspace row
+  when its tasks call a library, so the
   count is a cost, and which nodes are worth splitting is the schedule
   search's question below.
 - **How loose is too loose.** A bound from the dimensions is the preferred

@@ -906,6 +906,12 @@ impl GpuTask for Form {
         vec![("n_rec", self.pairs().n_rec() as usize)]
     }
 
+    /// It sorts and launches kernels, and calls no library, so a class's
+    /// lane above 0 has no BLAS workspace row and no handles.
+    fn uses_libraries(&self) -> bool {
+        false
+    }
+
     fn run(
         &self,
         rows: &FormRows,

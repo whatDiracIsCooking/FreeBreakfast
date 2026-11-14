@@ -143,7 +143,8 @@ impl Backend for HostOnly {
 }
 
 /// What a GPU node is handed under [`Device`]: its lane's stream, which it
-/// derefs to, and the lane's library handles, each bound to that stream.
+/// derefs to, and the lane's library handles, each bound to that stream, if
+/// the lane has them ([`Device::new`]).
 /// Made with the [`Device`], never during a run, so a task reaches a handle
 /// through its [`Lane`](super::Lane) and never makes one.
 ///
@@ -158,8 +159,9 @@ impl Backend for HostOnly {
 pub struct DeviceStream {
     // Fields drop in declaration order: the handles before the stream they
     // are bound to (each also holds the stream until it is destroyed).
-    blas: BlasHandle,
-    solver: SolverHandle,
+    // `None` on a lane made without them.
+    blas: Option<BlasHandle>,
+    solver: Option<SolverHandle>,
     stream: Rc<Stream>,
 }
 
@@ -169,25 +171,43 @@ impl DeviceStream {
     /// handle bound to it. Aborts if any cannot be made.
     #[track_caller]
     pub fn new(dev_idx: i32) -> Self {
+        Self::with_libraries(dev_idx, true)
+    }
+
+    /// A non-blocking stream on `dev_idx`, and its two handles if
+    /// `libraries`. Aborts if any cannot be made.
+    #[track_caller]
+    fn with_libraries(dev_idx: i32, libraries: bool) -> Self {
         let stream = Rc::new(Stream::new(dev_idx));
         DeviceStream {
-            blas: BlasHandle::new(Rc::clone(&stream)),
-            solver: SolverHandle::new(Rc::clone(&stream)),
+            blas: libraries.then(|| BlasHandle::new(Rc::clone(&stream))),
+            solver: libraries.then(|| SolverHandle::new(Rc::clone(&stream))),
             stream,
         }
     }
 
     /// The lane's BLAS handle, bound to its stream: pass its `get()` to
     /// a `wwr_blas_*` call, and the call enqueues on the stream.
+    ///
+    /// # Panics
+    /// If the lane was made without handles: a task on it said it calls no
+    /// library (the planner's `GpuTask::uses_libraries`) and calls one.
     pub fn blas(&self) -> &BlasHandle {
-        &self.blas
+        self.blas
+            .as_ref()
+            .expect("a lane made without library handles: its tasks said they call none")
     }
 
     /// The lane's dense-solver handle, bound to its stream: pass its
     /// `get()` to a `wwr_solver_dn_*` call, and the call enqueues on the
     /// stream.
+    ///
+    /// # Panics
+    /// As [`DeviceStream::blas`].
     pub fn solver(&self) -> &SolverHandle {
-        &self.solver
+        self.solver
+            .as_ref()
+            .expect("a lane made without library handles: its tasks said they call none")
     }
 }
 
@@ -209,7 +229,8 @@ pub enum DeviceStream {}
 
 #[cfg(feature = "device")]
 /// GPU workers, each on its own device with one non-blocking stream per
-/// lane and the lane's library handles bound to it ([`DeviceStream`]), and
+/// lane and, on the lanes that call a library, the lane's library handles
+/// bound to it ([`DeviceStream`]), and
 /// two timing events per GPU node and trip: its stream scope, recorded
 /// before it runs and after it returns. The second is also what its
 /// consumers wait on. A node outside every counted loop has one trip; one
@@ -244,19 +265,25 @@ impl Device {
     /// GPU worker `w` on device `devices[w]`, with as many lanes as `plan`
     /// places nodes on ([`Plan::lanes`]), at least one, and an event pair
     /// for every GPU node of `plan` and trip of the counted loop it is in.
+    /// Lane `l` of worker `w` has library handles if `libraries[w][l]`, and
+    /// none if it is false or missing, so a lane whose nodes call no
+    /// library costs no handle and no library workspace.
     #[debug_requires(
         plan.lanes().len() <= devices.len(),
         "a device for every GPU worker of the plan"
     )]
     #[track_caller]
-    pub fn new(devices: &[i32], plan: &Plan<'_, DeviceStream>) -> Self {
+    pub fn new(devices: &[i32], plan: &Plan<'_, DeviceStream>, libraries: &[Vec<bool>]) -> Self {
         let lanes = plan.lanes();
         let streams = devices
             .iter()
             .enumerate()
             .map(|(w, &d)| {
                 let n = lanes.get(w).copied().unwrap_or(0).max(1);
-                (0..n).map(|_| DeviceStream::new(d)).collect()
+                let has = |l: usize| libraries.get(w).and_then(|v| v.get(l)).copied();
+                (0..n)
+                    .map(|l| DeviceStream::with_libraries(d, has(l).unwrap_or(false)))
+                    .collect()
             })
             .collect();
         let events = plan
@@ -293,13 +320,16 @@ impl Device {
     /// As [`BlasHandle::bind_workspace`]: the library's refusal.
     ///
     /// # Panics
-    /// If the backend does not have `lane`.
+    /// If the backend does not have `lane`, or `lane` has no library
+    /// handles ([`Device::new`]).
     pub fn bind_blas_workspace<W>(&mut self, lane: LaneId, workspace: W) -> Status
     where
         W: DeviceSliceMut<u8> + Send + Sync + 'static,
     {
         self.streams[lane.worker][lane.lane]
             .blas
+            .as_mut()
+            .expect("a lane made without library handles has no workspace to bind")
             .bind_workspace(workspace)
     }
 

@@ -91,6 +91,10 @@ impl<T: Element> GpuTask for Upload<T> {
         vec![("len", self.len)]
     }
 
+    fn uses_libraries(&self) -> bool {
+        false
+    }
+
     fn run(
         &self,
         dst: &Self::Rows,
@@ -123,6 +127,10 @@ impl<T: Element> GpuTask for Download<T> {
 
     fn dims(&self) -> Vec<(&'static str, usize)> {
         vec![("len", self.len)]
+    }
+
+    fn uses_libraries(&self) -> bool {
+        false
     }
 
     fn run(
