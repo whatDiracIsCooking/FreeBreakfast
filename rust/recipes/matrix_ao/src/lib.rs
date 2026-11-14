@@ -23,6 +23,7 @@
 //! | `MatrixAO<L>`, `BasisLayout`, `ao_count` | nothing: a matrix is a device row, its order the basis's `nao_cart` or `nao_sphe` |
 //! | `MatrixAOPair::spherical_to_cartesian` | not ported yet |
 
+use contracts::debug_requires;
 use fb_basis::BasisSet;
 use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
@@ -45,9 +46,11 @@ use wwr_sys::{wwr_blas_operation, wwr_memcpy_kind, wwr_stream};
 /// slot for every matrix of the plan over `basis` on `worker`, and U is
 /// staged once and read by every transform.
 ///
+/// Requires, checked in debug builds: `basis` has at least one shell.
+///
 /// # Panics
-/// If `basis` has no shells, or `u` holds a row of another worker's table
-/// ([`Dag::add`]).
+/// If `u` holds a row of another worker's table ([`Dag::add`]).
+#[debug_requires(basis.nshells() > 0, "a basis of at least one shell")]
 #[track_caller]
 pub fn add_cartesian_to_spherical(
     dag: &mut Dag<'_>,
@@ -57,10 +60,6 @@ pub fn add_cartesian_to_spherical(
     name: &str,
     cartesian: RowId<Device, f64>,
 ) -> RowId<Device, f64> {
-    assert!(
-        basis.nshells() > 0,
-        "add_cartesian_to_spherical: a basis with no shells"
-    );
     let u = *u.get_or_insert_with(|| {
         dag.add(
             "harmonics",

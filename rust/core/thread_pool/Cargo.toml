@@ -20,6 +20,7 @@ device = ["dep:fb-core-wwr"]
 device-tests = ["device", "fb-core-wwr/test-support", "dep:wwr-sys"]
 
 [dependencies]
+contracts.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-log.workspace = true
 fb-core-wwr = { workspace = true, optional = true }

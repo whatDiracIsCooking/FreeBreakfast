@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use contracts::debug_requires;
 use fb_core_error_handling::Status;
 use serde::{Deserialize, Serialize};
 
@@ -83,8 +84,11 @@ impl<'a, S> Plan<'a, S> {
     /// the plan; that is what makes the plan acyclic and the ids a
     /// topological order.
     ///
-    /// # Panics
-    /// If a predecessor is not in this plan.
+    /// Requires, checked in debug builds: every predecessor is in this plan.
+    #[debug_requires(
+        deps.iter().all(|d| d.0 < self.nodes.len()),
+        "every predecessor is in the plan"
+    )]
     pub fn add(
         &mut self,
         name: impl Into<String>,
@@ -97,7 +101,6 @@ impl<'a, S> Plan<'a, S> {
         preds.sort_unstable();
         preds.dedup();
         for &p in &preds {
-            assert!(p < id, "predecessor {p} is not in the plan");
             self.succs[p].push(id);
         }
         self.nodes.push(Node {

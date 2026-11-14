@@ -264,7 +264,8 @@ fn an_empty_plan_runs() {
 }
 
 #[test]
-#[should_panic(expected = "predecessor 0 is not in the plan")]
+#[cfg(debug_assertions)] // the contract is compiled out of release
+#[should_panic(expected = "every predecessor is in the plan")]
 fn a_predecessor_from_elsewhere_is_rejected() {
     let mut other: Plan<'_, ()> = Plan::new();
     let foreign = other.add("x", Placement::Cpu, &[], |_| Ok(()));

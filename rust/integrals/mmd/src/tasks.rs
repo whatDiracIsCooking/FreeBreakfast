@@ -579,7 +579,9 @@ fn upload<T: Element>(
     src: &[T],
 ) -> Result<*const T> {
     let dst = device.take_mut(dst);
-    debug_assert_eq!(dst.len(), src.len());
+    // Always on, not a contract: the copy below writes `src.len()` elements
+    // into `dst`, so a release build must not skip it.
+    assert_eq!(dst.len(), src.len(), "upload: the rows' lengths differ");
     // SAFETY: two rows of `src.len()` elements, on the task's stream. The
     // pinned row is not rewritten before the copy completes: its bytes'
     // next owner is ordered after this task's event by a handoff.

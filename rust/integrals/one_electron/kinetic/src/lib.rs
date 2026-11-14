@@ -114,10 +114,13 @@ pub fn kinetic_classes(
 /// build serves every reader of the plan; `u` is the plan's slot for U over
 /// `basis` on `worker`, shared with every other matrix the plan transforms.
 ///
+/// Requires, checked in debug builds: `basis` has at least one shell.
+///
 /// # Panics
-/// If `basis` has no shells, or `nao_cart²` does not fit an `i32` (the
-/// kinetic kernels index the matrix in 32 bits), or `classes` are rows of
-/// another worker's or another plan's table ([`Dag::add`]).
+/// If `nao_cart²` does not fit an `i32` (the kinetic kernels index the
+/// matrix in 32 bits), or `classes` are rows of another worker's or another
+/// plan's table ([`Dag::add`]).
+#[debug_requires(basis.nshells() > 0, "a basis of at least one shell")]
 #[track_caller]
 pub fn add_kinetic(
     dag: &mut Dag<'_>,
@@ -126,7 +129,6 @@ pub fn add_kinetic(
     classes: &[ClassRows],
     u: &mut Option<RowId<Pinned, f64>>,
 ) -> RowId<Device, f64> {
-    assert!(basis.nshells() > 0, "add_kinetic: a basis with no shells");
     let n_cart = basis.nao_cart() as usize;
     assert!(
         i32::try_from(n_cart * n_cart).is_ok(),

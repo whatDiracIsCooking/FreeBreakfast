@@ -267,7 +267,9 @@ a check lives"):
 | What a launch wrapper requires | The C header's `///` comment, carried into the `-sys` crate by `devtools/rust-bindings.py`, and the safe wrapper's `debug_requires` ([`gpu_layer.md`](gpu_layer.md), "The safe wrapper") |
 
 Three rules hold for all of them. Contracts are debug-only, so a release
-build pays nothing and the PR gate, a debug build, has every one on. The
+build pays nothing and the PR gate, a debug build, has every one on; a
+check that soundness rests on is therefore an always-on `assert!`, not a
+contract ([`testing.md`](testing.md), "Contracts are part of the spec"). The
 outcome of a GPU call that can fail is not a contract; the call returns a
 status or a `Result`, a failure is an expected result, and making it a
 contract would turn it into a panic. A

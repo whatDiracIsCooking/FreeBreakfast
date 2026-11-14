@@ -20,6 +20,7 @@ device = ["fb-core-arena/device", "fb-core-thread-pool/device"]
 device-tests = ["device", "dep:fb-core-wwr", "dep:wwr-sys"]
 
 [dependencies]
+contracts.workspace = true
 fb-core-arena.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-thread-pool.workspace = true
