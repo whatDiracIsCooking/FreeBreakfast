@@ -7,7 +7,7 @@ use fb_core_types::Double3;
 
 use fb_integrals_sys::{ClassPairs, ShellTable};
 
-use super::tables::tables;
+use super::tables::{mixed_tables, tables};
 
 /// Four shells on two centres, a p before the s shells so the swap is
 /// needed: 0 p on A (2 primitives), 1 s on B (3), 2 s on A (1), 3 d on B (1).
@@ -81,4 +81,49 @@ fn tables_of_a_hand_built_basis() {
     assert_eq!(t.n_cart(), 11);
     assert_eq!(t.n_pairs(), 10);
     assert_eq!(t.n_max(), 13);
+}
+
+/// The two-basis sweep of [`basis`] against a second basis of an s (2
+/// primitives) and a p (1) on a third centre: every ordered pair, never
+/// swapped, so (1,0) and (2,0) appear; the ket shells follow the bra
+/// basis's in the table, each offset and rank its own basis's.
+#[test]
+fn mixed_tables_of_two_hand_built_bases() {
+    let c = Double3 {
+        x: -0.5,
+        y: 1.0,
+        z: 0.25,
+    };
+    let cols = BasisSet::new(vec![
+        Shell::zipped(0, &[4.0, 0.5], &[0.7, 0.3], c),
+        Shell::zipped(1, &[0.8], &[1.0], c),
+    ]);
+    let t = mixed_tables(&basis(), &cols);
+    let s = t.shells();
+    assert_eq!(s.prim_begin, [0, 2, 5, 6, 7, 9, 10]);
+    // The bra basis's offsets and ranks, then the ket basis's from 0.
+    assert_eq!(s.ao_offset, [0, 3, 4, 5, 0, 1]);
+    assert_eq!(s.rank, [0, 0, 1, 0, 0, 0]);
+    assert_eq!(s.c_x, [0.0, 1.25, 0.0, 1.25, -0.5, -0.5]);
+    assert_eq!(
+        t.classes(),
+        vec![
+            // (1,4) K 6, (2,4) K 2.
+            class(0, 0, &[1, 2], &[4, 4], &[0, 6, 8]),
+            // (1,5) K 3, (2,5) K 1.
+            class(0, 1, &[1, 2], &[5, 5], &[0, 3, 4]),
+            // (0,4) K 4: a p bra on an s ket, not swapped.
+            class(1, 0, &[0], &[4], &[0, 4]),
+            // (0,5) K 2.
+            class(1, 1, &[0], &[5], &[0, 2]),
+            // (3,4) K 2.
+            class(2, 0, &[3], &[4], &[0, 2]),
+            // (3,5) K 1.
+            class(2, 1, &[3], &[5], &[0, 1]),
+        ]
+    );
+    // The bra basis's Cartesians.
+    assert_eq!(t.n_cart(), 11);
+    assert_eq!(t.n_pairs(), 8);
+    assert_eq!(t.n_max(), 8);
 }

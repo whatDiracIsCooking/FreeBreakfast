@@ -89,14 +89,20 @@ impl ClassPairs {
 }
 
 /// The shell table and every class of a basis whose `n_cart` Cartesian AOs
-/// the records' offsets index: what [`add_record_tasks`] forms the records
-/// from. Made only by [`RecordTables::new`], which checks every index the
-/// kernels follow, so the tables are fixed once checked.
+/// the records' offsets index, or of two bases, a bra basis's shells and
+/// then a ket basis's, each indexing its own: what [`add_record_tasks`]
+/// (one basis) or [`add_mixed_record_tasks`] (two) forms the records from.
+/// Made only by [`RecordTables::new`] and [`RecordTables::mixed`], which
+/// check every index the kernels follow, so the tables are fixed once
+/// checked.
 #[derive(Debug, PartialEq)]
 pub struct RecordTables {
     shells: ShellTable,
     classes: Vec<ClassPairs>,
-    n_cart: usize,
+    /// The Cartesian AOs the bra offsets index, and the ket offsets.
+    n_cart: [usize; 2],
+    /// For two bases, the bra basis's shells, which come first.
+    n_bra_shells: Option<usize>,
 }
 
 /// A shell of momentum `l`'s Cartesian functions, `(l + 1)(l + 2) / 2`.
@@ -128,11 +134,51 @@ impl RecordTables {
     /// lie inside `[0, n_cart)`.
     #[track_caller]
     pub fn new(shells: ShellTable, classes: Vec<ClassPairs>, n_cart: usize) -> RecordTables {
+        RecordTables::checked(shells, classes, [n_cart; 2], None)
+    }
+
+    /// The tables of two bases, checked as [`RecordTables::new`] checks one:
+    /// the first `n_bra_shells` shells of `shells` are the bra basis's,
+    /// whose `n_cart[0]` Cartesian AOs their offsets index, and the rest
+    /// the ket basis's, indexing its own `n_cart[1]`. Every pair's bra is a
+    /// bra-basis shell and its ket a ket-basis shell, in a class of any
+    /// order: what a two-basis build reads into an `n_cart[0] × n_cart[1]`
+    /// matrix.
+    ///
+    /// # Panics
+    /// As [`RecordTables::new`], with `n_cart[0] · n_cart[1]` for `n_cart²`
+    /// and each shell's block inside its own basis's AOs; and if
+    /// `n_bra_shells` is past the table, or a pair's bra is not one of the
+    /// first `n_bra_shells` shells or its ket is one of them.
+    #[track_caller]
+    pub fn mixed(
+        shells: ShellTable,
+        classes: Vec<ClassPairs>,
+        n_bra_shells: usize,
+        n_cart: [usize; 2],
+    ) -> RecordTables {
+        RecordTables::checked(shells, classes, n_cart, Some(n_bra_shells))
+    }
+
+    /// [`RecordTables::new`]'s and [`RecordTables::mixed`]'s checks.
+    #[track_caller]
+    fn checked(
+        shells: ShellTable,
+        classes: Vec<ClassPairs>,
+        n_cart: [usize; 2],
+        n_bra_shells: Option<usize>,
+    ) -> RecordTables {
+        let [n_bra, n_ket] = n_cart;
         assert!(
-            n_cart
-                .checked_mul(n_cart)
+            n_bra
+                .checked_mul(n_ket)
                 .is_some_and(|n2| i32::try_from(n2).is_ok()),
-            "RecordTables: {n_cart}² Cartesian AOs do not fit the kernels' 32-bit index"
+            "RecordTables: {} Cartesian AOs do not fit the kernels' 32-bit index",
+            if n_bra_shells.is_some() {
+                format!("{n_bra} × {n_ket}")
+            } else {
+                format!("{n_bra}²")
+            }
         );
         let s = &shells;
         let n_shells = s.ao_offset.len();
@@ -151,6 +197,12 @@ impl RecordTables {
                 && s.coefficient.len() == n_prim,
             "RecordTables: prim_begin is not a prefix of the {n_prim} primitives"
         );
+        if let Some(n) = n_bra_shells {
+            assert!(
+                n <= n_shells,
+                "RecordTables: {n} bra shells, but the table has {n_shells}"
+            );
+        }
         // Non-negative and non-decreasing, checked above.
         let n_prims_of = |shell: usize| i64::from(s.prim_begin[shell + 1] - s.prim_begin[shell]);
         for c in &classes {
@@ -175,7 +227,14 @@ impl RecordTables {
                         == n_prims_of(a) * n_prims_of(b),
                     "RecordTables: class ({la}, {lb}) pair {p}'s records are not its primitive product"
                 );
-                for (shell, l) in [(a, la), (b, lb)] {
+                if let Some(n) = n_bra_shells {
+                    assert!(
+                        a < n && b >= n,
+                        "RecordTables: class ({la}, {lb}) pair {p} pairs shells {a} and {b}, \
+                         not a bra shell below {n} with a ket shell from it"
+                    );
+                }
+                for (shell, l, n_cart) in [(a, la, n_bra), (b, lb, n_ket)] {
                     let offset = s.ao_offset[shell];
                     assert!(
                         offset >= 0 && offset as usize + n_cart_of(l) <= n_cart,
@@ -189,6 +248,7 @@ impl RecordTables {
             shells,
             classes,
             n_cart,
+            n_bra_shells,
         }
     }
 
@@ -202,9 +262,10 @@ impl RecordTables {
         &self.classes
     }
 
-    /// The basis's Cartesian AOs, which the records' offsets index.
+    /// The Cartesian AOs the records' bra offsets index: the basis's, or
+    /// the bra basis's of two.
     pub fn n_cart(&self) -> usize {
-        self.n_cart
+        self.n_cart[0]
     }
 
     /// Every class's shell pairs.
@@ -473,6 +534,57 @@ impl ClassRows {
     }
 }
 
+/// One class of two bases' records ([`add_mixed_record_tasks`]): every
+/// ordered shell pair, a bra-basis shell with a ket-basis shell, never
+/// swapped, so `la > lb` classes appear; `off_a` indexes the bra basis's
+/// Cartesian AOs and `off_b` the ket basis's, and each rank is among its
+/// own basis's shells. The fields, their order and their bounds are a
+/// [`ClassRows`]', which this is not: a one-basis build reads a basis's
+/// `i <= j` pairs and mirrors each value, so a two-basis class handed to
+/// one would build the wrong matrix, and no one-basis launcher takes this
+/// type. What makes its offsets trustworthy is [`ClassRows`]' argument,
+/// with each offset's block inside its own basis's AOs
+/// ([`RecordTables::mixed`]).
+#[derive(Clone, Copy, Debug)]
+pub struct MixedClassRows {
+    rows: ClassRows,
+    n_cart_ket: usize,
+}
+
+impl MixedClassRows {
+    /// The bra shell's momentum.
+    pub fn la(&self) -> i32 {
+        self.rows.la
+    }
+
+    /// The ket shell's momentum, below `la` or not.
+    pub fn lb(&self) -> i32 {
+        self.rows.lb
+    }
+
+    /// The number of records: every primitive product of every ordered
+    /// shell pair of the class.
+    pub fn n_rec(&self) -> i32 {
+        self.rows.n_rec
+    }
+
+    /// The Cartesian AOs the bra offsets index, and the ket offsets: a
+    /// build's matrix is `n_cart[0] × n_cart[1]`.
+    pub fn n_cart(&self) -> [usize; 2] {
+        [self.rows.n_cart, self.n_cart_ket]
+    }
+
+    /// The double fields' rows, as [`ClassRows::f64_rows`] orders them.
+    pub fn f64_rows(&self) -> [RowId<Device, f64>; 16] {
+        self.rows.f64_rows()
+    }
+
+    /// The integer fields' rows, as [`ClassRows::i32_rows`] orders them.
+    pub fn i32_rows(&self) -> [RowId<Device, i32>; 4] {
+        self.rows.i32_rows()
+    }
+}
+
 /// Add the records of `tables` to `dag` on GPU worker `worker`: a CPU task,
 /// `mmd tables`, that writes the tables into pinned rows, and a stream
 /// task, `mmd records`, that copies them to device scratch and forms every
@@ -482,7 +594,49 @@ impl ClassRows {
 /// Every size is the tables', fixed here at planning: a class's rows are
 /// its `n_rec` long, and the sort's workspace is
 /// [`fb_mmd_order_workspace_bytes`] of the largest class, a host query.
+///
+/// # Panics
+/// If `tables` are two bases' ([`RecordTables::mixed`]): their ket offsets
+/// index another basis's AOs than the `n_cart` a [`ClassRows`] promises
+/// its launchers. [`add_mixed_record_tasks`] takes them.
+#[track_caller]
 pub fn add_record_tasks(dag: &mut Dag<'_>, worker: usize, tables: RecordTables) -> Vec<ClassRows> {
+    assert!(
+        tables.n_bra_shells.is_none(),
+        "add_record_tasks: the tables are two bases'; add_mixed_record_tasks takes them"
+    );
+    record_tasks(dag, worker, tables)
+}
+
+/// Add the records of two bases' `tables` ([`RecordTables::mixed`]) to
+/// `dag` on GPU worker `worker`, as [`add_record_tasks`] adds one basis's:
+/// the same two tasks, every field formed the same way, in a class of any
+/// order. Returns each class's rows as [`MixedClassRows`], which no
+/// one-basis launcher takes.
+///
+/// # Panics
+/// If `tables` are one basis's ([`RecordTables::new`]).
+#[track_caller]
+pub fn add_mixed_record_tasks(
+    dag: &mut Dag<'_>,
+    worker: usize,
+    tables: RecordTables,
+) -> Vec<MixedClassRows> {
+    assert!(
+        tables.n_bra_shells.is_some(),
+        "add_mixed_record_tasks: the tables are one basis's; add_record_tasks takes them"
+    );
+    let n_cart_ket = tables.n_cart[1];
+    record_tasks(dag, worker, tables)
+        .into_iter()
+        .map(|rows| MixedClassRows { rows, n_cart_ket })
+        .collect()
+}
+
+/// [`add_record_tasks`]' and [`add_mixed_record_tasks`]' two tasks, each
+/// class's rows carrying the bra offsets' `n_cart`.
+#[track_caller]
+fn record_tasks(dag: &mut Dag<'_>, worker: usize, tables: RecordTables) -> Vec<ClassRows> {
     if tables.classes.is_empty() {
         return Vec::new();
     }
@@ -678,7 +832,7 @@ impl Task for Records {
                     la,
                     lb,
                     n_rec: c.n_rec(),
-                    n_cart: t.n_cart,
+                    n_cart: t.n_cart[0],
                     zeta,
                     p_x,
                     p_y,
@@ -813,16 +967,19 @@ impl Task for Records {
             })?;
 
             // A class above a family's table keeps that family's bounds
-            // zero, as the C++ does; every build refuses such a class.
-            if cls.lb <= FB_PAIR_BOUND_MAX_MOMENTUM {
+            // zero, as the C++ does; every build refuses such a class. The
+            // pair bound depends on la + lb alone, so a two-basis class
+            // with la > lb takes (lb, la)'s kernel, the one emitted.
+            let (lo, hi) = (cls.la.min(cls.lb), cls.la.max(cls.lb));
+            if hi <= FB_PAIR_BOUND_MAX_MOMENTUM {
                 // SAFETY: zeta and bound are n-long rows of their own.
                 launched("fb_mmd_bound", &class, unsafe {
-                    fb_mmd_bound(stream, cls.la, cls.lb, n, zeta.as_ptr(), bound.as_mut_ptr())
+                    fb_mmd_bound(stream, lo, hi, n, zeta.as_ptr(), bound.as_mut_ptr())
                 })?;
             } else {
                 memset::zero(&mut bound, worker)?;
             }
-            if cls.lb <= FB_RECORD_BOUND_MAX_MOMENTUM {
+            if hi <= FB_RECORD_BOUND_MAX_MOMENTUM {
                 let view = fb_primitive_pair_class_view {
                     la: cls.la,
                     lb: cls.lb,
@@ -1048,6 +1205,90 @@ mod tests {
     fn a_block_past_the_matrix_panics() {
         let (shells, classes) = parts();
         RecordTables::new(shells, classes, 3);
+    }
+
+    /// The tables of [`parts`] as two bases: shells 0 and 1 the bra
+    /// basis's (4 Cartesians), and a copy of the s as the ket basis's
+    /// (1 Cartesian, at its own AO 0), one class (0, 0) and one (1, 0).
+    fn mixed_parts() -> (ShellTable, Vec<ClassPairs>) {
+        let (mut shells, _) = parts();
+        shells.prim_begin.push(5);
+        shells.exponent.extend([3.0, 0.5]);
+        shells.coefficient.extend([0.4, 0.6]);
+        shells.c_x.push(0.0);
+        shells.c_y.push(0.0);
+        shells.c_z.push(2.0);
+        shells.ao_offset.push(0);
+        shells.rank.push(0);
+        let class = |la, lb, bra, ket, k| ClassPairs {
+            la,
+            lb,
+            bra: vec![bra],
+            ket: vec![ket],
+            rec_begin: vec![0, k],
+        };
+        (shells, vec![class(0, 0, 0, 2, 4), class(1, 0, 1, 2, 2)])
+    }
+
+    /// Two bases' consistent tables are accepted, each offset checked in
+    /// its own basis's AOs: the ket's AO 0 of 1 is inside.
+    #[test]
+    fn consistent_mixed_tables_are_kept() {
+        let (shells, classes) = mixed_parts();
+        let t = RecordTables::mixed(shells, classes, 2, [4, 1]);
+        assert_eq!((t.n_cart(), t.n_pairs(), t.n_max()), (4, 2, 4));
+    }
+
+    /// A ket shell whose block runs past the ket basis's AOs, though it
+    /// would fit the bra basis's.
+    #[test]
+    #[should_panic(expected = "shell 2 at AO 0 with momentum 1 does not fit 1 Cartesian AOs")]
+    fn a_ket_block_past_its_own_basis_panics() {
+        let (mut shells, mut classes) = mixed_parts();
+        shells.ao_offset[2] = 0;
+        classes[1] = ClassPairs {
+            la: 0,
+            lb: 1,
+            bra: vec![0],
+            ket: vec![2],
+            rec_begin: vec![0, 4],
+        };
+        RecordTables::mixed(shells, classes, 2, [4, 1]);
+    }
+
+    /// A pair whose ket is a bra-basis shell: its offset indexes the other
+    /// basis's AOs.
+    #[test]
+    #[should_panic(expected = "pair 0 pairs shells 0 and 1, not a bra shell below 2")]
+    fn a_pair_within_the_bra_basis_panics() {
+        let (shells, mut classes) = mixed_parts();
+        classes[0] = ClassPairs {
+            la: 0,
+            lb: 1,
+            bra: vec![0],
+            ket: vec![1],
+            rec_begin: vec![0, 2],
+        };
+        RecordTables::mixed(shells, classes, 2, [4, 1]);
+    }
+
+    /// Two bases' tables are not one basis's records: a `ClassRows`
+    /// promises its launchers one `n_cart` for both offsets.
+    #[test]
+    #[should_panic(expected = "add_record_tasks: the tables are two bases'")]
+    fn one_basis_records_refuse_two_bases_tables() {
+        let (shells, classes) = mixed_parts();
+        let mut dag = Dag::new();
+        add_record_tasks(&mut dag, 0, RecordTables::mixed(shells, classes, 2, [4, 1]));
+    }
+
+    /// And one basis's tables are not two bases'.
+    #[test]
+    #[should_panic(expected = "add_mixed_record_tasks: the tables are one basis's")]
+    fn two_bases_records_refuse_one_basis_tables() {
+        let (shells, classes) = parts();
+        let mut dag = Dag::new();
+        add_mixed_record_tasks(&mut dag, 0, RecordTables::new(shells, classes, 4));
     }
 
     /// A pair naming a shell past the table.

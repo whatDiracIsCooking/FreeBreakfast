@@ -17,14 +17,9 @@
 
 mod common;
 
-use std::sync::{Arc, Mutex};
-
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p};
-use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, Task};
-use fb_core_thread_pool::{DeviceStream, Lane};
+use common::{Class, HostClass};
+use fb_core_planner::Dag;
 use fb_integrals_mmd::add_records;
-use fb_integrals_sys::ClassRows;
 
 /// The double fields, in the reference file's order.
 const F64_FIELDS: [&str; 16] = [
@@ -37,134 +32,6 @@ const I32_FIELDS: [&str; 4] = ["off_a", "off_b", "rank_a", "rank_b"];
 const BITWISE: [&str; 3] = ["zeta", "ea", "eb"];
 /// Every other double's relative bar.
 const RELATIVE: f64 = 1e-13;
-
-/// One class's records on the host, every field in record order.
-#[derive(Debug, Default)]
-struct HostClass {
-    la: i32,
-    lb: i32,
-    n_rec: i32,
-    f64s: Vec<Vec<f64>>,
-    i32s: Vec<Vec<i32>>,
-}
-
-/// The class's double rows, in the reference file's order, which is
-/// [`ClassRows::f64_rows`]'s.
-fn f64_fields(c: &ClassRows) -> [RowId<Device, f64>; 16] {
-    c.f64_rows()
-}
-
-/// Its integer rows, likewise.
-fn i32_fields(c: &ClassRows) -> [RowId<Device, i32>; 4] {
-    c.i32_rows()
-}
-
-/// A class's pinned copies.
-#[derive(Clone)]
-struct PinnedClass {
-    f64s: Vec<RowId<Pinned, f64>>,
-    i32s: Vec<RowId<Pinned, i32>>,
-}
-
-/// GPU: every field of every class copied down into pinned rows on the
-/// stream.
-struct Download(Vec<ClassRows>);
-
-impl Task for Download {
-    type Rows = Vec<PinnedClass>;
-    const GPU: bool = true;
-
-    fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
-        self.0
-            .iter()
-            .map(|c| {
-                let n = c.n_rec() as usize;
-                let (f, i) = (f64_fields(c), i32_fields(c));
-                PinnedClass {
-                    f64s: f
-                        .iter()
-                        .map(|&r| d.read(r))
-                        .map(|_| h.output("down", n))
-                        .collect(),
-                    i32s: i
-                        .iter()
-                        .map(|&r| d.read(r))
-                        .map(|_| h.output("down", n))
-                        .collect(),
-                }
-            })
-            .collect()
-    }
-
-    fn run(
-        &self,
-        rows: &Self::Rows,
-        d: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        lane: Lane<'_, DeviceStream>,
-    ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
-            unreachable!("a GPU task runs on a stream")
-        };
-        for (c, down) in self.0.iter().zip(rows) {
-            let (f, i) = (f64_fields(c), i32_fields(c));
-            for (&src, &dst) in f.iter().zip(&down.f64s) {
-                memcpy_d2p(h, dst, d.get(src), stream)?;
-            }
-            for (&src, &dst) in i.iter().zip(&down.i32s) {
-                memcpy_d2p(h, dst, d.get(src), stream)?;
-            }
-        }
-        Ok(())
-    }
-}
-
-/// CPU: the pinned copies read into `out`, after the executor waited for
-/// the download.
-struct Collect {
-    classes: Vec<ClassRows>,
-    down: Vec<PinnedClass>,
-    out: Arc<Mutex<Vec<HostClass>>>,
-}
-
-impl Task for Collect {
-    type Rows = ();
-    const GPU: bool = false;
-
-    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) {
-        for c in &self.down {
-            c.f64s.iter().for_each(|&r| {
-                h.read(r);
-            });
-            c.i32s.iter().for_each(|&r| {
-                h.read(r);
-            });
-        }
-    }
-
-    fn run(
-        &self,
-        _: &(),
-        _: &Bufs<'_, Device>,
-        h: &Bufs<'_, Pinned>,
-        _: Lane<'_, DeviceStream>,
-    ) -> Status {
-        let mut out = self.out.lock().unwrap();
-        *out = self
-            .classes
-            .iter()
-            .zip(&self.down)
-            .map(|(c, down)| HostClass {
-                la: c.la(),
-                lb: c.lb(),
-                n_rec: c.n_rec(),
-                f64s: down.f64s.iter().map(|&r| h.get(r).to_vec()).collect(),
-                i32s: down.i32s.iter().map(|&r| h.get(r).to_vec()).collect(),
-            })
-            .collect();
-        Ok(())
-    }
-}
 
 /// The reference file `tests/data/<stem>.bin` (its README has the format).
 fn reference(stem: &str) -> Vec<HostClass> {
@@ -226,23 +93,9 @@ fn reference(stem: &str) -> Vec<HostClass> {
 fn records_match_the_cpp_tree() {
     let mut misses = Vec::new();
     for (stem, basis) in common::cases() {
-        let out = Arc::new(Mutex::new(Vec::new()));
         let mut dag = Dag::new();
         let classes = add_records(&mut dag, 0, &basis).unwrap();
-        let down = dag.add("download", 0, Download(classes.clone()));
-        dag.add(
-            "collect",
-            0,
-            Collect {
-                classes,
-                down,
-                out: Arc::clone(&out),
-            },
-        );
-        let mut instance = dag.plan().instantiate(&[0]);
-        let mut backend = instance.backend();
-        instance.run(&mut backend, 1).result.unwrap();
-        let got = std::mem::take(&mut *out.lock().unwrap());
+        let got = common::run(dag, classes.iter().map(Class::from).collect());
         let want = reference(stem);
 
         let list = |c: &[HostClass]| c.iter().map(|c| (c.la, c.lb, c.n_rec)).collect::<Vec<_>>();
