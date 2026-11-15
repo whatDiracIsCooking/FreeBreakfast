@@ -10,3 +10,10 @@ directory's `h2o.xyz`, byte for byte, so `tests/examples.rs` compares the S
 A copy rather than a path into the overlap crate, so this crate's tests
 read only files of their own (`docs/testing.md`, "Selection: the workspace
 graph is the selection graph").
+
+`localization_h2o_cc-pvdz_cc-pvdz-jkfit.npy` is `[L, sens]`, written by
+`localization_reference.py` (its docstring has the command): PySCF's
+Pipek-Mezey maximum `L_2` of its DF-RHF of `rust/examples/water.xyz` in
+cc-pVDZ over cc-pVDZ-JKFIT, and the first-order bound on how far that
+maximum moves per unit of the SCF's residual, which `tests/examples.rs`'s
+localization example builds its bar from.

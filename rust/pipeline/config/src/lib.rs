@@ -14,7 +14,7 @@
 //! is emitted from the type"). `rust/examples/` holds one config per
 //! calculation, each run through the binary by `tests/examples.rs`.
 //!
-//! Three calculations exist. [`Calculation::Overlap`]: the overlap of
+//! Four calculations exist. [`Calculation::Overlap`]: the overlap of
 //! [`fb_integrals_one_electron_overlap`], then its write nodes
 //! ([`add_write_npy`]), `download overlap.npy` on the stream and
 //! `write overlap.npy` on the CPU (`docs/design.md`, "What it writes").
@@ -26,11 +26,17 @@
 //! fitted integrals, from that guess, then the write nodes of `c.npy` and
 //! `d.npy` and of `scf.json`, a stream download of ε and a CPU write of it
 //! beside the last build's energy, residual and iteration count.
+//! [`Calculation::Localization`]: that RHF and its writes, then the
+//! Pipek-Mezey localization of its occupied orbitals
+//! ([`fb_localization_pipek_mezey::add_pm_localize`]) over its S and C,
+//! the decision loop after the SCF's, then the write nodes of
+//! `c_local.npy` and of `localization.json`, a CPU write of the
+//! localization's heap row `[L before, L after, sweeps]`.
 //!
 //! **Tables by calculation.** A step's table is its step crate's type,
 //! used from there (no umbrella re-exports them): [`GuessStep`],
-//! [`EriStep`], [`ScfStep`](fb_pipeline_scf::ScfStep), each with its own
-//! `check` of its values. Which of these optional tables a calculation requires and which
+//! [`EriStep`], [`ScfStep`](fb_pipeline_scf::ScfStep),
+//! [`LocalizationStep`], each with its own `check` of its values. Which of these optional tables a calculation requires and which
 //! it accepts is one row per calculation, and [`read_config`] holds a
 //! config to its row in one loop: a table set beside a calculation that
 //! does not read it is refused, naming those that do, and a required one
@@ -84,6 +90,10 @@
 //! | `[molecule] charge`, `multiplicity`; the guess rescaled by `N / Σ Z` | not ported: every molecule is the neutral singlet |
 //! | the RHF calculation, `ScfStep::run` over the steps before it | [`Calculation::Rhf`], [`plan`] composing the steps' tasks; `scf.json`, `c.npy`, `d.npy` its products |
 //! | `ScfStep::molden`, `scf.molden` | not ported |
+//! | the localization calculation, `[scf]` then `[localization]`, `LocalizationStep::run` | [`Calculation::Localization`], `calculation = "localization"`: the RHF's tasks and products, then [`add_pm_localize`]; `c_local.npy` and `localization.json` (L before and after, the sweeps) its own products |
+//! | `[localization]`'s `mode`, `max_sweeps`, `functional_tolerance`, `rotation_gain_threshold`, `exponent` | [`Config::localization`], [`LocalizationStep`] itself, its values checked by [`read_config`] |
+//! | `[localization] mode = "ibo"`, `livvo` | not ported: `"ibo"` refused `Unsupported`, `livvo` an unknown key |
+//! | `LocalizationStep::molden`, `localization.molden`, its orbitals sorted by `<i\|F\|i>` | not ported: `c_local.npy` holds the orbitals in the order the sweeps leave them |
 //! | the density the C++ pipeline names `d.npy` | [`Calculation::Guess`], which always writes `d.npy` |
 //! | `write_overlap_npy`, after a stream sync inside the step | [`add_write_npy`]: a download node and a write node that feeds nothing |
 //! | `[memory] max_device_mem_per_gpu`, `max_pinned_mem_per_gpu`, `read_byte_size`, each off when unset | [`MemoryCaps`], the same keys and size strings, each defaulted at its floor |
@@ -105,6 +115,8 @@
 //! [`EriStep::aux_basis`]: fb_pipeline_eri::EriStep::aux_basis
 //! [`EriMode::DensityFitting`]: fb_pipeline_eri::EriMode::DensityFitting
 //! [`Planned`]: fb_core_planner::Planned
+//! [`LocalizationStep`]: fb_localization_pipek_mezey::LocalizationStep
+//! [`add_pm_localize`]: fb_localization_pipek_mezey::add_pm_localize
 
 #![forbid(unsafe_code)]
 

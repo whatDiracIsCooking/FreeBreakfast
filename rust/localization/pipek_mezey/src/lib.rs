@@ -65,7 +65,8 @@
 //! | `InvalidConfig` for a basis with no atoms, `n_occ` outside `0..n_ao` or past 65535, `max_sweeps` below 1 | the same, at planning, adding nothing; `n_occ` 0 refused too, a plan of nothing |
 //! | `InvalidConfig` for a null pointer or `c_local` aliasing `c` | nothing: rows, which the planner keeps apart |
 //! | `pm_localize_footprint(basis, n_occ)` | nothing: the layouts declare every row, and the arena's size is the plan's golden |
-//! | `localization/ibo`, Loewdin populations, the virtual space | not ported |
+//! | `LocalizationStep`'s `mode`, `max_sweeps`, `functional_tolerance`, `rotation_gain_threshold` and `exponent`, read from `[localization]` | [`LocalizationStep`], deserialized by `fb-pipeline-config` and checked by [`LocalizationStep::check`]; [`PmOptions`] formed from it at planning |
+//! | `LocalizationMode::Ibo`, `localization/ibo`, `livvo`, Loewdin populations, the virtual space | not ported: [`LocalizationMode::Ibo`] is read and refused `Unsupported`, `livvo` refused as an unknown key |
 
 #![forbid(unsafe_code)]
 
@@ -78,6 +79,7 @@ use fb_core_planner::{CpuTask, Dag, Decision, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::gemm;
 use fb_localization_sys::{FB_PM_MAX_OCCUPIED, add_pm_start, add_pm_sweep};
+use serde::Deserialize;
 use wwr_sys::wwr_blas_operation::WWR_BLAS_OP_N as OP_N;
 
 /// The power `p` of `L_p = Σ_i Σ_A (Q^A_ii)^p`.
@@ -89,7 +91,11 @@ use wwr_sys::wwr_blas_operation::WWR_BLAS_OP_N as OP_N;
 /// concentrates the populations harder and breaks that degeneracy; its
 /// angle is approximate, but a rotation is kept only where it raises `L_4`
 /// exactly.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// As a config value, the integer `2` or `4`; any other is refused, naming
+/// it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "i64")]
 pub enum PmExponent {
     /// `L_2`, Pipek and Mezey (1989).
     #[default]
@@ -116,6 +122,18 @@ pub struct PmOptions {
     pub exponent: PmExponent,
 }
 
+impl TryFrom<i64> for PmExponent {
+    type Error = String;
+
+    fn try_from(exponent: i64) -> std::result::Result<PmExponent, String> {
+        match exponent {
+            2 => Ok(PmExponent::Two),
+            4 => Ok(PmExponent::Four),
+            _ => Err(format!("exponent is {exponent}, not 2 or 4")),
+        }
+    }
+}
+
 impl Default for PmOptions {
     fn default() -> PmOptions {
         PmOptions {
@@ -125,6 +143,92 @@ impl Default for PmOptions {
             exponent: PmExponent::Two,
         }
     }
+}
+
+/// `[localization]`: the config's table of the localization of an RHF's
+/// occupied orbitals, the C++ `LocalizationStep`'s keys that Pipek-Mezey
+/// reads. Each field is a key, optional at [`PmOptions::default`]'s value,
+/// and any other key is refused by name: the C++ `livvo` among them, since
+/// the LIVVOs are not ported.
+///
+/// ```text
+/// [localization]
+/// mode = "pipek_mezey"
+/// exponent = 2
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LocalizationStep {
+    /// `mode`: the localization. Default `"pipek_mezey"`, the only one
+    /// ported; the C++ `"ibo"` is read, and refused by
+    /// [`LocalizationStep::check`].
+    pub mode: LocalizationMode,
+    /// `max_sweeps`: [`PmOptions::max_sweeps`]. Default 64; at least 1.
+    pub max_sweeps: usize,
+    /// `functional_tolerance`: [`PmOptions::functional_tolerance`], in
+    /// units of `L`, a sum of squared or fourth-power populations. Default
+    /// 1e-10.
+    pub functional_tolerance: f64,
+    /// `rotation_gain_threshold`: [`PmOptions::rotation_gain_threshold`],
+    /// in units of `L`. Default 1e-14.
+    pub rotation_gain_threshold: f64,
+    /// `exponent`: [`PmOptions::exponent`], `2` or `4`. Default 2.
+    pub exponent: PmExponent,
+}
+
+impl Default for LocalizationStep {
+    fn default() -> LocalizationStep {
+        let options = PmOptions::default();
+        LocalizationStep {
+            mode: LocalizationMode::PipekMezey,
+            max_sweeps: options.max_sweeps,
+            functional_tolerance: options.functional_tolerance,
+            rotation_gain_threshold: options.rotation_gain_threshold,
+            exponent: options.exponent,
+        }
+    }
+}
+
+impl LocalizationStep {
+    /// Check the table's values, so a reader of a config can refuse them
+    /// before anything is planned; [`add_pm_localize`] checks
+    /// `max_sweeps` too.
+    ///
+    /// # Errors
+    /// `Unsupported` for `mode = "ibo"`, which is not ported. `InvalidConfig`
+    /// for a `max_sweeps` of 0, or a tolerance that is negative or NaN.
+    pub fn check(&self) -> Status {
+        if self.mode == LocalizationMode::Ibo {
+            return Err(Error::unsupported(
+                "[localization] mode = \"ibo\": the Rust pipeline does not port IBO yet (it \
+                 needs the intrinsic atomic orbitals); \"pipek_mezey\" is the mode it has",
+            ));
+        }
+        if self.max_sweeps < 1 {
+            return Err(Error::config("[localization] max_sweeps is 0, below 1"));
+        }
+        let refused = |t: f64| t.is_nan() || t < 0.0;
+        if refused(self.functional_tolerance) || refused(self.rotation_gain_threshold) {
+            return Err(Error::config(format!(
+                "[localization] functional_tolerance ({}) and rotation_gain_threshold ({}) must \
+                 be non-negative",
+                self.functional_tolerance, self.rotation_gain_threshold
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// `[localization] mode`: which localization runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalizationMode {
+    /// `"pipek_mezey"`: [`add_pm_localize`] over Mulliken populations.
+    PipekMezey,
+    /// `"ibo"`: intrinsic bond orbitals, Pipek-Mezey over intrinsic atomic
+    /// orbital populations. Not ported: [`LocalizationStep::check`] refuses
+    /// it.
+    Ibo,
 }
 
 /// Add the Pipek-Mezey localization of the first `n_occ` orbitals of `c`

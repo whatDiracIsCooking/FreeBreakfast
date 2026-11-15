@@ -17,6 +17,7 @@ fb-core-thread-pool = { workspace = true, features = ["device"] }
 fb-core-wwr.workspace = true
 fb-localization-sys.workspace = true
 log.workspace = true
+serde.workspace = true
 # BLAS for the operation C U's gemm takes.
 wwr-sys = { workspace = true, features = ["blas"] }
 

@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use fb_localization_pipek_mezey::LocalizationStep;
 use fb_pipeline_eri::EriStep;
 use fb_pipeline_guess::GuessStep;
 use fb_pipeline_scf::ScfStep;
@@ -36,23 +37,33 @@ pub struct Config {
     pub molecule: MoleculeStep,
     /// `[basis_set]`: the orbital basis. Required.
     pub basis_set: BasisSetStep,
-    /// `[guess]`: the initial guess, read by [`Calculation::Guess`] and
-    /// [`Calculation::Rhf`] and refused beside the overlap. Optional;
+    /// `[guess]`: the initial guess, read by [`Calculation::Guess`],
+    /// [`Calculation::Rhf`] and [`Calculation::Localization`], and refused
+    /// beside the overlap. Optional;
     /// default a SAD guess.
     #[serde(default)]
     pub guess: Option<GuessStep>,
     /// `[eri]`: the two-electron integrals, density-fitted. Required by
-    /// [`Calculation::Rhf`], which has no default for it, and refused
-    /// beside every other calculation.
+    /// [`Calculation::Rhf`] and [`Calculation::Localization`], which have
+    /// no default for it, and refused beside every other calculation.
     #[serde(default)]
     pub eri: Option<EriStep>,
     /// `[scf]`: the SCF loop's options, [`ScfStep`]'s fields as its keys
     /// (`max_iterations`, `energy_tolerance` in hartree,
     /// `commutator_tolerance`, `diis_history`), each optional at the C++
-    /// default its doc gives. Read by [`Calculation::Rhf`] alone and
-    /// refused beside any other. Optional; default every key's default.
+    /// default its doc gives. Read by [`Calculation::Rhf`] and
+    /// [`Calculation::Localization`], and refused beside any other.
+    /// Optional; default every key's default.
     #[serde(default)]
     pub scf: Option<ScfStep>,
+    /// `[localization]`: the localization's options, [`LocalizationStep`]'s
+    /// fields as its keys (`mode`, `max_sweeps`, `functional_tolerance`,
+    /// `rotation_gain_threshold`, `exponent`), each optional at the C++
+    /// default its doc gives. Read by [`Calculation::Localization`] alone
+    /// and refused beside any other. Optional; default every key's
+    /// default.
+    #[serde(default)]
+    pub localization: Option<LocalizationStep>,
     /// `[memory]`: the caps on what each GPU worker's blocks may hold.
     /// Optional; default every key's default, which is also its floor.
     #[serde(default)]
@@ -84,12 +95,26 @@ pub enum Calculation {
     /// and `d.npy`, `D = 2 C_occ C_occᵀ`, which `[guess] from` reads back;
     /// each matrix `nao_sphe × nao_sphe`. An odd electron count is refused.
     Rhf,
+    /// `"localization"`: [`Calculation::Rhf`], writing its products, then
+    /// the Pipek-Mezey localization of its occupied orbitals over Mulliken
+    /// populations
+    /// ([`fb_localization_pipek_mezey::add_pm_localize`]) with
+    /// [`Config::localization`]'s options. Writes `c_local.npy`, the
+    /// localized orbitals, `nao_sphe × n_occ`, in the order the sweeps
+    /// leave them; and `localization.json`, an object of the functional
+    /// `L` of the canonical occupied orbitals as `functional_before`, of
+    /// the localized ones as `functional_after`, and the `sweeps` it took.
+    Localization,
 }
 
 impl Calculation {
     /// Every calculation.
-    pub(crate) const ALL: [Calculation; 3] =
-        [Calculation::Overlap, Calculation::Guess, Calculation::Rhf];
+    pub(crate) const ALL: [Calculation; 4] = [
+        Calculation::Overlap,
+        Calculation::Guess,
+        Calculation::Rhf,
+        Calculation::Localization,
+    ];
 
     /// The value as the config spells it.
     pub(crate) fn key(self) -> &'static str {
@@ -97,6 +122,7 @@ impl Calculation {
             Calculation::Overlap => "overlap",
             Calculation::Guess => "guess",
             Calculation::Rhf => "rhf",
+            Calculation::Localization => "localization",
         }
     }
 
@@ -110,6 +136,7 @@ impl Calculation {
             Calculation::Overlap => (&[], &[]),
             Calculation::Guess => (&[], &["guess"]),
             Calculation::Rhf => (&["eri"], &["guess", "scf"]),
+            Calculation::Localization => (&["eri"], &["guess", "scf", "localization"]),
         }
     }
 
@@ -126,11 +153,12 @@ impl Config {
     /// those [`Calculation::tables`] places. `[molecule]` and `[basis_set]`
     /// are required by every calculation and `[memory]` read by every one,
     /// so the type holds them.
-    pub(crate) fn tables(&self) -> [(&'static str, bool); 3] {
+    pub(crate) fn tables(&self) -> [(&'static str, bool); 4] {
         [
             ("guess", self.guess.is_some()),
             ("eri", self.eri.is_some()),
             ("scf", self.scf.is_some()),
+            ("localization", self.localization.is_some()),
         ]
     }
 }

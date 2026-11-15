@@ -578,6 +578,7 @@ dependencies = [
  "fb-localization-sys",
  "fb-test-support",
  "log",
+ "serde",
  "wwr-sys",
 ]
 
@@ -637,6 +638,7 @@ dependencies = [
  "fb-io-npy",
  "fb-io-sad",
  "fb-io-xyz",
+ "fb-localization-pipek-mezey",
  "fb-molecule",
  "fb-molecule-nuclei",
  "fb-pipeline-eri",

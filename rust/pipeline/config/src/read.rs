@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use fb_core_error_handling::{Error, ErrorKind, Result, Status};
+use fb_localization_pipek_mezey::LocalizationStep;
 use fb_pipeline_eri::EriStep;
 use fb_pipeline_guess::GuessStep;
 use fb_pipeline_scf::ScfStep;
@@ -19,20 +20,25 @@ use crate::{Calculation, Config, MemoryCaps};
 ///   `<file>:<line>: ...`.
 /// - `InvalidConfig`, `<file>:<line>: ...` naming the key: a key or table
 ///   [`Config`] does not have, a required one missing, a value of the
-///   wrong type, or a `calculation` or `[guess] type` that is not one.
+///   wrong type, a `calculation`, `[guess] type` or `[localization] mode`
+///   that is not one, or a `[localization] exponent` other than 2 or 4.
 /// - `InvalidConfig`, `<file>:<line>: ...`: a `[memory]` value that is not
 ///   a byte size ([`MemoryCaps`]).
 /// - `InvalidConfig`, `<file>: ...` naming the table or the key: a
-///   `[guess]`, `[eri]` or `[scf]` beside a calculation that does not read
-///   it, naming those that do (`[eri] is read by calculation = "rhf"
-///   alone`), or a table its calculation requires missing
+///   `[guess]`, `[eri]`, `[scf]` or `[localization]` beside a calculation
+///   that does not read it, naming those that do (`[eri] is read by
+///   calculation = "rhf" and "localization" alone`), or a table its
+///   calculation requires missing
 ///   (`calculation = "rhf" needs the [eri] table: it has no default`), as
 ///   each [`Calculation`]'s doc says which it reads; then each table's own
 ///   check: a `[guess]` with both `type` and `from` ([`GuessStep::check`]),
 ///   an `[eri] aux_basis` that is not a compiled-in fitting set
 ///   ([`EriStep::check`]), an `[scf]` option out of range
-///   ([`ScfStep::check`]); then a `[memory]` key under its floor, its default,
-///   naming the value.
+///   ([`ScfStep::check`]), a `[localization]` `max_sweeps` of 0 or a
+///   tolerance out of range ([`LocalizationStep::check`]); then a
+///   `[memory]` key under its floor, its default, naming the value.
+/// - `Unsupported`, `<file>: ...` naming the key: `[localization] mode =
+///   "ibo"`, which is not ported ([`LocalizationStep::check`]).
 pub fn read_config(path: &Path) -> Result<Config> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| Error::io(format!("cannot open '{}': {e}", path.display())))?;
@@ -42,12 +48,17 @@ pub fn read_config(path: &Path) -> Result<Config> {
     let mut config: Config =
         toml::from_str(&text).map_err(|e| refusal(ErrorKind::InvalidConfig, path, &text, &e))?;
     let file = path.display();
-    let at = |e: Error| Error::config(format!("{file}: {}", e.message));
+    // The kind and the origin kept: a check's `Unsupported` stays one.
+    let at = |mut e: Error| {
+        e.message = format!("{file}: {}", e.message);
+        e
+    };
     check_tables(&config).map_err(at)?;
     let checks = [
         config.guess.as_ref().map(GuessStep::check),
         config.eri.as_ref().map(EriStep::check),
         config.scf.as_ref().map(ScfStep::check),
+        config.localization.as_ref().map(LocalizationStep::check),
     ];
     for check in checks.into_iter().flatten() {
         check.map_err(at)?;
