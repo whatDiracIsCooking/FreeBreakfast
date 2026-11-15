@@ -19,11 +19,12 @@
 //!   function's own making that no caller can break, and each one carries a
 //!   `// INVARIANT:` comment directly above it saying why.
 //!
-//! - **A leading static assert is a `#[requires]`.** In a `pub fn`, an
-//!   `assert!` before any other statement, whose message is one literal
-//!   with no interpolation and whose condition names only the parameters,
-//!   is a plain condition on the arguments, so it is written where rustdoc
-//!   shows it.
+//! - **A leading precondition is a `#[requires]`.** In a `pub fn`, an
+//!   `assert!`, `assert_eq!`, `assert_ne!` or `if … { panic!(…) }` before
+//!   any other statement, whose condition names only the parameters, is a
+//!   plain condition on the arguments, so it is written where rustdoc
+//!   shows it, whatever its message prints: the value checks carry the
+//!   values. A site kept on purpose is listed in `KEPT`, with why.
 //!
 //! - **A value check is a whole `&&` term of a contract's condition.**
 //!   `fb_core_log`'s `le!`, `lt!`, `eq!` and `fits_i32!` store their
@@ -45,8 +46,7 @@
 #![forbid(unsafe_code)]
 
 use fb_doc_check::{
-    attributes, code_only, is_ident, line_of, string_literals, without_comments, words,
-    workspace_sources,
+    attributes, code_only, is_ident, line_of, string_literals, words, workspace_sources,
 };
 
 /// The phrase every hand-written restatement used, matched
@@ -317,28 +317,74 @@ fn test_modules(code: &str) -> Vec<(usize, usize)> {
 /// literals.
 const CONDITION_WORDS: [&str; 6] = ["as", "true", "false", "self", "Self", "crate"];
 
-/// One `assert!` at the head of a public function's body that could be a
-/// `#[requires]`: `path:function`, and the line it is on.
+/// The leading preconditions the tree keeps as body checks, each
+/// `path:function` with why. An entry whose site is gone fails
+/// [`a_leading_precondition_is_a_requires`], so the list only shrinks.
+const KEPT: &[(&str, &str)] = &[(
+    "localization/sys/src/lib.rs:add_pm_start",
+    "should move: follow-up (n_ao fits an i32, n_occ in range; no wave of #1636-#1638 \
+     covered fb-localization-sys)",
+)];
+
+/// One leading check at the head of a public function's body that could
+/// be a `#[requires]`: `path:function`, and the line it is on.
 struct Leading {
     key: String,
     line: usize,
 }
 
-/// The leading static asserts of one file's public functions: each
-/// `assert!` in the run of asserts that opens a `pub fn`'s body, before any
-/// other statement, whose message (if any) is one literal with no `{}`
-/// interpolation and no arguments, and whose condition names nothing
-/// lower-case but the function's parameters (a name after `.` or `::`, a
-/// call, a type and an upper-case constant aside). An `assert_eq!` or
-/// `assert_ne!` continues the run but is not one: it prints its operands,
-/// a runtime-valued message. Test files and `#[cfg(test)]` modules are
-/// skipped, and so is a `const fn`, which `#[requires]` cannot carry.
-fn leading_static_asserts(path: &str, source: &str) -> Vec<Leading> {
+/// Whether `cond` names nothing lower-case but `params`: a name after `.`
+/// or `::`, a call, a macro, a type, a keyword and an upper-case constant
+/// aside.
+fn only_params(cond: &str, params: &[&str]) -> bool {
+    let cb = cond.as_bytes();
+    idents(cond).iter().all(|&(j, w)| {
+        let before = cond[..j].trim_end();
+        let after = cond[j + w.len()..].trim_start();
+        params.contains(&w)
+            || CONDITION_WORDS.contains(&w)
+            || cb[j].is_ascii_uppercase()
+            || before.ends_with('.')
+            || before.ends_with("::")
+            || after.starts_with('(')
+            || after.starts_with("::")
+            || after.starts_with('!')
+            || is_primitive(w)
+    })
+}
+
+/// Whether `body`, a block's inside (`code_only`), is one `panic!` call and
+/// nothing else, a trailing `;` aside.
+fn only_a_panic(body: &str) -> bool {
+    let t = body.trim();
+    let Some(after) = t.strip_prefix("panic") else {
+        return false;
+    };
+    let Some(after) = after.trim_start().strip_prefix('!') else {
+        return false;
+    };
+    let after = after.trim_start();
+    if !after.starts_with(['(', '[', '{']) {
+        return false;
+    }
+    let open = t.len() - after.len();
+    let close = closing(t.as_bytes(), open);
+    matches!(t[close + 1..].trim(), "" | ";")
+}
+
+/// The leading preconditions of one file's public functions: each check in
+/// the run that opens a `pub fn`'s body, before any other statement, whose
+/// condition names nothing lower-case but the function's parameters
+/// ([`only_params`]). A check is an `assert!`, `assert_eq!` or
+/// `assert_ne!`, whatever its message, or an `if <condition> { panic!(…) }`
+/// with no `else`; the run ends at the first statement that is neither.
+/// Test files and `#[cfg(test)]` modules are skipped, and so is a
+/// `const fn`, which `#[requires]` cannot carry.
+fn leading_preconditions(path: &str, source: &str) -> Vec<Leading> {
     if test_file(path) {
         return Vec::new();
     }
     let code = code_only(source);
-    let text = without_comments(source);
     let b = code.as_bytes();
     let skipped = test_modules(&code);
     let words = idents(&code);
@@ -382,12 +428,55 @@ fn leading_static_asserts(path: &str, source: &str) -> Vec<Leading> {
             continue;
         }
         let end = closing(b, open);
-        // The run of asserts that opens the body.
+        // The run of checks that opens the body.
         let mut i = open + 1;
         loop {
             let t = &code[i..end];
             i += t.len() - t.trim_start().len();
             let rest = &code[i..end];
+            let line = code[..i].matches('\n').count() + 1;
+            let starts_word = |w: &str| {
+                rest.starts_with(w)
+                    && !rest[w.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
+            };
+            if starts_word("if") {
+                // `if <cond> { panic!(…) }`, the condition up to the first
+                // brace outside brackets.
+                let mut depth = 0i32;
+                let mut brace = None;
+                for (j, &c) in b.iter().enumerate().take(end).skip(i + 2) {
+                    match c {
+                        b'(' | b'[' => depth += 1,
+                        b')' | b']' => depth -= 1,
+                        b'{' if depth == 0 => {
+                            brace = Some(j);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                let Some(brace) = brace else {
+                    break;
+                };
+                let cond = &code[i + 2..brace];
+                let shut = closing(b, brace);
+                let tail = code[shut + 1..end].trim_start();
+                let guard = !cond.trim_start().starts_with("let ")
+                    && only_a_panic(&code[brace + 1..shut])
+                    && !(tail.starts_with("else")
+                        && !tail[4..].starts_with(|c: char| c.is_alphanumeric() || c == '_'));
+                if !guard {
+                    break;
+                }
+                if only_params(cond, &params) {
+                    out.push(Leading {
+                        key: format!("{path}:{name}"),
+                        line,
+                    });
+                }
+                i = shut + 1;
+                continue;
+            }
             let mac = ["assert_eq", "assert_ne", "assert"]
                 .into_iter()
                 .find(|m| rest.starts_with(m) && rest[m.len()..].trim_start().starts_with('!'));
@@ -400,48 +489,17 @@ fn leading_static_asserts(path: &str, source: &str) -> Vec<Leading> {
             };
             let q = closing(b, p);
             let n_cond = if mac == "assert" { 1 } else { 2 };
-            let plain = mac == "assert";
             let inside = &code[p + 1..q];
-            let spans = top_level_args(inside, &text[p + 1..q]);
-            let args: Vec<&str> = spans
-                .iter()
-                .map(|&(s, e)| &text[p + 1 + s..p + 1 + e])
-                .collect();
-            let message = &args[n_cond.min(args.len())..];
-            let static_message = match message {
-                [] => true,
-                [m] => {
-                    let lit = string_literals(m);
-                    lit.len() == 1
-                        && m.trim().starts_with('"')
-                        && !lit[0].replace("{{", "").replace("}}", "").contains('{')
-                }
-                _ => false,
-            };
-            let cond = spans
+            let cond = top_level_args(inside, inside)
                 .iter()
                 .take(n_cond)
                 .map(|&(s, e)| &inside[s..e])
                 .collect::<Vec<_>>()
                 .join(" ");
-            let cb = cond.as_bytes();
-            let only_params = idents(&cond).iter().all(|&(j, w)| {
-                let before = cond[..j].trim_end();
-                let after = cond[j + w.len()..].trim_start();
-                params.contains(&w)
-                    || CONDITION_WORDS.contains(&w)
-                    || cb[j].is_ascii_uppercase()
-                    || before.ends_with('.')
-                    || before.ends_with("::")
-                    || after.starts_with('(')
-                    || after.starts_with("::")
-                    || after.starts_with('!')
-                    || is_primitive(w)
-            });
-            if plain && static_message && only_params {
+            if only_params(&cond, &params) {
                 out.push(Leading {
                     key: format!("{path}:{name}"),
-                    line: code[..i].matches('\n').count() + 1,
+                    line,
                 });
             }
             i = q + 1;
@@ -477,20 +535,26 @@ fn is_primitive(w: &str) -> bool {
     )
 }
 
-/// The failures of the leading-assert rule over `found`: every leading
-/// static assert is one.
-fn leading_failures(found: &[Leading]) -> Vec<String> {
-    found
+/// The failures of the leading-precondition rule over `found`: every
+/// leading precondition not `kept`, and every `kept` entry with no site.
+fn leading_failures(found: &[Leading], kept: &[(&str, &str)]) -> Vec<String> {
+    let mut failures: Vec<String> = found
         .iter()
+        .filter(|l| !kept.iter().any(|&(k, _)| k == l.key))
         .map(|l| {
             let (path, name) = l.key.rsplit_once(':').unwrap_or((&l.key, ""));
             format!(
-                "{path}:{}: {name} opens with an assert on its arguments and a static message; \
-                 write it as #[requires]",
+                "{path}:{}: {name} opens with a check on its arguments; write it as #[requires]",
                 l.line
             )
         })
-        .collect()
+        .collect();
+    failures.extend(
+        kept.iter()
+            .filter(|&&(k, _)| !found.iter().any(|l| l.key == k))
+            .map(|(k, _)| format!("{k}: kept, but no leading precondition is there; drop it")),
+    );
+    failures
 }
 
 /// The byte spans of the value-check calls in `code` (`code_only`), each
@@ -708,22 +772,22 @@ fn a_negated_or_buried_value_check_is_found() {
 }
 
 #[test]
-fn a_static_leading_assert_is_a_requires() {
+fn a_leading_precondition_is_a_requires() {
     let found: Vec<Leading> = workspace_sources()
         .iter()
-        .flat_map(|(p, s)| leading_static_asserts(p, s))
+        .flat_map(|(p, s)| leading_preconditions(p, s))
         .collect();
-    let failures = leading_failures(&found);
+    let failures = leading_failures(&found, KEPT);
     assert!(
         failures.is_empty(),
-        "{} leading assert(s) to write as #[requires]:\n{}",
+        "{} leading precondition(s) to write as #[requires]:\n{}",
         failures.len(),
         failures.join("\n")
     );
 }
 
 #[test]
-fn a_leading_assert_is_judged_by_its_place_its_message_and_its_names() {
+fn a_leading_precondition_is_judged_by_its_place_and_its_names() {
     let src = concat!(
         "pub fn a(n: usize, x: &[f64]) {\n",
         "    assert!(x.len() >= n, \"x holds n\");\n",
@@ -739,24 +803,83 @@ fn a_leading_assert_is_judged_by_its_place_its_message_and_its_names() {
         "pub(crate) fn scoped(n: usize) { assert!(n > 0, \"n\"); }\n",
         "pub fn c(&self, n: usize) { assert!(self.len > n && local > 0, \"names a local\"); }\n",
         "pub fn d(mut n: usize) { assert!(n > 0, \"n\") }\n",
+        "pub fn e(n: usize, m: usize) {\n",
+        "    if n > i32::MAX as usize {\n        panic!(\"n is {n}\");\n    }\n",
+        "    assert_ne!(m, 0, \"m\");\n",
+        "    if m > n { panic!(\"m\") } else { return; }\n",
+        "    assert!(n > 0);\n",
+        "}\n",
+        "pub fn g(n: usize) {\n",
+        "    if n > 0 { log(n); }\n",
+        "    assert!(n > 0);\n",
+        "}\n",
+        "pub fn h(n: usize) {\n",
+        "    if let Some(k) = n.checked_mul(n) { panic!(\"k\") }\n",
+        "    if local > n { panic!(\"names a local\") }\n",
+        "    assert!(n > 0);\n",
+        "}\n",
+        "pub const fn k(n: usize) { assert!(n > 0, \"const\"); }\n",
         "#[cfg(test)]\nmod tests {\n    pub fn t(n: usize) { assert!(n > 0, \"n\"); }\n}\n",
     );
-    let found = leading_static_asserts("a/src/lib.rs", src);
+    let found = leading_preconditions("a/src/lib.rs", src);
     let got: Vec<(String, usize)> = found.iter().map(|l| (l.key.clone(), l.line)).collect();
+    let key = |f: &str| format!("a/src/lib.rs:{f}");
     let want = [
-        ("a/src/lib.rs:a".to_string(), 2),
-        ("a/src/lib.rs:b".to_string(), 9),
-        ("a/src/lib.rs:d".to_string(), 14),
+        (key("a"), 2),
+        (key("a"), 3),
+        (key("b"), 8),
+        (key("b"), 9),
+        (key("d"), 14),
+        (key("e"), 16),
+        (key("e"), 19),
     ];
     assert_eq!(got, want);
-    assert!(leading_static_asserts("a/tests/t.rs", src).is_empty());
-    assert!(leading_static_asserts("a/src/x.rs", &format!("#![cfg(test)]\n{src}")).is_empty());
+    assert!(leading_preconditions("a/tests/t.rs", src).is_empty());
+    assert!(leading_preconditions("a/src/x.rs", &format!("#![cfg(test)]\n{src}")).is_empty());
+}
 
-    // Each found is a failure.
-    let f = leading_failures(&found);
-    assert_eq!(f.len(), 3, "{f:#?}");
-    assert!(f[0].starts_with("a/src/lib.rs:2: a opens"), "{f:#?}");
-    assert!(f[0].ends_with("write it as #[requires]"), "{f:#?}");
+#[test]
+fn each_shape_of_leading_precondition_fails() {
+    // One function per shape the check widened to (#1640): an interpolated
+    // message, `assert_eq!`, and an `if … { panic!() }` guard.
+    let shapes = [
+        (
+            "interpolated",
+            "pub fn f(n: usize, x: &[f64]) { assert!(n <= x.len(), \"n is {n}\"); }\n",
+        ),
+        (
+            "assert_eq",
+            "pub fn f(n: usize, x: &[f64]) { assert_eq!(x.len(), n); }\n",
+        ),
+        (
+            "panic guard",
+            "pub fn f(n: usize) { if n > LIMIT { panic!(\"n is {}\", n); } }\n",
+        ),
+    ];
+    for (shape, src) in shapes {
+        let f = leading_failures(&leading_preconditions("a/src/lib.rs", src), &[]);
+        assert_eq!(f.len(), 1, "{shape}: {f:#?}");
+        assert_eq!(
+            f[0], "a/src/lib.rs:1: f opens with a check on its arguments; write it as #[requires]",
+            "{shape}"
+        );
+    }
+}
+
+#[test]
+fn a_kept_entry_silences_its_site_and_fails_without_one() {
+    let src = "pub fn f(n: usize) { assert_eq!(n, 1); }\n";
+    let found = leading_preconditions("a/src/lib.rs", src);
+    let kept = [("a/src/lib.rs:f", "a reason")];
+    assert_eq!(leading_failures(&found, &kept), Vec::<String>::new());
+    let stale = [
+        ("a/src/lib.rs:f", "a reason"),
+        ("a/src/lib.rs:gone", "a reason"),
+    ];
+    assert_eq!(
+        leading_failures(&found, &stale),
+        ["a/src/lib.rs:gone: kept, but no leading precondition is there; drop it"]
+    );
 }
 
 #[test]
