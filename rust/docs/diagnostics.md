@@ -339,12 +339,28 @@ before the abort, which runs no exit handlers. A panic in a test binary goes
 through the same hook, so a tripped contract reads the same in a log as in the
 test's output.
 
+**A tripped contract's line carries its values.** When the contract's
+condition was written with `fb_core_log`'s value checks (`le!`, `lt!`, `eq!`,
+`fits_i32!`), the check that failed stored each operand's source text and
+`Debug` value on its thread, and the hook takes them, clearing the slot, and
+ends its line, critical or stderr, with ` [text = value, ...]`:
+
+```text
+Pre-condition of inverse_sqrt violated: count is within data: le! (count, data.len()) [count = 5, data.len() = 4]
+```
+
+A panic with no failed check behind it ends at its message. The slot is
+cleared each time, so a panic carries only its own values, and a check is
+written only as a whole `&&` term of a contract's condition so that no false
+check is left for a later panic (`doc_check/tests/contracts.rs`).
+
 **A panic's message is never lost.** `set_level(Off)` silences `critical`, as
 in the C++ tree, and that would leave an aborting release build printing a
 bare backtrace with nothing saying what panicked. So when the logger would
 drop the hook's line (the level is off, or the panicking thread holds the
 sinks, which it cannot lock again), the hook writes it to stderr instead, as
-one line, `thread '<name>' panicked at <file>:<line>:<col>: <message>`, before
+one line, `thread '<name>' panicked at <file>:<line>:<col>: <message>`, with
+the failed check's ` [text = value, ...]` after it when there is one, before
 the backtrace. At every level where the critical line is written there is no
 stderr copy of it; the only other copy is std's own hook, which follows ours
 in an unwinding build.

@@ -5,8 +5,12 @@
 //! forbids `unsafe_code` unless `docs/programming_model.md` lists its crate
 //! as allowed it; `tests/contracts.rs`, which checks that no doc comment
 //! restates a contract rustdoc already renders, that every
-//! `debug_assert!` is an internal invariant that says so, and that a
-//! leading static `assert!` is a `#[requires]`;
+//! `debug_assert!` is an internal invariant that says so, that a
+//! leading static `assert!` is a `#[requires]`, and, in
+//! `a_value_check_is_only_in_a_contract` and
+//! `a_value_check_is_a_whole_term_of_its_condition`, that `fb_core_log`'s
+//! value checks are written only in a contract's condition, each a whole
+//! `&&` term of it;
 //! `tests/unsafe_contracts.rs`, which checks that no `unsafe` block rests
 //! on a debug-only contract on an extent unless a `// RELEASE:` comment
 //! says what holds it in release;
