@@ -11,9 +11,13 @@
 //!
 //! - **`overlap`**, on the worker's stream: the Cartesian matrix zeroed,
 //!   then one [`overlap_class`](fb_integrals_sys::overlap_class) launch
-//!   per class, each on a fork of the stream joined back before the task
-//!   returns
-//!   ([`DeviceStream::fork_join`](fb_core_thread_pool::DeviceStream::fork_join)),
+//!   per class, in order, or each on a fork of the stream joined back
+//!   before the task returns
+//!   ([`DeviceStream::fork_join`](fb_core_thread_pool::DeviceStream::fork_join))
+//!   when the classes opt in
+//!   ([`ClassRows::fork`](fb_integrals_sys::ClassRows::fork), off by
+//!   default; `fb_integrals_one_electron_core_hamiltonian`'s crate doc has
+//!   the bench),
 //!   each reading as an edge the fields of its class's records
 //!   the overlap kernels use
 //!   ([`ClassRows::read`](fb_integrals_sys::ClassRows::read) with
@@ -36,7 +40,7 @@
 //! | C++ | Here |
 //! |---|---|
 //! | `overlap(res, classes, s.cartesian())` | the `overlap` task, the records' [`ClassRows`](fb_integrals_sys::ClassRows) passed in by the caller |
-//! | `launch_each`: one stream per class, its `device_stream()`'s fork stream, forked from `res.stream()` and joined back | [`DeviceStream::fork_join`](fb_core_thread_pool::DeviceStream::fork_join) in the `overlap` task: a fork per class from the worker's fork streams, joined back before the task returns, never a lane's stream; the task declares a fork per class ([`GpuTask::forks`](fb_core_planner::GpuTask::forks)) |
+//! | `launch_each`: one stream per class, its `device_stream()`'s fork stream, forked from `res.stream()` and joined back | with [`ClassRows::fork`](fb_integrals_sys::ClassRows::fork) set (off by default: every class in order on lane 0), [`DeviceStream::fork_join`](fb_core_thread_pool::DeviceStream::fork_join) in the `overlap` task: a fork per class from the worker's fork streams, joined back before the task returns, never a lane's stream; the task declares a fork per class ([`GpuTask::forks`](fb_core_planner::GpuTask::forks)) |
 //! | `upload_spherical_transform_matrix`, `MatrixAOPair::cartesian_to_spherical` | [`fb_recipes_matrix_ao::add_cartesian_to_spherical`], U's slot passed in by the caller |
 //! | `OverlapStep::run`, `write_overlap_npy` | [`Run`], S returned to the caller |
 

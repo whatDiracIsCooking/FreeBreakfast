@@ -415,6 +415,20 @@ pub struct ClassRows {
     off_b: RowId<Device, i32>,
     rank_a: RowId<Device, i32>,
     rank_b: RowId<Device, i32>,
+    /// Whether a one-electron build launches this class on a fork of its
+    /// task's stream
+    /// ([`DeviceStream::fork_join`](fb_core_thread_pool::DeviceStream::fork_join))
+    /// rather than on the stream itself: off as the records task makes it,
+    /// and set by the plan's builder on all of a build's classes to opt in.
+    /// A build forks when any of its classes is set, and declares then a
+    /// fork per class (`GpuTask::forks`); with none set it declares none
+    /// and launches the classes in order on its lane, bitwise the order it
+    /// had before forks existed. Off by default because on the gfx1200 the
+    /// forks' events cost more than the classes' overlap wins at the sizes
+    /// tested: `fb_integrals_one_electron_core_hamiltonian`'s crate doc has
+    /// the bench. It changes the launch order alone, never which rows a
+    /// launch reads or writes.
+    pub fork: bool,
 }
 
 impl ClassRows {
@@ -895,6 +909,7 @@ impl GpuTask for Form {
             off_b,
             rank_a,
             rank_b,
+            fork: false,
         };
         FormRows {
             class,

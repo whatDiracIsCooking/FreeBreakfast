@@ -42,8 +42,9 @@ pub struct Fixture {
 }
 
 /// The fixture's plan: the molecule read (charge and multiplicity do not
-/// enter H) and the basis placed on it as the BasisSet step does.
-pub fn plan(xyz: &str, basis: &str) -> Fixture {
+/// enter H) and the basis placed on it as the BasisSet step does; its
+/// records set to fork (`ClassRows::fork`) if `fork`.
+pub fn plan(xyz: &str, basis: &str, fork: bool) -> Fixture {
     let molecule = fb_io_xyz::read_xyz(&data(xyz), 0, 1).expect("the XYZ file reads");
     let basis = fb_io_basis::resolve_basis(basis)
         .expect("a carried basis")
@@ -53,7 +54,10 @@ pub fn plan(xyz: &str, basis: &str) -> Fixture {
     let n_ao = basis.nao_sphe() as usize;
     let mut dag = Dag::new();
     let nuclei = add_nuclei(&mut dag, 0, &molecule);
-    let classes = add_records(&mut dag, 0, &basis).expect("the library loads");
+    let mut classes = add_records(&mut dag, 0, &basis).expect("the library loads");
+    for c in &mut classes {
+        c.fork = fork;
+    }
     let h = add_core_hamiltonian(&mut dag, 0, &basis, &classes, nuclei, &mut None)
         .expect("the nuclei are not empty");
     let pinned = dag.add_gpu(
