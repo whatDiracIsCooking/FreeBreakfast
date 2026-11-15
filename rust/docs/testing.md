@@ -38,6 +38,13 @@ The rules already in the crate carry over:
   else a caller must ensure (a basis has shells, a matrix has a row, a
   predecessor is in the plan) is a `debug_requires`, and its failing test is
   `#[cfg(debug_assertions)]`.
+- **An `unsafe` block never rests on a debug-only contract.** In a function
+  whose body holds an `unsafe` block, a `debug_requires` on an integer
+  parameter or a parameter's `.len()` is the kind of bound the block may
+  trust, and a release build compiles it out. Either it is always on, or a
+  `// RELEASE:` comment directly above it says what holds the bound in a
+  release build: the body clamps it, the launcher refuses it with a status.
+  The marker is the shape of `// SAFETY:` and `// INVARIANT:`.
 
 The rules are held by checks, not by review. clippy's `missing_panics_doc`
 fails a public function whose body can panic and whose doc has no
@@ -47,7 +54,8 @@ body is left for an invariant of the function's own making, which no
 caller can break, with an `// INVARIANT:` comment above it saying why.
 `fb-doc-check`'s `tests/contracts.rs` holds both: clippy's
 `disallowed_macros` cannot, since a `#[debug_requires]` expands to a
-`debug_assert!` at the contract's own span.
+`debug_assert!` at the contract's own span. Its `tests/unsafe_contracts.rs`
+holds the `// RELEASE:` marker.
 
 A contract's reach is every caller, but its strength is only as good as the
 inputs those callers happen to pass. It complements a dedicated test; it does

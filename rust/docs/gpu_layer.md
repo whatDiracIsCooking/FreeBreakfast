@@ -556,7 +556,12 @@ correctness rests on is a contract.
 - **Correctness-only rules are `debug_requires`.** `la <= lb` for a basis's
   own class, a momentum within the exported table limit (the launcher
   refuses one outside it with a status, so it is never memory-unsafe), a
-  count positive.
+  count positive. Where such a contract bounds an integer argument or a
+  slice's length and the wrapper's body holds the `unsafe` call, a
+  `// RELEASE:` comment directly above it names what holds the bound in a
+  release build: `fb_recipes_sys::diis_solve`'s body clamps `m`, `ld` and
+  `newest` to `FB_DIIS_SOLVE_MAX_DIM`, and its launcher refuses each out of
+  range as `FB_LAUNCH_INVALID_ARGUMENT`.
 - **The stream's device is current**, a `debug_requires` too.
 
 Nothing the safe wrapper checks costs a device call, and every check it makes

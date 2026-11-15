@@ -20,7 +20,10 @@ rule below, fix the counter-example (or file an issue) rather than copy it.
   doc comment; `fb-doc-check` fails a restatement.
 - A check that memory safety rests on (the length an `unsafe` call trusts,
   an `n²` that must fit a 32-bit index) is an always-on `assert!`, named in
-  the item's `# Panics`. clippy's `missing_panics_doc` is on.
+  the item's `# Panics`. clippy's `missing_panics_doc` is on. Beside an
+  `unsafe` block, a `#[debug_requires]` on an integer or a `.len()` is
+  always on or carries a `// RELEASE:` comment saying what holds it in
+  release (`doc_check/tests/unsafe_contracts.rs`).
 - The outcome of a GPU call that can fail is a status or a `Result`, never
   a contract or a panic.
 - `debug_assert!` is only for an invariant no caller can break, with an

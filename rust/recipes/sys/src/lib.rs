@@ -263,6 +263,8 @@ fn sort(
 /// # Panics
 /// If `n` or `lda` does not fit an `i32`, or `a` is shorter than the block,
 /// `lda (n - 1) + n` elements; before anything is enqueued.
+// RELEASE: the launcher refuses an lda below n as FB_LAUNCH_INVALID_ARGUMENT
+// before anything is touched.
 #[debug_requires(lda >= n, "the leading dimension covers a column")]
 #[track_caller]
 pub fn symmetrize(
@@ -293,6 +295,7 @@ pub fn symmetrize(
 ///
 /// # Panics
 /// As [`symmetrize`].
+// RELEASE: as in symmetrize.
 #[debug_requires(lda >= n, "the leading dimension covers a column")]
 #[track_caller]
 pub fn mirror_triangle(
@@ -355,10 +358,14 @@ fn square_block(
 /// If `first` or `lda` does not fit an `i32`, `a` is shorter than the tile,
 /// `lda (jb - 1) + jb` elements, `l11` shorter than `jb²`, or `info` empty;
 /// before anything is enqueued.
+// RELEASE: the body clamps jb to one past FB_CHOLESKY_TILE, and the launcher
+// refuses a jb outside 1 to FB_CHOLESKY_TILE as FB_LAUNCH_INVALID_ARGUMENT
+// before anything is touched.
 #[debug_requires(
     (1..=FB_CHOLESKY_TILE as usize).contains(&jb),
     "the tile's order is 1 to FB_CHOLESKY_TILE"
 )]
+// RELEASE: the launcher refuses an lda below jb as FB_LAUNCH_INVALID_ARGUMENT.
 #[debug_requires(lda >= jb, "the leading dimension covers a column")]
 #[track_caller]
 pub fn cholesky_diagonal(
@@ -424,12 +431,20 @@ pub fn cholesky_diagonal(
 /// If `gram` is shorter than the triangle it reads, `ld (m - 1) + m`
 /// elements, `coeff` shorter than `m`, or `singular` empty; before
 /// anything is enqueued.
+// RELEASE: the launcher refuses an m of 0 as FB_LAUNCH_INVALID_ARGUMENT
+// before reading anything.
 #[debug_requires(m >= 1, "a subspace of at least one pair")]
+// RELEASE: the body clamps m and ld to FB_DIIS_SOLVE_MAX_DIM, and the launcher
+// refuses an ld below m as FB_LAUNCH_INVALID_ARGUMENT.
 #[debug_requires(m <= ld, "the leading dimension covers the subspace")]
+// RELEASE: the body clamps ld to FB_DIIS_SOLVE_MAX_DIM, and the launcher
+// refuses it there as FB_LAUNCH_INVALID_ARGUMENT.
 #[debug_requires(
     ld < FB_DIIS_SOLVE_MAX_DIM as usize,
     "the bordered system within the kernel's shared memory"
 )]
+// RELEASE: the body clamps newest to FB_DIIS_SOLVE_MAX_DIM, and the launcher
+// refuses one at or past m as FB_LAUNCH_INVALID_ARGUMENT.
 #[debug_requires(newest < m, "the newest pair is in the subspace")]
 #[track_caller]
 pub fn diis_solve(

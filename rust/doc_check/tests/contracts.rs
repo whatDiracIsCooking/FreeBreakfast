@@ -111,6 +111,12 @@ fn restated(path: &str, source: &str) -> Vec<String> {
             }
             continue;
         }
+        // A plain comment between attributes (a `// RELEASE:`) is inside
+        // the run.
+        if line.trim_start().starts_with("//") {
+            i += 1;
+            continue;
+        }
         // The item, or anything else: the run ends here.
         let text = normal(&doc);
         for m in &messages {
@@ -208,6 +214,12 @@ fn a_restatement_is_found_by_its_phrase_or_its_message() {
     let f = restated("a.rs", message);
     assert_eq!(f.len(), 1, "{f:#?}");
     assert!(f[0].starts_with("a.rs:8:"), "{f:#?}");
+
+    // A plain comment between the contracts does not end the run.
+    let commented = "/// Needs one row.\n#[debug_requires(m > 0, \"one column\")]\n\
+                     // RELEASE: the launcher refuses it.\n#[debug_requires(n > 0, \"one row\")]\n\
+                     pub fn f(m: usize, n: usize) {}\n";
+    assert_eq!(restated("a.rs", commented).len(), 1);
 
     // Another item's message, and a contract with no doc, are not restated.
     let clean = "/// A matrix of at least one row.\nfn g() {}\n\n/// Other.\n\

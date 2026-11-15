@@ -6,6 +6,9 @@
 //! as allowed it; `tests/contracts.rs`, which checks that no doc comment
 //! restates a contract rustdoc already renders, and that every
 //! `debug_assert!` is an internal invariant that says so;
+//! `tests/unsafe_contracts.rs`, which checks that no `unsafe` block rests
+//! on a debug-only contract on an extent unless a `// RELEASE:` comment
+//! says what holds it in release;
 //! `tests/rules.rs`, which checks that every lint, type, test file and test
 //! the register `docs/rules.md` names exists; and `tests/workspace_graph.rs`,
 //! which reads the package graph (`cargo metadata`, over the manifests'
@@ -126,6 +129,99 @@ fn blank(source: &str, keep_literals: bool) -> String {
 #[must_use]
 pub fn is_ident(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_'
+}
+
+/// One attribute of a source, outer or inner.
+pub struct Attr {
+    /// The line it opens on, from 1.
+    pub line: usize,
+    /// Where its byte span in the source starts, at the `#`.
+    pub start: usize,
+    /// Where its byte span ends, one past the closing `]`.
+    pub end: usize,
+    /// Its first word: `cfg`, `ignore`, `should_panic`, `unsafe`, ….
+    pub name: String,
+    /// `#![…]`.
+    pub inner: bool,
+}
+
+/// The line of byte `at` in `text`, from 1.
+#[must_use]
+pub fn line_of(text: &str, at: usize) -> usize {
+    text[..at].matches('\n').count() + 1
+}
+
+/// The identifier starting at `at` in `b`, or "".
+#[must_use]
+pub fn word_at(b: &[u8], at: usize) -> &str {
+    let end = (at..b.len()).find(|&j| !is_ident(b[j])).unwrap_or(b.len());
+    std::str::from_utf8(&b[at..end]).unwrap_or("")
+}
+
+/// Every identifier of `code` with its byte offset.
+#[must_use]
+pub fn words(code: &str) -> Vec<(usize, &str)> {
+    let b = code.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if is_ident(b[i]) {
+            let w = word_at(b, i);
+            out.push((i, w));
+            i += w.len();
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Every attribute of a source, read from its code (`code_only` of it), so
+/// one in a comment or a string is not one.
+#[must_use]
+pub fn attributes(code: &str) -> Vec<Attr> {
+    let b = code.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'#' || (i > 0 && is_ident(b[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let inner = b.get(i + 1) == Some(&b'!');
+        let open = i + 1 + usize::from(inner);
+        if b.get(open) != Some(&b'[') {
+            i += 1;
+            continue;
+        }
+        let mut depth = 0i32;
+        let mut k = open;
+        while k < b.len() {
+            match b[k] {
+                b'[' | b'(' | b'{' => depth += 1,
+                b']' | b')' | b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            k += 1;
+        }
+        let end = (k + 1).min(b.len());
+        let first = (open + 1..end).find(|&j| !b[j].is_ascii_whitespace());
+        let name = first.map_or("", |j| word_at(b, j)).to_string();
+        out.push(Attr {
+            line: line_of(code, i),
+            start: i,
+            end,
+            name,
+            inner,
+        });
+        i = end;
+    }
+    out
 }
 
 /// The string literals in `text`, in order, each backslash taken as

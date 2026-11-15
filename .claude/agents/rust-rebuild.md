@@ -68,8 +68,11 @@ full, with its check, in the section cited.
   debug contract, and the doc comment does not restate it. A check that
   memory safety rests on is an always-on assert named under the item's
   panics heading. The outcome of a GPU call that can fail is a status or a
-  result, never a contract or a panic. Push every check to the cheapest
-  tier that can express it; a type beats a contract beats a test.
+  result, never a contract or a panic. In a function holding an `unsafe`
+  block, a debug contract on an integer or a length is always on, or a
+  `// RELEASE:` comment above it says what holds the bound in release.
+  Push every check to the cheapest tier that can express it; a type beats
+  a contract beats a test.
 - **`unsafe` stays where the docs list it**
   (`docs/programming_model.md`, "Capabilities are enforced by lints").
   Every other crate root forbids it. Above the core crates, reach a

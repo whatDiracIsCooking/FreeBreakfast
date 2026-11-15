@@ -556,7 +556,11 @@ a type, a test file or a test in one, does not exist.
 `doc_check/tests/contracts.rs` checks that no doc comment restates a
 contract, which rustdoc renders on its own, and that every `debug_assert!`
 carries an `// INVARIANT:` comment ([`testing.md`](docs/testing.md),
-"Contracts are part of the spec").
+"Contracts are part of the spec"). `doc_check/tests/unsafe_contracts.rs`
+checks that, in a function holding an `unsafe` block, a
+`#[debug_requires]` on an integer parameter or a parameter's `.len()` is
+always on or carries a `// RELEASE:` comment saying what holds the bound
+in a release build.
 
 `doc_check/tests/source_rules.rs` scans the sources for six rules of the
 register, each named in its row: every `#[ignore]` is a device case's, no
