@@ -16,6 +16,20 @@
 //! PySCF's DF-RHF energy of the same water, basis and fitting set, its
 //! committed reference; `scf.json` writes E at full precision, so the
 //! file adds nothing to the miss.
+//!
+//! The localization's is fixed by analysis in
+//! `tests/data/localization_reference.py`, one run: `|L - L_ref| <= sens
+//! τ_c + τ_L + τ_ref` against PySCF's Pipek-Mezey maximum `L_ref` of its
+//! DF-RHF of the same water, basis and fitting set, at exponent 2. The
+//! tree's SCF stops at a residual under `τ_c`, the default
+//! `commutator_tolerance` 1e-7, and the maximum moves with the occupied
+//! space it publishes at first order, by at most `sens` per unit of
+//! residual (the reference's sensitivity, about 0.13, so 1.3e-8). Each
+//! localization stops within its last sweep's change of the maximum, both
+//! converging faster than halving it there: `τ_L`, the example's
+//! `functional_tolerance` 1e-10, and `τ_ref`, PySCF's `conv_tol` 1e-12.
+//! PySCF's own SCF, at `conv_tol_grad` 1e-10, and the fitted integrals the
+//! two codes share add under 1e-11.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -28,6 +42,15 @@ const BAR: f64 = 1e-12;
 
 /// The DF-RHF energy bar, hartree.
 const ENERGY_BAR: f64 = 1e-9;
+
+/// The SCF's default `commutator_tolerance`, the residual its orbitals are
+/// published under.
+const COMMUTATOR_TOLERANCE: f64 = 1e-7;
+
+/// The localization example's `functional_tolerance` and PySCF's
+/// `conv_tol` in the reference, each a bound on its code's distance from
+/// the maximum.
+const LOCALIZATION_TOLERANCES: f64 = 1e-10 + 1e-12;
 
 /// `rust/examples/<file>`.
 fn example(file: &str) -> PathBuf {
@@ -146,7 +169,7 @@ fn memory_example() {
 
 /// The timing record `timing` read back, parsed as the timing record's
 /// type: every task of `config`'s plan timed, in rank order and then
-/// iteration; a loop's body node and decision once per iteration, 0 to the
+/// iteration; a loop's body node and decision once per iteration, 0 to its
 /// loop's count; every other node once; each of `named` among them. Returns
 /// the record. The plan is laid out at a stand-in syevd work: the tasks do
 /// not depend on it.
@@ -157,8 +180,6 @@ fn check_timing(config: &Path, timing: &Path, named: &[&str]) -> Record {
     let text = std::fs::read_to_string(timing).unwrap();
     let record: Record = serde_json::from_str(&text).expect("timing.json parses");
     record.result.as_ref().unwrap();
-    // One loop at most in these plans.
-    let count = record.iterations.values().copied().sum::<usize>();
     let mut entries = std::collections::BTreeMap::<usize, Vec<Option<usize>>>::new();
     let mut previous = None;
     for task in &record.tasks {
@@ -174,6 +195,14 @@ fn check_timing(config: &Path, timing: &Path, named: &[&str]) -> Record {
     assert_eq!(entries.len(), planned.len(), "every task timed");
     for (node, iterations) in &entries {
         if iterations[0].is_some() {
+            // A loop is a contiguous run of nodes ending at its decision, so
+            // a body node's loop is the first decision at or after it.
+            let count = record
+                .iterations
+                .iter()
+                .find(|(decision, _)| decision.index() >= *node)
+                .map(|(_, &count)| count)
+                .expect("an iterated node is in a loop");
             let want: Vec<_> = (0..count).map(Some).collect();
             assert_eq!(iterations, &want, "node {node}: one entry per iteration");
         } else {
@@ -351,6 +380,76 @@ fn rhf_example() {
         &loaded,
         &cwd.join("loaded/timing.json"),
         &["load guess", "write scf.json"],
+    );
+}
+
+/// The example localization through the binary: exit 0, its `scf.json`
+/// energy at the DF-RHF's bar, its `localization.json` L after within the
+/// bar of PySCF's maximum (the module's doc), L before under it and a
+/// sweep count within the bound, `c_local.npy` water's 24 AOs by its five
+/// occupied orbitals, and its `timing.json` the timing record with the
+/// loops' entries, the write nodes among them. Needs a GPU.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn localization_example() {
+    let cwd = workdir("example_localization");
+    let config = example("localization.toml");
+    let out = free_breakfast(&cwd, &config);
+    assert_eq!(out.status.code(), Some(0), "the example exits 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("completed: 0 errors"), "{stdout}");
+
+    let dir = cwd.join("localization");
+    let (energy, _) = scf_json(&dir);
+    let e_ref = fb_io_npy::read_npy(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../scf/tests/data/scf_h2o_cc-pvdz_cc-pvdz-jkfit.npy"),
+    )
+    .unwrap()
+    .data[0];
+    assert!((energy - e_ref).abs() <= ENERGY_BAR, "E = {energy:.12}");
+
+    let text = std::fs::read_to_string(dir.join("localization.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&text).expect("localization.json parses");
+    let before = json["functional_before"]
+        .as_f64()
+        .expect("functional_before");
+    let after = json["functional_after"].as_f64().expect("functional_after");
+    let sweeps = json["sweeps"].as_u64().expect("sweeps");
+    let [l_ref, sens] = fb_io_npy::read_npy(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data/localization_h2o_cc-pvdz_cc-pvdz-jkfit.npy"),
+    )
+    .unwrap()
+    .data[..] else {
+        panic!("the reference is [L, sens]")
+    };
+    let bar = sens * COMMUTATOR_TOLERANCE + LOCALIZATION_TOLERANCES;
+    let miss = (after - l_ref).abs();
+    println!(
+        "L {before:.12} -> {after:.12} in {sweeps} sweeps, against {l_ref:.12}: |dL| = \
+         {miss:e}, bar {bar:e}"
+    );
+    assert!(miss <= bar, "|dL| = {miss:e} over {bar:e}");
+    assert!(before < after, "{text}");
+    assert!((1..=64).contains(&sweeps), "{text}");
+
+    let c_local = fb_io_npy::read_npy(&dir.join("c_local.npy")).unwrap();
+    assert_eq!(
+        c_local.shape,
+        [24, 5],
+        "water's cc-pVDZ AOs by its occupied"
+    );
+    check_timing(
+        &config,
+        &dir.join("timing.json"),
+        &[
+            "write scf.json",
+            "pm converged",
+            "pm rotate",
+            "write c_local.npy",
+            "write localization.json",
+        ],
     );
 }
 

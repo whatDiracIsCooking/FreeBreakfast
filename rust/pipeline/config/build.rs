@@ -1,8 +1,8 @@
 //! Give the binary and the tests an rpath to WarpWraps' C ABI libraries
-//! (`rust/capi_dir.rs`) and to both kernel libraries a plan reaches,
-//! `libfb_integrals_kernels.so` (the integrals) and
+//! (`rust/capi_dir.rs`) and to the three kernel libraries a plan reaches,
+//! `libfb_integrals_kernels.so` (the integrals),
 //! `libfb_recipes_kernels.so` (the orthogonalizer, the Cholesky factor,
-//! DIIS): wwr-sys's and the `-sys` crates' rpaths reach their own targets
+//! DIIS) and `libfb_localization_kernels.so` (Pipek-Mezey): wwr-sys's and the `-sys` crates' rpaths reach their own targets
 //! only, and `free-breakfast` is run from wherever cargo put it.
 
 include!("../../capi_dir.rs");
@@ -17,6 +17,7 @@ fn main() {
         capi.clone(),
         build.join("integrals/kernels"),
         build.join("recipes/kernels"),
+        build.join("localization/kernels"),
     ] {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", d.display());
     }

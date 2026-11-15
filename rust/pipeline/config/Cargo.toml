@@ -1,6 +1,6 @@
 [package]
 name = "fb-pipeline-config"
-description = "pipeline/config: the binary's config, read from TOML, the plan it asks for (the overlap, the guess, the DF-RHF), its admission against the [memory] caps, and the free-breakfast binary"
+description = "pipeline/config: the binary's config, read from TOML, the plan it asks for (the overlap, the guess, the DF-RHF, its localization), its admission against the [memory] caps, and the free-breakfast binary"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -26,6 +26,7 @@ fb-integrals-one-electron-overlap.workspace = true
 fb-io-basis.workspace = true
 fb-io-npy.workspace = true
 fb-io-xyz.workspace = true
+fb-localization-pipek-mezey.workspace = true
 fb-molecule.workspace = true
 fb-molecule-nuclei.workspace = true
 fb-pipeline-eri.workspace = true

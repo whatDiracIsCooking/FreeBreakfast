@@ -1,11 +1,12 @@
 //! Planning: a [`Config`]'s calculation as its tasks and write nodes.
 
-use fb_core_arena::{Pinned, RowId};
+use fb_core_arena::{Device, Heap, Pinned, RowId};
 use fb_core_error_handling::{Error, ErrorKind, Result};
 use fb_core_planner::{Dag, Planned};
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_integrals_one_electron_overlap::add_overlap;
+use fb_localization_pipek_mezey::{PmOptions, add_pm_localize};
 use fb_molecule::Molecule;
 use fb_molecule_nuclei::add_nuclei;
 use fb_pipeline_eri::add_df_eri;
@@ -21,7 +22,8 @@ use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write}
 /// [`Config::output`]. `lwork` maps the number of spherical AOs `n` to
 /// syevd's work at `n` on the device the plan will run on
 /// ([`syevd_lwork`](fb_recipes_diagonalize::syevd_lwork) on a solver handle
-/// there); it is asked once, by [`Calculation::Rhf`] alone, after every
+/// there); it is asked once, by [`Calculation::Rhf`] and
+/// [`Calculation::Localization`] alone, after every
 /// refusal planning can make of the config. Touches no device unless
 /// `lwork` does; the output directory need not exist until the plan runs.
 ///
@@ -37,7 +39,11 @@ use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write}
 /// loop ([`add_scf`]); then [`add_write_npy`] of C to `c.npy` and of D to
 /// `d.npy`, and `download epsilon` (stream: ε into a pinned row) and
 /// `write scf.json` (CPU: ε beside the last build's energy, residual and
-/// count).
+/// count). For [`Calculation::Localization`]: all of that, then
+/// [`add_pm_localize`] of the first `n_occ` columns of C over S, with
+/// [`Config::localization`]'s options, [`add_write_npy`] of `C_local` to
+/// `c_local.npy`, `n × n_occ`, and `write localization.json` (CPU: the
+/// localization's heap row `[L before, L after, sweeps]`).
 ///
 /// # Errors
 /// The readers' refusals, the message led by the key that named the file
@@ -47,14 +53,19 @@ use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write}
 /// (`Io`), an element the basis or the fitting set lacks; a loaded guess's
 /// file that cannot be opened or whose header cannot be parsed (`Io`), or
 /// whose shape is not the basis's (`InvalidConfig`), checked from its
-/// header alone ([`add_loaded_guess`]); for [`Calculation::Rhf`], no
+/// header alone ([`add_loaded_guess`]); for [`Calculation::Rhf`] and
+/// [`Calculation::Localization`], no
 /// `[eri]`, an odd electron count ([`occupied_orbitals`]) and an option out
-/// of range ([`ScfStep::check`]), each `InvalidConfig`; `lwork`'s error;
+/// of range ([`ScfStep::check`]), each `InvalidConfig`; for
+/// [`Calculation::Localization`], [`LocalizationStep::check`]'s refusals;
+/// `lwork`'s error;
 /// and the kernel libraries' load checks ([`add_records`], [`add_df_eri`],
-/// [`add_scf`]). The guess's data is read when the plan runs.
+/// [`add_scf`], [`add_pm_localize`]). The guess's data is read when the
+/// plan runs.
 ///
 /// [`GuessStep::from`]: fb_pipeline_guess::GuessStep::from
 /// [`ScfStep::check`]: fb_pipeline_scf::ScfStep::check
+/// [`LocalizationStep::check`]: fb_localization_pipek_mezey::LocalizationStep::check
 pub fn plan(
     config: &Config,
     lwork: impl FnOnce(usize) -> Result<usize>,
@@ -73,71 +84,126 @@ pub fn plan(
             dag.blas_workspace(0);
             let classes = add_records(&mut dag, 0, &basis)?;
             let s = add_overlap(&mut dag, 0, &basis, &classes, &mut None);
-            add_write_npy(&mut dag, 0, s, n, config.output.join("overlap.npy"));
+            add_write_npy(&mut dag, 0, s, [n, n], config.output.join("overlap.npy"));
         }
         Calculation::Guess => {
             let d = add_guess(&mut dag, config, &basis, &molecule)?;
-            add_write_host_npy(&mut dag, 0, d, n, config.output.join("d.npy"));
+            add_write_host_npy(&mut dag, 0, d, [n, n], config.output.join("d.npy"));
         }
-        Calculation::Rhf => {
-            // read_config refuses this config by the same table; a Config
-            // built in code reaches it here.
-            let Some(eri) = &config.eri else {
-                return Err(read::needs(Calculation::Rhf, "eri"));
-            };
-            let step = config.scf.clone().unwrap_or_default();
-            // Refused here, before lwork can touch a device; add_scf checks
-            // both again.
-            step.check()?;
-            occupied_orbitals(&molecule)?;
-            dag.blas_workspace(0);
-            let nuclei = add_nuclei(&mut dag, 0, &molecule);
-            let mut u = None;
-            let classes = add_records(&mut dag, 0, &basis)?;
-            let s = add_overlap(&mut dag, 0, &basis, &classes, &mut u);
-            let h = add_core_hamiltonian(&mut dag, 0, &basis, &classes, nuclei, &mut u)?;
-            let eri = add_df_eri(
+        Calculation::Rhf | Calculation::Localization => {
+            let localization = (config.calculation == Calculation::Localization)
+                .then(|| config.localization.unwrap_or_default());
+            // Refused before lwork can touch a device, as the RHF's options.
+            if let Some(step) = &localization {
+                step.check()?;
+            }
+            let rhf = plan_rhf(&mut dag, config, &molecule, &basis, lwork)?;
+            add_write_npy(&mut dag, 0, rhf.c, [n, n], config.output.join("c.npy"));
+            add_write_npy(&mut dag, 0, rhf.d, [n, n], config.output.join("d.npy"));
+            write::add_write_scf_json(
                 &mut dag,
                 0,
-                &molecule,
-                &basis,
-                &classes,
-                &mut u,
-                &eri.aux_basis,
-            )
-            .map_err(|e| match e.kind {
-                ErrorKind::InvalidConfig => keyed(e, "[eri] aux_basis"),
-                _ => e,
-            })?;
-            let guess = add_guess(&mut dag, config, &basis, &molecule)?;
-            let guess = add_guess_upload(&mut dag, 0, &basis, guess);
-            let lwork = lwork(n)?;
-            let x = add_orthogonalize(
-                &mut dag,
-                0,
-                "X",
+                rhf.scalars,
+                rhf.eps,
                 n,
-                lwork,
-                s,
-                ORTHOGONALIZE_EIGENVALUE_FLOOR,
-            )?;
-            let (scalars, [eps, c, d]) = add_scf(
-                &mut dag,
-                0,
-                &step,
-                &molecule,
-                n,
-                lwork,
-                &eri,
-                [h, s, x],
-                guess,
-            )?;
-            add_write_npy(&mut dag, 0, c, n, config.output.join("c.npy"));
-            add_write_npy(&mut dag, 0, d, n, config.output.join("d.npy"));
-            write::add_write_scf_json(&mut dag, 0, scalars, eps, n, config.output.join("scf.json"));
+                config.output.join("scf.json"),
+            );
+            if let Some(step) = localization {
+                let options = PmOptions {
+                    max_sweeps: step.max_sweeps,
+                    functional_tolerance: step.functional_tolerance,
+                    rotation_gain_threshold: step.rotation_gain_threshold,
+                    exponent: step.exponent,
+                };
+                // Planned after the RHF, which refused an open shell.
+                let n_occ = occupied_orbitals(&molecule)?;
+                let (info, [c_local, _]) =
+                    add_pm_localize(&mut dag, 0, &options, &basis, n_occ, rhf.s, rhf.c)?;
+                add_write_npy(
+                    &mut dag,
+                    0,
+                    c_local,
+                    [n, n_occ],
+                    config.output.join("c_local.npy"),
+                );
+                write::add_write_localization_json(
+                    &mut dag,
+                    0,
+                    info,
+                    config.output.join("localization.json"),
+                );
+            }
         }
     }
     Ok(dag.plan())
+}
+
+/// What [`plan_rhf`] leaves for the calculations that read an RHF: device
+/// rows of the plan's GPU worker 0.
+struct Rhf {
+    /// S, `n²`.
+    s: RowId<Device, f64>,
+    /// The orbitals C, `n²`, column `j` that of `ε_j`, ascending.
+    c: RowId<Device, f64>,
+    /// `D = 2 C_occ C_occᵀ`, `n²`.
+    d: RowId<Device, f64>,
+    /// ε, `n`.
+    eps: RowId<Device, f64>,
+    /// [`add_scf`]'s heap row `[E, ‖e‖, builds]`.
+    scalars: RowId<Heap, f64>,
+}
+
+/// Add the DF-RHF `config` asks for to `dag` on GPU worker 0, its writes
+/// left to the caller: the nuclei, the records, S, H and the fitted
+/// integrals over one staging of the orbital basis's spherical transform,
+/// the guess uploaded, `X = S^(-1/2)` and the loop, as [`plan`]'s doc has
+/// them; `lwork` asked once, after every refusal.
+///
+/// # Errors
+/// As [`plan`]'s, for [`Calculation::Rhf`].
+fn plan_rhf(
+    dag: &mut Dag<'static>,
+    config: &Config,
+    molecule: &Molecule,
+    basis: &fb_basis::BasisSet,
+    lwork: impl FnOnce(usize) -> Result<usize>,
+) -> Result<Rhf> {
+    // read_config refuses this config by the same table; a Config built in
+    // code reaches it here.
+    let Some(eri) = &config.eri else {
+        return Err(read::needs(config.calculation, "eri"));
+    };
+    let n = basis.nao_sphe() as usize;
+    let step = config.scf.clone().unwrap_or_default();
+    // Refused here, before lwork can touch a device; add_scf checks both
+    // again.
+    step.check()?;
+    occupied_orbitals(molecule)?;
+    dag.blas_workspace(0);
+    let nuclei = add_nuclei(dag, 0, molecule);
+    let mut u = None;
+    let classes = add_records(dag, 0, basis)?;
+    let s = add_overlap(dag, 0, basis, &classes, &mut u);
+    let h = add_core_hamiltonian(dag, 0, basis, &classes, nuclei, &mut u)?;
+    let eri = add_df_eri(dag, 0, molecule, basis, &classes, &mut u, &eri.aux_basis).map_err(
+        |e| match e.kind {
+            ErrorKind::InvalidConfig => keyed(e, "[eri] aux_basis"),
+            _ => e,
+        },
+    )?;
+    let guess = add_guess(dag, config, basis, molecule)?;
+    let guess = add_guess_upload(dag, 0, basis, guess);
+    let lwork = lwork(n)?;
+    let x = add_orthogonalize(dag, 0, "X", n, lwork, s, ORTHOGONALIZE_EIGENVALUE_FLOOR)?;
+    let (scalars, [eps, c, d]) =
+        add_scf(dag, 0, &step, molecule, n, lwork, &eri, [h, s, x], guess)?;
+    Ok(Rhf {
+        s,
+        c,
+        d,
+        eps,
+        scalars,
+    })
 }
 
 /// The guess [`Config::guess`] asks for, on GPU worker 0's host table:

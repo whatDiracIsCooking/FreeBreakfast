@@ -5,7 +5,8 @@
 //! of 1234 doubles, since the vendor's number needs a device. Planning
 //! touches no device, but the records ask the kernel library for the
 //! sort's workspace, so the library must be built. And the config's paths,
-//! its `[guess]`, `[eri]`, `[scf]` and `[memory]` tables read and refused,
+//! its `[guess]`, `[eri]`, `[scf]`, `[localization]` and `[memory]` tables
+//! read and refused,
 //! every key of the config set by an example, and admission against the
 //! caps, each card's free memory a number the case gives.
 
@@ -18,6 +19,7 @@ use std::cell::Cell;
 use fb_core_arena::{Bufs, Heap, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, Planned};
+use fb_localization_pipek_mezey::{LocalizationMode, LocalizationStep, PmExponent};
 use fb_pipeline_config::{Calculation, DEVICE_RESERVE, MemoryCaps, admit_plan, plan, read_config};
 use fb_pipeline_guess::{GuessKind, GuessStep};
 use fb_pipeline_scf::ScfStep;
@@ -27,7 +29,13 @@ use fb_test_support::golden;
 const LWORK: usize = 1234;
 
 /// The examples, by file name.
-const EXAMPLES: [&str; 4] = ["overlap.toml", "guess.toml", "rhf.toml", "memory.toml"];
+const EXAMPLES: [&str; 5] = [
+    "overlap.toml",
+    "guess.toml",
+    "rhf.toml",
+    "memory.toml",
+    "localization.toml",
+];
 
 /// `rust/examples/`.
 fn examples() -> PathBuf {
@@ -68,6 +76,19 @@ fn plan_golden_guess() {
 #[test]
 fn plan_golden_rhf() {
     plan_text("rhf.toml", Calculation::Rhf, "plan_rhf.txt");
+}
+
+/// The localization example: the DF-RHF's plan and its writes, then the
+/// Pipek-Mezey tables, the loop of sweeps and its decision, `pm rotate`,
+/// and the write nodes of `c_local.npy` (a stream download and a CPU write)
+/// and `localization.json` (a CPU write of the heap row).
+#[test]
+fn plan_golden_localization() {
+    plan_text(
+        "localization.toml",
+        Calculation::Localization,
+        "plan_localization.txt",
+    );
 }
 
 /// The geometry and a basis path are joined to the config's directory; a
@@ -160,7 +181,7 @@ fn guess_refusals() {
         (
             "guess_beside_overlap",
             format!("{}[guess]\n", GUESS.replace("\"guess\"", "\"overlap\"")),
-            "[guess] is read by calculation = \"guess\" and \"rhf\" alone",
+            "[guess] is read by calculation = \"guess\", \"rhf\" and \"localization\" alone",
         ),
     ];
     for (name, text, named) in cases {
@@ -201,7 +222,7 @@ fn eri_refusals() {
         (
             "eri_beside_guess",
             format!("{GUESS}[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n"),
-            "[eri] is read by calculation = \"rhf\" alone",
+            "[eri] is read by calculation = \"rhf\" and \"localization\" alone",
         ),
         (
             "eri_absent_beside_rhf",
@@ -270,7 +291,7 @@ fn scf_refusals() {
         (
             "scf_beside_guess",
             format!("{GUESS}[scf]\n"),
-            "[scf] is read by calculation = \"rhf\" alone",
+            "[scf] is read by calculation = \"rhf\" and \"localization\" alone",
         ),
     ];
     for (name, text, named) in cases {
@@ -294,6 +315,114 @@ fn an_open_shell_is_refused_before_lwork() {
         panic!("one electron is planned");
     };
     assert_eq!(error.kind, ErrorKind::InvalidConfig, "{error}");
+}
+
+/// A DF-RHF config's tables under `calculation = "localization"`.
+fn localization(extra: &str) -> String {
+    format!("{}{extra}", RHF.replace("\"rhf\"", "\"localization\""))
+}
+
+/// `[localization]` is optional, every key at its default; a key set
+/// replaces its default alone.
+#[test]
+fn localization_is_read() {
+    let (_, absent) = read_text("localization_absent", &localization(""));
+    assert_eq!(absent.unwrap().localization, None);
+    let (_, set) = read_text(
+        "localization_set",
+        &localization("[localization]\nexponent = 4\n"),
+    );
+    assert_eq!(
+        set.unwrap().localization,
+        Some(LocalizationStep {
+            exponent: PmExponent::Four,
+            ..LocalizationStep::default()
+        })
+    );
+}
+
+/// What `[localization]` refuses, naming the key or table and the file:
+/// `mode = "ibo"`, read and not ported, `Unsupported`; and, each
+/// `InvalidConfig`, a mode that is not one, an exponent other than 2 or
+/// 4, `max_sweeps = 0`, a negative tolerance, the C++ `livvo`, which is
+/// not ported, the table beside a calculation that does not read it, and
+/// the calculation without `[eri]`.
+#[test]
+fn localization_refusals() {
+    let cases = [
+        (
+            "localization_ibo",
+            localization("[localization]\nmode = \"ibo\"\n"),
+            ErrorKind::Unsupported,
+            "does not port IBO yet",
+        ),
+        (
+            "localization_bad_mode",
+            localization("[localization]\nmode = \"boys\"\n"),
+            ErrorKind::InvalidConfig,
+            "unknown variant `boys`",
+        ),
+        (
+            "localization_bad_exponent",
+            localization("[localization]\nexponent = 3\n"),
+            ErrorKind::InvalidConfig,
+            "exponent is 3, not 2 or 4",
+        ),
+        (
+            "localization_no_sweeps",
+            localization("[localization]\nmax_sweeps = 0\n"),
+            ErrorKind::InvalidConfig,
+            "[localization] max_sweeps is 0",
+        ),
+        (
+            "localization_negative_tolerance",
+            localization("[localization]\nfunctional_tolerance = -1.0\n"),
+            ErrorKind::InvalidConfig,
+            "must be non-negative",
+        ),
+        (
+            "localization_livvo",
+            localization("[localization]\nlivvo = true\n"),
+            ErrorKind::InvalidConfig,
+            "unknown field `livvo`",
+        ),
+        (
+            "localization_beside_rhf",
+            format!("{RHF}[localization]\n"),
+            ErrorKind::InvalidConfig,
+            "[localization] is read by calculation = \"localization\" alone",
+        ),
+        (
+            "localization_without_eri",
+            localization("").replace(ERI, ""),
+            ErrorKind::InvalidConfig,
+            "calculation = \"localization\" needs the [eri] table",
+        ),
+    ];
+    for (name, text, kind, named) in cases {
+        let (_, config) = read_text(name, &text);
+        let error = config.expect_err(name);
+        assert_eq!(error.kind, kind, "{name}: {error}");
+        assert!(error.message.contains(named), "{name}: {error}");
+        assert!(error.message.contains("config.toml"), "{name}: {error}");
+    }
+}
+
+/// `mode = "ibo"` in a `Config` built in code, past [`read_config`], is
+/// refused at planning, `Unsupported`, before `lwork` is asked.
+#[test]
+fn ibo_is_refused_at_planning_before_lwork() {
+    let (dir, config) = read_text("localization_ibo_planned", &localization(""));
+    std::fs::copy(examples().join("water.xyz"), dir.join("m.xyz")).unwrap();
+    let mut config = config.unwrap();
+    config.localization = Some(LocalizationStep {
+        mode: LocalizationMode::Ibo,
+        ..LocalizationStep::default()
+    });
+    let Err(error) = plan(&config, |_| panic!("lwork asked of a refused config")) else {
+        panic!("IBO is planned");
+    };
+    assert_eq!(error.kind, ErrorKind::Unsupported, "{error}");
 }
 
 /// The keys `Config` accepts, as dotted paths (`scf.diis_history`), read
@@ -348,7 +477,8 @@ const SHOWN_IN_A_COMMENT: [&str; 1] = ["guess.from"];
 /// Every key the config accepts is set by an example
 /// (`docs/documentation.md`, "Configuration: the reference is emitted
 /// from the type"), the keys read from the type itself, so a key added to
-/// `Config` or to a step's table (`GuessStep`, `EriStep`, `ScfStep`) fails here until an example sets it. A key that
+/// `Config` or to a step's table (`GuessStep`, `EriStep`, `ScfStep`,
+/// `LocalizationStep`) fails here until an example sets it. A key that
 /// excludes one an example sets is listed in [`SHOWN_IN_A_COMMENT`], and
 /// must then appear as `key =` in an example's comment.
 #[test]
