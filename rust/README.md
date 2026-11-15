@@ -1372,3 +1372,18 @@ CPU task whose whole work is a heap/pinned copy. On the gfx1200 (HIP),
 the `hip` preset: `devtools/test.py pr --only cargo --all` passed on
 this tree rebased over #1613, tiers 1 to 3 342 tests, tier 4 368, none
 skipped, every plan golden unchanged. CUDA not run.
+
+2026-11-15, Pipek-Mezey localization (`fb-localization-sys`,
+`fb-localization-pipek-mezey`): `src/localization/pipek_mezey`'s kernels
+forked into `libfb_localization_kernels.so`, and `add_pm_localize`, the
+sweeps a planner loop to convergence. Against PySCF's Pipek-Mezey over
+Mulliken populations (`pyscf.lo.PM`, PySCF 2.14.0, driven to a maximum
+by its stability check), for water (five occupied orbitals) and borane
+(four) in cc-pVDZ at both exponents: L of the orbitals as given within
+2e-16 relative, the localized L within 2e-14 absolute (bar 2e-12), and
+every orbital's population on every atom within 4e-9 of PySCF's (bar
+1e-5), U orthogonal and `C_local = C U` to round-off. On the RTX 3080
+(CUDA), the `default` preset: `devtools/test.py pr --only cargo --all`
+passed, tiers 1 to 3 352 tests, tier 4 376, none skipped. The fork also
+compiles under HIP (rust/'s kernel library built with the `hip` preset);
+not run on the gfx1200.
