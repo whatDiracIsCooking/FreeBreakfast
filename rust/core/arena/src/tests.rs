@@ -1128,7 +1128,7 @@ fn a_table_refuses_another_tables_row() {
         let t = TableBuilder::<Device>::new().build();
         let _ = t.offset(r);
     });
-    assert!(m.contains("a row of another table"), "{m}");
+    assert!(m.contains("a row of this table"), "{m}");
 }
 
 /// A view gives a node its own rows and refuses the rest: a value one node
@@ -1189,7 +1189,7 @@ fn views_give_a_node_its_rows_and_no_others() {
     let m = panic_message(|| {
         v1.get(other);
     });
-    assert!(m.contains("another table"), "{m}");
+    assert!(m.contains("a row of this table"), "{m}");
 }
 
 /// A table of zero bytes allocates nothing and hands out empty rows.
@@ -1214,7 +1214,10 @@ fn host_copies_round_trip_and_check_lengths() {
     assert_eq!(memcpy_p2h(&block.partition(1, 0), a), vec![1.0, 2.0, 3.0]);
 
     let m = panic_message(|| memcpy_h2p(&block.partition(0, 0), a, &[1.0]));
-    assert!(m.contains("memcpy_h2p: the lengths differ"), "{m}");
+    assert!(
+        m.contains("Pre-condition of memcpy_h2p violated: the row and the slice are one length"),
+        "{m}"
+    );
 }
 
 /// A counted loop's body row is one copy per iteration in flight: the

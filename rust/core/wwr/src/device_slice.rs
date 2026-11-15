@@ -11,6 +11,9 @@
 //! because the arena's device-free build links no wwr, and a call that
 //! takes them does.
 
+use contracts::requires;
+use fb_core_log::le;
+
 /// Device memory to read: `len()` elements of `T` from `as_ptr()`.
 ///
 /// # Safety
@@ -76,19 +79,13 @@ pub struct DevicePart<'a, T> {
 ///     tail.len()
 /// }
 /// ```
-///
-/// # Panics
-/// If `mid` is past `slice.len()`.
+#[requires(le!(mid, slice.len()), "mid is within the slice")]
 #[track_caller]
 pub fn split_at_mut<T>(
     slice: &mut impl DeviceSliceMut<T>,
     mid: usize,
 ) -> (DevicePart<'_, T>, DevicePart<'_, T>) {
     let len = slice.len();
-    assert!(
-        mid <= len,
-        "split_at_mut: mid is {mid}, past the slice's {len} elements"
-    );
     let ptr = slice.as_mut_ptr();
     let part = |ptr, len| DevicePart {
         ptr,
@@ -169,11 +166,50 @@ mod tests {
     }
 
     /// A cut past the end panics: a part would claim memory the slice never
-    /// promised.
+    /// promised. Run as [`a_cut_past_the_end_shows_its_values`]'s child
+    /// (`FB_CONTRACT_CHILD` set), it panics at level off, so the panic
+    /// hook writes its line to stderr.
     #[test]
-    #[should_panic(expected = "split_at_mut: mid is 11, past the slice's 10 elements")]
+    #[should_panic(expected = "Pre-condition of split_at_mut violated: mid is within the slice")]
     fn a_cut_past_the_end_panics() {
+        if std::env::var_os("FB_CONTRACT_CHILD").is_some() {
+            fb_core_log::set_level(fb_core_log::LogLevel::Off);
+        }
         let mut slice = Fake(vec![0.0; 10]);
-        let _ = split_at_mut(&mut slice, 11);
+        let _ = split_at_mut(&mut slice, 11); // MARK cut
+    }
+
+    /// The contract's panic carries its operands' values, through
+    /// `fb_core_log`'s panic hook, and is located at the caller's line,
+    /// `#[track_caller]` reaching through `#[requires]`. The hook's line is
+    /// not the panic's message, which `#[should_panic]` matches, so the
+    /// case above is re-run as a child and its stderr read.
+    #[test]
+    fn a_cut_past_the_end_shows_its_values() {
+        const NAME: &str = "device_slice::tests::a_cut_past_the_end_panics";
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+            .env("FB_CONTRACT_CHILD", "1")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{:?}\n{stderr}", out.status);
+        let source = include_str!("device_slice.rs");
+        let (line, text) = source
+            .lines()
+            .enumerate()
+            .find(|(_, l)| l.contains("// MARK cut"))
+            .unwrap();
+        let column = text.find("split_at_mut(").unwrap() + 1;
+        let want = format!(
+            "thread '{NAME}' panicked at {}:{}:{column}: Pre-condition of split_at_mut violated: \
+             mid is within the slice: le! (mid, slice.len()) [mid = 11, slice.len() = 10]",
+            file!(),
+            line + 1
+        );
+        assert!(
+            stderr.lines().any(|l| l == want),
+            "{stderr}\n  wanted {want}"
+        );
     }
 }

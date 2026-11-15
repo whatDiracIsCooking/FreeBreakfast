@@ -5,6 +5,11 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::sync::atomic::Ordering;
 
+#[cfg(feature = "device")]
+use contracts::requires;
+#[cfg(feature = "device")]
+use fb_core_log::eq;
+
 use super::block::Block;
 use super::kind::{Device, Element, HostKind, Kind};
 #[cfg(feature = "device")]
@@ -383,16 +388,15 @@ impl Block<Device> {
     /// [`TableBuilder::worker`]: super::TableBuilder::worker
     ///
     /// # Panics
-    /// If `row` is not of this block's table or not a worker row, or a
-    /// view or another [`HeldRow`] holds it.
+    /// If `row` is not of this block's table, or a view or another
+    /// [`HeldRow`] holds it.
+    #[requires(
+        eq!(self.table.rows[self.table.index(row)].owner, Owner::Worker),
+        "a worker row, the only kind that can be held"
+    )]
     pub fn hold<T: Element>(self: &std::sync::Arc<Self>, row: RowId<Device, T>) -> HeldRow<T> {
         let index = self.table.index(row);
         let info = &self.table.rows[index];
-        assert!(
-            info.owner == Owner::Worker,
-            "{} is not a worker row, so it cannot be held",
-            info.name
-        );
         let taken = self.borrows[self.flags[index]]
             .compare_exchange(0, -1, Ordering::Acquire, Ordering::Relaxed)
             .is_ok();

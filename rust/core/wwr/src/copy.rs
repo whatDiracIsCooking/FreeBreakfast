@@ -13,8 +13,11 @@
 //! [`split_at_mut`](crate::device_slice::split_at_mut) part names.
 //!
 //! **Safe for the same reason [`blas::gemm`](crate::blas::gemm) is**: each
-//! side carries its length, the two are asserted equal, and the borrow
-//! checker keeps the destination apart from the source.
+//! side carries its length, an always-on contract holds the two equal, and
+//! the borrow checker keeps the destination apart from the source.
+
+use contracts::requires;
+use fb_core_log::eq;
 
 use crate::device_slice::{DeviceSlice, DeviceSliceMut};
 use crate::gpu_status;
@@ -29,22 +32,13 @@ use wwr_sys::wwr_memcpy_kind;
 ///
 /// # Errors
 /// The runtime's refusal, as a `GpuRuntime` error naming the status.
-///
-/// # Panics
-/// If the two lengths differ, before anything is enqueued.
+#[requires(eq!(dst.len(), src.len()), "the two slices are one length")]
 #[track_caller]
 pub fn d2d<T>(
     dst: &mut impl DeviceSliceMut<T>,
     src: &impl DeviceSlice<T>,
     stream: &Stream,
 ) -> Status {
-    assert_eq!(
-        dst.len(),
-        src.len(),
-        "copy::d2d: the destination holds {} elements, the source {}",
-        dst.len(),
-        src.len()
-    );
     if dst.is_empty() {
         return Ok(());
     }
@@ -97,7 +91,7 @@ mod tests {
     /// enqueued.
     #[test]
     #[ignore = "tier 4: needs a GPU"]
-    #[should_panic(expected = "copy::d2d: the destination holds 2 elements, the source 1")]
+    #[should_panic(expected = "Pre-condition of d2d violated: the two slices are one length")]
     fn parts_of_different_lengths_panic() {
         let stream = Stream::new(0);
         let (mut dst, src) = (DeviceBytes::new(16), DeviceBytes::new(8));

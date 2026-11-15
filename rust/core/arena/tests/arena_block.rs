@@ -254,7 +254,10 @@ fn copies_round_trip_through_every_kind() {
         let m = fb_test_support::panic_message(|| {
             let _ = memcpy_d2p(&h, short, &b, &stream);
         });
-        assert!(m.contains("the rows' lengths differ"), "{m}");
+        assert!(
+            m.contains("Pre-condition of copy violated: the two rows are one length"),
+            "{m}"
+        );
     }
     assert_eq!(memcpy_p2h(&pinned.partition(2, 0), output), data);
 }
@@ -275,7 +278,10 @@ fn a_held_worker_row_is_alone_and_keeps_its_block() {
     let out = d.output::<f64>(0, "out", 64);
     let ws = d.worker::<u8>("ws", MIB);
     let block = Arc::new(Block::new(0, d.build()));
-    assert!(panic_message(|| drop(block.hold(out))).contains("out is not a worker row"));
+    assert!(
+        panic_message(|| drop(block.hold(out)))
+            .contains("Pre-condition of hold violated: a worker row")
+    );
 
     let held = block.hold(ws);
     assert_eq!(held.len(), MIB);

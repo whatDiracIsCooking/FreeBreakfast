@@ -21,6 +21,9 @@
 
 use wwr_sys::{wwr_solver_eig_mode, wwr_solver_fill_mode, wwr_solver_handle, wwr_solver_status};
 
+use contracts::requires;
+use fb_core_log::le;
+
 use super::SolverHandle;
 use crate::blas::{check_extent, check_vector};
 use crate::device_slice::DeviceSliceMut;
@@ -131,9 +134,8 @@ solver_scalar! {
 /// # Errors
 /// The query's refusal, as a `GpuRuntime` error naming `syevd_lwork` and
 /// `n`.
-///
-/// # Panics
-/// If `n` is negative or `lda` is less than `max(1, n)`.
+#[requires(le!(0, n), "n is not negative")]
+#[requires(le!(n.max(1), lda), "lda is at least max(1, n)")]
 #[track_caller]
 pub fn syevd_lwork<T: SolverScalar>(
     handle: &SolverHandle,
@@ -142,11 +144,6 @@ pub fn syevd_lwork<T: SolverScalar>(
     n: i32,
     lda: i32,
 ) -> Result<usize> {
-    assert!(n >= 0, "syevd_lwork: n is {n}");
-    assert!(
-        lda >= n.max(1),
-        "syevd_lwork: A's leading dimension {lda} is less than max(1, {n} rows)"
-    );
     let mut lwork = 0_i32;
     // SAFETY: the handle is live; the legacy query reads neither matrix
     // pointer, and writes one integer through a valid local.
@@ -187,10 +184,11 @@ pub fn syevd_lwork<T: SolverScalar>(
 /// naming `syevd_lwork` or `syevd` and `n`.
 ///
 /// # Panics
-/// If `n` is negative, `lda` is less than `max(1, n)`, or a slice is
-/// shorter than its operand: A n × n at `lda`, w n, the work the query's
-/// `lwork`, `info` one; before anything is enqueued.
+/// If `lda` is less than `max(1, n)`, or a slice is shorter than its
+/// operand: A n × n at `lda`, w n, the work the query's `lwork`, `info`
+/// one; before anything is enqueued.
 #[allow(clippy::too_many_arguments, reason = "the solver signature")]
+#[requires(le!(0, n), "n is not negative")]
 #[track_caller]
 pub fn syevd<T: SolverScalar>(
     handle: &SolverHandle,
@@ -203,7 +201,6 @@ pub fn syevd<T: SolverScalar>(
     work: &mut impl DeviceSliceMut<T>,
     info: &mut impl DeviceSliceMut<i32>,
 ) -> Status {
-    assert!(n >= 0, "syevd: n is {n}");
     check_extent("syevd", "A", a.len(), n, n, lda);
     check_vector("syevd", "w", w.len(), n, 1);
     check_vector("syevd", "info", info.len(), 1, 1);

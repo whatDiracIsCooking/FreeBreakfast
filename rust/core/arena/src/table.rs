@@ -8,7 +8,8 @@ use std::marker::PhantomData;
 use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use contracts::debug_requires;
+use contracts::{debug_requires, requires};
+use fb_core_log::eq;
 
 use super::DEVICE_ALIGNMENT;
 use super::assign::{Life, Row, assign};
@@ -662,8 +663,8 @@ impl<K: Kind> Table<K> {
         self.rows[self.index(row)].len
     }
 
+    #[requires(eq!(row.table, self.id), "a row of this table")]
     pub(super) fn index<T: Element>(&self, row: RowId<K, T>) -> usize {
-        assert_eq!(row.table, self.id, "a row of another table");
         row.index
     }
 
