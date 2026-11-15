@@ -1,5 +1,5 @@
 # libfb_integrals_kernels.so: the integrals launch wrappers rust/ has forked
-# from src/integrals -- mmd's order, records, bound and dressed bound, the
+# from src/integrals -- mmd's records, bound and dressed bound, the
 # overlap, the kinetic energy, the nuclear attraction, and density fitting's
 # metric, three-center integrals and their symmetrization -- with the
 # FelizJueves units they launch, one shared object with its own device link,
@@ -14,9 +14,9 @@
 # byte for byte (README.md, "Build and test").
 #
 # Linked: wwr::device PRIVATE for runtime.h and WWR_WARP_SIZE; the C ABI's
-# runtime_api library PRIVATE for wwr_get_last_error(); fb_recipes_kernels
-# PRIVATE for fb_merge_sort, which the order calls, a host call between the
-# two objects with no device symbol crossing. The vendor runtime is the shared
+# runtime_api library PRIVATE for wwr_get_last_error(). No other kernel
+# library: the C++ records' order, which called the recipes' merge sort, is
+# not forked (mmd/mmd_launch.cu has why). The vendor runtime is the shared
 # one, as in ../../recipes/kernels, so the launches here and that query read
 # the same per-thread error.
 file(GLOB _fb_integrals_units CONFIGURE_DEPENDS
@@ -60,14 +60,12 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${FB_RUST_DEVICE_HEADERS}
           ${FB_RUST_CAPI_GEN} ${_fb_felizjueves_include}
           ${CMAKE_CURRENT_SOURCE_DIR}/shared
-          ${CMAKE_CURRENT_SOURCE_DIR}/../../recipes/kernels
 )
 target_compile_definitions(
   fb_integrals_kernels PRIVATE FJ_WAVEFRONT=${WWR_WARP_SIZE}
 )
 target_link_libraries(
   fb_integrals_kernels PRIVATE wwr::device wwr::capi::runtime_api
-                               fb_recipes_kernels
 )
 set_target_properties(
   fb_integrals_kernels PROPERTIES POSITION_INDEPENDENT_CODE ON

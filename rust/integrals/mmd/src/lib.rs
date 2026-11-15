@@ -3,13 +3,15 @@
 //! into the per-class arrays the generated one-electron kernels read, with
 //! each record's Schwarz bounds, undressed and dressed. The C++
 //! `src/integrals/mmd` is the reference design, and its README the
-//! description of every field and of the order.
+//! description of every field; the order is the one thing this fork
+//! changes (below).
 //!
 //! This crate forms the sweep on the host; the device path is
-//! `fb-integrals-sys`'s. [`add_records`] forms the shell table (each
+//! `fb-integrals-sys`'s. [`record_tables`] forms the shell table (each
 //! shell's primitives, centre, first Cartesian AO and rank) and every
 //! class's shell pairs with their record prefixes, a
-//! [`RecordTables`](fb_integrals_sys::RecordTables), and hands it to
+//! [`RecordTables`](fb_integrals_sys::RecordTables), and [`add_records`]
+//! hands it to
 //! [`fb_integrals_sys::add_record_tasks`], which adds to a [`Dag`]:
 //!
 //! - **`mmd tables`**, on the CPU: the tables written into pinned rows.
@@ -18,10 +20,10 @@
 //! - **`upload <table>`**, one per table, on the worker's lane 0: the
 //!   tables copied into device rows ([`Dag::upload`]).
 //! - **`mmd records (la,lb)`**, one per class `(la, lb)`, `la <= lb`, in
-//!   ascending order, the `c`-th on the worker's lane `c`: its order
-//!   (`fb_mmd_order`), its records (`fb_mmd_records`, already in
-//!   descending ζ), its bound (`fb_mmd_bound`) and its two dressed bounds
-//!   (`fb_ordered_pair_bound`, as stored and swapped). The record fields
+//!   ascending order, the `c`-th on the worker's lane `c`: its records
+//!   (`fb_mmd_records`, in enumeration order), its bound (`fb_mmd_bound`)
+//!   and its two dressed bounds (`fb_ordered_pair_bound`, as stored and
+//!   swapped). The record fields
 //!   are its outputs, the class's [`ClassRows`], a type only those tasks
 //!   make, so the class launchers can trust the AO offsets it holds on the
 //!   device. A reader on another lane, as every reader on lane 0 is but
@@ -30,12 +32,20 @@
 //!
 //! Every size is fixed at planning from the basis: a class's `n_rec` is
 //! the sum of its shell pairs' primitive products, nothing is screened, and
-//! its sort's key, permutation and workspace
-//! (`fb_mmd_order_workspace_bytes`) are its own task's scratch, sized to
-//! the class. The assigner packs that scratch to the fewest bytes, so the
-//! classes share it and the handoffs chain them, one after another, as the
-//! C++ forks do; giving that reuse up for concurrency is admission's
-//! search, not built (`docs/memory.md`, "Open questions").
+//! a class's task holds no scratch.
+//!
+//! **The records are not sorted.** The C++ sorts each class's records into
+//! descending ζ (`mmd_order`: a key, a merge sort and its scratch) for J's
+//! screened bra loop, whose load it balances, and to spread a shell pair's
+//! records across warps for J's and K's atomics. No reader here needs it:
+//! the one-electron kernels and the bounds are one thread per record and
+//! independent of the order, and the three-center integrals regrouped the
+//! sorted records by shell pair on the host, undoing it. So the records
+//! stay in enumeration order (shell pair, then bra primitive, then ket
+//! primitive), each shell pair's records one contiguous run of its class,
+//! its range the pair's record prefix in the [`record_tables`], which the
+//! three-center integrals take at planning instead of regrouping. A J or K
+//! built here sorts, or bins, its own bras.
 //!
 //! | C++ (`src/integrals/mmd`) | Here |
 //! |---|---|
@@ -43,8 +53,9 @@
 //! | `PrimitivePairClass`, a device buffer per field on its own stream | [`ClassRows`]: a device output row per field, written on the class's own lane |
 //! | `basis_sweep`, `shell_table`, `pair_table`, `shell_ranks` | the host tables, formed here and checked by [`RecordTables::new`](fb_integrals_sys::RecordTables::new) |
 //! | `upload`'s carve of `res`'s pinned workspace, and the device buffers for the call | the tables' pinned rows (outputs of `mmd tables`) and device rows (outputs of the uploads, read by every class) |
-//! | `form_classes`' carve of `res`'s device workspace, two keys and two permutations | one key, one permutation and `fb_mmd_order`'s workspace, scratch of each class's task, sized to the class |
-//! | each class forked from the one before, so the sorts share the carve | each class on its own lane, the sorts' scratch sharing bytes, so the handoffs chain them |
+//! | `mmd_order`, each class sorted into descending ζ, and `form_classes`' carve of `res`'s device workspace for it, two keys and two permutations | nothing: the records stay in enumeration order, each shell pair's one run (above), and a class's task holds no scratch |
+//! | each class forked from the one before, so the sorts share the carve | each class on its own lane, with no scratch to share, so nothing chains them |
+//! | `three_center` copying the sorted records' offsets back and regrouping them by shell pair | [`record_tables`], formed again at planning by a reader: each pair's record range is its prefix, its offsets its shells' |
 //! | `primitive_pair_classes_footprint` | the plan's tables ([`Planned`](fb_core_planner::Planned)): the footprint is the layout |
 //! | `mixed_primitive_pair_classes(res, rows, cols)`, `mixed_sweep` | [`add_mixed_records`]`(dag, worker, rows, cols)`: the same tasks over both bases' table, returning [`MixedClassRows`], which no one-basis launcher takes |
 //! | `mixed_primitive_pair_classes_footprint` | the plan's tables, as for one basis |
@@ -98,7 +109,24 @@ pub fn add_records(
     if basis.nshells() == 0 {
         return Ok(Vec::new());
     }
-    Ok(add_record_tasks(dag, worker, tables::tables(basis)))
+    Ok(add_record_tasks(dag, worker, record_tables(basis)))
+}
+
+/// The tables [`add_records`] forms the records of `basis` from: every
+/// shell pair `i <= j`, swapped when `i` has the higher momentum, in its
+/// class `(la, lb)`, ascending, with its first record, and the shell
+/// table. A host function, which a reader of the records calls at planning
+/// for what their order puts where: the records of the `c`-th class's
+/// `p`-th pair are `[rec_begin[p], rec_begin[p + 1])` of that class's rows,
+/// and their AO offsets the pair's shells'. Aborts past `i32::MAX`
+/// primitives, or records in one class, as [`add_records`] does.
+///
+/// # Panics
+/// As [`RecordTables::new`](fb_integrals_sys::RecordTables::new), which a
+/// basis's own sweep never trips.
+#[track_caller]
+pub fn record_tables(basis: &fb_basis::BasisSet) -> fb_integrals_sys::RecordTables {
+    tables::tables(basis)
 }
 
 /// Add the records between two bases, `rows` and `cols`, to `dag` on GPU
@@ -112,7 +140,8 @@ pub fn add_records(
 /// nothing is swapped, so `la > lb` classes appear. `off_a` is a Cartesian
 /// AO of `rows` and `off_b` one of `cols`, two index sets, so equal
 /// offsets mean nothing; each rank is among its own basis's shells. The
-/// fields, their order (descending ζ in a class) and the bounds are
+/// fields, their order (enumeration order: `rows`' shell, then `cols`',
+/// then the two primitives) and the bounds are
 /// [`add_records`]'. The bases may differ in set, in geometry, in both or
 /// in neither, and may be the same.
 ///

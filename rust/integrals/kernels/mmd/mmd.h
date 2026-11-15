@@ -1,8 +1,10 @@
-/* The primitive-pair records' launch wrappers -- the order, the records, the
- * bound and the dressed bound -- and the structs they read and write: the C
- * header forked from src/integrals/mmd/mmd_bridge.h. mmd_launch.cu defines
- * them; fb_integrals.h includes this, and devtools/rust-bindings.py reads it
- * into fb-integrals-sys. Plain C: no templates, no vendor types. */
+/* The primitive-pair records' launch wrappers -- the records, the bound and
+ * the dressed bound -- and the structs they read and write: the C header
+ * forked from src/integrals/mmd/mmd_bridge.h, without its order (mmd_order):
+ * the records stay in the order the host enumerates them, each shell pair's
+ * one contiguous run (mmd_launch.cu has why). mmd_launch.cu defines them;
+ * fb_integrals.h includes this, and devtools/rust-bindings.py reads it into
+ * fb-integrals-sys. Plain C: no templates, no vendor types. */
 #pragma once
 
 #include <stddef.h>
@@ -106,43 +108,21 @@ typedef struct fb_primitive_pair_records {
   int32_t *rank_b;
 } fb_primitive_pair_records;
 
-/// The bytes of the one scratch buffer fb_mmd_order needs for n_rec records:
-/// the merge sort's, keys with values (fb_merge_sort_workspace_bytes), zero
-/// up to one tile (2816 records) and for n_rec not positive. A plain host
-/// function, pure in its argument: it calls no runtime and needs no device.
-size_t fb_mmd_order_workspace_bytes(int32_t n_rec);
-
-/// The order of a class's records by zeta, descending, on stream: the record
-/// of host index `perm[k]` is the k-th, equal zetas in host order.
-///
-/// Writes `key[r] = -zeta` of host record r (formed from src) and `perm[r] = r`,
-/// then sorts the keys ascending with perm carried (fb_merge_sort, stable).
-/// key and perm are device arrays n_rec long, and workspace is
-/// FB_DEVICE_ALIGNMENT-aligned and at least fb_mmd_order_workspace_bytes(n_rec)
-/// long; it may be null when that is zero. No array may overlap another.
-///
-/// Returns FB_LAUNCH_INVALID_ARGUMENT, enqueueing nothing, for n_rec or
-/// src->n_pairs not positive, a null src, key or perm, or a workspace shorter
-/// than the query; otherwise the status of the first failed launch, or
-/// FB_LAUNCH_SUCCESS. Launch errors only.
-fb_launch_status fb_mmd_order(wwr_stream stream, int32_t n_rec, const fb_primitive_pair_source *src,
-                              double *key, uint32_t *perm, void *workspace, size_t workspace_bytes);
-
-/// Every record field but the bounds, in the order perm gives, on stream:
-/// record k is the record of host index `perm[k]`, formed from src, one thread
-/// per record.
+/// Every record field but the bounds, on stream: record r is the record of
+/// host index r, formed from src, one thread per record, so each shell pair's
+/// records are the contiguous run `[rec_begin[p], rec_begin[p + 1])`.
 ///
 /// P is (alpha A + beta B) / zeta, its numerator one explicit FMA with the
 /// terms in exponent order: the same for a record and its primitives swapped,
 /// bit for bit, though it may sit an ulp from a host's unfused value.
 ///
-/// perm and every array of out are n_rec long, written whole.
+/// Every array of out is n_rec long, written whole.
 ///
 /// Returns FB_LAUNCH_INVALID_ARGUMENT, enqueueing nothing, for n_rec or
-/// src->n_pairs not positive or a null src, perm or out; otherwise the launch
+/// src->n_pairs not positive or a null src or out; otherwise the launch
 /// status. Launch errors only.
 fb_launch_status fb_mmd_records(wwr_stream stream, int32_t n_rec,
-                                const fb_primitive_pair_source *src, const uint32_t *perm,
+                                const fb_primitive_pair_source *src,
                                 const fb_primitive_pair_records *out);
 
 /// Each record's Schwarz bound I = pair_bound(zeta, la + lb) into bound, on

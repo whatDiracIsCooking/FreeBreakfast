@@ -1,8 +1,8 @@
 //! The records' plan for both molecules (tier 3): the plan text, the
 //! device table's size (the arena's) among it, is a committed golden per
 //! molecule, `FB_BLESS=1` rewriting it (`docs/testing.md`, "Performance").
-//! Planning touches no device, but the layout asks the kernel library for
-//! the sort's workspace, so the library must be built.
+//! Planning touches no device, but `add_records` runs the kernel library's
+//! load check, so the library must be built.
 
 mod common;
 

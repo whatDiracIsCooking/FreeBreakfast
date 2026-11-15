@@ -16,17 +16,19 @@
 //! [`add_three_center`] adds, after the kernel library's load check and the
 //! kernels' limits at planning, `harmonics` and `upload U` for
 //! each basis whose U the caller's slot does not hold yet
-//! ([`add_harmonics`]), and the four tasks
+//! ([`add_harmonics`]), and the three tasks
 //! of [`fb_integrals_sys::add_three_center_tasks`]:
 //!
-//! - **`download three-center bra`** and **`download three-center
-//!   offsets`**, the planner's copy nodes on the worker's stream: the
-//!   orbital records' bra fields and AO offsets (`fb_integrals_mmd`'s,
-//!   read as edges) into pinned rows.
-//! - **`three-center tables`**, on the CPU: those records regrouped by
-//!   shell pair, the aux records (the metric's, one per aux primitive,
-//!   `s = c (π/α)^{3/2}`) into one pinned row, and the cells, one per
-//!   (shell pair, aux shell) in its class `(la, lb, lP)`, into another.
+//! - **`download three-center bra`**, the planner's copy node on the
+//!   worker's stream: the orbital records' bra fields
+//!   (`fb_integrals_mmd`'s, read as edges) into pinned rows.
+//! - **`three-center tables`**, on the CPU: those fields packed as they
+//!   are, each shell pair's records already one run (the records are in
+//!   enumeration order, [`fb_integrals_mmd`]'s crate doc), and the aux
+//!   records (the metric's, one per aux primitive, `s = c (π/α)^{3/2}`)
+//!   into one pinned row, and the cells, one per (shell pair, aux shell)
+//!   in its class `(la, lb, lP)`, formed at planning from the basis's
+//!   [`record_tables`], into another.
 //! - **`three-center`**, on the worker's stream: both uploaded; U and U_aux
 //!   read from the plan's device rows of them, which the metric's transform
 //!   over the same aux basis reads too; one launch
@@ -46,25 +48,24 @@
 //! |---|---|
 //! | `three_center(res, basis, classes, aux, b, max_bytes)`, into the caller's `b` | [`add_three_center`]`(dag, worker, basis, classes, aux, u, u_aux)`, returning (mn\|P)'s row; the slots of U and U_aux passed in, as every transform takes them |
 //! | U and U_aux staged with the records and cells | the plan's device rows of U and U_aux ([`add_harmonics`]), each copied up once for every reader over its basis on the worker and read by the last task |
-//! | `mmd`'s records copied back and regrouped on the host, the call synchronizing after the copy | `download three-center bra`, `download three-center offsets` and `three-center tables`: two copy nodes, their pinned outputs read by a CPU task after the executor waits on their events |
+//! | `mmd`'s records copied back and regrouped by shell pair on the host, undoing their sort, the call synchronizing after the copy | `download three-center bra` and `three-center tables`: one copy node, its pinned outputs packed by a CPU task after the executor waits on its event, unregrouped, since the records here are unsorted and each pair's run is its prefix in the tables |
 //! | the staging, the cells, the Cartesian tensor and the work, the call's own buffers | pinned rows and the stream task's device scratch, all in the plan's arena |
 //! | `three_center_class` per class, `gemm` and `gemmStridedBatched` (`recipes/blas`, wwr) | [`fb_integrals_sys::add_three_center_tasks`], over `fb_core_wwr::blas`'s `gemm` and `gemm_strided_batched` |
 //! | `three_center_symmetrize`, out of place into `b` | the same, into the output row |
 //! | `Unsupported` for an orbital shell above f or an aux shell above i, or a tensor past `INT32_MAX` | the same, at planning, adding nothing |
 //! | `Unsupported` past `max_bytes` or the device's memory budget, naming the bytes | admission's `Allocation` over the plan's table, naming the rows at the peak |
-//! | `InvalidConfig` for a class that is not the basis's | a contract that `classes` are the basis's records, and `InvalidConfig` at run time if the regroup finds another count of shell pairs |
+//! | `InvalidConfig` for a class that is not the basis's | a contract that `classes` are the basis's records, checked always by [`fb_integrals_sys::add_three_center_tasks`] against the basis's tables |
 //! | success with nothing written for an empty basis | a contract: both bases have a shell |
 //! | `three_center_footprint(basis, aux)` | nothing: the layout declares every row, and the arena's size is the plan's golden |
 
 #![forbid(unsafe_code)]
-
-use std::collections::BTreeMap;
 
 use contracts::debug_requires;
 use fb_basis::BasisSet;
 use fb_core_arena::{Device, RowId};
 use fb_core_error_handling::{Error, Result};
 use fb_core_planner::Dag;
+use fb_integrals_mmd::record_tables;
 use fb_integrals_sys::{
     AuxTable, ClassRows, FB_THREE_CENTER_AUX_MAX_MOMENTUM, FB_THREE_CENTER_MAX_MOMENTUM,
     add_three_center_tasks,
@@ -85,8 +86,8 @@ use fb_recipes_matrix_ao::add_harmonics;
 /// of each (the metric's transform takes `u_aux`'s): `harmonics` (CPU)
 /// and `upload U` (stream) are added for each that is `None`, and
 /// U's device row left there ([`add_harmonics`]). The tasks are then
-/// `download three-center bra` and `download three-center offsets`
-/// (stream), `three-center tables` (CPU) and `three-center` (stream), which reads U and U_aux and whose scratch holds
+/// `download three-center bra` (stream), `three-center tables` (CPU) and
+/// `three-center` (stream), which reads U and U_aux and whose scratch holds
 /// the Cartesian tensor (`naux_cart · nao_cart²` doubles) and the
 /// transform's intermediate (`naux · nao_cart²`).
 ///
@@ -105,10 +106,12 @@ use fb_recipes_matrix_ao::add_harmonics;
 ///
 /// # Panics
 /// If `classes`, or a row `u` or `u_aux` holds, are rows of another
-/// worker's or another plan's table ([`Dag::add_gpu`]).
+/// worker's or another plan's table ([`Dag::add_gpu`]), or, in every
+/// build, if `classes` are not the records of `basis`
+/// ([`fb_integrals_sys::add_three_center_tasks`]' contract against its
+/// tables).
 #[debug_requires(basis.nshells() > 0, "an orbital basis of at least one shell")]
 #[debug_requires(aux.nshells() > 0, "an aux basis of at least one shell")]
-#[debug_requires(are_records_of(classes, basis), "classes are the records of basis")]
 #[track_caller]
 pub fn add_three_center(
     dag: &mut Dag<'_>,
@@ -161,47 +164,13 @@ pub fn add_three_center(
                 .map(|p| (p.exponent, p.coefficient)),
         );
     }
-    let pairs = shell_pairs(basis);
-    let n_pairs: Vec<usize> = classes
-        .iter()
-        .map(|c| pairs.get(&(c.la(), c.lb())).map_or(0, |&(n, _)| n))
-        .collect();
+    let tables = record_tables(basis);
     let u = [
         add_harmonics(dag, worker, basis, u),
         add_harmonics(dag, worker, aux, u_aux),
     ];
     let n_sph = [basis.nao_sphe() as usize, aux.nao_sphe() as usize];
     Ok(add_three_center_tasks(
-        dag, worker, classes, &n_pairs, &table, u, n_sph,
+        dag, worker, classes, &tables, &table, u, n_sph,
     ))
-}
-
-/// The shell pairs `i <= j` of `basis` in each class `(la, lb)`, `la <= lb`,
-/// with their records, the pairs' primitive products summed.
-fn shell_pairs(basis: &BasisSet) -> BTreeMap<(i32, i32), (usize, usize)> {
-    let mut pairs = BTreeMap::new();
-    let shells = basis.shells();
-    for (i, a) in shells.iter().enumerate() {
-        for b in &shells[i..] {
-            let (la, lb) = (a.angular_momentum(), b.angular_momentum());
-            let entry = pairs.entry((la.min(lb), la.max(lb))).or_insert((0, 0));
-            entry.0 += 1;
-            entry.1 += a.nprimitives() as usize * b.nprimitives() as usize;
-        }
-    }
-    pairs
-}
-
-/// Whether `classes` are the records of `basis`: one per class of its
-/// shell pairs, each with that class's record count, over its Cartesian
-/// AOs.
-fn are_records_of(classes: &[ClassRows], basis: &BasisSet) -> bool {
-    let pairs = shell_pairs(basis);
-    classes.len() == pairs.len()
-        && classes.iter().all(|c| {
-            c.n_cart() == basis.nao_cart() as usize
-                && pairs
-                    .get(&(c.la(), c.lb()))
-                    .is_some_and(|&(_, n_rec)| n_rec == c.n_rec() as usize)
-        })
 }

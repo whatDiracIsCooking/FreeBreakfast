@@ -5,13 +5,21 @@
 //! `mixed_primitive_pair_classes` forms in the C++ tree and
 //! `add_mixed_records` here.
 //!
+//! The records here are in enumeration order, and the C++ tree's in
+//! descending ζ, equal ζ in enumeration order (its stable sort, which this
+//! fork leaves out: `fb_integrals_mmd`'s crate doc). So each class is first
+//! held to the enumeration, every record's offsets and exponents in sweep
+//! order exactly (`common::enumeration`, written from the bases), and then
+//! sorted stably by descending ζ, which is the C++ tree's order exactly,
+//! since ζ is bitwise the same (below), and compared field by field.
+//!
 //! The bars are fixed by analysis, one run, the same for both:
 //!
 //! - The class list, each `n_rec`, and every integer field (`off_*`,
 //!   `rank_*`) exactly: they are the same sweep of the same bases.
 //! - `zeta`, `ea` and `eb` bitwise: exponents read from the same JSON, and
-//!   ζ their sum, one rounding on both sides. Equal ζ keep the enumeration
-//!   order, so this is the record order too.
+//!   ζ their sum, one rounding on both sides. So the stable sort by ζ
+//!   reproduces the C++ order, and these fields being equal checks it.
 //! - Every other field within 1e-13 relative: the coefficients come out of
 //!   each tree's host normalization (`pow`, `sqrt`), whose libm rounding may
 //!   differ by an ulp, carried through a few device operations (`s`, and
@@ -20,7 +28,7 @@
 
 mod common;
 
-use common::{Class, HostClass};
+use common::{Class, HostClass, check_enumeration, enumeration};
 use fb_core_planner::Dag;
 use fb_integrals_mmd::{add_mixed_records, add_records};
 
@@ -88,7 +96,21 @@ fn reference(stem: &str) -> Vec<HostClass> {
     classes
 }
 
-/// `got`, the records of case `stem`, against the C++ tree's, at the bars
+/// `c`'s records in the C++ tree's order: sorted stably by descending ζ.
+fn sorted_by_zeta(c: &HostClass) -> HostClass {
+    let mut order: Vec<usize> = (0..c.n_rec as usize).collect();
+    order.sort_by(|&a, &b| c.f64s[0][b].total_cmp(&c.f64s[0][a]));
+    let permute = |v: &Vec<f64>| order.iter().map(|&r| v[r]).collect();
+    let permute_i = |v: &Vec<i32>| order.iter().map(|&r| v[r]).collect();
+    HostClass {
+        f64s: c.f64s.iter().map(permute).collect(),
+        i32s: c.i32s.iter().map(permute_i).collect(),
+        ..c.clone()
+    }
+}
+
+/// `got`, the records of case `stem` sorted as the C++ tree's are, against
+/// the C++ tree's, at the bars
 /// above: every field's largest error printed, and every miss pushed onto
 /// `misses`.
 fn compare(stem: &str, got: &[HostClass], misses: &mut Vec<String>) {
@@ -143,8 +165,9 @@ fn compare(stem: &str, got: &[HostClass], misses: &mut Vec<String>) {
     }
 }
 
-/// Each molecule's records planned, run once on device 0 and compared with
-/// the C++ tree's against the bars above. Every field's largest error is
+/// Each molecule's records planned, run once on device 0, held to the
+/// enumeration, and compared, sorted, with the C++ tree's against the bars
+/// above. Every field's largest error is
 /// printed, and every miss named before the test fails. Needs a GPU.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
@@ -154,15 +177,17 @@ fn records_match_the_cpp_tree() {
         let mut dag = Dag::new();
         let classes = add_records(&mut dag, 0, &basis).unwrap();
         let got = common::run(dag, classes.iter().map(Class::from).collect());
+        check_enumeration(stem, &got, &enumeration(&basis, None), &mut misses);
+        let got: Vec<HostClass> = got.iter().map(sorted_by_zeta).collect();
         compare(stem, &got, &mut misses);
     }
     assert!(misses.is_empty(), "past the bars:\n{}", misses.join("\n"));
 }
 
 /// Two bases' records, water in cc-pVDZ as `rows` and water in STO-3G at
-/// a displaced geometry as `cols`, planned, run once on device 0 and
-/// compared with the C++ tree's `mixed_primitive_pair_classes` against the
-/// same bars. Needs a GPU.
+/// a displaced geometry as `cols`, planned, run once on device 0, held to
+/// the ordered pairs' enumeration, and compared, sorted, with the C++
+/// tree's `mixed_primitive_pair_classes` against the same bars. Needs a GPU.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn mixed_records_match_the_cpp_tree() {
@@ -171,6 +196,9 @@ fn mixed_records_match_the_cpp_tree() {
     let classes = add_mixed_records(&mut dag, 0, &rows, &cols).unwrap();
     let got = common::run(dag, classes.iter().map(Class::from).collect());
     let mut misses = Vec::new();
-    compare("h2o_ccpvdz_sto3g_mixed", &got, &mut misses);
+    let case = "h2o_ccpvdz_sto3g_mixed";
+    check_enumeration(case, &got, &enumeration(&rows, Some(&cols)), &mut misses);
+    let got: Vec<HostClass> = got.iter().map(sorted_by_zeta).collect();
+    compare(case, &got, &mut misses);
     assert!(misses.is_empty(), "past the bars:\n{}", misses.join("\n"));
 }

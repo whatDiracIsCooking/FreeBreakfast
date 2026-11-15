@@ -1,7 +1,7 @@
 // The device half of mmd: each class's records formed on the device from the
-// basis's shells and the class's shell pairs, in descending zeta order (the
-// order sorted from zeta alone, then every field written once, already in
-// it), then each record's Schwarz bound through the generated
+// basis's shells and the class's shell pairs, in the order the host enumerates
+// them (shell pair, then bra primitive, then ket primitive), every field
+// written once, then each record's Schwarz bound through the generated
 // pair_bound<la, lb> (kernels/pair_bound/) and its dressed bound, as stored
 // and swapped, through the generated record_bound<la, lb>
 // (kernels/record_bound/). Each class is its own unit of this library:
@@ -11,11 +11,18 @@
 //
 // Forked from src/integrals/mmd/mmd_launch.cu: the kernels are unchanged, and
 // the launchers are rewritten as mmd.h's extern "C", enqueue-only launch
-// wrappers (rust/docs/gpu_layer.md, "Layering"). The order's two scratch
-// arrays are one workspace, the forked merge sort's (fb_merge_sort, in
-// libfb_recipes_kernels.so); the status is the C ABI's wwr_get_last_error(),
-// so no vendor code crosses; a class outside a table is
+// wrappers (rust/docs/gpu_layer.md, "Layering"); the status is the C ABI's
+// wwr_get_last_error(), so no vendor code crosses; a class outside a table is
 // FB_LAUNCH_UNSUPPORTED, split from the invalid arguments.
+//
+// The C++ order is left out: its mmd_order sorts each class's records into
+// descending zeta, for J's screened bra loop (load balance) and to spread a
+// shell pair's records across warps for J's and K's atomics. Nothing in rust/
+// reads the records so: the one-electron kernels and the bounds are one thread
+// per record, order-independent, and the three-center integrals want each
+// shell pair's records as one run, which enumeration order already is, its
+// range the pair's record prefix known at planning. A J built here sorts its
+// own bras.
 
 // Standard headers, and ours (which include only standard headers), before the
 // wwr headers below: under HIP the vendor runtime header they pull in must not
@@ -28,7 +35,6 @@
 #include "primitives.h"
 
 #include "mmd/mmd.h"
-#include "sort/merge_sort.h"
 
 // wwr_get_last_error(): the launch status, already mapped onto wwr_status.
 #include "runtime_api/wwr_capi_runtime_api.h"
@@ -105,27 +111,14 @@ __device__ double product_centre(const double alpha, const double a, const doubl
   return free_breakfast::math::fma(e_hi, c_hi, e_lo * c_lo) / zeta;
 }
 
-// key[r] = -zeta and perm[r] = r for host record r: the ascending sort of key
-// is the descending order of zeta, carrying each record's host index.
-__global__ void mmd_order_key_kernel(const int32_t n_rec, const fb_primitive_pair_source src,
-                                     double *key, uint32_t *perm) {
-  const auto r = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
-  if (r < n_rec) {
-    const RecordPrimitives rp = record_primitives(src, r);
-    key[r] = -(src.exponent[rp.ia] + src.exponent[rp.ib]);
-    perm[r] = static_cast<uint32_t>(r);
-  }
-}
-
-// Record k from host record perm[k]: one thread per record, the stores
-// coalesced.
+// Record k from host record k: one thread per record, the stores coalesced.
 __global__ void mmd_records_kernel(const int32_t n_rec, const fb_primitive_pair_source src,
-                                   const uint32_t *perm, const fb_primitive_pair_records out) {
+                                   const fb_primitive_pair_records out) {
   const auto k = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
   if (k >= n_rec) {
     return;
   }
-  const RecordPrimitives rp = record_primitives(src, static_cast<int32_t>(perm[k]));
+  const RecordPrimitives rp = record_primitives(src, k);
   const uint32_t a = src.bra[rp.pair];
   const uint32_t b = src.ket[rp.pair];
   const double alpha = src.exponent[rp.ia];
@@ -186,36 +179,15 @@ uint32_t mmd_record_blocks(const int32_t n_rec) {
 
 } // namespace
 
-extern "C" size_t fb_mmd_order_workspace_bytes(const int32_t n_rec) {
-  return n_rec < 1 ? 0 : fb_merge_sort_workspace_bytes(static_cast<uint32_t>(n_rec), true);
-}
-
-extern "C" fb_launch_status fb_mmd_order(const wwr_stream stream, const int32_t n_rec,
-                                         const fb_primitive_pair_source *src, double *key,
-                                         uint32_t *perm, void *workspace,
-                                         const size_t workspace_bytes) {
-  if (n_rec < 1 || src == nullptr || src->n_pairs < 1 || key == nullptr || perm == nullptr ||
-      workspace_bytes < fb_mmd_order_workspace_bytes(n_rec)) {
+extern "C" fb_launch_status fb_mmd_records(const wwr_stream stream, const int32_t n_rec,
+                                           const fb_primitive_pair_source *src,
+                                           const fb_primitive_pair_records *out) {
+  if (n_rec < 1 || src == nullptr || src->n_pairs < 1 || out == nullptr) {
     return FB_LAUNCH_INVALID_ARGUMENT;
   }
   // The C ABI's stream is the runtime's, behind a void *.
-  mmd_order_key_kernel<<<mmd_record_blocks(n_rec), free_breakfast::kFourWarps, 0,
-                         static_cast<wwr::wwrStream_t>(stream)>>>(n_rec, *src, key, perm);
-  if (const fb_launch_status status = last_launch_status(); status != FB_LAUNCH_SUCCESS) {
-    return status;
-  }
-  return fb_merge_sort(stream, static_cast<uint32_t>(n_rec), key, perm, workspace, workspace_bytes);
-}
-
-extern "C" fb_launch_status fb_mmd_records(const wwr_stream stream, const int32_t n_rec,
-                                           const fb_primitive_pair_source *src,
-                                           const uint32_t *perm,
-                                           const fb_primitive_pair_records *out) {
-  if (n_rec < 1 || src == nullptr || src->n_pairs < 1 || perm == nullptr || out == nullptr) {
-    return FB_LAUNCH_INVALID_ARGUMENT;
-  }
   mmd_records_kernel<<<mmd_record_blocks(n_rec), free_breakfast::kFourWarps, 0,
-                       static_cast<wwr::wwrStream_t>(stream)>>>(n_rec, *src, perm, *out);
+                       static_cast<wwr::wwrStream_t>(stream)>>>(n_rec, *src, *out);
   return last_launch_status();
 }
 
