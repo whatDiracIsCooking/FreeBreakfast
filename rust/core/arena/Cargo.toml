@@ -20,6 +20,9 @@ test-support = []
 [dependencies]
 contracts.workspace = true
 fb-core-error-handling.workspace = true
+# The value checks of the always-on contracts (le!, eq!), and the panic
+# hook that prints their operands.
+fb-core-log.workspace = true
 fb-core-wwr = { workspace = true, optional = true }
 log.workspace = true
 wwr-sys = { workspace = true, optional = true }

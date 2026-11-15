@@ -10,9 +10,9 @@
 //! `wwr_memcpy_async`, and what makes each sound is what [`Bufs`] already
 //! guarantees, so a task needs no `unsafe` to move its data.
 //!
-//! - **Lengths.** Both sides of a copy have the same length, checked always,
-//!   not as a contract: a release build that skipped it would copy past a
-//!   row.
+//! - **Lengths.** Both sides of a copy have the same length, an always-on
+//!   contract, not a debug one: a release build that skipped it would copy
+//!   past a row.
 //! - **Who else touches the bytes while the copy is in flight.** The rows'
 //!   borrows are taken by the copy itself, on the view, and held until it
 //!   drops: a pinned source as a reader, a pinned destination as its writer.
@@ -42,6 +42,9 @@ use fb_core_wwr::runtime::Stream;
 #[cfg(feature = "device")]
 use wwr_sys::wwr_memcpy_kind;
 
+use contracts::requires;
+use fb_core_log::eq;
+
 use super::bufs::Bufs;
 #[cfg(feature = "device")]
 use super::bufs::{CopyOnly, DeviceMut, DeviceRef};
@@ -53,10 +56,10 @@ use super::table::RowId;
 /// `src` copied into the host row `dst`, which the node writes.
 ///
 /// # Panics
-/// If the lengths differ, or as [`Bufs::take_mut`] does.
+/// As [`Bufs::take_mut`] does.
+#[requires(eq!(host.block.table.len(dst), src.len()), "the row and the slice are one length")]
 pub fn memcpy_h2p<K: HostKind, T: Element>(host: &Bufs<'_, K>, dst: RowId<K, T>, src: &[T]) {
     let dst = host.take_mut(dst);
-    assert_eq!(dst.len(), src.len(), "memcpy_h2p: the lengths differ");
     dst.copy_from_slice(src);
 }
 
@@ -147,6 +150,7 @@ pub fn memcpy_d2d<'s, T: Element>(
 /// the lengths are checked. An empty row enqueues nothing, since its
 /// pointer may be the block's end.
 #[cfg(feature = "device")]
+#[requires(eq!(dst_len, len), "the two rows are one length")]
 #[track_caller]
 fn copy<T: Element>(
     dst: *mut T,
@@ -156,7 +160,6 @@ fn copy<T: Element>(
     kind: wwr_memcpy_kind,
     stream: &Stream,
 ) -> Status {
-    assert_eq!(dst_len, len, "memcpy: the rows' lengths differ");
     if len == 0 {
         return Ok(());
     }

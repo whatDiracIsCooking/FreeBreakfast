@@ -228,6 +228,7 @@ version = "0.1.0"
 dependencies = [
  "contracts",
  "fb-core-error-handling",
+ "fb-core-log",
  "fb-core-wwr",
  "fb-test-support",
  "libc",

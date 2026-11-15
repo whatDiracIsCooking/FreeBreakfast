@@ -74,7 +74,9 @@ use crate::handle::{
 };
 use crate::runtime::Stream;
 use crate::{gpu_log_error_at, gpu_status};
+use contracts::requires;
 use fb_core_error_handling::{Status, check_or_abort};
+use fb_core_log::le;
 
 /// `wwrblasStatus_t`, as the C ABI hands it back. The name is the
 /// enumerator's; wwr's would be the vendor's (`CUBLAS_STATUS_ALLOC_FAILED`),
@@ -689,10 +691,11 @@ pub(crate) fn check_vector(routine: &str, name: &str, len: usize, count: i32, in
 /// The library's refusal, as a `GpuRuntime` error naming the status.
 ///
 /// # Panics
-/// If m, n or k is negative, a leading dimension is less than its matrix's
-/// row count (or 1), or a slice is shorter than its matrix at its leading
-/// dimension; before anything is enqueued.
+/// If a leading dimension is less than its matrix's row count (or 1), or a
+/// slice is shorter than its matrix at its leading dimension; before
+/// anything is enqueued.
 #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+#[requires(le!(0, m) && le!(0, n) && le!(0, k), "m, n and k are not negative")]
 #[track_caller]
 pub fn gemm<T: BlasScalar>(
     handle: &BlasHandle,
@@ -710,10 +713,6 @@ pub fn gemm<T: BlasScalar>(
     c: &mut impl DeviceSliceMut<T>,
     ldc: i32,
 ) -> Status {
-    assert!(
-        m >= 0 && n >= 0 && k >= 0,
-        "gemm: m, n and k are {m}, {n} and {k}"
-    );
     let stored = |op, rows, cols| {
         if op == wwr_blas_operation::WWR_BLAS_OP_N {
             (rows, cols)
@@ -820,11 +819,15 @@ pub(crate) fn check_batch(
 /// The library's refusal, as a `GpuRuntime` error naming the status.
 ///
 /// # Panics
-/// If m, n, k or `batch` is negative, a leading dimension is less than its
-/// matrix's row count (or 1), a stride is negative, C's stride is less than
-/// one C's extent (with more than one product), or a slice is shorter than
-/// its last matrix at its stride; before anything is enqueued.
+/// If a leading dimension is less than its matrix's row count (or 1), a
+/// stride is negative, C's stride is less than one C's extent (with more
+/// than one product), or a slice is shorter than its last matrix at its
+/// stride; before anything is enqueued.
 #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+#[requires(
+    le!(0, m) && le!(0, n) && le!(0, k) && le!(0, batch),
+    "m, n, k and batch are not negative"
+)]
 #[track_caller]
 pub fn gemm_strided_batched<T: BlasScalar>(
     handle: &BlasHandle,
@@ -847,10 +850,6 @@ pub fn gemm_strided_batched<T: BlasScalar>(
     batch: i32,
 ) -> Status {
     const ROUTINE: &str = "gemm_strided_batched";
-    assert!(
-        m >= 0 && n >= 0 && k >= 0 && batch >= 0,
-        "{ROUTINE}: m, n, k and batch are {m}, {n}, {k} and {batch}"
-    );
     let stored = |op, rows, cols| {
         if op == wwr_blas_operation::WWR_BLAS_OP_N {
             (rows, cols)
@@ -929,10 +928,11 @@ pub fn gemm_strided_batched<T: BlasScalar>(
 /// The library's refusal, as a `GpuRuntime` error naming the status.
 ///
 /// # Panics
-/// If m or n is negative, A's leading dimension is less than m (or 1), a
-/// stride is less than 1, or a slice is shorter than its operand's extent;
-/// before anything is enqueued.
+/// If A's leading dimension is less than m (or 1), a stride is less than
+/// 1, or a slice is shorter than its operand's extent; before anything is
+/// enqueued.
 #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+#[requires(le!(0, m) && le!(0, n), "m and n are not negative")]
 #[track_caller]
 pub fn gemv<T: BlasScalar>(
     handle: &BlasHandle,
@@ -948,7 +948,6 @@ pub fn gemv<T: BlasScalar>(
     y: &mut impl DeviceSliceMut<T>,
     incy: i32,
 ) -> Status {
-    assert!(m >= 0 && n >= 0, "gemv: m and n are {m} and {n}");
     let (x_count, y_count) = if op == wwr_blas_operation::WWR_BLAS_OP_N {
         (n, m)
     } else {
@@ -998,11 +997,11 @@ pub fn gemv<T: BlasScalar>(
 /// The library's refusal, as a `GpuRuntime` error naming the status.
 ///
 /// # Panics
-/// If m or n is negative, a leading dimension is less than m (or 1),
-/// `incx` is less than 1, or a slice is shorter than its operand's extent
+/// If a leading dimension is less than m (or 1), `incx` is less than 1, or a slice is shorter than its operand's extent
 /// (x's is `1 + (count - 1) incx` for a non-empty one); before anything is
 /// enqueued.
 #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+#[requires(le!(0, m) && le!(0, n), "m and n are not negative")]
 #[track_caller]
 pub fn dgmm<T: BlasScalar>(
     handle: &BlasHandle,
@@ -1016,7 +1015,6 @@ pub fn dgmm<T: BlasScalar>(
     c: &mut impl DeviceSliceMut<T>,
     ldc: i32,
 ) -> Status {
-    assert!(m >= 0 && n >= 0, "dgmm: m and n are {m} and {n}");
     let count = match side {
         wwr_blas_side_mode::WWR_BLAS_SIDE_LEFT => m,
         wwr_blas_side_mode::WWR_BLAS_SIDE_RIGHT => n,
@@ -1061,10 +1059,11 @@ pub fn dgmm<T: BlasScalar>(
 /// The library's refusal, as a `GpuRuntime` error naming the status.
 ///
 /// # Panics
-/// If m or n is negative, a leading dimension is less than its matrix's row
-/// count (or 1), or a slice is shorter than its matrix at its leading
-/// dimension; before anything is enqueued.
+/// If a leading dimension is less than its matrix's row count (or 1), or a
+/// slice is shorter than its matrix at its leading dimension; before
+/// anything is enqueued.
 #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+#[requires(le!(0, m) && le!(0, n), "m and n are not negative")]
 #[track_caller]
 pub fn trsm<T: BlasScalar>(
     handle: &BlasHandle,
@@ -1080,7 +1079,6 @@ pub fn trsm<T: BlasScalar>(
     b: &mut impl DeviceSliceMut<T>,
     ldb: i32,
 ) -> Status {
-    assert!(m >= 0 && n >= 0, "trsm: m and n are {m} and {n}");
     let order = match side {
         wwr_blas_side_mode::WWR_BLAS_SIDE_LEFT => m,
         wwr_blas_side_mode::WWR_BLAS_SIDE_RIGHT => n,
@@ -1129,10 +1127,11 @@ pub fn trsm<T: BlasScalar>(
 /// `op` of `WWR_BLAS_OP_C` on a complex `T` among them).
 ///
 /// # Panics
-/// If n or k is negative, a leading dimension is less than its matrix's row
-/// count (or 1), or a slice is shorter than its matrix at its leading
-/// dimension; before anything is enqueued.
+/// If a leading dimension is less than its matrix's row count (or 1), or a
+/// slice is shorter than its matrix at its leading dimension; before
+/// anything is enqueued.
 #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+#[requires(le!(0, n) && le!(0, k), "n and k are not negative")]
 #[track_caller]
 pub fn syrk<T: BlasScalar>(
     handle: &BlasHandle,
@@ -1147,7 +1146,6 @@ pub fn syrk<T: BlasScalar>(
     c: &mut impl DeviceSliceMut<T>,
     ldc: i32,
 ) -> Status {
-    assert!(n >= 0 && k >= 0, "syrk: n and k are {n} and {k}");
     let (a_rows, a_cols) = if op == wwr_blas_operation::WWR_BLAS_OP_N {
         (n, k)
     } else {
@@ -1195,10 +1193,11 @@ pub fn syrk<T: BlasScalar>(
 /// The library's refusal, as a `GpuRuntime` error naming the status.
 ///
 /// # Panics
-/// If m or n is negative, a leading dimension is less than its matrix's
-/// row count (or 1), or a slice is shorter than its matrix at its leading
-/// dimension; before anything is enqueued.
+/// If a leading dimension is less than its matrix's row count (or 1), or a
+/// slice is shorter than its matrix at its leading dimension; before
+/// anything is enqueued.
 #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+#[requires(le!(0, m) && le!(0, n), "m and n are not negative")]
 #[track_caller]
 pub fn geam<T: BlasScalar>(
     handle: &BlasHandle,
@@ -1215,7 +1214,6 @@ pub fn geam<T: BlasScalar>(
     c: &mut impl DeviceSliceMut<T>,
     ldc: i32,
 ) -> Status {
-    assert!(m >= 0 && n >= 0, "geam: m and n are {m} and {n}");
     let stored = |op| {
         if op == wwr_blas_operation::WWR_BLAS_OP_N {
             (m, n)
