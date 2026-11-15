@@ -126,9 +126,11 @@ reaches (`FB_RECIPES_ABI_VERSION` is 6, bumped as the inverse square root,
 the symmetrization, the Cholesky diagonal tile and the DIIS solve joined the
 merge sort, then as the inverse square root took its floor's factor from the
 device;
-`FB_INTEGRALS_ABI_VERSION` is 3, bumped as the kinetic and
+`FB_INTEGRALS_ABI_VERSION` is 4, bumped as the kinetic and
 nuclear-attraction wrappers with `fb_nuclei_view`, then density fitting's
-metric and three-center launchers, joined the overlap;
+metric and three-center launchers, joined the overlap, then as the records'
+order left (`fb_mmd_order` and its query removed, `fb_mmd_records` taking
+no permutation);
 `FB_LOCALIZATION_ABI_VERSION` is 1, the Pipek-Mezey launchers; `fb-doc-check`'s
 `doc_lists.rs` holds these numbers to the headers). The bump is held:
 `devtools/rust-bindings.py` records in each module's bindings, beside the
@@ -397,8 +399,8 @@ takes four `n_rec`-long arrays. The sizes are correct and unenforced, which is
 the footprint problem the programming model names, one level down.
 
 **Every forked launcher that takes scratch gets a query,
-`fb_<launcher>_workspace_bytes(dims)`,** as `fb_merge_sort` and
-`fb_mmd_order` have. It is a plain host function in the
+`fb_<launcher>_workspace_bytes(dims)`,** as `fb_merge_sort` has. It is a
+plain host function in the
 same header, pure in its dimensions, and it returns the bytes of one buffer
 the wrapper partitions internally, with each piece aligned as the kernel
 needs. The task's layout calls it at planning, the arena carves that amount,
@@ -636,9 +638,10 @@ separable compilation with the device link resolved inside the `.so`
 links the shared vendor runtime, not CMake's static default, so that the
 launches inside it and the C ABI's `wwr_get_last_error()` read the same
 last error. Under HIP the `.cu` compiles as C++ with `hip::device` private
-to the library. A library may link another for a host call:
-`libfb_integrals_kernels.so` links the recipes library for `fb_merge_sort`,
-and no device symbol crosses between them. The generated units find
+to the library. A library may link another for a host call, with no device
+symbol crossing between them; none does today
+(`libfb_integrals_kernels.so` linked the recipes library for the records'
+sort until the fork left that order out). The generated units find
 FelizJueves' runtime header with `FJ_WAVEFRONT` set to `WWR_WARP_SIZE`.
 
 One Rust `-sys` crate per library, `fb-recipes-sys`, `fb-integrals-sys`
@@ -647,7 +650,7 @@ which is the workspace graph the test selection runs on. Their `build.rs`
 include `rust/kernel_lib.rs` after `capi_dir.rs`: `link_kernel_lib(module)`
 finds the library in the same `<build>` the C ABI library came from, links
 it and sets the rpaths. A file under a module's `kernels/` re-runs every
-kernel `-sys` crate's tier 4, since one library links another
+kernel `-sys` crate's tier 4, since a library may link another
 ([`testing.md`](testing.md), "Selecting GPU tiers in cargo"); the cargo half
 of the gates builds this project for its card's backend before it runs, so a
 broken device link fails there.

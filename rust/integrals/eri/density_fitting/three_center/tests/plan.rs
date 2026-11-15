@@ -1,7 +1,8 @@
 //! Water's plan (tier 3): the plan text, each worker's device and pinned
 //! table among it with the arena's size, is a committed golden,
 //! `FB_BLESS=1` rewriting it (`docs/testing.md`, "Performance"); admission
-//! of its device table; and the refusals planning makes of a basis.
+//! of its device table; and the refusals planning makes of a basis, and of
+//! records handed in with other tables.
 //! Planning touches no device, but the load check reads the kernel library,
 //! so it must be built.
 
@@ -11,6 +12,8 @@ use fb_basis::{BasisSet, Shell};
 use fb_core_error_handling::ErrorKind;
 use fb_core_planner::Dag;
 use fb_integrals_eri_density_fitting_three_center::add_three_center;
+use fb_integrals_sys::{AuxTable, add_three_center_tasks};
+use fb_recipes_matrix_ao::add_harmonics;
 use fb_test_support::golden;
 
 #[test]
@@ -133,4 +136,27 @@ fn u_and_u_aux_are_read_from_the_slots() {
             "the second build reads upload {t}'s row"
         );
     }
+}
+
+/// Records handed in with another basis's tables are refused at planning,
+/// in every build: the cells' record ranges and AO offsets come from the
+/// tables, and index the records' rows and the Cartesian tensor.
+#[test]
+#[should_panic(
+    expected = "Pre-condition of add_three_center_tasks violated: classes are the records of tables"
+)]
+fn records_of_other_tables_are_refused() {
+    let (basis, aux) = common::water();
+    let mut dag = Dag::new();
+    let classes = fb_integrals_mmd::add_records(&mut dag, 0, &basis).unwrap();
+    let mut table = AuxTable::new(1);
+    table.push_shell(0, [0.0; 3], 0, [(1.0, 1.0)]);
+    let u = [
+        add_harmonics(&mut dag, 0, &basis, &mut None),
+        add_harmonics(&mut dag, 0, &aux, &mut None),
+    ];
+    let n_sph = [basis.nao_sphe() as usize, 1];
+    // The aux basis's tables, of other classes than the records'.
+    let other = fb_integrals_mmd::record_tables(&aux);
+    add_three_center_tasks(&mut dag, 0, &classes, &other, &table, u, n_sph);
 }

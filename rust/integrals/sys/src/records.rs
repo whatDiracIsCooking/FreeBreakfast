@@ -11,18 +11,21 @@
 //! - **`upload <table>`**, one per table, on the worker's lane 0: each
 //!   pinned row copied into a device row ([`Dag::upload`]).
 //! - **`mmd records (la,lb)`**, one per class, class `c` of the tables'
-//!   order on the worker's lane `c`: reading the uploaded tables, its order
-//!   ([`fb_mmd_order`]: the key `-ζ` and a stable sort, in scratch sized to
-//!   the class), its records ([`fb_mmd_records`], every field written
-//!   once, already in descending ζ), its bound ([`fb_mmd_bound`]) and its
-//!   two dressed bounds ([`fb_ordered_pair_bound`], as stored and swapped).
-//!   The record fields are its outputs, the class's [`ClassRows`].
+//!   order on the worker's lane `c`: reading the uploaded tables, its
+//!   records ([`fb_mmd_records`], every field written once, in enumeration
+//!   order), its bound ([`fb_mmd_bound`]) and its two dressed bounds
+//!   ([`fb_ordered_pair_bound`], as stored and swapped). The record fields
+//!   are its outputs, the class's [`ClassRows`], and it has no scratch.
 //!
 //! Each class on a lane of its own is the C++ `src/integrals/mmd`, whose
-//! every `PrimitivePairClass` carries its own stream. The sorts' scratch
-//! is packed to the fewest bytes like any other row, so the classes share
-//! it and the handoffs chain them, one after another, as the C++ forks do
-//! (`docs/programming_model.md`, "Workers are a hierarchy").
+//! every `PrimitivePairClass` carries its own stream
+//! (`docs/programming_model.md`, "Workers are a hierarchy"). The C++ sorts
+//! each class into descending ζ first, for J's screened bra loop and its
+//! atomics; nothing here reads the records so (`mmd_launch.cu` has why), so
+//! the order is not forked, and each shell pair's records stay one
+//! contiguous run, `[rec_begin[p], rec_begin[p + 1])` of its class, known
+//! at planning: what the three-center integrals' cells take
+//! ([`add_three_center_tasks`](crate::add_three_center_tasks)).
 //!
 //! Forming the tables from a basis, the sweep, is `fb-integrals-mmd`'s;
 //! this module trusts none of it, and checks every index the kernels
@@ -39,9 +42,9 @@ use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::memset;
 
 use crate::{
-    FB_PAIR_BOUND_MAX_MOMENTUM, FB_RECORD_BOUND_MAX_MOMENTUM, fb_mmd_bound, fb_mmd_order,
-    fb_mmd_order_workspace_bytes, fb_mmd_records, fb_ordered_pair_bound,
-    fb_primitive_pair_class_view, fb_primitive_pair_records, fb_primitive_pair_source, launched,
+    FB_PAIR_BOUND_MAX_MOMENTUM, FB_RECORD_BOUND_MAX_MOMENTUM, fb_mmd_bound, fb_mmd_records,
+    fb_ordered_pair_bound, fb_primitive_pair_class_view, fb_primitive_pair_records,
+    fb_primitive_pair_source, launched,
 };
 
 /// A basis's shells and primitives, a field per array, as the device reads
@@ -123,7 +126,7 @@ impl RecordTables {
     /// The tables of a basis of `n_cart` Cartesian AOs, checked.
     ///
     /// Every check is one a kernel's memory access rests on, so each is
-    /// always on: the order and records kernels find a record's pair by
+    /// always on: the records kernel finds a record's pair by
     /// binary search over its class's prefix, then its primitives through
     /// `prim_begin`, and read every shell array at the pair's two shells;
     /// the class kernels write a class's matrix block at the AO offsets the
@@ -289,6 +292,19 @@ impl RecordTables {
             .max()
             .unwrap_or(0)
     }
+
+    /// Whether `classes` could be the records [`add_record_tasks`] formed
+    /// from these one basis's tables: one per class, in their order, each
+    /// with the class's momenta and record count, over their Cartesian AOs.
+    /// Then each pair's prefix is a record range inside its class's rows,
+    /// and its shells' offsets open blocks inside the classes' `n_cart`.
+    pub(crate) fn formed(&self, classes: &[ClassRows]) -> bool {
+        self.n_bra_shells.is_none()
+            && classes.len() == self.classes.len()
+            && classes.iter().zip(&self.classes).all(|(c, p)| {
+                (c.la, c.lb, c.n_rec, c.n_cart) == (p.la, p.lb, p.n_rec(), self.n_cart[0])
+            })
+    }
 }
 
 /// A set of a class's record fields: the ones a family's kernels read. A
@@ -347,8 +363,10 @@ const I_OFF_B: usize = 17;
 /// [`potential_en_class`](crate::potential_en_class).
 ///
 /// The fields are the C++ `PrimitivePairClass`'s (its README's design has
-/// each one), in descending ζ order, equal ζ in enumeration order (shell
-/// pair, then bra primitive, then ket primitive).
+/// each one), in enumeration order: shell pair, then bra primitive, then
+/// ket primitive, so the records of the class's `p`-th pair are
+/// `[rec_begin[p], rec_begin[p + 1])` of its [`ClassPairs`]. The C++ sorts
+/// them into descending ζ; this fork does not (the module doc has why).
 ///
 /// **Why a launcher may trust it.** A class kernel adds into
 /// `m[off_a + i][off_b + j]` at the AO offsets the records hold, and those
@@ -357,8 +375,8 @@ const I_OFF_B: usize = 17;
 /// `ClassRows` is [`add_record_tasks`], which adds, with it, the tasks
 /// that write its rows and the tables they read.
 ///
-/// - **What the rows hold.** The class's records task launches the order,
-///   the records and the bounds into every row on its lane's stream, from
+/// - **What the rows hold.** The class's records task launches the records
+///   and the bounds into every row on its lane's stream, from
 ///   the device tables the uploads copied from the pinned rows `mmd
 ///   tables` wrote, of tables [`RecordTables::new`] checked, so every
 ///   offset is a shell's `ao_offset` with its block inside `[0, n_cart)`,
@@ -567,8 +585,9 @@ impl ClassRows {
 /// ordered shell pair, a bra-basis shell with a ket-basis shell, never
 /// swapped, so `la > lb` classes appear; `off_a` indexes the bra basis's
 /// Cartesian AOs and `off_b` the ket basis's, and each rank is among its
-/// own basis's shells. The fields, their order and their bounds are a
-/// [`ClassRows`]', which this is not: a one-basis build reads a basis's
+/// own basis's shells. The fields, their order (the ordered pairs', each
+/// pair's records one run) and their bounds are a [`ClassRows`]', which
+/// this is not: a one-basis build reads a basis's
 /// `i <= j` pairs and folds each value into one triangle that the build
 /// then mirrors, so a two-basis class handed to
 /// one would build the wrong matrix, and no one-basis launcher takes this
@@ -626,17 +645,11 @@ impl MixedClassRows {
 /// The lanes are the records' own, numbered from the worker's lane 0, as
 /// the C++ puts each class on a stream of its own. A reader of a class on
 /// another lane is ordered after it by an event on the device, with no host
-/// wait. The classes' sort scratch is laid out like any other row: the
-/// assigner packs it to the fewest bytes, so the classes share those bytes
-/// and the handoffs between them chain the classes one after another, as
-/// the C++ forks each class's stream from the one before ("which is why the
-/// forks chain"). Giving that reuse up for concurrency is admission's
-/// search, not built (`docs/memory.md`, "Open questions").
+/// wait. A class's task holds no scratch, so no bytes are shared between
+/// the classes to chain them, as the C++ sorts' carve chains its forks.
 ///
 /// Every size is the tables', fixed here at planning: a class's rows are
-/// its `n_rec` long, and so are its sort's key and permutation, scratch of
-/// its own task beside the sort's workspace,
-/// [`fb_mmd_order_workspace_bytes`] of its `n_rec`, a host query.
+/// its `n_rec` long, in the tables' enumeration order.
 ///
 /// Two bases' tables ([`RecordTables::mixed`]) are refused always: their
 /// ket offsets index another basis's AOs than the `n_cart` a [`ClassRows`]
@@ -700,7 +713,7 @@ fn record_tasks(dag: &mut Dag<'_>, worker: usize, tables: RecordTables) -> Vec<C
         };
         first += pairs.bra.len();
         let name = format!("mmd records ({},{})", pairs.la, pairs.lb);
-        classes.push(dag.add_gpu(name, LaneId { worker, lane: c }, task).class);
+        classes.push(dag.add_gpu(name, LaneId { worker, lane: c }, task));
     }
     classes
 }
@@ -815,9 +828,8 @@ impl CpuTask for Stage {
     }
 }
 
-/// GPU: one class, on its lane, from the uploaded tables: its order (key
-/// and stable sort, in scratch sized to the class), its records, its bound
-/// and its two dressed bounds.
+/// GPU: one class, on its lane, from the uploaded tables: its records, its
+/// bound and its two dressed bounds.
 struct Form {
     tables: Arc<RecordTables>,
     /// The class's index in the tables' order.
@@ -825,15 +837,6 @@ struct Form {
     /// Its first pair's index among every class's pairs.
     first: usize,
     uploaded: TableRows<Device>,
-}
-
-/// A [`Form`]'s rows: the class's, its outputs, and the sort's scratch.
-#[derive(Clone, Copy)]
-struct FormRows {
-    class: ClassRows,
-    key: RowId<Device, f64>,
-    perm: RowId<Device, u32>,
-    workspace: RowId<Device, u8>,
 }
 
 impl Form {
@@ -844,9 +847,9 @@ impl Form {
 }
 
 impl GpuTask for Form {
-    type Rows = FormRows;
+    type Rows = ClassRows;
 
-    fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> FormRows {
+    fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> ClassRows {
         let u = &self.uploaded;
         device.read(u.prim_begin);
         device.read(u.exponent);
@@ -861,11 +864,6 @@ impl GpuTask for Form {
         device.read(u.rec_begin);
         let pairs = self.pairs();
         let (la, lb, n) = (pairs.la, pairs.lb, pairs.n_rec() as usize);
-        let key = device.scratch("order key", n);
-        let perm = device.scratch("order perm", n);
-        // SAFETY: a host function of its argument alone.
-        let bytes = unsafe { fb_mmd_order_workspace_bytes(pairs.n_rec()) };
-        let workspace = device.scratch("order workspace", bytes);
         let mut f64_row = |field: &str| device.output::<f64>(&format!("{field} ({la},{lb})"), n);
         let (zeta, p_x, p_y, p_z) = (
             f64_row("zeta"),
@@ -885,7 +883,7 @@ impl GpuTask for Form {
             i32_row("rank_a"),
             i32_row("rank_b"),
         );
-        let class = ClassRows {
+        ClassRows {
             la,
             lb,
             n_rec: pairs.n_rec(),
@@ -911,12 +909,6 @@ impl GpuTask for Form {
             rank_a,
             rank_b,
             fork: false,
-        };
-        FormRows {
-            class,
-            key,
-            perm,
-            workspace,
         }
     }
 
@@ -924,7 +916,7 @@ impl GpuTask for Form {
         vec![("n_rec", self.pairs().n_rec() as usize)]
     }
 
-    /// It sorts and launches kernels, and calls no library, so a class's
+    /// It launches kernels and calls no library, so a class's
     /// lane above 0 has no BLAS workspace row and no handles.
     fn uses_libraries(&self) -> bool {
         false
@@ -932,7 +924,7 @@ impl GpuTask for Form {
 
     fn run(
         &self,
-        rows: &FormRows,
+        cls: &ClassRows,
         device: &Bufs<'_, Device>,
         _: &CopyOnly<'_, Pinned>,
         lane: &DeviceStream,
@@ -944,7 +936,7 @@ impl GpuTask for Form {
             device.get(u.ket),
             device.get(u.rec_begin),
         );
-        let (pairs, cls, first) = (self.pairs(), &rows.class, self.first);
+        let (pairs, first) = (self.pairs(), self.first);
         let n_pairs = pairs.bra.len();
         let class = [cls.la, cls.lb];
         let src = fb_primitive_pair_source {
@@ -964,25 +956,6 @@ impl GpuTask for Form {
             rank: device.get(u.rank).as_ptr(),
         };
         let n = cls.n_rec;
-        let key = device.take_mut(rows.key);
-        let perm = device.take_mut(rows.perm);
-        let workspace = device.take_mut(rows.workspace);
-        // SAFETY: key and perm are n long, the workspace is this class's
-        // query, every array of src is a device row the uploads wrote, on
-        // this lane or ordered before it by an event, from tables
-        // RecordTables::new checked (each index the kernels follow is
-        // inside its array), and none overlap: each is a row of its own.
-        launched("fb_mmd_order", &class, unsafe {
-            fb_mmd_order(
-                stream,
-                n,
-                &src,
-                key.as_mut_ptr(),
-                perm.as_mut_ptr(),
-                workspace.as_mut_ptr().cast(),
-                workspace.len(),
-            )
-        })?;
         let f = |row| device.take_mut(row);
         let (zeta, p_x, p_y, p_z) = (f(cls.zeta), f(cls.p_x), f(cls.p_y), f(cls.p_z));
         let (pa_x, pa_y, pa_z) = (f(cls.pa_x), f(cls.pa_y), f(cls.pa_z));
@@ -1012,11 +985,14 @@ impl GpuTask for Form {
             rank_a: rank_a.as_mut_ptr(),
             rank_b: rank_b.as_mut_ptr(),
         };
-        // SAFETY: perm is the order just written, a permutation of the
-        // class's n host records; src is as above; and every array of out
-        // is an n-long row of its own.
+        // SAFETY: every array of src is a device row the uploads wrote, on
+        // this lane or ordered before it by an event, from tables
+        // RecordTables::new checked (each index the kernel follows is
+        // inside its array), n is the class's record count, the last entry
+        // of its checked prefix, and every array of out is an n-long row of
+        // its own, apart from src's.
         launched("fb_mmd_records", &class, unsafe {
-            fb_mmd_records(stream, n, &src, perm.as_ptr(), &out)
+            fb_mmd_records(stream, n, &src, &out)
         })?;
 
         // A class above a family's table keeps that family's bounds zero,

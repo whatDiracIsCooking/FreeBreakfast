@@ -1210,11 +1210,11 @@ CARGO_RECORD_FLAG = "--message-format=json-render-diagnostics"
 # Files that lie in no crate but belong to one, determinator's path rules
 # (rust/docs/testing.md, "Selection"): a module's forked kernels belong to
 # every kernel library's -sys crate (a member that declares `links`), since
-# one kernel library links another (libfb_integrals_kernels.so links the
-# recipes'); rust/docs/ is read by fb-doc-check
-# alone, rust/examples/ by fb-pipeline-config (whose tests run them through
-# the binary), and devtools/rust-bindings.py by fb-device-check. Any other
-# file outside every crate affects the whole workspace.
+# one kernel library may link another (none does today); rust/docs/ is read
+# by fb-doc-check alone, rust/examples/ by fb-pipeline-config (whose tests
+# run them through the binary), and devtools/rust-bindings.py by
+# fb-device-check. Any other file outside every crate affects the whole
+# workspace.
 KERNELS_PATH = re.compile(r"^rust/[^/]+/kernels/")
 DOC_PATHS = re.compile(r"^rust/docs/|^rust/README\.md$")
 EXAMPLES_PATH = re.compile(r"^rust/examples/")

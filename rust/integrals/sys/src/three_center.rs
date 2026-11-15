@@ -1,22 +1,18 @@
 //! The three-center integrals' device path: (mn|P) of an orbital basis,
-//! whose records the records tasks formed ([`ClassRows`]), and an auxiliary
-//! one ([`AuxTable`]), as four tasks ([`add_three_center_tasks`]).
+//! whose records the records tasks formed ([`ClassRows`]) from tables the
+//! caller hands in too ([`RecordTables`]), and an auxiliary one
+//! ([`AuxTable`]), as three tasks ([`add_three_center_tasks`]).
 //!
 //! The tasks, added in this order:
 //!
-//! - **`download three-center bra`** and **`download three-center
-//!   offsets`**, the planner's copy nodes ([`Dag::download_rows`]) on the
-//!   worker's stream: every class's bra fields (ζ, P, P − A, P − B, `s`),
-//!   then its two AO offsets, copied into pinned rows named after the
-//!   field and the class, one node and one event for each element type.
-//! - **`three-center tables`**, on the CPU: each class's records regrouped
-//!   by shell pair, the pairs in their first record's order and the
-//!   records' descending-ζ order kept within each, since an `eri3` thread
-//!   walks its pair's records as one run and a class's records task interleaves
-//!   the pairs of a class; then the aux records, formed at planning,
-//!   behind them in one pinned row; and the cells, one per (shell pair,
-//!   aux shell), per class `(la, lb, lP)`, the pair outer and the aux
-//!   shell inner, into another.
+//! - **`download three-center bra`**, the planner's copy node
+//!   ([`Dag::download_rows`]) on the worker's stream: every class's bra
+//!   fields (ζ, P, P − A, P − B, `s`) copied into pinned rows named after
+//!   the field and the class, one node and one event.
+//! - **`three-center tables`**, on the CPU: each class's bra fields packed
+//!   field-major into one pinned row as they are, then the aux records,
+//!   formed at planning, behind them; and the cells, formed at planning,
+//!   into another.
 //! - **`three-center`**, on the worker's stream: both rows uploaded into
 //!   scratch; U and U_aux read from the caller's device rows (the plan's
 //!   `upload U` rows, copied up once for every reader), one
@@ -24,28 +20,30 @@
 //!   Cartesian tensor (scratch), the three spherical GEMMs and
 //!   [`fb_three_center_symmetrize`] into (mn|P), its output.
 //!
-//! Every count is fixed at planning: the records' (each class's `n_rec`),
-//! the aux table's, and the shell pairs per class, which the caller gives.
-//! What only a run knows is the order of the records within a class; the
-//! regroup checks it against the pair counts, and every index a cell holds
-//! is one this module wrote: a pair's record range from the regroup, its
-//! offsets each inside the orbital basis's `n_cart` (checked again here,
-//! though the records tasks wrote them from checked tables), the aux
-//! shell's range and offset from the [`AuxTable`].
+//! An `eri3` thread walks its shell pair's records as one run. The records
+//! are in enumeration order, each shell pair's one contiguous run of its
+//! class (`ClassRows`' order), so nothing is regrouped: a pair's run is
+//! its record prefix in the tables, and its AO offsets are its shells'
+//! there. Every count and every index a cell holds is therefore fixed at
+//! planning, from tables [`RecordTables::new`] checked: a pair's record
+//! range inside its class, its offsets each opening a block inside the
+//! orbital basis's `n_cart`, the aux shell's range and offset from the
+//! [`AuxTable`]. That the records are the tables' is a contract, checked
+//! always, since the ranges index the records' rows.
 
 use std::sync::Arc;
 
-use contracts::{debug_ensures, debug_requires};
+use contracts::{debug_ensures, requires};
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_p2d};
-use fb_core_error_handling::{Error, Status};
+use fb_core_error_handling::Status;
+use fb_core_log::{fits_i32, le};
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::{gemm, gemm_strided_batched};
 use fb_core_wwr::handle::DeviceHandleStream;
 use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N, WWR_BLAS_OP_T};
 
-use crate::metric::n_cart_of;
-use crate::records::ClassRows;
+use crate::records::{ClassRows, RecordTables};
 use crate::{
     AuxTable, FB_THREE_CENTER_AUX_FIELDS, FB_THREE_CENTER_AUX_MAX_MOMENTUM,
     FB_THREE_CENTER_BRA_FIELDS, FB_THREE_CENTER_CELL_FIELDS, fb_three_center_class,
@@ -80,20 +78,19 @@ struct Staging {
     n_sph: usize,
     n_aux_cart: usize,
     n_aux_sph: usize,
-    /// Each orbital class's momenta, record count, first record among all
-    /// classes', and shell pairs.
-    classes: Vec<(i32, i32, usize, usize, usize)>,
+    /// Each orbital class's momenta, record count, and first record among
+    /// all classes'.
+    classes: Vec<(i32, i32, usize, usize)>,
     /// Every class's records.
     n_bra: usize,
     /// The aux records, field-major: the records row behind the bra
     /// records.
     tail: Vec<f64>,
     n_aux_rec: usize,
-    /// The aux shells of each momentum, by index.
-    aux_of_l: Vec<Vec<usize>>,
-    aux_rec_begin: Vec<i32>,
-    aux_offset: Vec<i32>,
+    /// The cell classes, in launch order.
     cells: Vec<CellClass>,
+    /// Every cell, field-major: the cells row.
+    cell_fields: Vec<i32>,
     n_cells: usize,
 }
 
@@ -109,38 +106,46 @@ impl Staging {
 /// output row of `n_sph² n_aux_sph` doubles, element `(m, n, P)` at
 /// `P + n_aux_sph (n + n_sph m)`, P fastest, exactly symmetric in m and n.
 ///
-/// `classes` are the orbital basis's records ([`add_record_tasks`]), and
-/// `n_pairs[c]` the shell pairs of `classes[c]`; `aux` the auxiliary
-/// basis's table; `[u, u_aux]` the device rows of the two bases'
-/// Cartesian-to-spherical transforms, U `n_cart` × `n_sph` and U_aux
-/// `aux.n_cart()` × `n_aux_sph`, column-major, written by earlier tasks of
-/// `dag` on `worker` (`fb_recipes_matrix_ao::add_harmonics`'s), and
-/// `[n_sph, n_aux_sph]` their column counts. The tasks are `download
-/// three-center bra` and `download three-center offsets` (stream, the
-/// planner's copy nodes), `three-center tables` (CPU) and `three-center`
-/// (stream), which reads U and U_aux and holds, as scratch, the
-/// Cartesian tensor (`n_cart² aux.n_cart()` doubles) and the transform's
-/// intermediate (`n_cart² n_aux_sph`), so all are in its table at
-/// planning, beside the output.
+/// `classes` are the orbital basis's records ([`add_record_tasks`]) and
+/// `tables` the tables they were formed from, whose shell pairs give each
+/// pair's record range and AO offsets; `aux` the auxiliary basis's table;
+/// `[u, u_aux]` the device rows of the two bases' Cartesian-to-spherical
+/// transforms, U `n_cart` × `n_sph` and U_aux `aux.n_cart()` × `n_aux_sph`,
+/// column-major, written by earlier tasks of `dag` on `worker`
+/// (`fb_recipes_matrix_ao::add_harmonics`'s), and `[n_sph, n_aux_sph]`
+/// their column counts. The tasks are `download three-center bra` (stream,
+/// the planner's copy node), `three-center tables` (CPU) and
+/// `three-center` (stream), which reads U and U_aux and holds, as scratch,
+/// the Cartesian tensor (`n_cart² aux.n_cart()` doubles) and the
+/// transform's intermediate (`n_cart² n_aux_sph`), so all are in its table
+/// at planning, beside the output.
 ///
 /// A class above the kernels' table ([`FB_THREE_CENTER_MAX_MOMENTUM`](crate::FB_THREE_CENTER_MAX_MOMENTUM)
 /// for the orbital shells, [`FB_THREE_CENTER_AUX_MAX_MOMENTUM`] for the
 /// aux) is the launcher's refusal at run time, `Unsupported` naming the
-/// class; a caller refuses one at planning. A regroup that finds another
-/// count of pairs in a class than `n_pairs` gives is `InvalidConfig` at
-/// run time: the records were not the basis's the counts describe.
+/// class; a caller refuses one at planning.
 ///
 /// [`add_record_tasks`]: crate::add_record_tasks
 ///
 /// # Panics
-/// If `n_pairs` is not one count per class; the classes are not over one
-/// `n_cart`, or their records together pass an `i32` count (the kernels'
-/// record index); `n_cart² aux.n_cart()` does not fit an `i32` (the kernels'
-/// index); `n_sph` is not in `1..=n_cart`, or `n_aux_sph` in
-/// `1..=aux.n_cart()`; a class's cell count does not fit an `i32`; a class,
-/// U or U_aux is of another worker's or plan's table ([`Dag::add_gpu`]); or, at
+/// If the classes' records together pass an `i32` count (the kernels'
+/// record index); a class's cell count does not fit an `i32`; a class, U or
+/// U_aux is of another worker's or plan's table ([`Dag::add_gpu`]); or, at
 /// run time, U's row is shorter than `n_cart · n_sph` doubles or U_aux's
 /// than `aux.n_cart() · n_aux_sph` (`fb_core_wwr::blas`'s GEMMs).
+#[requires(tables.formed(classes), "classes are the records of tables")]
+#[requires(
+    fits_i32!(tables.n_cart().checked_pow(2).and_then(|n2| n2.checked_mul(aux.n_cart()))),
+    "n_cart² aux.n_cart() fits the kernels' 32-bit index"
+)]
+#[requires(
+    le!(1, n_sph[0]) && le!(n_sph[0], tables.n_cart()),
+    "U has 1 to its n_cart rows of columns"
+)]
+#[requires(
+    le!(1, n_sph[1]) && le!(n_sph[1], aux.n_cart()),
+    "U_aux has 1 to its aux.n_cart() rows of columns"
+)]
 #[debug_requires(!classes.is_empty(), "an orbital basis of at least one shell")]
 #[debug_requires(aux.n_shells() > 0, "an aux basis of at least one shell")]
 #[track_caller]
@@ -148,12 +153,12 @@ pub fn add_three_center_tasks(
     dag: &mut Dag<'_>,
     worker: usize,
     classes: &[ClassRows],
-    n_pairs: &[usize],
+    tables: &RecordTables,
     aux: &AuxTable,
     u: [RowId<Device, f64>; 2],
     n_sph: [usize; 2],
 ) -> RowId<Device, f64> {
-    let staging = Arc::new(staging(classes, n_pairs, aux, n_sph));
+    let staging = Arc::new(staging(classes, tables, aux, n_sph));
     let downloaded = download(dag, worker, classes);
     let tables = dag.add_cpu(
         "three-center tables",
@@ -167,10 +172,10 @@ pub fn add_three_center_tasks(
         .out
 }
 
-/// The staging of [`add_three_center_tasks`], every extent it asserts
-/// checked.
+/// The staging of [`add_three_center_tasks`]: the cells formed from the
+/// tables' shell pairs, every extent it asserts checked.
 #[debug_ensures(
-    ret.n_cells == n_pairs.iter().sum::<usize>() * aux.n_shells(),
+    ret.n_cells == tables.n_pairs() * aux.n_shells(),
     "every shell pair meets every aux shell in exactly one cell"
 )]
 #[debug_ensures(
@@ -184,57 +189,16 @@ pub fn add_three_center_tasks(
 #[track_caller]
 fn staging(
     classes: &[ClassRows],
-    n_pairs: &[usize],
+    tables: &RecordTables,
     aux: &AuxTable,
     [n_sph, n_aux_sph]: [usize; 2],
 ) -> Staging {
-    assert_eq!(
-        n_pairs.len(),
-        classes.len(),
-        "add_three_center_tasks: {} pair counts for {} classes",
-        n_pairs.len(),
-        classes.len()
-    );
-    let n_cart = classes[0].n_cart();
-    assert!(
-        classes.iter().all(|c| c.n_cart() == n_cart),
-        "add_three_center_tasks: the classes are not over one basis's Cartesian AOs"
-    );
-    let n_aux_cart = aux.n_cart();
-    assert!(
-        n_cart
-            .checked_mul(n_cart)
-            .and_then(|n2| n2.checked_mul(n_aux_cart))
-            .is_some_and(|n| i32::try_from(n).is_ok()),
-        "add_three_center_tasks: {n_cart}² x {n_aux_cart} Cartesian elements do not fit the \
-         kernels' 32-bit index"
-    );
-    // The transform writes U's columns over the Cartesian tensor and the
-    // intermediate, which hold as many only when there are no more of them
-    // than Cartesian functions.
-    for (what, cols, rows) in [("U", n_sph, n_cart), ("U_aux", n_aux_sph, n_aux_cart)] {
-        assert!(
-            (1..=rows).contains(&cols),
-            "add_three_center_tasks: {what} has {cols} columns, not 1 to its {rows} rows"
-        );
-    }
-
+    let n_cart = tables.n_cart();
     let n_bra: usize = classes.iter().map(|c| c.n_rec() as usize).sum();
     assert!(
         i32::try_from(n_bra).is_ok(),
         "add_three_center_tasks: {n_bra} records, past the kernels' i32 record index"
     );
-    let mut first = 0;
-    let classes: Vec<_> = classes
-        .iter()
-        .zip(n_pairs)
-        .map(|(c, &pairs)| {
-            let n_rec = c.n_rec() as usize;
-            first += n_rec;
-            (c.la(), c.lb(), n_rec, first - n_rec, pairs)
-        })
-        .collect();
-
     let n_l = FB_THREE_CENTER_AUX_MAX_MOMENTUM.max(aux.momentum.iter().copied().max().unwrap_or(0))
         as usize
         + 1;
@@ -242,20 +206,65 @@ fn staging(
     for (s, &l) in aux.momentum.iter().enumerate() {
         aux_of_l[l as usize].push(s);
     }
+
+    // Each class's pairs, in enumeration order: a pair's record range,
+    // among every class's records, is its prefix behind the class's first
+    // record, and its offsets are its two shells'. In range: n_bra fits an
+    // i32 (above), and so does every AO offset (RecordTables::new).
+    let offset = &tables.shells().ao_offset;
+    let mut out = Vec::with_capacity(classes.len());
     let mut cells = Vec::new();
+    let mut cell_classes = Vec::new();
     let mut n_cells = 0;
-    for (class, &(la, lb, _, _, pairs)) in classes.iter().enumerate() {
+    let mut first = 0;
+    for (class, (c, pairs)) in classes.iter().zip(tables.classes()).enumerate() {
+        let n_rec = c.n_rec() as usize;
+        out.push((c.la(), c.lb(), n_rec, first));
+        let runs: Vec<[i32; 4]> = (0..pairs.bra.len())
+            .map(|p| {
+                [
+                    first as i32 + pairs.rec_begin[p],
+                    first as i32 + pairs.rec_begin[p + 1],
+                    offset[pairs.bra[p] as usize],
+                    offset[pairs.ket[p] as usize],
+                ]
+            })
+            .collect();
         for (lp, shells) in aux_of_l.iter().enumerate() {
-            let n_cell = pairs * shells.len();
+            let n_cell = runs.len() * shells.len();
             if n_cell == 0 {
                 continue;
             }
             assert!(
                 i32::try_from(n_cell).is_ok(),
-                "add_three_center_tasks: class ({la}, {lb}, {lp}) has {n_cell} cells, past an \
-                 i32 count"
+                "add_three_center_tasks: class ({}, {}, {lp}) has {n_cell} cells, past an i32 \
+                 count",
+                c.la(),
+                c.lb()
             );
-            cells.push(CellClass {
+            // The class's cells, field-major, the pair outer and the aux
+            // shell inner.
+            let mut run = vec![0; CELL_FIELDS * n_cell];
+            let mut k = 0;
+            for &[rec0, rec1, oa, ob] in &runs {
+                for &sh in shells {
+                    let fields = [
+                        rec0,
+                        rec1,
+                        aux.rec_begin[sh],
+                        aux.rec_begin[sh + 1],
+                        oa,
+                        ob,
+                        aux.ao_offset[sh],
+                    ];
+                    for (f, v) in fields.into_iter().enumerate() {
+                        run[f * n_cell + k] = v;
+                    }
+                    k += 1;
+                }
+            }
+            cells.extend(run);
+            cell_classes.push(CellClass {
                 class,
                 lp: lp as i32,
                 begin: n_cells,
@@ -263,6 +272,7 @@ fn staging(
             });
             n_cells += n_cell;
         }
+        first += n_rec;
     }
 
     let tail = aux.field_major();
@@ -272,53 +282,34 @@ fn staging(
     Staging {
         n_cart,
         n_sph,
-        n_aux_cart,
+        n_aux_cart: aux.n_cart(),
         n_aux_sph,
-        classes,
-        n_bra: first,
+        classes: out,
+        n_bra,
         tail,
         n_aux_rec: aux.n_rec(),
-        aux_of_l,
-        aux_rec_begin: aux.rec_begin.clone(),
-        aux_offset: aux.ao_offset.clone(),
-        cells,
+        cells: cell_classes,
+        cell_fields: cells,
         n_cells,
     }
 }
 
-/// One class's downloaded fields: the bra fields and the two AO offsets.
-#[derive(Clone, Copy)]
-struct Downloaded {
-    fields: [RowId<Pinned, f64>; BRA_FIELDS],
-    off: [RowId<Pinned, i32>; 2],
-}
-
-/// Each class's bra fields and offsets copied into pinned rows by two
-/// planner copy nodes, `download three-center bra` and `download
-/// three-center offsets`, each row named after its field and class.
-fn download(dag: &mut Dag<'_>, worker: usize, classes: &[ClassRows]) -> Vec<Downloaded> {
+/// Each class's bra fields copied into pinned rows by one planner copy
+/// node, `download three-center bra`, each row named after its field and
+/// class: one array of rows per class.
+fn download(
+    dag: &mut Dag<'_>,
+    worker: usize,
+    classes: &[ClassRows],
+) -> Vec<[RowId<Pinned, f64>; BRA_FIELDS]> {
     let name = |what: &str, c: &ClassRows| format!("{what} ({},{})", c.la(), c.lb());
     let fields = classes
         .iter()
         .flat_map(|c| (0..BRA_FIELDS).map(move |f| (c, f)))
         .map(|(c, f)| (c.f64_rows()[f], name(BRA_NAMES[f], c), c.n_rec() as usize));
     let fields = dag.download_rows(worker, "three-center bra", fields);
-    let off = classes
-        .iter()
-        .flat_map(|c| (0..2).map(move |f| (c, f)))
-        .map(|(c, f)| {
-            (
-                c.i32_rows()[f],
-                name(["off_a", "off_b"][f], c),
-                c.n_rec() as usize,
-            )
-        });
-    let off = dag.download_rows(worker, "three-center offsets", off);
     (0..classes.len())
-        .map(|c| Downloaded {
-            fields: std::array::from_fn(|f| fields[BRA_FIELDS * c + f]),
-            off: std::array::from_fn(|f| off[2 * c + f]),
-        })
+        .map(|c| std::array::from_fn(|f| fields[BRA_FIELDS * c + f]))
         .collect()
 }
 
@@ -338,22 +329,19 @@ impl<K> Clone for TableRows<K> {
 
 impl<K> Copy for TableRows<K> {}
 
-/// CPU: the records regrouped by shell pair, and the cells formed from the
-/// pairs, into pinned rows behind what planning formed.
+/// CPU: the downloaded bra fields packed field-major, the aux records
+/// behind them, and the cells, into pinned rows.
 struct Tables {
     staging: Arc<Staging>,
-    downloaded: Vec<Downloaded>,
+    downloaded: Vec<[RowId<Pinned, f64>; BRA_FIELDS]>,
 }
 
 impl CpuTask for Tables {
     type Rows = TableRows<Pinned>;
 
     fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
-        for d in &self.downloaded {
-            for &row in &d.fields {
-                host.read(row);
-            }
-            for &row in &d.off {
+        for fields in &self.downloaded {
+            for &row in fields {
                 host.read(row);
             }
         }
@@ -367,76 +355,14 @@ impl CpuTask for Tables {
     fn run(&self, rows: &Self::Rows, host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         let s = &self.staging;
         let records = host.take_mut(rows.records);
-        let cells = host.take_mut(rows.cells);
         let n_bra = s.n_bra;
         records[BRA_FIELDS * n_bra..].copy_from_slice(&s.tail);
-        for (c, (d, &(la, lb, n_rec, base, n_pairs))) in
-            self.downloaded.iter().zip(&s.classes).enumerate()
-        {
-            let off_a = host.get(d.off[0]);
-            let off_b = host.get(d.off[1]);
-            let mut order: Vec<usize> = (0..n_rec).collect();
-            order.sort_by_key(|&r| (off_a[r], off_b[r]));
-            // Each pair's run: its offsets and its record range in the
-            // class's regrouped order.
-            let mut pairs = Vec::with_capacity(n_pairs);
-            let mut k = 0;
-            while k < n_rec {
-                let key = (off_a[order[k]], off_b[order[k]]);
-                let end = k + order[k..]
-                    .iter()
-                    .take_while(|&&r| (off_a[r], off_b[r]) == key)
-                    .count();
-                let fits = |off: i32, l: i32| off >= 0 && off as usize + n_cart_of(l) <= s.n_cart;
-                if !fits(key.0, la) || !fits(key.1, lb) {
-                    return Err(Error::config(format!(
-                        "three-center tables: a ({la}, {lb}) record's AOs ({}, {}) are not the \
-                         orbital basis's {} Cartesian functions",
-                        key.0, key.1, s.n_cart
-                    )));
-                }
-                pairs.push((key, base + k, base + end));
-                k = end;
-            }
-            if pairs.len() != n_pairs {
-                return Err(Error::config(format!(
-                    "three-center tables: class ({la}, {lb})'s records hold {} shell pairs, and \
-                     the plan was made for {n_pairs}",
-                    pairs.len()
-                )));
-            }
-            for (f, &row) in d.fields.iter().enumerate() {
-                let src = host.get(row);
-                let dst = &mut records[f * n_bra + base..f * n_bra + base + n_rec];
-                for (to, &r) in dst.iter_mut().zip(&order) {
-                    *to = src[r];
-                }
-            }
-            for cc in s.cells.iter().filter(|cc| cc.class == c) {
-                let shells = &s.aux_of_l[cc.lp as usize];
-                let run = &mut cells[CELL_FIELDS * cc.begin..CELL_FIELDS * (cc.begin + cc.n_cell)];
-                let mut k = 0;
-                for &((oa, ob), rec0, rec1) in &pairs {
-                    for &sh in shells {
-                        // In range: n_bra fits an i32 (staging), and so does
-                        // every aux record count (AuxTable::push_shell).
-                        let fields = [
-                            rec0 as i32,
-                            rec1 as i32,
-                            s.aux_rec_begin[sh],
-                            s.aux_rec_begin[sh + 1],
-                            oa,
-                            ob,
-                            s.aux_offset[sh],
-                        ];
-                        for (f, v) in fields.into_iter().enumerate() {
-                            run[f * cc.n_cell + k] = v;
-                        }
-                        k += 1;
-                    }
-                }
+        for (fields, &(_, _, n_rec, base)) in self.downloaded.iter().zip(&s.classes) {
+            for (f, &row) in fields.iter().enumerate() {
+                records[f * n_bra + base..f * n_bra + base + n_rec].copy_from_slice(host.get(row));
             }
         }
+        host.take_mut(rows.cells).copy_from_slice(&s.cell_fields);
         Ok(())
     }
 }
@@ -513,12 +439,14 @@ impl GpuTask for ThreeCenter {
             // and then the AUX_FIELDS segments of n_aux_rec, and the class's
             // cells are CELL_FIELDS segments of n_cell int32s inside the
             // cells row, all copied above on this stream from the tables
-            // task, which wrote every cell's bra range inside [0, n_bra), its
-            // aux range from the AuxTable's prefix, its orbital offsets each
-            // checked to open a block inside [0, n_cart) and its aux offset
-            // the AuxTable's, inside [0, n_aux_cart); cartesian is this
-            // task's n_cart² n_aux_cart doubles; the launch only enqueues on
-            // the task's stream.
+            // task, which wrote the cells staging formed at planning: every
+            // bra range a pair's prefix inside its class's records (the
+            // classes are the tables', a contract), so inside [0, n_bra), its
+            // aux range from the AuxTable's prefix, its orbital offsets the
+            // pair's shells', each opening a block inside [0, n_cart)
+            // (RecordTables::new), and its aux offset the AuxTable's, inside
+            // [0, n_aux_cart); cartesian is this task's n_cart² n_aux_cart
+            // doubles; the launch only enqueues on the task's stream.
             let status = unsafe {
                 fb_three_center_class(
                     worker.stream(),

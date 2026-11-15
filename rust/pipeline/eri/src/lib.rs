@@ -23,8 +23,8 @@
 //!   ([`add_three_center`]: `harmonics` and `upload U` for the aux
 //!   basis, and for the
 //!   orbital one unless the caller's slot holds its U already,
-//!   `download three-center bra`, `download three-center offsets`,
-//!   `three-center tables`, `three-center`), over
+//!   `download three-center bra`, `three-center tables`,
+//!   `three-center`), over
 //!   the orbital records and U the caller built once;
 //! - the metric M ([`add_metric`]: `metric tables`, `metric`, `spherical
 //!   transform`, `metric average`), reading the aux basis's U from the

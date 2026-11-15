@@ -18,9 +18,9 @@ use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::runtime::tests::DeviceBytes;
 use fb_integrals_sys::{
     FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, FB_LAUNCH_UNSUPPORTED, FB_OVERLAP_MAX_MOMENTUM,
-    FB_PAIR_BOUND_MAX_MOMENTUM, FB_RECORD_BOUND_MAX_MOMENTUM, fb_mmd_bound, fb_mmd_order,
-    fb_mmd_order_workspace_bytes, fb_mmd_records, fb_ordered_pair_bound, fb_overlap_class,
-    fb_primitive_pair_class_view, fb_primitive_pair_records, fb_primitive_pair_source,
+    FB_PAIR_BOUND_MAX_MOMENTUM, FB_RECORD_BOUND_MAX_MOMENTUM, fb_mmd_bound, fb_mmd_records,
+    fb_ordered_pair_bound, fb_overlap_class, fb_primitive_pair_class_view,
+    fb_primitive_pair_records, fb_primitive_pair_source,
 };
 use std::ptr::{null, null_mut};
 
@@ -173,8 +173,8 @@ fn overlap_refuses_a_class_with_no_kernel() {
 
 /// The bounds' tables refuse as the overlap's does: the undressed bound
 /// (la <= lb only) and the dressed one (every ordered pair) past their
-/// limits are FB_LAUNCH_UNSUPPORTED, and the order and the records refuse a
-/// count, a null pointer or a short workspace. No device is touched.
+/// limits are FB_LAUNCH_UNSUPPORTED, and the records refuse a count or a
+/// null pointer. No device is touched.
 #[test]
 fn mmd_wrappers_refuse_before_launching() {
     let dangling = std::ptr::NonNull::<f64>::dangling().as_ptr();
@@ -216,48 +216,28 @@ fn mmd_wrappers_refuse_before_launching() {
         ao_offset: null(),
         rank: null(),
     };
-    let perm = std::ptr::NonNull::<u32>::dangling().as_ptr();
-    // SAFETY: as above.
-    let order = |n_rec: i32,
-                 src: *const fb_primitive_pair_source,
-                 workspace: *mut core::ffi::c_void,
-                 bytes: usize| unsafe {
-        fb_mmd_order(null_mut(), n_rec, src, dangling, perm, workspace, bytes)
-    };
-    assert_eq!(order(0, &src, null_mut(), 0), FB_LAUNCH_INVALID_ARGUMENT);
-    assert_eq!(order(5, null(), null_mut(), 0), FB_LAUNCH_INVALID_ARGUMENT);
-    // SAFETY: a host function of its argument alone.
-    let bytes = unsafe { fb_mmd_order_workspace_bytes(5000) };
-    assert_eq!(
-        order(5000, &src, dangling.cast(), bytes - 1),
-        FB_LAUNCH_INVALID_ARGUMENT
-    );
     let no_pairs = fb_primitive_pair_source { n_pairs: 0, ..src };
+    // Never read: each call is refused on another argument first.
+    let out: *const fb_primitive_pair_records =
+        std::ptr::NonNull::<fb_primitive_pair_records>::dangling().as_ptr();
     // SAFETY: as the closures above.
-    let records = unsafe {
-        fb_mmd_records(
-            null_mut(),
-            5,
-            &no_pairs,
-            perm,
-            null::<fb_primitive_pair_records>(),
-        )
+    let records = |n_rec: i32,
+                   src: *const fb_primitive_pair_source,
+                   out: *const fb_primitive_pair_records| unsafe {
+        fb_mmd_records(null_mut(), n_rec, src, out)
     };
-    assert_eq!(records, FB_LAUNCH_INVALID_ARGUMENT);
-}
-
-/// The order's workspace is the merge sort's with values: nothing up to a
-/// tile (2816 records) or for no records, then the keys' half padded to the
-/// alignment and the values' half after it. Host only.
-#[test]
-fn mmd_order_workspace_is_the_sort_with_values() {
-    // SAFETY: a host function of its argument alone.
-    let bytes = |n_rec| unsafe { fb_mmd_order_workspace_bytes(n_rec) };
-    assert_eq!(bytes(-1), 0);
-    assert_eq!(bytes(0), 0);
-    assert_eq!(bytes(2816), 0);
-    // 2817 keys are 22536 bytes, 22784 at 256; the values 11268 more.
-    assert_eq!(bytes(2817), 22784 + 11268);
+    for (n_rec, src, out, what) in [
+        (0, &raw const src, out, "no records"),
+        (5, null(), out, "a null source"),
+        (5, &raw const no_pairs, out, "no pairs"),
+        (5, &raw const src, null(), "a null out"),
+    ] {
+        assert_eq!(
+            records(n_rec, src, out),
+            FB_LAUNCH_INVALID_ARGUMENT,
+            "{what}"
+        );
+    }
 }
 
 /// The library this binary loaded is the one the bindings describe: the

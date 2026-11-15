@@ -8,8 +8,10 @@
 //! records from: no atom on an axis.
 //!
 //! Beside them, what the device tests share: [`run`], a plan run once with
-//! every class of it downloaded ([`HostClass`]).
+//! every class of it downloaded ([`HostClass`]), and [`enumeration`], the
+//! record order the device must keep.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use fb_atom::{Atom, Element};
@@ -90,6 +92,106 @@ pub fn two_bases() -> (BasisSet, BasisSet) {
         ],
     );
     (rows, cols)
+}
+
+/// What names a record: its two AO offsets and its two exponents' bits.
+pub type RecordKey = ([i32; 2], [u64; 2]);
+
+/// Each class's records, by what names them, in enumeration order: every
+/// shell pair in sweep order, then the bra's primitives, then the ket's.
+/// One basis (`cols` None): the pairs `i <= j`, swapped when `i` has the
+/// higher momentum, as `fb_integrals_mmd::record_tables` lists them. Two
+/// bases: every ordered pair, `i` of `rows` then `j` of `cols`, never
+/// swapped, each offset into its own basis's AOs. Written here from the
+/// bases alone, so the records' order is held to the sweep, not to the
+/// tables the device formed them from.
+#[allow(dead_code, reason = "the plan binary downloads nothing")]
+pub fn enumeration(
+    rows: &BasisSet,
+    cols: Option<&BasisSet>,
+) -> BTreeMap<(i32, i32), Vec<RecordKey>> {
+    let mut out: BTreeMap<(i32, i32), Vec<RecordKey>> = BTreeMap::new();
+    let mut push = |a: (&BasisSet, u32), b: (&BasisSet, u32)| {
+        let (sa, sb) = (&a.0.shells()[a.1 as usize], &b.0.shells()[b.1 as usize]);
+        let offsets = [
+            a.0.ao_offset_cart(a.1) as i32,
+            b.0.ao_offset_cart(b.1) as i32,
+        ];
+        let class = out
+            .entry((sa.angular_momentum(), sb.angular_momentum()))
+            .or_default();
+        for pa in sa.primitives() {
+            for pb in sb.primitives() {
+                class.push((offsets, [pa.exponent.to_bits(), pb.exponent.to_bits()]));
+            }
+        }
+    };
+    match cols {
+        None => {
+            let n = rows.nshells();
+            for i in 0..n {
+                for j in i..n {
+                    let l = |s: u32| rows.shells()[s as usize].angular_momentum();
+                    let (bra, ket) = if l(i) > l(j) { (j, i) } else { (i, j) };
+                    push((rows, bra), (rows, ket));
+                }
+            }
+        }
+        Some(cols) => {
+            for i in 0..rows.nshells() {
+                for j in 0..cols.nshells() {
+                    push((rows, i), (cols, j));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A downloaded class's records, by what names them, in record order.
+#[allow(dead_code, reason = "the plan binary downloads nothing")]
+pub fn keys(c: &HostClass) -> Vec<RecordKey> {
+    (0..c.n_rec as usize)
+        .map(|r| {
+            (
+                [c.i32s[0][r], c.i32s[1][r]],
+                [c.f64s[11][r].to_bits(), c.f64s[12][r].to_bits()],
+            )
+        })
+        .collect()
+}
+
+/// Whether every class of `got` holds its records in `want`'s order, the
+/// classes the same; each miss pushed onto `misses`, naming `case`.
+#[allow(dead_code, reason = "the plan binary downloads nothing")]
+pub fn check_enumeration(
+    case: &str,
+    got: &[HostClass],
+    want: &BTreeMap<(i32, i32), Vec<RecordKey>>,
+    misses: &mut Vec<String>,
+) {
+    let classes: Vec<_> = got.iter().map(|c| (c.la, c.lb)).collect();
+    let expected: Vec<_> = want.keys().copied().collect();
+    if classes != expected {
+        misses.push(format!(
+            "{case}: classes {classes:?}, enumerated {expected:?}"
+        ));
+        return;
+    }
+    for c in got {
+        let keys = keys(c);
+        let w = &want[&(c.la, c.lb)];
+        let first = keys.iter().zip(w).position(|(a, b)| a != b);
+        if keys.len() != w.len() || first.is_some() {
+            misses.push(format!(
+                "{case} ({},{}): {} records against {} enumerated, first out of order at {first:?}",
+                c.la,
+                c.lb,
+                keys.len(),
+                w.len()
+            ));
+        }
+    }
 }
 
 /// One class's records on the host, every field in record order: the

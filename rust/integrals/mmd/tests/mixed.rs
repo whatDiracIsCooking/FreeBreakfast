@@ -18,14 +18,15 @@
 //! the same shells' values; `s` and the bound are symmetric in the pair,
 //! and so is P while the exponents differ, since the records kernel fuses
 //! the larger-exponent term, whichever is the bra; at a tie it fuses the
-//! bra's, which the mirror swaps. Records of equal ζ may be enumerated in
-//! another order, so each class is matched record by record on its
-//! primitive pair (offsets, ranks, exponents). Within a class ζ must not
-//! increase.
+//! bra's, which the mirror swaps. The two sets enumerate their pairs in
+//! different orders (the ordered pairs `rows`-major, the `i <= j` pairs in
+//! sweep order), so each class is matched record by record on its
+//! primitive pair (offsets, ranks, exponents); and each set is held to its
+//! own enumeration (`common::enumeration`).
 
 mod common;
 
-use common::{Class, HostClass};
+use common::{Class, HostClass, check_enumeration, enumeration};
 use fb_core_planner::Dag;
 use fb_integrals_mmd::{add_mixed_records, add_records};
 
@@ -104,6 +105,14 @@ fn two_bases_that_coincide_give_one_basis_records() {
         .collect();
     let host = common::run(dag, classes);
     let (same, mixed) = host.split_at(n_same);
+    let mut misses = Vec::new();
+    check_enumeration("one basis", same, &enumeration(&basis, None), &mut misses);
+    check_enumeration(
+        "two bases",
+        mixed,
+        &enumeration(&basis, Some(&basis)),
+        &mut misses,
+    );
 
     let one = |la: i32, lb: i32| {
         same.iter()
@@ -122,7 +131,6 @@ fn two_bases_that_coincide_give_one_basis_records() {
     let got_keys: Vec<_> = mixed.iter().map(|c| (c.la, c.lb)).collect();
     assert_eq!(got_keys, want_keys, "the two-basis classes, ascending");
 
-    let mut misses = Vec::new();
     for c in mixed {
         let (la, lb) = (c.la, c.lb);
         let want: Vec<Record> = match la.cmp(&lb) {
@@ -139,10 +147,6 @@ fn two_bases_that_coincide_give_one_basis_records() {
             }
         };
         let got = records(c);
-        let zeta: Vec<f64> = got.iter().map(|(f, _)| f64::from_bits(f[0])).collect();
-        if !zeta.windows(2).all(|w| w[0] >= w[1]) {
-            misses.push(format!("({la},{lb}): zeta increases"));
-        }
         if got.len() != want.len() {
             misses.push(format!(
                 "({la},{lb}): {} records against {}",

@@ -12,8 +12,8 @@
 //! | C++ (`src/integrals`) | Here |
 //! |---|---|
 //! | `PrimitivePairClassView`, `PrimitivePairSource`, `PrimitivePairRecords` | [`fb_primitive_pair_class_view`], [`fb_primitive_pair_source`], [`fb_primitive_pair_records`], `#[repr(C)]`, by pointer |
-//! | `mmd_order(stream, n_rec, src, key, key_alt, perm, perm_alt)` | [`fb_mmd_order`]`(stream, n_rec, src, key, perm, workspace, workspace_bytes)`, the two alternates one workspace of [`fb_mmd_order_workspace_bytes`] bytes |
-//! | `mmd_records`, `mmd_bound` | [`fb_mmd_records`], [`fb_mmd_bound`] |
+//! | `mmd_order(stream, n_rec, src, key, key_alt, perm, perm_alt)`, each class sorted into descending ζ | nothing: the records stay in enumeration order, which no reader here needs changed ([`ClassRows`] has the order) |
+//! | `mmd_records(stream, n_rec, src, perm, out)`, `mmd_bound` | [`fb_mmd_records`]`(stream, n_rec, src, out)`, record r the host's record r; [`fb_mmd_bound`] |
 //! | `ordered_pair_bound` | [`fb_ordered_pair_bound`] |
 //! | `overlap_class` | [`fb_overlap_class`] |
 //! | `kinetic_class` | [`fb_kinetic_class`] |
@@ -23,7 +23,7 @@
 //! | `metric_class` (`src/integrals/eri/density_fitting/metric`) | [`fb_metric_class`], the records and pairs as field segments, as there; the safe path is [`add_metric_tasks`] over an [`AuxTable`] |
 //! | `metric`'s host staging: one record per aux primitive, the pairs P <= Q per class, swapped to the lower momentum first | [`AuxTable::push_shell`] and the `metric tables` task of [`add_metric_tasks`] |
 //! | `three_center_class`, `three_center_symmetrize` (`.../three_center`) | [`fb_three_center_class`], [`fb_three_center_symmetrize`]`(stream, n_ao, n_aux, input, output)`, overlapping arrays refused |
-//! | `three_center`'s host staging: `mmd`'s records copied back and regrouped by shell pair, the aux records, the cells, U and U_aux in one upload; the launches, the three spherical GEMMs and the average | [`add_three_center_tasks`]: `download three-center bra` and `download three-center offsets` (the planner's copy nodes), `three-center tables` and `three-center`, U and U_aux read from the caller's device rows (the plan's `upload U` rows) rather than staged again |
+//! | `three_center`'s host staging: `mmd`'s records copied back and regrouped by shell pair, the aux records, the cells, U and U_aux in one upload; the launches, the three spherical GEMMs and the average | [`add_three_center_tasks`]: `download three-center bra` (the planner's copy node), `three-center tables` and `three-center`, nothing regrouped, the cells formed at planning from the [`RecordTables`] the records came from, U and U_aux read from the caller's device rows (the plan's `upload U` rows) rather than staged again |
 //! | `kMetricMaxMomentum`, `kThreeCenterMaxMomentum`, `kThreeCenterAuxMaxMomentum` | [`FB_METRIC_MAX_MOMENTUM`], [`FB_THREE_CENTER_MAX_MOMENTUM`], [`FB_THREE_CENTER_AUX_MAX_MOMENTUM`] |
 //! | `kMetricRecordFields`, `kMetricPairFields`, `kThreeCenterBraFields`, `kThreeCenterAuxFields`, `kThreeCenterCellFields` | [`FB_METRIC_RECORD_FIELDS`], [`FB_METRIC_PAIR_FIELDS`], [`FB_THREE_CENTER_BRA_FIELDS`], [`FB_THREE_CENTER_AUX_FIELDS`], [`FB_THREE_CENTER_CELL_FIELDS`], for a safe layer to size its segments by |
 //! | `wwrErrorInvalidValue` for a refusal | [`FB_LAUNCH_INVALID_ARGUMENT`] (a count, a null pointer, a short workspace) or [`FB_LAUNCH_UNSUPPORTED`] (no kernel for the class) |
@@ -38,8 +38,9 @@
 //!   pairs ([`ClassPairs`]) with every index the kernels follow checked
 //!   when it is made, and [`add_record_tasks`], the tasks that stage and
 //!   upload it and form every class's records from it, each class on a
-//!   lane of its own (`fb_mmd_order`, `fb_mmd_records`, `fb_mmd_bound`,
-//!   `fb_ordered_pair_bound`), returning one [`ClassRows`] per class.
+//!   lane of its own (`fb_mmd_records`, `fb_mmd_bound`,
+//!   `fb_ordered_pair_bound`), returning one [`ClassRows`] per class, its
+//!   records in enumeration order.
 //! - [`overlap_class`], [`kinetic_class`] and [`potential_en_class`], over
 //!   a [`ClassRows`] and an output
 //!   [`DeviceSliceMut`](fb_core_wwr::device_slice::DeviceSliceMut) whose
@@ -55,14 +56,15 @@
 //!   caller could fill reaches the launch.
 //!
 //! - [`add_three_center_tasks`], the three tasks of (mn\|P) over a
-//!   basis's [`ClassRows`], an [`AuxTable`] and the pinned rows of U and
-//!   U_aux: the records' bra fields downloaded, regrouped by shell pair on
-//!   the CPU with the cells formed from them, then the uploads, one
-//!   [`fb_three_center_class`] per class
+//!   basis's [`ClassRows`], the [`RecordTables`] they were formed from, an
+//!   [`AuxTable`] and the device rows of U and U_aux: the records' bra
+//!   fields downloaded and packed on the CPU beside the cells, then the
+//!   uploads, one [`fb_three_center_class`] per class
 //!   into a Cartesian scratch row, the spherical GEMMs
 //!   (`fb_core_wwr::blas`) and [`fb_three_center_symmetrize`] into an
-//!   output row. Every cell index is one the CPU task wrote, from the
-//!   regroup and the table, and checked there.
+//!   output row. Every cell index is formed at planning from the checked
+//!   tables and the aux table, and the records are held to the tables by
+//!   an always-on contract.
 //!
 //! A class kernel writes at AO offsets held in device memory, so
 //! [`ClassRows`] is a type only [`add_record_tasks`] makes; its doc comment
