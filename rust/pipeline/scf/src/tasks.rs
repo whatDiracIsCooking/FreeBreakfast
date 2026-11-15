@@ -1,9 +1,10 @@
 //! The Roothaan step on a stream: F transformed by X, diagonalized, and its
 //! eigenvectors transformed back.
 
-use contracts::debug_requires;
+use contracts::requires;
 use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
+use fb_core_log::fits_i32;
 use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::gemm;
@@ -26,8 +27,9 @@ use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N as OP_N, WWR_BLAS_OP_T as OP_T};
 /// its row `"F' U"`), and `back transform` (stream: `C = X C'`).
 ///
 /// # Panics
-/// As [`add_diagonalize`]: if `n²` or `lwork` does not fit an `i32`; or if
-/// `f` or `x` is a row of another worker's table ([`Dag::add_gpu`]).
+/// As [`add_diagonalize`]: if `lwork` does not fit an `i32`; or if `f` or
+/// `x` is a row of another worker's table ([`Dag::add_gpu`]).
+#[requires(fits_i32!(n.checked_mul(n)), "n² fits the BLAS's i32")]
 #[debug_requires(n > 0, "a matrix of at least one row")]
 #[track_caller]
 pub fn add_solve_fock(
@@ -38,10 +40,6 @@ pub fn add_solve_fock(
     f: RowId<Device, f64>,
     x: RowId<Device, f64>,
 ) -> (RowId<Device, f64>, RowId<Device, f64>) {
-    assert!(
-        n.checked_mul(n).is_some_and(|n2| i32::try_from(n2).is_ok()),
-        "add_solve_fock: n = {n}: n² does not fit BLAS's i32"
-    );
     let f_prime = dag
         .add_gpu("fock transform", worker, FockTransform { f, x, n })
         .f_prime;

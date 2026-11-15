@@ -2,9 +2,10 @@
 //! from the orbitals, and the Fock matrix, the energy and the DIIS residual
 //! from J and K.
 
-use contracts::debug_requires;
+use contracts::requires;
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::{Error, Result, Status};
+use fb_core_log::fits_i32;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::{geam, gemm, gemv};
@@ -46,9 +47,9 @@ pub fn occupied_orbitals(molecule: &Molecule) -> Result<usize> {
 /// iteration's J reads this D and its K this factor.
 ///
 /// # Panics
-/// If `n²` does not fit an `i32`, the BLAS's integer; or as [`Dag::add_gpu`],
-/// if a row is of another worker's table, or `d` or `c_occ` is written
-/// where no loop carries it.
+/// As [`Dag::add_gpu`], if a row is of another worker's table, or `d` or
+/// `c_occ` is written where no loop carries it.
+#[requires(fits_i32!(n.checked_mul(n)), "n² fits the BLAS's i32")]
 #[debug_requires(n > 0, "a basis of at least one function")]
 #[debug_requires((1..=n).contains(&nocc), "between one occupied orbital and n")]
 #[track_caller]
@@ -61,7 +62,6 @@ pub fn add_density(
     d: RowId<Device, f64>,
     c_occ: RowId<Device, f64>,
 ) {
-    assert_square_fits(n);
     dag.add_gpu(
         "density",
         worker,
@@ -123,8 +123,8 @@ pub(crate) fn add_published_density(
 ///   added and the square root taken.
 ///
 /// # Panics
-/// If `n²` does not fit an `i32`, the BLAS's integer; or as [`Dag::add_gpu`],
-/// if a row is of another worker's table.
+/// As [`Dag::add_gpu`], if a row is of another worker's table.
+#[requires(fits_i32!(n.checked_mul(n)), "n² fits the BLAS's i32")]
 #[debug_requires(n > 0, "a basis of at least one function")]
 #[allow(
     clippy::too_many_arguments,
@@ -143,7 +143,6 @@ pub fn add_fock(
     s: RowId<Device, f64>,
     x: RowId<Device, f64>,
 ) -> (RowId<Device, f64>, RowId<Device, f64>, RowId<Pinned, f64>) {
-    assert_square_fits(n);
     let fock = dag.add_gpu("fock", worker, Fock { h, j, k, d, n });
     let residual = dag.add_gpu(
         "residual",
@@ -166,16 +165,6 @@ pub fn add_fock(
         },
     );
     (fock.f, residual.e, scalars)
-}
-
-/// Panic unless `n²` fits an `i32`: every count the BLAS is handed here is
-/// at most `n²`.
-#[track_caller]
-fn assert_square_fits(n: usize) {
-    assert!(
-        n.checked_mul(n).is_some_and(|n2| i32::try_from(n2).is_ok()),
-        "scf: n = {n}: n² does not fit BLAS's i32"
-    );
 }
 
 /// GPU: `C_occ = C[:, :nocc]`, then `D = 2 C_occ C_occᵀ`.

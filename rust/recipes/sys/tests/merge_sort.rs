@@ -135,6 +135,57 @@ fn workspace_query_is_the_two_halves() {
     assert_eq!(bytes(2817, true), 22784 + 11268);
 }
 
+/// A key count past the launch's `u32` panics in the workspace query. Host
+/// only. Run as [`a_query_past_u32_shows_its_values`]'s child
+/// (`FB_CONTRACT_CHILD` set), it panics at level off, so the panic hook
+/// writes its line to stderr.
+#[test]
+#[should_panic(
+    expected = "Pre-condition of merge_sort_workspace_bytes violated: n fits the launch's u32"
+)]
+fn a_query_past_u32_panics() {
+    if std::env::var_os("FB_CONTRACT_CHILD").is_some() {
+        fb_core_log::set_level(fb_core_log::LogLevel::Off);
+    }
+    let _ = merge_sort_workspace_bytes(1 << 32, true); // MARK query
+}
+
+/// The contract's panic carries its operands' values, through
+/// `fb_core_log`'s panic hook, and is located at the caller's line,
+/// `#[track_caller]` reaching through `#[requires]`. The hook's line is not
+/// the panic's message, which `#[should_panic]` matches, so the case above
+/// is re-run as a child and its stderr read. An operand's text is
+/// `stringify!`'s, which spaces a path's `::`.
+#[test]
+fn a_query_past_u32_shows_its_values() {
+    const NAME: &str = "a_query_past_u32_panics";
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+        .env("FB_CONTRACT_CHILD", "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{:?}\n{stderr}", out.status);
+    let source = include_str!("merge_sort.rs");
+    let (line, text) = source
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("// MARK query"))
+        .unwrap();
+    let column = text.find("merge_sort_workspace_bytes(").unwrap() + 1;
+    let want = format!(
+        "thread '{NAME}' panicked at {}:{}:{column}: Pre-condition of merge_sort_workspace_bytes \
+         violated: n fits the launch's u32: le! (n, u32::MAX as usize) \
+         [n = 4294967296, u32 :: MAX as usize = 4294967295]",
+        file!(),
+        line + 1
+    );
+    assert!(
+        stderr.lines().any(|l| l == want),
+        "{stderr}\n  wanted {want}"
+    );
+}
+
 /// Needs a GPU. A workspace one byte short of the query panics before
 /// anything is enqueued.
 #[test]
@@ -171,7 +222,7 @@ fn the_safe_call_refuses_a_misaligned_workspace() {
 /// enqueued.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
-#[should_panic(expected = "merge_sort: values holds 4, but keys 5")]
+#[should_panic(expected = "Pre-condition of merge_sort violated: values is as long as keys")]
 fn the_safe_call_refuses_short_values() {
     let stream = Stream::new(0);
     let mut keys = DeviceBytes::new(5 * size_of::<f64>());

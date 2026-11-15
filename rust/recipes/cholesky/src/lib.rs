@@ -65,11 +65,12 @@
 
 #![forbid(unsafe_code)]
 
-use contracts::debug_requires;
+use contracts::requires;
 use fb_core_arena::{
     Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, StagingKind, memcpy_d2d, memcpy_d2p,
 };
 use fb_core_error_handling::{Error, Result, Status};
+use fb_core_log::fits_i32;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::{syrk, trsm};
@@ -111,8 +112,8 @@ pub const CHOLESKY_BLOCK: usize = FB_CHOLESKY_TILE as usize;
 /// `libfb_recipes_kernels.so` is not the one the bindings describe.
 ///
 /// # Panics
-/// If `n` does not fit an `i32`, the BLAS's integer, or `a` is a row of
-/// another worker's table ([`Dag::add_gpu`]).
+/// If `a` is a row of another worker's table ([`Dag::add_gpu`]).
+#[requires(fits_i32!(n), "n fits the BLAS's i32")]
 #[debug_requires(n > 0, "a matrix of at least one row")]
 #[track_caller]
 pub fn add_cholesky(
@@ -122,10 +123,6 @@ pub fn add_cholesky(
     n: usize,
     a: RowId<Device, f64>,
 ) -> Result<(RowId<Device, f64>, RowId<Pinned, i32>)> {
-    assert!(
-        i32::try_from(n).is_ok(),
-        "add_cholesky: n = {n} does not fit the BLAS's i32"
-    );
     // Not `map_err(Error::gpu)`: through a function pointer the error's
     // origin would be core's, not this call's caller.
     if let Err(e) = fb_recipes_sys::check_library() {

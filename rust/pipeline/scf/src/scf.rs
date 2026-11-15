@@ -3,8 +3,10 @@
 
 use std::ops::ControlFlow;
 
+use contracts::requires;
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_p2d};
 use fb_core_error_handling::{Error, Result, Status};
+use fb_core_log::fits_i32;
 use fb_core_planner::{CpuTask, Dag, Decision, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::{dgmm, geam};
@@ -170,9 +172,8 @@ impl ScfStep {
 /// `max_iterations` builds.
 ///
 /// # Panics
-/// If `n²` does not fit an `i32`, the BLAS's integer, or as
-/// [`add_df_exchange`]; or as [`Dag::add_gpu`], if a row is of another worker's
-/// table.
+/// As [`add_df_exchange`]; or as [`Dag::add_gpu`], if a row is of another
+/// worker's table.
 #[allow(
     clippy::too_many_arguments,
     reason = "the step's inputs, each a row or a product of its own"
@@ -181,6 +182,7 @@ impl ScfStep {
     clippy::type_complexity,
     reason = "the step's four products as rows, in the crate's tuple style"
 )]
+#[requires(fits_i32!(n.checked_mul(n)), "n² fits the BLAS's i32")]
 #[track_caller]
 pub fn add_scf(
     dag: &mut Dag<'_>,
@@ -195,10 +197,6 @@ pub fn add_scf(
 ) -> Result<(RowId<Heap, f64>, [RowId<Device, f64>; 3])> {
     step.check()?;
     let nocc = occupied_orbitals(molecule)?;
-    assert!(
-        n.checked_mul(n).is_some_and(|n2| i32::try_from(n2).is_ok()),
-        "add_scf: n = {n}: n² does not fit BLAS's i32"
-    );
     let naux = eri.aux.nao_sphe() as usize;
     let e_nuc = nuclear_repulsion_energy(molecule);
 
