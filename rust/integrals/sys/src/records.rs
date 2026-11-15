@@ -30,6 +30,7 @@
 
 use std::sync::Arc;
 
+use contracts::requires;
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_h2p};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
@@ -618,16 +619,16 @@ impl MixedClassRows {
 /// its own task beside the sort's workspace,
 /// [`fb_mmd_order_workspace_bytes`] of its `n_rec`, a host query.
 ///
-/// # Panics
-/// If `tables` are two bases' ([`RecordTables::mixed`]): their ket offsets
-/// index another basis's AOs than the `n_cart` a [`ClassRows`] promises
-/// its launchers. [`add_mixed_record_tasks`] takes them.
+/// Two bases' tables ([`RecordTables::mixed`]) are refused always: their
+/// ket offsets index another basis's AOs than the `n_cart` a [`ClassRows`]
+/// promises its launchers, so a launch over them would write past its
+/// matrix. [`add_mixed_record_tasks`] takes them.
+#[requires(
+    tables.n_bra_shells.is_none(),
+    "the tables are one basis's; add_mixed_record_tasks takes two bases'"
+)]
 #[track_caller]
 pub fn add_record_tasks(dag: &mut Dag<'_>, worker: usize, tables: RecordTables) -> Vec<ClassRows> {
-    assert!(
-        tables.n_bra_shells.is_none(),
-        "add_record_tasks: the tables are two bases'; add_mixed_record_tasks takes them"
-    );
     record_tasks(dag, worker, tables)
 }
 
@@ -636,19 +637,16 @@ pub fn add_record_tasks(dag: &mut Dag<'_>, worker: usize, tables: RecordTables) 
 /// the same tasks on the same lanes, every field formed the same way, in a
 /// class of any order. Returns each class's rows as [`MixedClassRows`],
 /// which no one-basis launcher takes.
-///
-/// # Panics
-/// If `tables` are one basis's ([`RecordTables::new`]).
+#[requires(
+    tables.n_bra_shells.is_some(),
+    "the tables are two bases'; add_record_tasks takes one basis's"
+)]
 #[track_caller]
 pub fn add_mixed_record_tasks(
     dag: &mut Dag<'_>,
     worker: usize,
     tables: RecordTables,
 ) -> Vec<MixedClassRows> {
-    assert!(
-        tables.n_bra_shells.is_some(),
-        "add_mixed_record_tasks: the tables are one basis's; add_record_tasks takes them"
-    );
     let n_cart_ket = tables.n_cart[1];
     record_tasks(dag, worker, tables)
         .into_iter()
@@ -1294,7 +1292,9 @@ mod tests {
     /// Two bases' tables are not one basis's records: a `ClassRows`
     /// promises its launchers one `n_cart` for both offsets.
     #[test]
-    #[should_panic(expected = "add_record_tasks: the tables are two bases'")]
+    #[should_panic(
+        expected = "the tables are one basis's; add_mixed_record_tasks takes two bases'"
+    )]
     fn one_basis_records_refuse_two_bases_tables() {
         let (shells, classes) = mixed_parts();
         let mut dag = Dag::new();
@@ -1303,7 +1303,7 @@ mod tests {
 
     /// And one basis's tables are not two bases'.
     #[test]
-    #[should_panic(expected = "add_mixed_record_tasks: the tables are one basis's")]
+    #[should_panic(expected = "the tables are two bases'; add_record_tasks takes one basis's")]
     fn two_bases_records_refuse_one_basis_tables() {
         let (shells, classes) = parts();
         let mut dag = Dag::new();
