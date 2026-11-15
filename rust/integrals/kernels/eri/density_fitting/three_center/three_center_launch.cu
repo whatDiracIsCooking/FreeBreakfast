@@ -9,7 +9,9 @@
 // (rust/docs/gpu_layer.md, "Layering"), their refusals split into
 // FB_LAUNCH_INVALID_ARGUMENT and FB_LAUNCH_UNSUPPORTED ("Statuses"), and the
 // 32-bit extent the kernels index by, and the symmetrization's out-of-place
-// rule, refused rather than assumed. The generated kernels are sources of this
+// rule, refused rather than assumed. The bra records are read in place, from
+// the class's own record rows (fb_primitive_pair_class_view), where the C++
+// launcher takes them packed into one staging buffer. The generated kernels are sources of this
 // library of their own (kernels/), each one explicit specialization of the
 // kernel template `eri3`. kernels/eri3.h declares the template, every
 // specialization and eri3_kernels, their [la][lb][lP] table, nullptr where
@@ -78,22 +80,33 @@ __global__ void three_center_symmetrize_kernel(const int32_t n_ao, const int32_t
 
 } // namespace
 
-extern "C" fb_launch_status
-fb_three_center_class(const wwr_stream stream, const int32_t la, const int32_t lb, const int32_t lp,
-                      const int32_t n_bra_rec, const double *bra, const int32_t n_aux_rec,
-                      const double *aux, const int32_t n_cell, const int32_t *cells,
-                      const int32_t n_ao, const int32_t n_aux, double *eri3) {
-  if (bra == nullptr || aux == nullptr || cells == nullptr || eri3 == nullptr || n_bra_rec < 1 ||
-      n_aux_rec < 1 || n_cell < 1 || n_ao < 1 || n_aux < 1 || tensor_count(n_ao, n_aux) < 0) {
+extern "C" fb_launch_status fb_three_center_class(const wwr_stream stream,
+                                                  const fb_primitive_pair_class_view *cls,
+                                                  const int32_t lp, const int32_t n_aux_rec,
+                                                  const double *aux, const int32_t n_cell,
+                                                  const int32_t *cells, const int32_t n_ao,
+                                                  const int32_t n_aux, double *eri3) {
+  if (cls == nullptr || aux == nullptr || cells == nullptr || eri3 == nullptr || n_aux_rec < 1 ||
+      n_cell < 1 || n_ao < 1 || n_aux < 1 || tensor_count(n_ao, n_aux) < 0) {
     return FB_LAUNCH_INVALID_ARGUMENT;
   }
+  // The bra fields the kernels read, in their parameter order.
+  const double *const bra[] = {cls->zeta, cls->p_x,  cls->p_y,  cls->p_z,  cls->pa_x, cls->pa_y,
+                               cls->pa_z, cls->pb_x, cls->pb_y, cls->pb_z, cls->s};
+  for (const double *field : bra) {
+    if (field == nullptr) {
+      return FB_LAUNCH_INVALID_ARGUMENT;
+    }
+  }
+  if (cls->n_rec < 1) {
+    return FB_LAUNCH_INVALID_ARGUMENT;
+  }
+  const int32_t la = cls->la;
+  const int32_t lb = cls->lb;
   if (la < 0 || lb < la || lb > FB_THREE_CENTER_MAX_MOMENTUM || lp < 0 ||
       lp > FB_THREE_CENTER_AUX_MAX_MOMENTUM) {
     return FB_LAUNCH_UNSUPPORTED;
   }
-  const auto b = [&](const int32_t field) {
-    return bra + (static_cast<size_t>(field) * static_cast<size_t>(n_bra_rec));
-  };
   const auto a = [&](const int32_t field) {
     return aux + (static_cast<size_t>(field) * static_cast<size_t>(n_aux_rec));
   };
@@ -106,9 +119,9 @@ fb_three_center_class(const wwr_stream stream, const int32_t la, const int32_t l
       free_breakfast::math::idivup(static_cast<uint32_t>(n_cell), free_breakfast::kFourWarps);
   // The C ABI's stream is the runtime's, behind a void *.
   kernel<<<blocks, free_breakfast::kFourWarps, 0, static_cast<wwr::wwrStream_t>(stream)>>>(
-      n_cell, n_bra_rec, n_aux_rec, n_ao, n_aux, b(0), b(1), b(2), b(3), b(4), b(5), b(6), b(7),
-      b(8), b(9), b(10), a(0), a(1), a(2), a(3), a(4), c(0), c(1), c(2), c(3), c(4), c(5), c(6),
-      eri3);
+      n_cell, cls->n_rec, n_aux_rec, n_ao, n_aux, bra[0], bra[1], bra[2], bra[3], bra[4], bra[5],
+      bra[6], bra[7], bra[8], bra[9], bra[10], a(0), a(1), a(2), a(3), a(4), c(0), c(1), c(2), c(3),
+      c(4), c(5), c(6), eri3);
   return static_cast<fb_launch_status>(wwr_get_last_error());
 }
 

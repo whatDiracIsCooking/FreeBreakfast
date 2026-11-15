@@ -126,11 +126,12 @@ reaches (`FB_RECIPES_ABI_VERSION` is 6, bumped as the inverse square root,
 the symmetrization, the Cholesky diagonal tile and the DIIS solve joined the
 merge sort, then as the inverse square root took its floor's factor from the
 device;
-`FB_INTEGRALS_ABI_VERSION` is 4, bumped as the kinetic and
+`FB_INTEGRALS_ABI_VERSION` is 5, bumped as the kinetic and
 nuclear-attraction wrappers with `fb_nuclei_view`, then density fitting's
 metric and three-center launchers, joined the overlap, then as the records'
 order left (`fb_mmd_order` and its query removed, `fb_mmd_records` taking
-no permutation);
+no permutation), then as `fb_three_center_class` took a class view for its
+bra records instead of a packed buffer;
 `FB_LOCALIZATION_ABI_VERSION` is 1, the Pipek-Mezey launchers; `fb-doc-check`'s
 `doc_lists.rs` holds these numbers to the headers). The bump is held:
 `devtools/rust-bindings.py` records in each module's bindings, beside the

@@ -16,20 +16,18 @@
 //! [`add_three_center`] adds, after the kernel library's load check and the
 //! kernels' limits at planning, `harmonics` and `upload U` for
 //! each basis whose U the caller's slot does not hold yet
-//! ([`add_harmonics`]), and the three tasks
+//! ([`add_harmonics`]), and the two tasks
 //! of [`fb_integrals_sys::add_three_center_tasks`]:
 //!
-//! - **`download three-center bra`**, the planner's copy node on the
-//!   worker's stream: the orbital records' bra fields
-//!   (`fb_integrals_mmd`'s, read as edges) into pinned rows.
-//! - **`three-center tables`**, on the CPU: those fields packed as they
-//!   are, each shell pair's records already one run (the records are in
-//!   enumeration order, [`fb_integrals_mmd`]'s crate doc), and the aux
-//!   records (the metric's, one per aux primitive, `s = c (π/α)^{3/2}`)
-//!   into one pinned row, and the cells, one per (shell pair, aux shell)
-//!   in its class `(la, lb, lP)`, formed at planning from the basis's
+//! - **`three-center tables`**, on the CPU: the aux records (the metric's,
+//!   one per aux primitive, `s = c (π/α)^{3/2}`) into one pinned row, and
+//!   the cells, one per (shell pair, aux shell) in its class
+//!   `(la, lb, lP)`, formed at planning from the basis's
 //!   [`record_tables`], into another.
-//! - **`three-center`**, on the worker's stream: both uploaded; U and U_aux
+//! - **`three-center`**, on the worker's stream: both uploaded; the
+//!   orbital records' bra fields (`fb_integrals_mmd`'s) read in place, as
+//!   edges, each shell pair's records already one run (they are in
+//!   enumeration order, [`fb_integrals_mmd`]'s crate doc); U and U_aux
 //!   read from the plan's device rows of them, which the metric's transform
 //!   over the same aux basis reads too; one launch
 //!   per class into the Cartesian tensor, `nao_cart² naux_cart` doubles,
@@ -47,8 +45,8 @@
 //! | C++ | Here |
 //! |---|---|
 //! | `three_center(res, basis, classes, aux, b, max_bytes)`, into the caller's `b` | [`add_three_center`]`(dag, worker, basis, classes, aux, u, u_aux)`, returning (mn\|P)'s row; the slots of U and U_aux passed in, as every transform takes them |
-//! | U and U_aux staged with the records and cells | the plan's device rows of U and U_aux ([`add_harmonics`]), each copied up once for every reader over its basis on the worker and read by the last task |
-//! | `mmd`'s records copied back and regrouped by shell pair on the host, undoing their sort, the call synchronizing after the copy | `download three-center bra` and `three-center tables`: one copy node, its pinned outputs packed by a CPU task after the executor waits on its event, unregrouped, since the records here are unsorted and each pair's run is its prefix in the tables |
+//! | U and U_aux staged with the aux records and cells | the plan's device rows of U and U_aux ([`add_harmonics`]), each copied up once for every reader over its basis on the worker and read by the last task |
+//! | `mmd`'s records copied back, regrouped by shell pair on the host, undoing their sort, and staged up again, the call synchronizing after the copy | nothing copied: each launch reads its class's bra fields in place from `fb_integrals_mmd`'s rows, which are unsorted, each pair's run its prefix in the tables |
 //! | the staging, the cells, the Cartesian tensor and the work, the call's own buffers | pinned rows and the stream task's device scratch, all in the plan's arena |
 //! | `three_center_class` per class, `gemm` and `gemmStridedBatched` (`recipes/blas`, wwr) | [`fb_integrals_sys::add_three_center_tasks`], over `fb_core_wwr::blas`'s `gemm` and `gemm_strided_batched` |
 //! | `three_center_symmetrize`, out of place into `b` | the same, into the output row |
@@ -86,8 +84,8 @@ use fb_recipes_matrix_ao::add_harmonics;
 /// of each (the metric's transform takes `u_aux`'s): `harmonics` (CPU)
 /// and `upload U` (stream) are added for each that is `None`, and
 /// U's device row left there ([`add_harmonics`]). The tasks are then
-/// `download three-center bra` (stream), `three-center tables` (CPU) and
-/// `three-center` (stream), which reads U and U_aux and whose scratch holds
+/// `three-center tables` (CPU) and `three-center` (stream), which reads
+/// the records' bra fields, U and U_aux, and whose scratch holds
 /// the Cartesian tensor (`naux_cart · nao_cart²` doubles) and the
 /// transform's intermediate (`naux · nao_cart²`).
 ///
