@@ -23,7 +23,7 @@
 //!   `assert!` before any other statement, whose message is one literal
 //!   with no interpolation and whose condition names only the parameters,
 //!   is a plain condition on the arguments, so it is written where rustdoc
-//!   shows it. The ones written before the rule are `NOT_YET_REQUIRES`.
+//!   shows it.
 //!
 //! clippy's `disallowed_macros` cannot hold the second rule: a
 //! `#[debug_requires]` expands to a `debug_assert!` spanned at the
@@ -464,23 +464,11 @@ fn is_primitive(w: &str) -> bool {
     )
 }
 
-/// The leading static asserts not yet written as `#[requires]`, as
-/// `path:function`, each one a `pub fn` that has one today. PR 2 of the
-/// always-on contracts migration (`docs/testing.md`, "Contracts are part of
-/// the spec") converts them and empties this list; it only shrinks, since
-/// an entry with no such assert left fails.
-const NOT_YET_REQUIRES: &[&str] = &[
-    "integrals/sys/src/records.rs:add_record_tasks",
-    "integrals/sys/src/records.rs:add_mixed_record_tasks",
-];
-
-/// The failures of the leading-assert rule over `found`, against the
-/// allowlist: a leading static assert not on it, and an entry on it that
-/// no longer has one.
-fn leading_failures(found: &[Leading], allowed: &[&str]) -> Vec<String> {
-    let mut failures: Vec<String> = found
+/// The failures of the leading-assert rule over `found`: every leading
+/// static assert is one.
+fn leading_failures(found: &[Leading]) -> Vec<String> {
+    found
         .iter()
-        .filter(|l| !allowed.contains(&l.key.as_str()))
         .map(|l| {
             let (path, name) = l.key.rsplit_once(':').unwrap_or((&l.key, ""));
             format!(
@@ -489,15 +477,7 @@ fn leading_failures(found: &[Leading], allowed: &[&str]) -> Vec<String> {
                 l.line
             )
         })
-        .collect();
-    for a in allowed {
-        if !found.iter().any(|l| l.key == *a) {
-            failures.push(format!(
-                "{a}: on NOT_YET_REQUIRES but has no leading static assert; remove the entry"
-            ));
-        }
-    }
-    failures
+        .collect()
 }
 
 #[test]
@@ -506,7 +486,7 @@ fn a_static_leading_assert_is_a_requires() {
         .iter()
         .flat_map(|(p, s)| leading_static_asserts(p, s))
         .collect();
-    let failures = leading_failures(&found, NOT_YET_REQUIRES);
+    let failures = leading_failures(&found);
     assert!(
         failures.is_empty(),
         "{} leading assert(s) to write as #[requires]:\n{}",
@@ -545,26 +525,11 @@ fn a_leading_assert_is_judged_by_its_place_its_message_and_its_names() {
     assert!(leading_static_asserts("a/tests/t.rs", src).is_empty());
     assert!(leading_static_asserts("a/src/x.rs", &format!("#![cfg(test)]\n{src}")).is_empty());
 
-    // Each found is a failure unless allowlisted, and an allowlisted entry
-    // with no such assert left is one too, so the list only shrinks.
-    let f = leading_failures(&found, &[]);
+    // Each found is a failure.
+    let f = leading_failures(&found);
     assert_eq!(f.len(), 3, "{f:#?}");
     assert!(f[0].starts_with("a/src/lib.rs:2: a opens"), "{f:#?}");
     assert!(f[0].ends_with("write it as #[requires]"), "{f:#?}");
-    let allowed = ["a/src/lib.rs:a", "a/src/lib.rs:b", "a/src/lib.rs:d"];
-    assert_eq!(leading_failures(&found, &allowed), Vec::<String>::new());
-    let stale = [
-        "a/src/lib.rs:a",
-        "a/src/lib.rs:b",
-        "a/src/lib.rs:d",
-        "a/src/lib.rs:gone",
-    ];
-    let f = leading_failures(&found, &stale);
-    assert_eq!(f.len(), 1, "{f:#?}");
-    assert!(
-        f[0].starts_with("a/src/lib.rs:gone: on NOT_YET_REQUIRES"),
-        "{f:#?}"
-    );
 }
 
 #[test]
