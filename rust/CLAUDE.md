@@ -32,8 +32,9 @@ rule below, fix the counter-example (or file an issue) rather than copy it.
   characters or needing a loop, and a private helper whose message names
   its caller's operand (the BLAS `check_*` helpers). clippy's
   `missing_panics_doc` is on, and
-  `fb-doc-check` fails a leading static `assert!` that should be a
-  `#[requires]`. Beside an `unsafe` block, a `#[debug_requires]` on an
+  `fb-doc-check` fails a leading precondition that should be a
+  `#[requires]`, whatever its message: an `assert!`, an `assert_eq!` or
+  `assert_ne!`, or an `if … { panic!() }` guard. Beside an `unsafe` block, a `#[debug_requires]` on an
   integer or a `.len()` is always on or carries a `// RELEASE:` comment
   saying what holds it in release (`doc_check/tests/unsafe_contracts.rs`).
 - The outcome of a GPU call that can fail is a status or a `Result`, never
