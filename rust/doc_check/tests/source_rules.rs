@@ -41,7 +41,10 @@
 
 #![forbid(unsafe_code)]
 
-use fb_doc_check::{code_only, is_ident, rust_root, string_literals, workspace_sources};
+use fb_doc_check::{
+    Attr, attributes, code_only, is_ident, line_of, rust_root, string_literals, word_at, words,
+    workspace_sources,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -79,94 +82,6 @@ const RUST_FENCE_WORDS: [&str; 10] = [
     "edition2021",
     "edition2024",
 ];
-
-/// One attribute of a source, outer or inner.
-struct Attr {
-    /// The line it opens on, from 1.
-    line: usize,
-    /// Its byte span in the source, `#` to the closing `]`.
-    start: usize,
-    end: usize,
-    /// Its first word: `cfg`, `ignore`, `should_panic`, `unsafe`, ….
-    name: String,
-    /// `#![…]`.
-    inner: bool,
-}
-
-/// The line of byte `at` in `text`, from 1.
-fn line_of(text: &str, at: usize) -> usize {
-    text[..at].matches('\n').count() + 1
-}
-
-/// The identifier starting at `at` in `b`, or "".
-fn word_at(b: &[u8], at: usize) -> &str {
-    let end = (at..b.len()).find(|&j| !is_ident(b[j])).unwrap_or(b.len());
-    std::str::from_utf8(&b[at..end]).unwrap_or("")
-}
-
-/// Every identifier of `code` with its byte offset.
-fn words(code: &str) -> Vec<(usize, &str)> {
-    let b = code.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < b.len() {
-        if is_ident(b[i]) {
-            let w = word_at(b, i);
-            out.push((i, w));
-            i += w.len();
-        } else {
-            i += 1;
-        }
-    }
-    out
-}
-
-/// Every attribute of a source, read from its code (`code_only` of it), so
-/// one in a comment or a string is not one.
-fn attributes(code: &str) -> Vec<Attr> {
-    let b = code.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] != b'#' || (i > 0 && is_ident(b[i - 1])) {
-            i += 1;
-            continue;
-        }
-        let inner = b.get(i + 1) == Some(&b'!');
-        let open = i + 1 + usize::from(inner);
-        if b.get(open) != Some(&b'[') {
-            i += 1;
-            continue;
-        }
-        let mut depth = 0i32;
-        let mut k = open;
-        while k < b.len() {
-            match b[k] {
-                b'[' | b'(' | b'{' => depth += 1,
-                b']' | b')' | b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            k += 1;
-        }
-        let end = (k + 1).min(b.len());
-        let first = (open + 1..end).find(|&j| !b[j].is_ascii_whitespace());
-        let name = first.map_or("", |j| word_at(b, j)).to_string();
-        out.push(Attr {
-            line: line_of(code, i),
-            start: i,
-            end,
-            name,
-            inner,
-        });
-        i = end;
-    }
-    out
-}
 
 /// Whether an attribute, as written, makes what it is on debug-only:
 /// a `cfg` naming `debug_assertions` and not negating it.
@@ -759,13 +674,16 @@ fn functions(path: &str, source: &str) -> Vec<Func> {
         let head = code[..*i].rfind('\n').map_or(0, |p| p + 1);
         let vis = code[head..*i].trim();
         let public = vis.split_whitespace().next() == Some("pub");
-        // The doc comment: up the lines over attributes and doc lines.
+        // The doc comment: up the lines over attributes, doc lines, and the
+        // plain comments between attributes (a `// RELEASE:`).
         let mut doc = Vec::new();
         let mut n = line_of(&code, *i) - 1;
         while n > 0 {
             let above = lines[n - 1].trim_start();
             if let Some(d) = above.strip_prefix("///") {
                 doc.push(d);
+                n -= 1;
+            } else if above.starts_with("//") && !above.starts_with("//!") {
                 n -= 1;
             } else if let Some(a) = attrs.iter().find(|a| line_of(&code, a.end - 1) == n) {
                 n = a.line - 1;
@@ -931,7 +849,7 @@ fn a_wrapper_links_what_it_calls_or_what_its_helper_does() {
         binding_names("unsafe extern \"C\" {\n    pub fn fb_a(n: u32);\n    pub fn fb_b();\n}\n");
     assert_eq!(bindings.len(), 2);
     let src = concat!(
-        "/// [`fb_a`], checked.\n#[track_caller]\npub fn a() { unsafe { fb_a(1) } }\n",
+        "/// [`fb_a`], checked.\n// RELEASE: x.\n#[track_caller]\npub fn a() { unsafe { fb_a(1) } }\n",
         "/// Calls it.\n#[debug_requires(\n    x,\n    \"m\"\n)]\npub fn b() { unsafe { fb_b() } }\n",
         "/// [`a`] by another name.\npub fn c() { helper() }\n",
         "/// [`fb_b`](crate::fb_b), through a helper.\npub fn d() { helper() }\n",
@@ -940,8 +858,8 @@ fn a_wrapper_links_what_it_calls_or_what_its_helper_does() {
     );
     let f = unlinked(&bindings, &functions("lib.rs", src));
     assert_eq!(f.len(), 2, "{f:#?}");
-    assert!(f[0].starts_with("lib.rs:9: b calls `fb_b`"), "{f:#?}");
-    assert!(f[1].starts_with("lib.rs:11: c reaches `fb_b`"), "{f:#?}");
+    assert!(f[0].starts_with("lib.rs:10: b calls `fb_b`"), "{f:#?}");
+    assert!(f[1].starts_with("lib.rs:12: c reaches `fb_b`"), "{f:#?}");
 }
 
 // ------------------------------------------------ contract-tripping tests
