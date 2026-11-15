@@ -320,11 +320,7 @@ const CONDITION_WORDS: [&str; 6] = ["as", "true", "false", "self", "Self", "crat
 /// The leading preconditions the tree keeps as body checks, each
 /// `path:function` with why. An entry whose site is gone fails
 /// [`a_leading_precondition_is_a_requires`], so the list only shrinks.
-const KEPT: &[(&str, &str)] = &[(
-    "localization/sys/src/lib.rs:add_pm_start",
-    "should move: follow-up (n_ao fits an i32, n_occ in range; no wave of #1636-#1638 \
-     covered fb-localization-sys)",
-)];
+const KEPT: &[(&str, &str)] = &[];
 
 /// One leading check at the head of a public function's body that could
 /// be a `#[requires]`: `path:function`, and the line it is on.

@@ -56,9 +56,10 @@ mod bindings;
 
 pub use bindings::*;
 
-use contracts::debug_requires;
+use contracts::{debug_requires, requires};
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::Status;
+use fb_core_log::{fits_i32, le};
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::gemm;
@@ -178,12 +179,21 @@ impl PmRows {
 /// [`PmRows::initial`].
 ///
 /// # Panics
-/// If the offsets are fewer than two, decrease anywhere, or end past
-/// `n_ao`; if `n_occ` is 0, past `n_ao` or past [`FB_PM_MAX_OCCUPIED`];
-/// or if `n_ao` does not fit an `i32`: every index the kernels follow,
-/// checked here, at planning. As [`Dag::add_gpu`], if a row is of another
-/// worker's table; and when the plan runs, if `c` is shorter than `n_ao`
-/// `n_occ` doubles.
+/// As [`Dag::add_gpu`], if a row is of another worker's table; and when
+/// the plan runs, if `c` is shorter than `n_ao` `n_occ` doubles.
+#[requires(fits_i32!(n_ao), "n_ao fits the kernels' i32")]
+#[requires(le!(2, atom_ao_offsets.len()), "the offsets bound one atom or more")]
+#[requires(atom_ao_offsets.is_sorted(), "the offsets do not decrease")]
+#[requires(
+    le!(atom_ao_offsets.last().copied().unwrap_or(0), n_ao),
+    "the offsets end within n_ao"
+)]
+#[requires(le!(1, n_occ), "one occupied orbital or more")]
+#[requires(le!(n_occ, n_ao), "n_occ is within n_ao")]
+#[requires(
+    le!(n_occ, FB_PM_MAX_OCCUPIED as usize),
+    "n_occ is within FB_PM_MAX_OCCUPIED"
+)]
 #[debug_requires(exponent == 2 || exponent == 4, "the exponent is 2 or 4")]
 #[allow(
     clippy::too_many_arguments,
@@ -200,22 +210,6 @@ pub fn add_pm_start(
     s: RowId<Device, f64>,
     c: RowId<Device, f64>,
 ) -> PmRows {
-    assert!(
-        i32::try_from(n_ao).is_ok(),
-        "add_pm_start: n_ao = {n_ao} does not fit the kernels' i32"
-    );
-    assert!(
-        atom_ao_offsets.len() >= 2
-            && atom_ao_offsets.is_sorted()
-            && atom_ao_offsets.last().is_some_and(|&end| end <= n_ao),
-        "add_pm_start: the atom offsets {atom_ao_offsets:?} are not a non-decreasing run of \
-         two or more within n_ao = {n_ao}"
-    );
-    assert!(
-        (1..=n_ao.min(FB_PM_MAX_OCCUPIED as usize)).contains(&n_occ),
-        "add_pm_start: n_occ = {n_occ} is outside 1..={}",
-        n_ao.min(FB_PM_MAX_OCCUPIED as usize)
-    );
     let n_atoms = atom_ao_offsets.len() - 1;
     let m = padded(n_occ);
     let staged = dag.add_cpu(
