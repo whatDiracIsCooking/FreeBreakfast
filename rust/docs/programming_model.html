@@ -91,7 +91,7 @@ svg .fh{fill:currentColor}
 </head>
 <body>
 <div class="wrap">
-<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#the-pipeline-is-already-an-instance">The pipeline is already an instance</a></li><li class="l2"><a href="#three-owners">Three owners</a></li><li class="l3"><a href="#a-task-declares">A task declares</a></li><li class="l3"><a href="#an-edge-declares">An edge declares</a></li><li class="l3"><a href="#the-orchestrator-derives">The orchestrator derives</a></li><li class="l2"><a href="#memory-layouts-and-arenas">Memory: layouts and arenas</a></li><li class="l3"><a href="#the-arena-is-a-table-and-a-block">The arena is a table and a block</a></li><li class="l3"><a href="#blocks-plans-and-the-process">Blocks, plans and the process</a></li><li class="l3"><a href="#memory-kinds">Memory kinds</a></li><li class="l2"><a href="#plan-once-run-many">Plan once, run many</a></li><li class="l2"><a href="#two-kinds-of-distribution">Two kinds of distribution</a></li><li class="l2"><a href="#workers-are-a-hierarchy">Workers are a hierarchy</a></li><li class="l3"><a href="#cpu-workers">CPU workers</a></li><li class="l3"><a href="#capabilities-are-enforced-by-lints">Capabilities are enforced by lints</a></li><li class="l2"><a href="#reproducibility-across-placements">Reproducibility across placements</a></li><li class="l2"><a href="#example-the-coulomb-build-under-two-placements">Example: the Coulomb build under two placements</a></li><li class="l2"><a href="#granularity">Granularity</a></li><li class="l2"><a href="#open-questions">Open questions</a></li></ol><div class="sib"><div class="kicker">See also</div><ol><li><a href="memory.html">memory</a></li></ol></div></nav>
+<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#the-pipeline-is-already-an-instance">The pipeline is already an instance</a></li><li class="l2"><a href="#three-owners">Three owners</a></li><li class="l3"><a href="#a-task-declares">A task declares</a></li><li class="l3"><a href="#an-edge-declares">An edge declares</a></li><li class="l3"><a href="#the-orchestrator-derives">The orchestrator derives</a></li><li class="l3"><a href="#a-builder-adds-tasks">A builder adds tasks</a></li><li class="l2"><a href="#memory-layouts-and-arenas">Memory: layouts and arenas</a></li><li class="l3"><a href="#the-arena-is-a-table-and-a-block">The arena is a table and a block</a></li><li class="l3"><a href="#blocks-plans-and-the-process">Blocks, plans and the process</a></li><li class="l3"><a href="#memory-kinds">Memory kinds</a></li><li class="l2"><a href="#plan-once-run-many">Plan once, run many</a></li><li class="l2"><a href="#two-kinds-of-distribution">Two kinds of distribution</a></li><li class="l2"><a href="#workers-are-a-hierarchy">Workers are a hierarchy</a></li><li class="l3"><a href="#cpu-workers">CPU workers</a></li><li class="l3"><a href="#capabilities-are-enforced-by-lints">Capabilities are enforced by lints</a></li><li class="l2"><a href="#reproducibility-across-placements">Reproducibility across placements</a></li><li class="l2"><a href="#example-the-coulomb-build-under-two-placements">Example: the Coulomb build under two placements</a></li><li class="l2"><a href="#granularity">Granularity</a></li><li class="l2"><a href="#open-questions">Open questions</a></li></ol><div class="sib"><div class="kicker">See also</div><ol><li><a href="memory.html">memory</a></li></ol></div></nav>
 <main>
 <h1><span class="pre">Rust rebuild</span>Programming model</h1>
 <p>We design a feature as a DAG of tasks before we write it as code. A node is a
@@ -236,6 +236,32 @@ edge lifetime under that schedule, that fits each worker's budget.</li>
 mechanism that moves it.</li>
 <li><strong>Error propagation</strong>: a failed node fails its successors and nothing else.</li>
 </ul>
+<h3 id="a-builder-adds-tasks">A builder adds tasks</h3>
+<p>A computation is not one task, and the code that wires its tasks together
+is a builder: a public function that takes the DAG and adds nodes to it
+through <code>Dag::add_gpu</code> and <code>Dag::add_cpu</code> (&quot;Memory: layouts and arenas&quot;
+below). Every builder has one shape, <code>add_x(dag, worker, inputs…) -&gt; outputs</code>:</p>
+<ul>
+<li><strong>Named <code>add_*</code></strong>, for what it adds: <code>add_overlap</code>, <code>add_scf</code>.</li>
+<li><strong><code>dag: &amp;mut Dag</code> first</strong>, after <code>self</code> for a method
+(<code>Diis::add_push</code>), and <strong><code>worker</code>, when it takes one, second</strong>.
+Then the rows of earlier builders it reads, and the planning input
+(a basis, a molecule, a step's settings).</li>
+<li><strong>Rows out</strong>: the row ids the next builder reads, which is how one wires
+to the next. A builder that can refuse its input returns a <code>Result</code> and
+refuses at planning, before it adds anything, so a refused plan holds no
+half of a builder.</li>
+</ul>
+<p><code>add_core_hamiltonian</code> is the pattern whole: it refuses nuclei with no
+nucleus, adds one GPU task, hands that task's row to
+<code>add_cartesian_to_spherical</code>, and returns the row that adds.</p>
+<p>It is a convention a source scan holds, not a trait. A trait could not
+stop a free function taking a <code>&amp;mut Dag</code> beside it, since <code>Dag::add_gpu</code>
+is public to every task crate, and nothing yet calls builders generically;
+each call names its builder. A planner that reads each step's needs and
+outputs from a table is that caller, and the trait is worth its types
+then. A private function that adds nodes for a builder, and the planner's
+own <code>Dag</code> methods in <code>core/</code>, are not held to the shape.</p>
 <h2 id="memory-layouts-and-arenas">Memory: layouts and arenas</h2>
 <p>The C++ tree's footprints
 (<a href="../../src/core/footprint/README.md"><code>src/core/footprint</code></a>,
@@ -610,8 +636,9 @@ reaching a minimum) whose output is read on the host.</p>
 <code>fb_core_thread_pool</code>, a loop is its body, the nodes added after a given
 one, and a decision node <code>Plan::add_loop</code> adds after the body's sinks and
 any node before the body it is given, so after every body node. The decision is a CPU node, so a worker has waited
-on the host for every GPU body node before it runs: the body's work has
-completed, and its rows and events are free to be used again, when the
+on the host for the body's sinks before it runs, and every GPU body node's
+work precedes theirs on the device, so it waits on no other: the body's
+work has completed, and its rows and events are free to be used again, when the
 decision returns. Its <code>Continue</code> readies the body again, under the run's
 one lock, in the same scope and on the same workers, so a replay spawns no
 thread and allocates nothing; its <code>Break</code> readies what follows the loop,
@@ -620,9 +647,7 @@ handed the iteration's index. The iteration count has a bound, fixed at
 planning beside the dimensions: a decision that would start one iteration
 past it fails the run with <code>MaxIterationsExceeded</code>, and a failed body node
 ends the loop and skips what follows it, as any failure skips its
-descendants. A loop in a loop's body is not built: a counted loop inside a
-decision loop, which J and K over a streamed tensor need every SCF
-iteration, is #1613.</p>
+descendants.</p>
 <p><strong>The planner closes a loop the same way.</strong> <code>fb_core_planner::Dag::add_loop</code>
 takes the position of the body's first task, its bound and a <code>Decision</code>: a
 CPU node that declares host rows as a task does, reads what the body copied
@@ -666,6 +691,23 @@ GEMMs on a compute lane, with <code>R = 2</code>: the next batch's upload runs u
 this one's GEMMs, ordered against the GEMMs two batches back by the ring.
 A node after a counted loop may follow a body node directly, and runs
 after its last iteration.</p>
+<p><strong>A counted loop may lie in a decision loop's body.</strong> J and K over a
+streamed B run every SCF iteration, so the SCF's body holds a counted
+loop over B's batches; that is the one nesting built. A counted loop holds
+no loop, and a decision loop no decision loop. The counted loop is closed
+before the decision, and the executor unrolls its trips inside the
+decision loop's run of nodes, so the decision's <code>Continue</code> readies it
+whole: every trip again, overlapped as at the top level, with no host
+wait between trips. The decision runs after the body's sinks, which
+every trip precedes, and before its replay reads the stream scope of each
+trip of each GPU body node, its events about to be recorded again. A body
+node of the counted loop is handed its trip; the decision loop's
+iteration is the timing record's
+(<a href="diagnostics.md"><code>diagnostics.md</code></a>, &quot;The timing record&quot;). An edge
+leaving only the counted loop, to a later node of the decision loop's
+body, runs from its last trip; one leaving the decision loop runs from
+the decision. The counted loop's region is a row of the decision loop's
+body table (<a href="memory.html"><code>memory.md</code></a>, &quot;Nested plans&quot;).</p>
 <p><strong>A wait on an event binds to its recording at the time the wait is
 enqueued</strong>, on both backends: record an event, enqueue a wait for it on
 another stream, record it again, and the wait is released by the first
@@ -782,7 +824,9 @@ planned, before the backend makes one stream per lane.</p>
 card, and a BLAS or solver handle's state and workspace are one stream's at
 a time, so the <code>Device</code> backend makes a BLAS and a dense-solver handle per
 lane, bound to its stream (<a href="gpu_layer.md"><code>gpu_layer.md</code></a>, &quot;Layering&quot;),
-and a declared BLAS workspace is a worker row per lane.</p>
+and a declared BLAS workspace is a worker row per lane. A lane above 0
+whose tasks all say they call no library (<code>GpuTask::uses_libraries</code>), as
+the mmd records' classes and the copy nodes do, has neither.</p>
 <p><strong>Reuse across lanes is a handoff, and every one serializes.</strong> The assigner
 packs a worker's table to the fewest bytes against the plan's ranks,
 whatever lane a node is on, and every reuse it makes is a handoff the
@@ -1124,7 +1168,8 @@ room line does today, or does the planner iterate?</li>
 <li><strong>Lanes from the DAG's shape.</strong> The builder names each GPU node's lane
 today, as the C++ mmd names a stream per class. Two nodes with no path
 between them could be put on two lanes by the planner instead, but a
-lane is a stream, a library handle pair and a BLAS workspace row, so the
+lane is a stream, and a library handle pair and a BLAS workspace row
+when its tasks call a library, so the
 count is a cost, and which nodes are worth splitting is the schedule
 search's question below.</li>
 <li><strong>How loose is too loose.</strong> A bound from the dimensions is the preferred
