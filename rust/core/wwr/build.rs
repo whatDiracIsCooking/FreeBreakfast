@@ -6,11 +6,16 @@
 //! `FB_WWR_BACKEND`, `CUDA` or `HIP`, read from that build's CMakeCache.txt
 //! as `rust/kernel_lib.rs` reads it, since wwr's C ABI has no query that
 //! names its backend: [`runtime::stack_growth`] is 0 under HIP without a
-//! device call, as the C++ `Device::stack_growth` is.
+//! device call, as the C++ `Device::stack_growth` is. Under
+//! `FB_RUST_DOC_ONLY=1` it links nothing and names CUDA.
 
 include!("../../capi_dir.rs");
 
 fn main() {
+    if doc_only() {
+        println!("cargo:rustc-env=FB_WWR_BACKEND=CUDA");
+        return;
+    }
     let dir = capi_dir();
     println!("cargo:rustc-link-search=native={}", dir.display());
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());

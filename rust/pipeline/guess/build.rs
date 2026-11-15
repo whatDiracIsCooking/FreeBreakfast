@@ -6,6 +6,9 @@
 include!("../../capi_dir.rs");
 
 fn main() {
+    if doc_only() {
+        return;
+    }
     let capi = capi_dir();
     // capi_dir() is <build>/deps/WarpWraps/src/capi; the kernel library is
     // at <build>/integrals/kernels (`rust/kernel_lib.rs`).

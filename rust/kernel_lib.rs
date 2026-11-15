@@ -15,7 +15,12 @@
 
 /// Links `libfb_<module>_kernels.so` and the C ABI library beside it, and
 /// sets `FB_KERNELS_BACKEND` to the backend of their build.
+/// Under `doc_only()` it links nothing and names CUDA.
 fn link_kernel_lib(module: &str) {
+    if doc_only() {
+        println!("cargo:rustc-env=FB_KERNELS_BACKEND=CUDA");
+        return;
+    }
     let capi = capi_dir();
     // capi_dir() is <build>/deps/WarpWraps/src/capi.
     let build = capi.ancestors().nth(4).unwrap();

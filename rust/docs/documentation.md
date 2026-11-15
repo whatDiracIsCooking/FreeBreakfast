@@ -333,17 +333,27 @@ panics in its `build.rs` when
 the CUDA or HIP toolchain, which is the one thing a GitHub-hosted runner
 cannot have: it is why `.github/workflows/ci.yml`'s `cpp` job is `if: false`.
 A Pages workflow that builds the rustdoc therefore has the `cpp` job's
-problem, unless `build.rs` is told it is documenting. A tree-chosen
-environment variable (`FB_RUST_DOC_ONLY=1`) makes `build.rs` emit nothing and
-return, and rustdoc, which never links, succeeds. Doctests do link, so they
-stay on the card hosts with the PR's tiers; the runner builds the pages and
-nothing else.
+problem, unless `build.rs` is told it is documenting. `FB_RUST_DOC_ONLY=1`
+does that: every `build.rs` that links asks `rust/capi_dir.rs`'s
+`doc_only()` first, emits no link line and returns, naming CUDA for the
+crates whose `env!()` reads a backend, and rustdoc, which never links,
+succeeds. A test or binary built so fails at the link. Doctests do link, so
+they stay on the card hosts with the PR's tiers; the runner builds the pages
+and nothing else.
 
-**Publish now, under `experimental/`.** The site is the only rendering of
+**The workflow is `.github/workflows/docs.yml`.** A PR touching `rust/`
+runs `cargo doc --workspace --no-deps` there under `RUSTDOCFLAGS=-D warnings`
+and deploys nothing, which makes it the one server-side check of the rustdoc
+of the members that link; a push to `main` builds and deploys. The API is
+at `/api/`, beside a generated list of the crates, and the site root
+redirects there until the book takes it.
+
+**Publish now, as experimental.** The site is the only rendering of
 these documents, the KaTeX and Mermaid conventions are only checked by
 rendering them, and the `build.rs` change above is the whole cost. The site
 says it documents an experimental tree, the way `experimental/README.md`
-does.
+does. The rustdoc is published today; the book, KaTeX and Mermaid are not
+yet built.
 
 **What the docs build checks, and where.** The checks are tier 3 and tier 1,
 and run where the testing document puts those tiers:

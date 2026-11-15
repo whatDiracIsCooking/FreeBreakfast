@@ -7,7 +7,7 @@
 include!("../../capi_dir.rs");
 
 fn main() {
-    if std::env::var_os("CARGO_FEATURE_DEVICE").is_none() {
+    if std::env::var_os("CARGO_FEATURE_DEVICE").is_none() || doc_only() {
         return;
     }
     let dir = capi_dir();
