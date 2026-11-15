@@ -48,7 +48,7 @@
 //! | `wwr::gemv<double, int32_t>`, `wwr::gemmStridedBatched<…>`, `wwr::syrk<…>` with `kOne`, `kZero`, `kTwo` | [`gemv`], [`gemm_strided_batched`] and [`syrk`], the same modes, on the stream worker's handle, the scalars by value |
 //! | `symmetrize(res, WWRBLAS_FILL_MODE_LOWER, nao, k, nao)` | [`symmetrize_from`], the same fill mode |
 //! | `nao == 0`: an empty success; `naux` (or `nocc`) `== 0`: J (or K) zeroed; a negative count: `InvalidConfig` | refused at planning: every count is at least 1 |
-//! | `nao²` (J) or `naux · nocc` (K) past `int32_t`: `InvalidConfig` | an always-on assert, since the BLAS's counts are `i32`s |
+//! | `nao²` (J) or `naux · nocc` (K) past `int32_t`: `InvalidConfig` | an always-on contract (J) or `assert!` (K), since the BLAS's counts are `i32`s |
 //! | `ScopedDeviceIndex` for the call | nothing: a stream worker's tasks run on its device |
 //! | nothing: the C++ tree compiles its kernels into the binary | [`fb_recipes_sys::check_library`] first, at planning, for K's mirror |
 //! | `df_exchange(res, nao, naux, rank, b, left, right, k)`, the two-factor K | not ported: an SCF's density is `2 C Cᵀ`; a response density's port brings it |
@@ -63,6 +63,7 @@
 use contracts::debug_requires;
 use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, Result, Status};
+use fb_core_log::fits_i32;
 use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::{gemm_strided_batched, gemv, syrk};
@@ -80,10 +81,11 @@ use wwr_sys::{wwr_blas_fill_mode, wwr_blas_operation};
 /// symmetric to rounding when D is, not bit for bit.
 ///
 /// # Panics
-/// If `naux` or `nao²` does not fit an `i32`, the BLAS's integer, or a row
-/// is of another worker's table ([`Dag::add_gpu`]).
+/// If a row is of another worker's table ([`Dag::add_gpu`]).
 #[debug_requires(naux > 0, "a fitting set of at least one function")]
 #[debug_requires(nao > 0, "an orbital basis of at least one function")]
+#[requires(fits_i32!(naux), "naux fits the BLAS's i32")]
+#[requires(fits_i32!(nao.checked_mul(nao)), "nao² fits the BLAS's i32")]
 #[track_caller]
 pub fn add_df_coulomb(
     dag: &mut Dag<'_>,
@@ -93,15 +95,6 @@ pub fn add_df_coulomb(
     b: RowId<Device, f64>,
     density: RowId<Device, f64>,
 ) -> RowId<Device, f64> {
-    assert!(
-        i32::try_from(naux).is_ok(),
-        "add_df_coulomb: naux = {naux} does not fit the BLAS's i32"
-    );
-    assert!(
-        nao.checked_mul(nao)
-            .is_some_and(|pairs| i32::try_from(pairs).is_ok()),
-        "add_df_coulomb: nao² = {nao}² does not fit the BLAS's i32"
-    );
     dag.add_gpu(
         "df coulomb",
         worker,

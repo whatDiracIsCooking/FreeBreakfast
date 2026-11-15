@@ -10,6 +10,7 @@
 use contracts::debug_requires;
 use fb_core_arena::{Bufs, Device};
 use fb_core_error_handling::Status;
+use fb_core_log::{eq, fits_i32};
 use fb_core_wwr::device_slice::{DeviceSlice, DeviceSliceMut};
 use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::runtime::Stream;
@@ -19,24 +20,6 @@ use crate::{
     FB_KINETIC_MAX_MOMENTUM, FB_OVERLAP_MAX_MOMENTUM, FB_POTENTIAL_EN_MAX_MOMENTUM,
     fb_kinetic_class, fb_nuclei_view, fb_overlap_class, fb_potential_en_class, launched,
 };
-
-/// Panic unless the matrix a launcher adds into, `len` doubles, is
-/// `n_cart²` for the class's `n_cart`, and `n_cart²` fits the kernels'
-/// 32-bit index; returns `n_cart` as the C ABI's `n_ao`.
-#[track_caller]
-fn matrix_extent(routine: &str, class: &ClassRows, len: usize) -> i32 {
-    let n = class.n_cart();
-    let n2 = n.checked_mul(n);
-    assert!(
-        n2 == Some(len),
-        "{routine}: the matrix holds {len} doubles, but the records' basis has {n}² Cartesian AOs"
-    );
-    assert!(
-        n2.is_some_and(|n2| i32::try_from(n2).is_ok()),
-        "{routine}: {n}² Cartesian AOs do not fit the kernels' 32-bit index"
-    );
-    n as i32
-}
 
 /// Adds `class`'s overlap contributions into the `n_cart × n_cart` matrix
 /// `s` on `stream`: [`fb_overlap_class`], over records only the records
@@ -54,13 +37,17 @@ fn matrix_extent(routine: &str, class: &ClassRows, len: usize) -> i32 {
 /// inside the kernel surfaces at the next synchronization.
 ///
 /// # Panics
-/// If `s` is not the class's `n_cart²` doubles, or `n_cart²` does not fit
-/// an `i32`; or a field of [`Fields::OVERLAP`] was not declared by the
-/// task's layout ([`Bufs::get`]); before anything is enqueued.
+/// If a field of [`Fields::OVERLAP`] was not declared by the task's layout
+/// ([`Bufs::get`]), before anything is enqueued.
 #[debug_requires(
     0 <= class.la() && class.la() <= class.lb() && class.lb() <= FB_OVERLAP_MAX_MOMENTUM,
     "the class is in the overlap kernels' table"
 )]
+#[requires(
+    eq!(class.n_cart().checked_mul(class.n_cart()), Some(s.len())),
+    "the matrix is the records' n_cart² doubles"
+)]
+#[requires(fits_i32!(s.len()), "the matrix fits the kernels' 32-bit index")]
 #[track_caller]
 pub fn overlap_class(
     stream: &Stream,
@@ -68,7 +55,8 @@ pub fn overlap_class(
     class: &ClassRows,
     s: &mut impl DeviceSliceMut<f64>,
 ) -> Status {
-    let n_ao = matrix_extent("overlap_class", class, s.len());
+    // In range: the matrix is n_cart² doubles and fits an i32 (the contracts).
+    let n_ao = class.n_cart() as i32;
     let view = class.view(device, Fields::OVERLAP);
     let s = s.as_mut_ptr();
     // SAFETY: the view's arrays are the class's n_rec-long rows of
@@ -78,7 +66,7 @@ pub fn overlap_class(
     // on its lane or ordered by an event on the device (ClassRows's
     // argument), so every offset they hold opens a
     // block inside n_cart;
-    // `s` is n_cart² doubles, checked above, with no other user until the
+    // `s` is n_cart² doubles, by the contracts, with no other user until the
     // enqueued work finishes (DeviceSliceMut's promise); the view is a host
     // struct that outlives the call, which only enqueues.
     let status = unsafe { fb_overlap_class(stream.stream(), &view, n_ao, s) };
@@ -95,11 +83,16 @@ pub fn overlap_class(
 /// As [`overlap_class`].
 ///
 /// # Panics
-/// As [`overlap_class`], for `t` and [`Fields::KINETIC`].
+/// As [`overlap_class`], for [`Fields::KINETIC`].
 #[debug_requires(
     0 <= class.la() && class.la() <= class.lb() && class.lb() <= FB_KINETIC_MAX_MOMENTUM,
     "the class is in the kinetic kernels' table"
 )]
+#[requires(
+    eq!(class.n_cart().checked_mul(class.n_cart()), Some(t.len())),
+    "the matrix is the records' n_cart² doubles"
+)]
+#[requires(fits_i32!(t.len()), "the matrix fits the kernels' 32-bit index")]
 #[track_caller]
 pub fn kinetic_class(
     stream: &Stream,
@@ -107,7 +100,8 @@ pub fn kinetic_class(
     class: &ClassRows,
     t: &mut impl DeviceSliceMut<f64>,
 ) -> Status {
-    let n_ao = matrix_extent("kinetic_class", class, t.len());
+    // In range: the matrix is n_cart² doubles and fits an i32 (the contracts).
+    let n_ao = class.n_cart() as i32;
     let view = class.view(device, Fields::KINETIC);
     let t = t.as_mut_ptr();
     // SAFETY: as in overlap_class, for `t` and Fields::KINETIC, every field
@@ -130,13 +124,18 @@ pub fn kinetic_class(
 /// `FB_LAUNCH_INVALID_ARGUMENT`.
 ///
 /// # Panics
-/// As [`overlap_class`], for `v` and [`Fields::POTENTIAL_EN`]; and if `c`
-/// is not three doubles per charge, or the nuclei do not fit an `i32`
-/// count.
+/// As [`overlap_class`], for [`Fields::POTENTIAL_EN`].
 #[debug_requires(
     0 <= class.la() && class.la() <= class.lb() && class.lb() <= FB_POTENTIAL_EN_MAX_MOMENTUM,
     "the class is in the nuclear-attraction kernels' table"
 )]
+#[requires(
+    eq!(class.n_cart().checked_mul(class.n_cart()), Some(v.len())),
+    "the matrix is the records' n_cart² doubles"
+)]
+#[requires(fits_i32!(v.len()), "the matrix fits the kernels' 32-bit index")]
+#[requires(eq!(z.len().checked_mul(3), Some(c.len())), "c is three coordinates per charge")]
+#[requires(fits_i32!(z.len()), "the nuclei fit an i32 count")]
 #[track_caller]
 pub fn potential_en_class(
     stream: &Stream,
@@ -146,16 +145,10 @@ pub fn potential_en_class(
     c: &impl DeviceSlice<f64>,
     v: &mut impl DeviceSliceMut<f64>,
 ) -> Status {
-    assert!(
-        c.len() == 3 * z.len(),
-        "potential_en_class: {} charges, but {} coordinates",
-        z.len(),
-        c.len()
-    );
-    let Ok(n_nuc) = i32::try_from(z.len()) else {
-        panic!("potential_en_class: {} nuclei, past an i32 count", z.len());
-    };
-    let n_ao = matrix_extent("potential_en_class", class, v.len());
+    // In range: the nuclei fit an i32 (the contract).
+    let n_nuc = z.len() as i32;
+    // In range: the matrix is n_cart² doubles and fits an i32 (the contracts).
+    let n_ao = class.n_cart() as i32;
     let view = class.view(device, Fields::POTENTIAL_EN);
     let nuclei = fb_nuclei_view {
         n_nuc,
@@ -165,7 +158,7 @@ pub fn potential_en_class(
     let v = v.as_mut_ptr();
     // SAFETY: as in overlap_class, for `v` and Fields::POTENTIAL_EN, every
     // field the nuclear-attraction kernels read; and the nuclei's arrays are
-    // n_nuc and 3 n_nuc doubles, checked above, unwritten until the
+    // n_nuc and 3 n_nuc doubles, by the contracts, unwritten until the
     // enqueued work finishes (DeviceSlice's promise).
     let status = unsafe { fb_potential_en_class(stream.stream(), &view, &nuclei, n_ao, v) };
     launched("fb_potential_en_class", &[class.la(), class.lb()], status)

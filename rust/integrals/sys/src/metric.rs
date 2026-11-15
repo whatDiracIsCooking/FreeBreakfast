@@ -17,9 +17,10 @@
 
 use std::sync::Arc;
 
-use contracts::{debug_ensures, debug_requires};
+use contracts::{debug_ensures, debug_requires, requires};
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d};
 use fb_core_error_handling::Status;
+use fb_core_log::{fits_i32, le};
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::handle::DeviceHandleStream;
@@ -59,19 +60,14 @@ pub struct AuxTable {
 }
 
 impl AuxTable {
-    /// An empty table over `n_cart` Cartesian functions.
-    ///
-    /// # Panics
-    /// If `n_cart²` does not fit an `i32`: the kernels index the metric in
-    /// 32 bits.
+    /// An empty table over `n_cart` Cartesian functions; the kernels index
+    /// the metric in 32 bits.
+    #[requires(
+        fits_i32!(n_cart.checked_mul(n_cart)),
+        "n_cart² fits the kernels' 32-bit index"
+    )]
     #[track_caller]
     pub fn new(n_cart: usize) -> AuxTable {
-        assert!(
-            n_cart
-                .checked_mul(n_cart)
-                .is_some_and(|n2| i32::try_from(n2).is_ok()),
-            "AuxTable: {n_cart}² Cartesian functions do not fit the kernels' 32-bit index"
-        );
         AuxTable {
             n_cart,
             momentum: Vec::new(),
@@ -85,10 +81,17 @@ impl AuxTable {
     /// Cartesian function `ao_offset`, over `primitives`, each an
     /// (exponent, coefficient) pair, the coefficient as the basis holds it.
     ///
+    /// The momentum, the block and the records' count are each an index the
+    /// kernel follows.
+    ///
     /// # Panics
-    /// If `l` is negative, the shell's block `ao_offset + (l + 1)(l + 2) / 2`
-    /// passes `n_cart`, or the records pass an `i32` count: each is an
-    /// index the kernel follows.
+    /// If the records pass an `i32` count, which only the body sees, as it
+    /// takes `primitives`.
+    #[requires(le!(0, l), "a shell's momentum is not negative")]
+    #[requires(
+        le!(Some(n_cart_of(l)), self.n_cart.checked_sub(ao_offset)),
+        "the shell's block lies inside the n_cart functions"
+    )]
     #[debug_ensures(
         self.n_shells() == old(self.n_shells()) + 1
             && self.ao_offset.len() == self.n_shells()
@@ -104,16 +107,6 @@ impl AuxTable {
         ao_offset: usize,
         primitives: impl IntoIterator<Item = (f64, f64)>,
     ) {
-        assert!(l >= 0, "AuxTable: a shell of momentum {l}");
-        let width = n_cart_of(l);
-        assert!(
-            ao_offset
-                .checked_add(width)
-                .is_some_and(|end| end <= self.n_cart),
-            "AuxTable: a shell at function {ao_offset} with momentum {l} does not fit {} \
-             Cartesian functions",
-            self.n_cart
-        );
         let [x, y, z] = centre;
         self.records.extend(
             primitives
@@ -498,7 +491,8 @@ mod tests {
     /// kernel writes.
     #[test]
     #[should_panic(
-        expected = "a shell at function 6 with momentum 1 does not fit 7 Cartesian functions"
+        expected = "Pre-condition of push_shell violated: the shell's block lies inside the n_cart \
+                    functions"
     )]
     fn a_block_past_the_metric_panics() {
         let mut t = AuxTable::new(7);
@@ -507,14 +501,18 @@ mod tests {
 
     /// A negative momentum has no block.
     #[test]
-    #[should_panic(expected = "a shell of momentum -1")]
+    #[should_panic(
+        expected = "Pre-condition of push_shell violated: a shell's momentum is not negative"
+    )]
     fn a_negative_momentum_panics() {
         AuxTable::new(7).push_shell(-1, [0.0; 3], 0, [(1.0, 1.0)]);
     }
 
     /// A metric whose square passes the kernels' 32-bit index.
     #[test]
-    #[should_panic(expected = "46341² Cartesian functions do not fit the kernels' 32-bit index")]
+    #[should_panic(
+        expected = "Pre-condition of new violated: n_cart² fits the kernels' 32-bit index"
+    )]
     fn a_metric_past_the_index_panics() {
         AuxTable::new(46_341);
     }

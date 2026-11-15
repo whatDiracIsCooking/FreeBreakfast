@@ -38,7 +38,7 @@
 //! | `add_nuclear_attraction(res, classes, molecule, m)`, V added into `m` unzeroed | [`potential_en_classes`], called by the task that zeroed the matrix |
 //! | `molecule.view()`, the `NucleiView` | [`NucleiRows`] from [`fb_molecule_nuclei::add_nuclei`], passed in; its rows handed to [`potential_en_class`] by [`potential_en_classes`] |
 //! | `check_nuclei`'s `InvalidConfig` for nuclei on another device | [`add_nuclear_attraction`]'s `InvalidConfig` at planning for [`NucleiRows`] with no nucleus (the wrapper's `n_nuc >= 1`), adding nothing; nuclei of another worker are another table's rows, which [`Dag::add_gpu`] refuses with a panic |
-//! | `check_one_electron_build`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | [`potential_en_class`]'s contract for the class, and its always-on `assert!` of the matrix's `n_cart²` and the `i32` bound; [`add_nuclear_attraction`] asserts the `i32` bound at planning too, and the records hold only `la <= lb` |
+//! | `check_one_electron_build`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | [`potential_en_class`]'s contract for the class, and its always-on contracts on the matrix's `n_cart²` and the `i32` bound; [`add_nuclear_attraction`] has the `i32` bound as an always-on contract at planning too, and the records hold only `la <= lb` |
 //! | `upload_spherical_transform_matrix`, `MatrixAOPair::cartesian_to_spherical` | [`fb_recipes_matrix_ao::add_cartesian_to_spherical`], U's slot passed in by the caller |
 //! | `res.dev_idx()` made current for the call | nothing: a stream task runs with its worker's device current |
 //!
@@ -50,6 +50,7 @@ use contracts::debug_requires;
 use fb_basis::BasisSet;
 use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, Result, Status};
+use fb_core_log::fits_i32;
 use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::device_slice::DeviceSliceMut;
@@ -128,10 +129,13 @@ pub fn potential_en_classes(
 /// launch wrapper's refusal, at planning), before anything is added.
 ///
 /// # Panics
-/// If `nao_cart²` does not fit an `i32` (the kernels index the matrix in
-/// 32 bits), or `classes` or `nuclei` are rows of another worker's or
-/// another plan's table ([`Dag::add_gpu`]).
+/// If `classes` or `nuclei` are rows of another worker's or another plan's
+/// table ([`Dag::add_gpu`]).
 #[debug_requires(basis.nshells() > 0, "a basis of at least one shell")]
+#[requires(
+    fits_i32!(basis.nao_cart().checked_mul(basis.nao_cart())),
+    "nao_cart² fits the kernels' 32-bit index"
+)]
 #[track_caller]
 pub fn add_nuclear_attraction(
     dag: &mut Dag<'_>,
@@ -148,10 +152,6 @@ pub fn add_nuclear_attraction(
         )));
     }
     let n_cart = basis.nao_cart() as usize;
-    assert!(
-        i32::try_from(n_cart * n_cart).is_ok(),
-        "add_nuclear_attraction: {n_cart}² Cartesian AOs do not fit the kernels' 32-bit index"
-    );
     let v_cart = dag.add_gpu(
         "potential en",
         worker,
