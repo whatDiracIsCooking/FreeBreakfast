@@ -360,8 +360,12 @@ test --release` keeps `#[should_panic]`. `doc_check/tests/panic_profile.rs`
 checks the profile line and `core/log/tests/panic_hook.rs` the hook, at
 level off as at info.
 
-**Contracts are debug-only**, as the crate already has them, so a release
-build pays nothing for a check and a debug build fails loudly on one.
+**A `debug_*` contract is debug-only**, as the crate already has them, so a
+release build pays nothing for a check and a debug build fails loudly on
+one. A check soundness rests on is always on, a `#[requires]` or a body
+`assert!` ([`testing.md`](testing.md), "Contracts are part of the spec"),
+and under abort its panic ends a release run through the hook like any
+other.
 
 ## Open questions
 

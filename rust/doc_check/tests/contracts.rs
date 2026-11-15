@@ -2,18 +2,28 @@
 //! "Contracts are part of the spec").
 //!
 //! - **No doc comment restates a contract.** rustdoc renders every
-//!   `#[debug_requires]`, `#[debug_ensures]` and `#[debug_invariant]` as the
-//!   item's `§ Contracts` section, its message and its expression
+//!   contract, debug (`#[debug_requires]`, `#[debug_ensures]`,
+//!   `#[debug_invariant]`) or always-on (`#[requires]`, `#[ensures]`,
+//!   `#[invariant]`), as the item's `§ Contracts` section, its message and
+//!   its expression
 //!   (`docs/documentation.md`, "Code: rustdoc"), so a sentence in the doc
 //!   comment saying the same is a second copy that drifts. Two shapes are
 //!   refused: the old restating phrase, anywhere in a doc comment, and a doc
 //!   comment that holds the message of a contract on its own item.
 //! - **A `debug_assert!` is an internal invariant, and says so.** A caller's
-//!   precondition is a `#[debug_requires]`, where rustdoc shows it; a check
-//!   soundness rests on is an `assert!`, named in `# Panics`. What is left
+//!   precondition is a contract, where rustdoc shows it: a
+//!   `#[debug_requires]`, or a `#[requires]` when soundness rests on it; a
+//!   safety check on a computed value is an `assert!`, named in `# Panics`.
+//!   What is left
 //!   for `debug_assert!` (and its `_eq` and `_ne` forms) is a fact of the
 //!   function's own making that no caller can break, and each one carries a
 //!   `// INVARIANT:` comment directly above it saying why.
+//!
+//! - **A leading static assert is a `#[requires]`.** In a `pub fn`, an
+//!   `assert!` before any other statement, whose message is one literal
+//!   with no interpolation and whose condition names only the parameters,
+//!   is a plain condition on the arguments, so it is written where rustdoc
+//!   shows it. The ones written before the rule are `NOT_YET_REQUIRES`.
 //!
 //! clippy's `disallowed_macros` cannot hold the second rule: a
 //! `#[debug_requires]` expands to a `debug_assert!` spanned at the
@@ -24,7 +34,9 @@
 
 #![forbid(unsafe_code)]
 
-use fb_doc_check::{code_only, is_ident, string_literals, workspace_sources};
+use fb_doc_check::{
+    attributes, code_only, is_ident, string_literals, without_comments, words, workspace_sources,
+};
 
 /// The phrase every hand-written restatement used, matched
 /// case-insensitively.
@@ -167,13 +179,392 @@ fn unmarked(path: &str, source: &str) -> Vec<String> {
             if !marked {
                 failures.push(format!(
                     "{path}:{}: {word}! with no {INVARIANT} comment above it; a caller's \
-                     precondition is a #[debug_requires], a check soundness rests on an assert!",
+                     precondition is a #[debug_requires] or, when soundness rests on it, a \
+                     #[requires]",
                     n + 1
                 ));
             }
         }
     }
     failures
+}
+
+/// Whether `path` is a test target's or a test module's file, by the
+/// tree's layout: under a `tests/`, `benches/` or `examples/` directory,
+/// or a `tests.rs` or `*_tests.rs` module.
+fn test_file(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    path.split('/')
+        .any(|d| matches!(d, "tests" | "benches" | "examples"))
+        || name == "tests.rs"
+        || name.ends_with("_tests.rs")
+}
+
+/// The byte index of the bracket closing the one opening at `open` in
+/// `b`, counting `(`, `[` and `{` alike, or `b.len()`.
+fn closing(b: &[u8], open: usize) -> usize {
+    let mut depth = 0i32;
+    for (j, &c) in b.iter().enumerate().skip(open) {
+        match c {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return j;
+                }
+            }
+            _ => {}
+        }
+    }
+    b.len()
+}
+
+/// The byte spans of `code`'s top-level comma-separated parts, each
+/// trimmed as `text` reads, an empty part (a trailing comma) dropped. The
+/// commas are read from `code` (`code_only`), so one in a string splits
+/// nothing, and the trimming from `text`, the same span with its literals
+/// kept (`without_comments`), so a part that is all string is not empty.
+fn top_level_args(code: &str, text: &str) -> Vec<(usize, usize)> {
+    let b = code.as_bytes();
+    let mut out = Vec::new();
+    let (mut depth, mut from) = (0i32, 0);
+    let mut push = |from: usize, to: usize| {
+        let part = &text[from..to];
+        let lead = part.len() - part.trim_start().len();
+        let len = part.trim().len();
+        if len > 0 {
+            out.push((from + lead, from + lead + len));
+        }
+    };
+    for (j, &c) in b.iter().enumerate() {
+        match c {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            // A closure's `|a, b|` and a generic's `<A, B>` are rare in a
+            // condition; a split inside one only makes it unseen.
+            b',' if depth == 0 => {
+                push(from, j);
+                from = j + 1;
+            }
+            _ => {}
+        }
+    }
+    push(from, b.len());
+    out
+}
+
+/// The identifiers of `code` with their byte offsets, numbers left out.
+fn idents(code: &str) -> Vec<(usize, &str)> {
+    words(code)
+        .into_iter()
+        .filter(|(_, w)| !w.as_bytes()[0].is_ascii_digit())
+        .collect()
+}
+
+/// The byte spans of the `#[cfg(test)]` modules of one file (any `cfg`
+/// naming `test` and not negating it, on a `mod` with a body), or the whole
+/// file under an inner `#![cfg(test)]`.
+fn test_modules(code: &str) -> Vec<(usize, usize)> {
+    let b = code.as_bytes();
+    let attrs = attributes(code);
+    let mut out = Vec::new();
+    for (k, a) in attrs.iter().enumerate() {
+        let names = idents(&code[a.start..a.end]);
+        let names_test = names.iter().any(|(_, w)| *w == "test");
+        if a.name != "cfg" || !names_test || names.iter().any(|(_, w)| *w == "not") {
+            continue;
+        }
+        if a.inner {
+            return vec![(0, b.len())];
+        }
+        // The item after this attribute and any that follow it.
+        let mut rest = a.end;
+        for next in &attrs[k + 1..] {
+            if code[rest..next.start].trim().is_empty() {
+                rest = next.end;
+            } else {
+                break;
+            }
+        }
+        let is_mod = idents(&code[rest..])
+            .iter()
+            .take(3)
+            .any(|(_, w)| *w == "mod");
+        let Some(brace) = code[rest..].find(['{', ';']).map(|j| rest + j) else {
+            continue;
+        };
+        if is_mod && b[brace] == b'{' {
+            out.push((rest, closing(b, brace)));
+        }
+    }
+    out
+}
+
+/// The words a condition may hold that are no parameter: keywords and
+/// literals.
+const CONDITION_WORDS: [&str; 6] = ["as", "true", "false", "self", "Self", "crate"];
+
+/// One `assert!` at the head of a public function's body that could be a
+/// `#[requires]`: `path:function`, and the line it is on.
+struct Leading {
+    key: String,
+    line: usize,
+}
+
+/// The leading static asserts of one file's public functions: each
+/// `assert!` in the run of asserts that opens a `pub fn`'s body, before any
+/// other statement, whose message (if any) is one literal with no `{}`
+/// interpolation and no arguments, and whose condition names nothing
+/// lower-case but the function's parameters (a name after `.` or `::`, a
+/// call, a type and an upper-case constant aside). An `assert_eq!` or
+/// `assert_ne!` continues the run but is not one: it prints its operands,
+/// a runtime-valued message. Test files and `#[cfg(test)]` modules are
+/// skipped, and so is a `const fn`, which `#[requires]` cannot carry.
+fn leading_static_asserts(path: &str, source: &str) -> Vec<Leading> {
+    if test_file(path) {
+        return Vec::new();
+    }
+    let code = code_only(source);
+    let text = without_comments(source);
+    let b = code.as_bytes();
+    let skipped = test_modules(&code);
+    let words = idents(&code);
+    let mut out = Vec::new();
+    for (k, &(at, w)) in words.iter().enumerate() {
+        if w != "fn" || skipped.iter().any(|&(s, e)| s <= at && at < e) {
+            continue;
+        }
+        // `pub fn`, `pub const fn`, `pub unsafe fn`, …, not `pub(crate)`.
+        let head = code[..at]
+            .rfind(['\n', ';', '{', '}', ']'])
+            .map_or(0, |p| p + 1);
+        let vis: Vec<&str> = code[head..at].split_whitespace().collect();
+        if vis.first() != Some(&"pub") || vis.contains(&"const") {
+            continue;
+        }
+        let Some(&(name_at, name)) = words.get(k + 1) else {
+            continue;
+        };
+        // The parameter list, past any generics.
+        let after_name = name_at + name.len();
+        let Some(paren) = code[after_name..].find('(').map(|j| after_name + j) else {
+            continue;
+        };
+        let close = closing(b, paren);
+        let list = &code[paren + 1..close];
+        let params: Vec<&str> = top_level_args(list, list)
+            .iter()
+            .filter_map(|&(s, e)| {
+                let pat = list[s..e].split(':').next().unwrap_or("");
+                idents(pat)
+                    .into_iter()
+                    .map(|(_, w)| w)
+                    .rfind(|w| *w != "mut")
+            })
+            .collect();
+        let Some(open) = code[close..].find(['{', ';']).map(|j| close + j) else {
+            continue;
+        };
+        if b[open] == b';' {
+            continue;
+        }
+        let end = closing(b, open);
+        // The run of asserts that opens the body.
+        let mut i = open + 1;
+        loop {
+            let t = &code[i..end];
+            i += t.len() - t.trim_start().len();
+            let rest = &code[i..end];
+            let mac = ["assert_eq", "assert_ne", "assert"]
+                .into_iter()
+                .find(|m| rest.starts_with(m) && rest[m.len()..].trim_start().starts_with('!'));
+            let Some(mac) = mac else {
+                break;
+            };
+            let bang = i + rest.find('!').unwrap_or(0);
+            let Some(p) = code[bang..end].find(['(', '[', '{']).map(|j| bang + j) else {
+                break;
+            };
+            let q = closing(b, p);
+            let n_cond = if mac == "assert" { 1 } else { 2 };
+            let plain = mac == "assert";
+            let inside = &code[p + 1..q];
+            let spans = top_level_args(inside, &text[p + 1..q]);
+            let args: Vec<&str> = spans
+                .iter()
+                .map(|&(s, e)| &text[p + 1 + s..p + 1 + e])
+                .collect();
+            let message = &args[n_cond.min(args.len())..];
+            let static_message = match message {
+                [] => true,
+                [m] => {
+                    let lit = string_literals(m);
+                    lit.len() == 1
+                        && m.trim().starts_with('"')
+                        && !lit[0].replace("{{", "").replace("}}", "").contains('{')
+                }
+                _ => false,
+            };
+            let cond = spans
+                .iter()
+                .take(n_cond)
+                .map(|&(s, e)| &inside[s..e])
+                .collect::<Vec<_>>()
+                .join(" ");
+            let cb = cond.as_bytes();
+            let only_params = idents(&cond).iter().all(|&(j, w)| {
+                let before = cond[..j].trim_end();
+                let after = cond[j + w.len()..].trim_start();
+                params.contains(&w)
+                    || CONDITION_WORDS.contains(&w)
+                    || cb[j].is_ascii_uppercase()
+                    || before.ends_with('.')
+                    || before.ends_with("::")
+                    || after.starts_with('(')
+                    || after.starts_with("::")
+                    || after.starts_with('!')
+                    || is_primitive(w)
+            });
+            if plain && static_message && only_params {
+                out.push(Leading {
+                    key: format!("{path}:{name}"),
+                    line: code[..i].matches('\n').count() + 1,
+                });
+            }
+            i = q + 1;
+            if code[i..end].trim_start().starts_with(';') {
+                i += code[i..end].find(';').unwrap_or(0) + 1;
+            } else {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Whether `w` is a primitive type's name, as in `u32::MAX` or `as usize`.
+fn is_primitive(w: &str) -> bool {
+    matches!(
+        w,
+        "u8" | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "f32"
+            | "f64"
+            | "bool"
+            | "char"
+    )
+}
+
+/// The leading static asserts not yet written as `#[requires]`, as
+/// `path:function`, each one a `pub fn` that has one today. PR 2 of the
+/// always-on contracts migration (`docs/testing.md`, "Contracts are part of
+/// the spec") converts them and empties this list; it only shrinks, since
+/// an entry with no such assert left fails.
+const NOT_YET_REQUIRES: &[&str] = &[
+    "integrals/sys/src/records.rs:add_record_tasks",
+    "integrals/sys/src/records.rs:add_mixed_record_tasks",
+];
+
+/// The failures of the leading-assert rule over `found`, against the
+/// allowlist: a leading static assert not on it, and an entry on it that
+/// no longer has one.
+fn leading_failures(found: &[Leading], allowed: &[&str]) -> Vec<String> {
+    let mut failures: Vec<String> = found
+        .iter()
+        .filter(|l| !allowed.contains(&l.key.as_str()))
+        .map(|l| {
+            let (path, name) = l.key.rsplit_once(':').unwrap_or((&l.key, ""));
+            format!(
+                "{path}:{}: {name} opens with an assert on its arguments and a static message; \
+                 write it as #[requires]",
+                l.line
+            )
+        })
+        .collect();
+    for a in allowed {
+        if !found.iter().any(|l| l.key == *a) {
+            failures.push(format!(
+                "{a}: on NOT_YET_REQUIRES but has no leading static assert; remove the entry"
+            ));
+        }
+    }
+    failures
+}
+
+#[test]
+fn a_static_leading_assert_is_a_requires() {
+    let found: Vec<Leading> = workspace_sources()
+        .iter()
+        .flat_map(|(p, s)| leading_static_asserts(p, s))
+        .collect();
+    let failures = leading_failures(&found, NOT_YET_REQUIRES);
+    assert!(
+        failures.is_empty(),
+        "{} leading assert(s) to write as #[requires]:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn a_leading_assert_is_judged_by_its_place_its_message_and_its_names() {
+    let src = concat!(
+        "pub fn a(n: usize, x: &[f64]) {\n",
+        "    assert!(x.len() >= n, \"x holds n\");\n",
+        "    assert_eq!(n % 2, 0);\n",
+        "    let m = n;\n",
+        "    assert!(m > 0, \"not leading\");\n",
+        "}\n",
+        "pub fn b(count: usize, data: &[f64]) {\n",
+        "    assert!(count <= data.len(), \"count is {count}, data {}\", data.len());\n",
+        "    assert!(count < u32::MAX as usize && count < LIMIT && ok(count), \"fits, {{}}\");\n",
+        "}\n",
+        "fn private(n: usize) { assert!(n > 0, \"n\"); }\n",
+        "pub(crate) fn scoped(n: usize) { assert!(n > 0, \"n\"); }\n",
+        "pub fn c(&self, n: usize) { assert!(self.len > n && local > 0, \"names a local\"); }\n",
+        "pub fn d(mut n: usize) { assert!(n > 0, \"n\") }\n",
+        "#[cfg(test)]\nmod tests {\n    pub fn t(n: usize) { assert!(n > 0, \"n\"); }\n}\n",
+    );
+    let found = leading_static_asserts("a/src/lib.rs", src);
+    let got: Vec<(String, usize)> = found.iter().map(|l| (l.key.clone(), l.line)).collect();
+    let want = [
+        ("a/src/lib.rs:a".to_string(), 2),
+        ("a/src/lib.rs:b".to_string(), 9),
+        ("a/src/lib.rs:d".to_string(), 14),
+    ];
+    assert_eq!(got, want);
+    assert!(leading_static_asserts("a/tests/t.rs", src).is_empty());
+    assert!(leading_static_asserts("a/src/x.rs", &format!("#![cfg(test)]\n{src}")).is_empty());
+
+    // Each found is a failure unless allowlisted, and an allowlisted entry
+    // with no such assert left is one too, so the list only shrinks.
+    let f = leading_failures(&found, &[]);
+    assert_eq!(f.len(), 3, "{f:#?}");
+    assert!(f[0].starts_with("a/src/lib.rs:2: a opens"), "{f:#?}");
+    assert!(f[0].ends_with("write it as #[requires]"), "{f:#?}");
+    let allowed = ["a/src/lib.rs:a", "a/src/lib.rs:b", "a/src/lib.rs:d"];
+    assert_eq!(leading_failures(&found, &allowed), Vec::<String>::new());
+    let stale = [
+        "a/src/lib.rs:a",
+        "a/src/lib.rs:b",
+        "a/src/lib.rs:d",
+        "a/src/lib.rs:gone",
+    ];
+    let f = leading_failures(&found, &stale);
+    assert_eq!(f.len(), 1, "{f:#?}");
+    assert!(
+        f[0].starts_with("a/src/lib.rs:gone: on NOT_YET_REQUIRES"),
+        "{f:#?}"
+    );
 }
 
 #[test]

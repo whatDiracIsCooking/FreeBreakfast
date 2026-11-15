@@ -194,9 +194,11 @@ Two things go the other way, where Rust asks for more than the C++ does:
 ## Contracts
 
 Preconditions are checked with the [`contracts`](https://crates.io/crates/contracts)
-crate, in debug builds only, and rustdoc shows each as its item's
-`§ Contracts` section; a check soundness rests on is an `assert!` instead
-([`testing.md`](docs/testing.md), "Contracts are part of the spec").
+crate, and rustdoc shows each as its item's `§ Contracts` section. A
+`#[debug_requires]` runs in debug builds only; a check soundness rests on
+is always on, a `#[requires]` when it is a plain condition on the
+arguments with a static message, and a body `assert!` named in `# Panics`
+otherwise ([`testing.md`](docs/testing.md), "Contracts are part of the spec").
 
 Outcomes of GPU calls are deliberately not contracts. A call that can fail
 returns a status or a `Result`, and a failure is an expected result, not a
@@ -209,7 +211,7 @@ cd rust
 cmake --preset cuda                    # or hip; the backend has no default
 cmake --build --preset cuda            # libwwr_capi_{runtime_api,blas,solver}.so and the kernel libraries
 cargo test --workspace -- --include-ignored  # debug, device cases and contract tests
-cargo test --workspace --release       # the contract tests are skipped
+cargo test --workspace --release       # the debug contracts' tests are skipped
 cargo test -p fb-core-arena            # one crate, with only its own features
 ```
 
@@ -554,19 +556,21 @@ a listed crate's, and a listed crate must still hold `unsafe`.
 a type, a test file or a test in one, does not exist.
 
 `doc_check/tests/contracts.rs` checks that no doc comment restates a
-contract, which rustdoc renders on its own, and that every `debug_assert!`
-carries an `// INVARIANT:` comment ([`testing.md`](docs/testing.md),
-"Contracts are part of the spec"). `doc_check/tests/unsafe_contracts.rs`
-checks that, in a function holding an `unsafe` block, a
-`#[debug_requires]` on an integer parameter or a parameter's `.len()` is
-always on or carries a `// RELEASE:` comment saying what holds the bound
-in a release build.
+contract, which rustdoc renders on its own, that every `debug_assert!`
+carries an `// INVARIANT:` comment, and that a public function's leading
+`assert!` on its arguments with a static message is a `#[requires]`
+([`testing.md`](docs/testing.md), "Contracts are part of the spec").
+`doc_check/tests/unsafe_contracts.rs` checks that, in a function holding an
+`unsafe` block, a `#[debug_requires]` on an integer parameter or a
+parameter's `.len()` is always on or carries a `// RELEASE:` comment saying
+what holds the bound in a release build.
 
 `doc_check/tests/source_rules.rs` scans the sources for six rules of the
 register, each named in its row: every `#[ignore]` is a device case's, no
 Markdown sits beside a module, a doc example carries its marker, nothing is
 exported to C, a binding crate's safe wrapper links down to the binding it
-calls, and a test that trips a contract is `#[cfg(debug_assertions)]`.
+calls, and a test that trips a contract is `#[cfg(debug_assertions)]`
+exactly when the contract is a debug one.
 
 Tests run in parallel, so a capture test must not use global capture mode.
 A global capture forbids other threads' unsafe calls, and on the 3080 it

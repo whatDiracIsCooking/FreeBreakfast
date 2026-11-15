@@ -94,10 +94,14 @@ opening the source. The `contracts` crate writes them there itself: each
 `#[debug_requires]`, `#[debug_ensures]` and `#[debug_invariant]` renders as a
 `§ Contracts` section after the item's own, one line per condition with its
 message (`Pre-condition - debug: a matrix of at least one row`) over its
-expression (`n > 0`). A doc comment therefore never restates a contract: a
-hand-written copy is a second spec that drifts from the first.
-`fb-doc-check`'s `tests/contracts.rs` fails a doc comment that does, by the
-old restating phrase or by the contract's own message.
+expression (`n > 0`). The always-on forms, `#[requires]`, `#[ensures]` and
+`#[invariant]`, render the same without the "- debug"
+(`Pre-condition: x holds n`), so the page tells a reader which checks a
+release build keeps. A doc comment therefore never restates a contract, in
+`# Panics` or anywhere else: a hand-written copy is a second spec that
+drifts from the first. `fb-doc-check`'s `tests/contracts.rs` fails a doc
+comment that does, by the old restating phrase or by the contract's own
+message.
 
 **The verification record is the metrics branch, not the README.** The
 crate's README carries two dated "Verified" paragraphs: card, test counts,
@@ -350,7 +354,7 @@ and run where the testing document puts those tiers:
 | Doctests, including `compile_fail` | 1 and 3 | Every PR, on a card host (they link) |
 | Bibliography keys match citations | 3 | Every PR, on the runner |
 | Section citations name a heading that exists; `mdbook-linkcheck` | 3 | Every PR, on the runner |
-| No doc comment restates a contract | 3 | Every PR, on the runner |
+| No doc comment restates a contract, debug or always-on | 3 | Every PR, on the runner |
 | The config reference matches the config type | 3 | Every PR, on the runner; it is generated, so the check is that the committed page is the generated one |
 | Plan diagrams match their goldens | 3 | Every PR, on a card host (the planner is in the crate) |
 | The book builds, with every equation and diagram rendered | 3 | Every PR, on the runner; `mdbook-katex` and `mdbook-mermaid` fail on a construct they cannot render |

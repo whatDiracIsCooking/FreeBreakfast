@@ -4,8 +4,9 @@
 //! cited; `tests/unsafe_code.rs`, which checks that every crate root
 //! forbids `unsafe_code` unless `docs/programming_model.md` lists its crate
 //! as allowed it; `tests/contracts.rs`, which checks that no doc comment
-//! restates a contract rustdoc already renders, and that every
-//! `debug_assert!` is an internal invariant that says so;
+//! restates a contract rustdoc already renders, that every
+//! `debug_assert!` is an internal invariant that says so, and that a
+//! leading static `assert!` is a `#[requires]`;
 //! `tests/unsafe_contracts.rs`, which checks that no `unsafe` block rests
 //! on a debug-only contract on an extent unless a `// RELEASE:` comment
 //! says what holds it in release;
@@ -20,7 +21,7 @@
 //! six rules of the register: every `#[ignore]` is a device case's, no
 //! Markdown sits beside a module, doc examples carry their markers, nothing
 //! is exported to C, the safe wrappers link down to their bindings, and a
-//! test that trips a contract is debug-only; and `tests/code_rules.rs`,
+//! test that trips a contract is debug-only exactly when the contract is; and `tests/code_rules.rs`,
 //! which checks that only the boundary logs an error, that no Rust source
 //! names a warp width or a launch shape, that an `Allocation` error is
 //! made only at admission, and that a copy between kinds that is a node's
