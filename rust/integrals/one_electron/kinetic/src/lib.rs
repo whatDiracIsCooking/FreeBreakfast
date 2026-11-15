@@ -9,16 +9,19 @@
 //! - [`kinetic_classes`]: every class's [`kinetic_class`] launch, each on
 //!   in order on the task's stream, or each on a fork of it joined back
 //!   ([`DeviceStream::fork_join`]) when the classes opt in
-//!   ([`ClassRows::fork`]), each adding into a Cartesian matrix the
-//!   caller zeroed. It neither zeroes nor transforms, so a task that
-//!   launches several families into one matrix (the core Hamiltonian's, T
-//!   and then V on top) calls it between its own launches.
+//!   ([`ClassRows::fork`]), each adding into the lower triangle of a
+//!   Cartesian matrix the caller zeroed. It neither zeroes, mirrors nor
+//!   transforms, so a task that launches several families into one matrix
+//!   (the core Hamiltonian's, T and then V on top) calls it between its own
+//!   launches and mirrors once, after the last.
 //! - [`add_kinetic`], T of a [`BasisSet`] added to a
 //!   [`Dag`] after the records
 //!   ([`fb_integrals_mmd::add_records`]), which the caller adds and passes
 //!   in so one build serves every reader of a plan: **`kinetic`**, on the worker's
-//!   stream, the Cartesian matrix zeroed and then [`kinetic_classes`],
-//!   reading each class's records as an edge; then the spherical transform,
+//!   stream, the Cartesian matrix zeroed, then [`kinetic_classes`],
+//!   reading each class's records as an edge, then the lower triangle
+//!   mirrored onto the upper ([`symmetrize_from`]), so the Cartesian T is
+//!   exactly symmetric; then the spherical transform,
 //!   `T = Uᵀ T_cart U` ([`fb_recipes_matrix_ao::add_cartesian_to_spherical`]),
 //!   U's slot passed in so a plan stages U once.
 //!
@@ -29,6 +32,7 @@
 //! |---|---|
 //! | `kinetic_class(stream, cls, n_ao, t)` (`kinetic_bridge.h`), one class | [`kinetic_class`], `fb-integrals-sys`'s safe launcher over a [`ClassRows`]; [`kinetic_classes`]`(stream, device, classes, t)`, every class in order on the task's stream, or on a fork of it with [`ClassRows::fork`] |
 //! | `kinetic(res, classes, t.cartesian())`: zeroed, then one launch per class | the `kinetic` task of [`add_kinetic`]: zeroed, then [`kinetic_classes`] on the worker's lane 0, each class's records, formed on a lane of their own, an event wait on the device; the records' [`ClassRows`] passed in by the caller |
+//! | `symmetrize(res, WWRBLAS_FILL_MODE_UPPER, n_ao, t.data(), n_ao)` at the end of `kinetic`, the lower triangle mirrored | [`symmetrize_from`] with the same fill mode, in the `kinetic` task after [`kinetic_classes`] returns, not inside it, so a task adding another family on top mirrors once |
 //! | `launch_each`: one stream per class, its `device_stream()`'s fork stream, forked from `res.stream()` and joined back | with [`ClassRows::fork`] set (off by default: every class in order on lane 0), [`DeviceStream::fork_join`] in [`kinetic_classes`]: a fork per class from the worker's fork streams, joined back before the task returns, never a lane's stream, so no class orders the task behind work the planner did not; the task declares a fork per class ([`GpuTask::forks`]) |
 //! | `kinetic`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | [`kinetic_class`]'s contract for the class, and its always-on contracts on the matrix's `n_cart²` and the `i32` bound; [`add_kinetic`] has the `i32` bound as an always-on contract at planning too, and the records hold only `la <= lb` |
 //! | `upload_spherical_transform_matrix`, `MatrixAOPair::cartesian_to_spherical` | [`fb_recipes_matrix_ao::add_cartesian_to_spherical`], U's slot passed in by the caller |
@@ -49,16 +53,21 @@ use fb_core_wwr::device_slice::DeviceSliceMut;
 use fb_core_wwr::memset;
 use fb_integrals_sys::{ClassRows, Fields, kinetic_class};
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
+use fb_recipes_symmetrize::symmetrize_from;
+use wwr_sys::wwr_blas_fill_mode::WWR_BLAS_FILL_MODE_UPPER;
 
 /// Add every class's kinetic-energy contributions into the Cartesian matrix
 /// `t`, `n_cart` × `n_cart`: one [`kinetic_class`] launch per class, each
-/// adding at `(m, n)` and `(n, m)`, in order on `stream`; or, when any
+/// adding into the lower triangle alone (row-major `m >= n`), in order on
+/// `stream`; or, when any
 /// class has [`ClassRows::fork`] set, each on a fork of `stream` joined
 /// back into it before the call returns ([`DeviceStream::fork_join`]), so
 /// the classes run at once. Either way everything enqueued on `stream`
-/// afterwards sees all of T. Enqueues only, and zeroes nothing: `t` must be zeroed
-/// (or hold what the caller adds T to) before the call, and is symmetric
-/// after it when it was before.
+/// afterwards sees all of T. Enqueues only, and neither zeroes nor
+/// mirrors: `t` must be zeroed (or hold what the caller adds T to) before
+/// the call, and the caller mirrors its lower triangle onto the upper
+/// ([`symmetrize_from`] with `WWR_BLAS_FILL_MODE_UPPER`) after the last
+/// family it adds.
 ///
 /// `stream` is the calling task's, `device` its view, and every class's
 /// [`Fields::KINETIC`] were declared read by its layout
@@ -95,10 +104,12 @@ pub fn kinetic_classes(
 
 /// Add the spherical AO kinetic-energy matrix of `basis` to `dag` on GPU
 /// worker `worker`, and return T: an output row of `nao_sphe²` doubles,
-/// column-major, symmetric up to rounding.
+/// column-major, symmetric up to the transform's rounding.
 ///
-/// `kinetic` (stream: the Cartesian matrix zeroed and [`kinetic_classes`],
-/// a fork per class when they opt in, reading the records as an edge), then the spherical transform of
+/// `kinetic` (stream: the Cartesian matrix zeroed, [`kinetic_classes`],
+/// a fork per class when they opt in, reading the records as an edge, and
+/// the lower triangle mirrored onto the upper, [`symmetrize_from`]), then
+/// the spherical transform of
 /// [`add_cartesian_to_spherical`]: `harmonics` and `upload U` (U
 /// into a pinned row, then its device row), only when `u` is `None`, and `spherical transform` (stream:
 /// `T = Uᵀ T_cart U`). `classes` are the records of `basis`, added on
@@ -134,8 +145,9 @@ pub fn add_kinetic(
     add_cartesian_to_spherical(dag, worker, basis, u, "T", t_cart)
 }
 
-/// GPU: the Cartesian kinetic-energy matrix, `nao_cart²`, zeroed and then
-/// summed class by class ([`kinetic_classes`]).
+/// GPU: the Cartesian kinetic-energy matrix, `nao_cart²`, zeroed, summed
+/// class by class into its lower triangle ([`kinetic_classes`]) and
+/// mirrored onto the upper ([`symmetrize_from`]).
 struct Kinetic {
     classes: Vec<ClassRows>,
     n_cart: usize,
@@ -168,6 +180,15 @@ impl GpuTask for Kinetic {
     ) -> Status {
         let mut t = device.take_mut(*t);
         memset::zero(&mut t, stream)?;
-        kinetic_classes(stream, device, &self.classes, &mut t)
+        kinetic_classes(stream, device, &self.classes, &mut t)?;
+        // The kernels wrote the row-major lower triangle, the column-major
+        // upper in the recipe's BLAS vocabulary.
+        symmetrize_from(
+            stream,
+            WWR_BLAS_FILL_MODE_UPPER,
+            self.n_cart,
+            &mut t,
+            self.n_cart,
+        )
     }
 }

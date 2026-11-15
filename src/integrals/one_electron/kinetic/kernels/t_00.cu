@@ -23,7 +23,8 @@ __global__ void kinetic<0, 0>(
     // kinetic energy, class (la, lb) = (0, 0): T_ab by the fixed ket shift on the
     // E axis tables read at lb + 2 (ao/kinetic.py)
     // PRECONDITION: T is zeroed by the caller before the first T launch of a
-    // build; this kernel only adds
+    // build; this kernel only adds, and only into the lower triangle (row >= col):
+    // the caller mirrors it onto the upper after the last launch
     // launch: one thread per primitive-pair record
     int32_t rec = static_cast<int32_t>(threadIdx.x + blockIdx.x * blockDim.x);
     if (rec < n_rec) {
@@ -68,19 +69,27 @@ __global__ void kinetic<0, 0>(
         // T_ab = s KE_ab: s = c_a c_b (pi/zeta)^{3/2} is the host's (ao.pairs.dress);
         // no prefactor and no K_AB is formed here
         double v0 = (sk * KE[0]);
-        // scatter into T_mn and its mirror T_nm
-        if ((oa < ob) + (ob < oa)) {
-            // AtomicAdd: several primitive records of one shell pair, and both mirror
-            // positions, add into the same T elements (kernel_jab's scatter rule)
+        // scatter into the lower triangle of T
+        if (ob < oa) {
+            // off_a > off_b: the block (off_a + i, off_b + j) lies wholly below the
+            // diagonal (two shells' AO ranges are disjoint)
+            // AtomicAdd: several primitive records of one shell pair add into the same T
+            // elements; one add per element, into the lower triangle only
             atomicAdd(&T[((oa + 0) * n_ao + (ob + 0))], v0);
-            atomicAdd(&T[((ob + 0) * n_ao + (oa + 0))], v0);
         } else {
-            // diagonal shell pair (off_a == off_b): the lower triangle i >= j only, each
-            // mirrored once -- kernel_jab's diagonal rule, so the diagonal is not double-
-            // counted
-            // AtomicAdd: several primitive records of one shell pair, and both mirror
-            // positions, add into the same T elements (kernel_jab's scatter rule)
-            atomicAdd(&T[((oa + 0) * n_ao + (oa + 0))], v0);
+            if (oa < ob) {
+                // off_a < off_b: the block lies wholly above the diagonal, so its transpose
+                // (off_b + j, off_a + i) is written instead
+                // AtomicAdd: several primitive records of one shell pair add into the same T
+                // elements; one add per element, into the lower triangle only
+                atomicAdd(&T[((ob + 0) * n_ao + (oa + 0))], v0);
+            } else {
+                // diagonal shell pair (off_a == off_b): the block's lower triangle i >= j
+                // only, no mirror
+                // AtomicAdd: several primitive records of one shell pair add into the same T
+                // elements; one add per element, into the lower triangle only
+                atomicAdd(&T[((oa + 0) * n_ao + (oa + 0))], v0);
+            }
         }
     }
 }

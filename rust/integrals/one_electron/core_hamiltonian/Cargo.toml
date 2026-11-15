@@ -23,6 +23,9 @@ fb-integrals-one-electron-kinetic.workspace = true
 fb-integrals-one-electron-potential-en.workspace = true
 fb-molecule-nuclei.workspace = true
 fb-recipes-matrix-ao.workspace = true
+fb-recipes-symmetrize.workspace = true
+# BLAS for the fill mode the mirror takes.
+wwr-sys = { workspace = true, features = ["blas"] }
 
 [dev-dependencies]
 fb-io-basis.workspace = true

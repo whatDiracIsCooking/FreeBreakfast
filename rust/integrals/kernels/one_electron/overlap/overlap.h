@@ -25,9 +25,9 @@ extern "C" {
 /// stream: the generated kernel s_{la}{lb}, one thread per record.
 ///
 /// Reads cls's zeta, pa_*, pb_*, s and offsets. Each value is atomically
-/// added at (m, n) and at (n, m), once on a diagonal shell pair, so s must be
-/// zeroed before the first class of a build and is symmetric after the last.
-/// s is a device array; the kernels index it as a 32-bit m * n_ao + n, so
+/// added into the lower triangle only (m >= n), so s must be zeroed before
+/// the first class of a build, and the caller mirrors the lower triangle onto
+/// the upper after the last. s is a device array; the kernels index it as a 32-bit m * n_ao + n, so
 /// n_ao * n_ao must fit an int32_t.
 ///
 /// Returns FB_LAUNCH_INVALID_ARGUMENT for a null cls or s, a view with no

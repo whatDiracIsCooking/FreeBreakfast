@@ -25,8 +25,9 @@ extern "C" {
 /// t, on stream: the generated kernel t_{la}{lb}, one thread per record.
 ///
 /// Reads cls's zeta, pa_*, pb_*, s, eb and offsets. Each value is atomically
-/// added at (m, n) and at (n, m), so t must be zeroed before the first class
-/// of a build and is symmetric after the last. t is a device array; the
+/// added into the lower triangle only (m >= n), so t must be zeroed before
+/// the first class of a build, and the caller mirrors the lower triangle onto
+/// the upper after the last. t is a device array; the
 /// kernels index it as a 32-bit m * n_ao + n, so n_ao * n_ao must fit an
 /// int32_t.
 ///

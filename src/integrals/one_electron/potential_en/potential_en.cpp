@@ -17,21 +17,27 @@ import free_breakfast.integrals.mmd;
 import free_breakfast.molecule;
 import free_breakfast.integrals.one_electron.launch;
 import free_breakfast.recipes.matrix_ao;
+import free_breakfast.recipes.symmetrize;
 
 #include "diagnostics.h"
 
 namespace free_breakfast {
 
-// Every check passed: launch the kernel of every class into m, on res's device,
-// each on its own stream between a fork from and a join into res.stream().
+// Every check passed: launch the kernel of every class into m's lower triangle,
+// on res's device, each on its own stream between a fork from and a join into
+// res.stream(), then mirror the lower triangle onto the upper.
 Status launch_potential_en(DeviceResources &res, const std::span<const PrimitivePairClass> classes,
                            const Molecule &molecule, CartesianMatrixAO &m) {
   const NucleiView nuclei_view = molecule.view();
   const auto n_ao = static_cast<int32_t>(m.n());
-  return gpu_status(launch_each(classes, res.stream(), [&](const PrimitivePairClass &cls) {
+  FBF_TRY(gpu_status(launch_each(classes, res.stream(), [&](const PrimitivePairClass &cls) {
     return device::potential_en_class(cls.device_stream()->stream(), cls.view(), nuclei_view, n_ao,
                                       m.data());
-  }));
+  })));
+  // The kernels write the lower triangle only (row-major, row >= col); the
+  // upper is mirrored from it once every class has joined. Row-major lower is
+  // column-major upper, the recipe's vocabulary.
+  return symmetrize(res, wwr::WWRBLAS_FILL_MODE_UPPER, n_ao, m.data(), n_ao);
 }
 
 Status nuclear_attraction(DeviceResources &res, const std::span<const PrimitivePairClass> classes,

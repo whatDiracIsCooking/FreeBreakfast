@@ -99,10 +99,11 @@ fn record() -> Record {
     }
 }
 
-/// The 2 x 2 matrix a launch wrote: the record is bra AO 0 and ket AO 1, so
-/// both mirror positions are within `bar` of `expected`, relative, and the
-/// diagonal stays 0.
-fn check_mirrors(matrix: &DeviceBytes, stream: &Stream, expected: f64, bar: f64) {
+/// The 2 x 2 row-major matrix a launch wrote: the record is bra AO 0 and
+/// ket AO 1, and the kernels add into the lower triangle alone, so `M_10`
+/// is within `bar` of `expected`, relative, and `M_01` and the diagonal
+/// stay 0 (the caller mirrors the lower triangle onto the upper).
+fn check_lower(matrix: &DeviceBytes, stream: &Stream, expected: f64, bar: f64) {
     let got: Vec<f64> = matrix
         .read(stream)
         .as_chunks::<8>()
@@ -112,17 +113,17 @@ fn check_mirrors(matrix: &DeviceBytes, stream: &Stream, expected: f64, bar: f64)
         .collect();
     assert_eq!(got[0].to_bits(), 0, "M_00 was written");
     assert_eq!(got[3].to_bits(), 0, "M_11 was written");
-    for (at, value) in [("M_01", got[1]), ("M_10", got[2])] {
-        let relative = ((value - expected) / expected).abs();
-        assert!(
-            relative <= bar,
-            "{at} = {value:e}, the closed form {expected:e}: {relative:e} relative, the bar {bar:e}"
-        );
-    }
+    assert_eq!(got[1].to_bits(), 0, "M_01, above the diagonal, was written");
+    let relative = ((got[2] - expected) / expected).abs();
+    assert!(
+        relative <= bar,
+        "M_10 = {:e}, the closed form {expected:e}: {relative:e} relative, the bar {bar:e}",
+        got[2]
+    );
 }
 
-/// Needs a GPU. One (s|s) record through `fb_kinetic_class`: both mirror
-/// positions the closed form within 1e-14 relative.
+/// Needs a GPU. One (s|s) record through `fb_kinetic_class`: the lower
+/// position the closed form within 1e-14 relative, the upper untouched.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn one_ss_record_is_the_closed_form_kinetic_energy() {
@@ -166,13 +167,13 @@ fn one_ss_record_is_the_closed_form_kinetic_energy() {
     // device, the matrix is n_ao x n_ao and zeroed, and none overlap.
     let status = unsafe { fb_kinetic_class(stream.stream(), &view, n_ao, d_matrix.0.cast()) };
     assert_eq!(status, FB_LAUNCH_SUCCESS);
-    check_mirrors(&d_matrix, &stream, expected, 1e-14);
+    check_lower(&d_matrix, &stream, expected, 1e-14);
 }
 
 /// Needs a GPU. One (s|s) record and one nucleus, Z = 8 at (0.375, 0.5, 0),
 /// so `P - C = (0, -0.5, 0)` exactly and `zeta |P - C|^2 = 1`, through
-/// `fb_potential_en_class`: both mirror positions the closed form within
-/// 1e-12 relative.
+/// `fb_potential_en_class`: the lower position the closed form within
+/// 1e-12 relative, the upper untouched.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn one_ss_record_and_nucleus_is_the_closed_form_attraction() {
@@ -234,7 +235,7 @@ fn one_ss_record_and_nucleus_is_the_closed_form_attraction() {
     let status =
         unsafe { fb_potential_en_class(stream.stream(), &view, &nuclei, n_ao, d_matrix.0.cast()) };
     assert_eq!(status, FB_LAUNCH_SUCCESS);
-    check_mirrors(&d_matrix, &stream, expected, 1e-12);
+    check_lower(&d_matrix, &stream, expected, 1e-12);
 }
 
 /// The classes outside a table: a bra above the ket, one past the limit on

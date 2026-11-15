@@ -15,8 +15,12 @@
 //! class's nuclear-attraction launch on top
 //! ([`fb_integrals_one_electron_potential_en::potential_en_classes`]). A
 //! chain of launches on one stream is one task (`docs/programming_model.md`,
-//! "Open questions"): both kernels only add, so H is formed in place, with
-//! no T or V matrix of its own and no separate addition. Then the shared
+//! "Open questions"): both kernels only add, into the lower triangle
+//! alone, so H is formed in place, with no T or V matrix of its own and no
+//! separate addition, and the task mirrors that triangle onto the upper
+//! once, after the last V launch
+//! ([`fb_recipes_symmetrize::symmetrize_from`]), so the Cartesian H is
+//! exactly symmetric. Then the shared
 //! spherical transform, `H = Uᵀ H_cart U`
 //! ([`fb_recipes_matrix_ao::add_cartesian_to_spherical`]), U's slot passed
 //! in so a plan stages U once.
@@ -59,6 +63,7 @@
 //! | C++ | Here |
 //! |---|---|
 //! | `core_hamiltonian(res, classes, molecule, h.cartesian())`: `kinetic` (zeroed, then one launch per class) and `add_nuclear_attraction` on top | the `core hamiltonian` task of [`add_core_hamiltonian`]: zeroed, then [`kinetic_classes`] and [`potential_en_classes`] on the worker's lane 0, each class's records, formed on a lane of their own, an event wait on the device; the records' [`ClassRows`] passed in by the caller |
+//! | `symmetrize(res, WWRBLAS_FILL_MODE_UPPER, n_ao, ...)` at the end of each of `kinetic` and `add_nuclear_attraction`, the second over T + V | one [`symmetrize_from`] with the same fill mode, in the task after [`potential_en_classes`] returns: the mirror is a copy, so the first one changes nothing the second leaves |
 //! | `launch_each` in each: one stream per class, its `device_stream()`'s fork stream, forked from `res.stream()` and joined back | with [`ClassRows::fork`] set (off by default: every class in order on lane 0), [`DeviceStream::fork_join`] in each of [`kinetic_classes`] and [`potential_en_classes`]: a fork per class from the worker's fork streams, joined back into lane 0 before the next family forks, so every V launch follows every T launch; never a lane's stream |
 //! | `check_one_electron_build`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | `fb-integrals-sys`'s launchers: a contract for the class, always-on contracts on the matrix's `n_cart²` and the `i32` bound; [`add_core_hamiltonian`] has the `i32` bound as an always-on contract at planning, and the records hold only `la <= lb` |
 //! | `check_nuclei`'s `InvalidConfig`, before anything launches | [`add_core_hamiltonian`]'s `InvalidConfig` at planning for [`NucleiRows`] with no nucleus, adding nothing; nuclei of another worker are another table's rows, which [`Dag::add_gpu`] refuses with a panic |
@@ -68,6 +73,7 @@
 //!
 //! [`kinetic_classes`]: fb_integrals_one_electron_kinetic::kinetic_classes
 //! [`potential_en_classes`]: fb_integrals_one_electron_potential_en::potential_en_classes
+//! [`symmetrize_from`]: fb_recipes_symmetrize::symmetrize_from
 
 #![forbid(unsafe_code)]
 
@@ -84,14 +90,17 @@ use fb_integrals_one_electron_potential_en::potential_en_classes;
 use fb_integrals_sys::{ClassRows, Fields};
 use fb_molecule_nuclei::NucleiRows;
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
+use fb_recipes_symmetrize::symmetrize_from;
+use wwr_sys::wwr_blas_fill_mode::WWR_BLAS_FILL_MODE_UPPER;
 
 /// Add the spherical AO core Hamiltonian of `basis` over `nuclei` to `dag`
 /// on GPU worker `worker`, and return H: an output row of `nao_sphe²`
-/// doubles, column-major, symmetric up to rounding.
+/// doubles, column-major, symmetric up to the transform's rounding.
 ///
 /// `core hamiltonian` (stream: the Cartesian matrix zeroed, [`kinetic_classes`] and then
-/// [`potential_en_classes`] into it, each a fork per class joined back
-/// before the next when the classes opt in ([`ClassRows::fork`]), reading the records and the nuclei as edges), then the spherical transform of [`add_cartesian_to_spherical`]:
+/// [`potential_en_classes`] into its lower triangle, each a fork per class joined back
+/// before the next when the classes opt in ([`ClassRows::fork`]), reading the records and the nuclei as edges,
+/// and that triangle mirrored onto the upper, [`symmetrize_from`]), then the spherical transform of [`add_cartesian_to_spherical`]:
 /// `harmonics` and `upload U` (U into a pinned row, then its
 /// device row), only when `u` is `None`, and
 /// `spherical transform` (stream: `H = Uᵀ H_cart U`). `nuclei` are the
@@ -113,6 +122,7 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 ///
 /// [`kinetic_classes`]: fb_integrals_one_electron_kinetic::kinetic_classes
 /// [`potential_en_classes`]: fb_integrals_one_electron_potential_en::potential_en_classes
+/// [`symmetrize_from`]: fb_recipes_symmetrize::symmetrize_from
 #[debug_requires(basis.nshells() > 0, "a basis of at least one shell")]
 #[requires(
     fits_i32!(basis.nao_cart().checked_mul(basis.nao_cart())),
@@ -150,7 +160,8 @@ pub fn add_core_hamiltonian(
 
 /// GPU: the Cartesian core Hamiltonian, `nao_cart²`, zeroed, then T summed
 /// class by class ([`kinetic_classes`]) and V on top
-/// ([`potential_en_classes`]).
+/// ([`potential_en_classes`]), both into the lower triangle, which is then
+/// mirrored onto the upper ([`symmetrize_from`]).
 struct CoreHamiltonian {
     classes: Vec<ClassRows>,
     nuclei: NucleiRows,
@@ -188,8 +199,18 @@ impl GpuTask for CoreHamiltonian {
         // Each family launches in order on this stream, or, when the classes
         // opt in, forks a stream per class and joins them back into this one
         // before it returns; either way every V launch follows every T
-        // launch, and each adds into `h` in turn.
+        // launch, and each adds into `h`'s lower triangle in turn.
         kinetic_classes(stream, device, &self.classes, &mut h)?;
-        potential_en_classes(stream, device, &self.classes, &self.nuclei, &mut h)
+        potential_en_classes(stream, device, &self.classes, &self.nuclei, &mut h)?;
+        // Once, after the last V launch: the kernels wrote the row-major
+        // lower triangle, the column-major upper in the recipe's BLAS
+        // vocabulary.
+        symmetrize_from(
+            stream,
+            WWR_BLAS_FILL_MODE_UPPER,
+            self.n_cart,
+            &mut h,
+            self.n_cart,
+        )
     }
 }

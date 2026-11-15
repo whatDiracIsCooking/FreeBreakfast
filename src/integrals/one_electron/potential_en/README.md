@@ -14,14 +14,16 @@ GPU, over the `v_{la}{lb}` kernels FelizJueves generates. Point nuclei.
 (`launch`), zeroes the `CartesianMatrixAO`, and launches one generated kernel
 per class, one thread per record, with every nucleus serial inside it. The
 kernels read the overlap's record fields plus `p`, the product centre, and the
-molecule's nuclear charges and positions (`NucleiView`). Each thread adds its values at
-`(m, n)` and `(n, m)` with fp64 atomics, so V is symmetric to rounding, not
-bitwise. Queued on `res.stream()`, each class on its own stream, forked from it
-and joined back into it (`launch_each`), with no host
+molecule's nuclear charges and positions (`NucleiView`). Each thread adds its values
+into the lower triangle only (`m >= n`) with fp64 atomics, and after the join
+one `symmetrize` launch mirrors it onto the upper, so V is bitwise symmetric.
+Queued on `res.stream()`, each class on its own stream, forked from it and
+joined back into it (`launch_each`), then the mirror, with no host
 synchronization.
 
 **`add_nuclear_attraction`** is the same build without the zeroing: it adds V
-into whatever the matrix holds. `core_hamiltonian` uses it to add V on top of
+into whatever the matrix's lower triangle holds, then mirrors it, so the
+upper triangle it is handed is never read. `core_hamiltonian` uses it to add V on top of
 the T that `kinetic` wrote, forming H in place. It runs the same checks.
 
 **Each kernel has its own Boys function.** Every `v_*.cu` carries the same
