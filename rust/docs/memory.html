@@ -230,6 +230,21 @@ the caller and the node by a label (<code>download &lt;label&gt;</code>): one ev
 one wait for them all, where a node per row costs an event and a wait
 each. Its rows are ordinary rows, the source read and the
 destination an output, so admission counts them and the edges order them.
+A heap row reaches the device and comes back only through two more:
+<code>Dag::upload_heap</code>, a range of a heap row up to a new device row, and
+<code>Dag::download_heap</code>, a device row down into a range of a heap row. Each
+is two nodes through a pinned window of the range's length, the
+operation's own row (<code>&lt;row&gt; window</code>): a CPU node and a stream node
+(<code>stage &lt;row&gt;</code>, then <code>upload &lt;row&gt;</code>; <code>download &lt;row&gt;</code>, then <code>unstage &lt;row&gt;</code>), since the device copy can start only once the host copy is done,
+and the host copy of a download only once the device copy is, and either
+wait inside one task would be a host sync
+(<a href="programming_model.html"><code>programming_model.md</code></a>, &quot;Granularity&quot;). As two
+nodes, one batch's host copy runs under another's device work. In a loop,
+iteration <code>k</code>'s range is the given one moved on by <code>k</code> of its lengths, so
+a row cut into ranges streams through a counted loop as one call, range
+<code>k</code> in trip <code>k</code>, its window and device row the body's and held once per
+iteration in flight; the heap row a download writes is one its loop
+carries, written by its one user in the body.
 A task never writes such a copy by hand; a copy inside a task's larger
 work, a solver's <code>info</code> flag down beside its launch, stays the task's.
 On one card the copy node is the transport; between cards, placement's
@@ -931,7 +946,11 @@ only <code>memcpy_p2d</code> and <code>memcpy_d2p</code> take.</li>
 <li><code>core::planner</code>'s <code>Dag::upload</code>, <code>Dag::download</code> and
 <code>Dag::download_rows</code>, the copy nodes (&quot;The table&quot;): the only <code>GpuTask</code>s
 whose <code>run</code> is a copy between kinds alone, so a pinned-to-device or device-to-pinned move is one line at
-its caller, on whichever lane of the worker the caller names.</li>
+its caller, on whichever lane of the worker the caller names. Its
+<code>Dag::upload_heap</code> and <code>Dag::download_heap</code> move a range of a heap row
+through a pinned window, a CPU node and a copy node each, whose host
+halves are the only <code>CpuTask</code>s whose <code>run</code> is a copy alone: a heap row
+reaches the device through them and nothing else.</li>
 </ul>
 <p><strong>The view's checks are always on, not <code>debug_requires</code>.</strong> Two nodes
 running at once both need rows of one block, so <code>partition</code> takes <code>&amp;self</code>,
