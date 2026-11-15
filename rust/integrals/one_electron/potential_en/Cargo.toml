@@ -21,6 +21,9 @@ fb-integrals-mmd.workspace = true
 fb-integrals-sys.workspace = true
 fb-molecule-nuclei.workspace = true
 fb-recipes-matrix-ao.workspace = true
+fb-recipes-symmetrize.workspace = true
+# BLAS for the fill mode the mirror takes.
+wwr-sys = { workspace = true, features = ["blas"] }
 
 [dev-dependencies]
 fb-io-basis.workspace = true

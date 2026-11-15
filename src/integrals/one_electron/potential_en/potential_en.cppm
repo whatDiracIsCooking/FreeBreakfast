@@ -33,15 +33,17 @@ export namespace free_breakfast {
 /// first.
 ///
 /// Launches the generated kernel of each class, which loops over the nuclei of
-/// @p molecule serially inside each record and adds its contributions at (m, n)
-/// and (n, m).
+/// @p molecule serially inside each record and adds its contributions into the
+/// lower triangle (m >= n), then mirrors the lower triangle onto the upper, so
+/// @p m comes back bitwise symmetric and its upper triangle on entry is not
+/// read.
 /// This is how @c core_hamiltonian forms T + V in place: @c kinetic zeroes the
 /// matrix and writes T, and this adds V on top. @p classes must come from the
 /// basis @p m was made for: a record's AO offsets are not checked against
 /// m.n().
 ///
 /// Queued on res.stream(), each class on its own stream, forked from it and
-/// joined back into it (@c launch_each), with no host
+/// joined back into it (@c launch_each), then the mirror, with no host
 /// synchronization. The device res.dev_idx() names is made current for the
 /// call and the previous one restored.
 ///
@@ -49,7 +51,8 @@ export namespace free_breakfast {
 ///         @p molecule's device, if a class is above f (or not la <= lb), or if
 ///         m.n() is too large for the kernels' 32-bit index (m.n()^2 above
 ///         INT32_MAX, about 46k AOs); or the GpuRuntime error of the first
-///         fork, launch or join that failed, which leaves @p m unspecified.
+///         fork, launch, join or mirror that failed, which leaves @p m
+///         unspecified.
 [[nodiscard]] Status add_nuclear_attraction(DeviceResources &res,
                                             std::span<const PrimitivePairClass> classes,
                                             const Molecule &molecule, CartesianMatrixAO &m);

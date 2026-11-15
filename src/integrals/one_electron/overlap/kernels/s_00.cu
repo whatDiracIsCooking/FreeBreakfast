@@ -22,7 +22,8 @@ __global__ void overlap<0, 0>(
     // overlap, class (la, lb) = (0, 0): S_ab as the t = 0 column of the dressed E
     // block (ao/overlap.py)
     // PRECONDITION: S is zeroed by the caller before the first S launch of a
-    // build; this kernel only adds
+    // build; this kernel only adds, and only into the lower triangle (row >= col):
+    // the caller mirrors it onto the upper after the last launch
     // launch: one thread per primitive-pair record
     int32_t rec = static_cast<int32_t>(threadIdx.x + blockIdx.x * blockDim.x);
     if (rec < n_rec) {
@@ -52,19 +53,27 @@ __global__ void overlap<0, 0>(
         // S_ab = s E^{ab}_0: s = c_a c_b (pi/zeta)^{3/2} is the host's
         // (ao.pairs.dress); no prefactor and no K_AB is formed here
         double v0 = (sk * E0[0]);
-        // scatter into S_mn and its mirror S_nm
-        if ((oa < ob) + (ob < oa)) {
-            // AtomicAdd: several primitive records of one shell pair, and both mirror
-            // positions, add into the same S elements (kernel_jab's scatter rule)
+        // scatter into the lower triangle of S
+        if (ob < oa) {
+            // off_a > off_b: the block (off_a + i, off_b + j) lies wholly below the
+            // diagonal (two shells' AO ranges are disjoint)
+            // AtomicAdd: several primitive records of one shell pair add into the same S
+            // elements; one add per element, into the lower triangle only
             atomicAdd(&S[((oa + 0) * n_ao + (ob + 0))], v0);
-            atomicAdd(&S[((ob + 0) * n_ao + (oa + 0))], v0);
         } else {
-            // diagonal shell pair (off_a == off_b): the lower triangle i >= j only, each
-            // mirrored once -- kernel_jab's diagonal rule, so the diagonal is not double-
-            // counted
-            // AtomicAdd: several primitive records of one shell pair, and both mirror
-            // positions, add into the same S elements (kernel_jab's scatter rule)
-            atomicAdd(&S[((oa + 0) * n_ao + (oa + 0))], v0);
+            if (oa < ob) {
+                // off_a < off_b: the block lies wholly above the diagonal, so its transpose
+                // (off_b + j, off_a + i) is written instead
+                // AtomicAdd: several primitive records of one shell pair add into the same S
+                // elements; one add per element, into the lower triangle only
+                atomicAdd(&S[((ob + 0) * n_ao + (oa + 0))], v0);
+            } else {
+                // diagonal shell pair (off_a == off_b): the block's lower triangle i >= j
+                // only, no mirror
+                // AtomicAdd: several primitive records of one shell pair add into the same S
+                // elements; one add per element, into the lower triangle only
+                atomicAdd(&S[((oa + 0) * n_ao + (oa + 0))], v0);
+            }
         }
     }
 }

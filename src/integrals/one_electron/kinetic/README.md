@@ -13,10 +13,11 @@ kernels FelizJueves generates.
 `kinetic` runs `check_one_electron_build` (`launch`), zeroes the
 `CartesianMatrixAO`, and launches one generated kernel per class, one thread per
 record. The kernels read the overlap's record fields plus `eb`, the ket
-exponent. Each thread adds its values at `(m, n)` and `(n, m)` with fp64
-atomics, so T is symmetric to rounding, not bitwise. Queued on `res.stream()`,
-each class on its own stream, forked from it and joined back into it
-(`launch_each`), with no host synchronization.
+exponent. Each thread adds its values into the lower triangle only (`m >= n`)
+with fp64 atomics, and after the join one `symmetrize` launch mirrors it onto
+the upper, so T is bitwise symmetric. Queued on `res.stream()`, each class on
+its own stream, forked from it and joined back into it (`launch_each`), then
+the mirror, with no host synchronization.
 
 `core_hamiltonian` calls `kinetic` to zero H and write T, then adds V on top.
 

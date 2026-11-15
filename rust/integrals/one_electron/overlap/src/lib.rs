@@ -21,7 +21,11 @@
 //!   each reading as an edge the fields of its class's records
 //!   the overlap kernels use
 //!   ([`ClassRows::read`](fb_integrals_sys::ClassRows::read) with
-//!   [`Fields::OVERLAP`](fb_integrals_sys::Fields::OVERLAP)).
+//!   [`Fields::OVERLAP`](fb_integrals_sys::Fields::OVERLAP)) and adding
+//!   into the lower triangle alone; then, once every class has joined,
+//!   that triangle mirrored onto the upper
+//!   ([`fb_recipes_symmetrize::symmetrize_from`]), so the Cartesian S is
+//!   exactly symmetric.
 //! - then the spherical transform, `S = Uᵀ S_cart U`
 //!   ([`fb_recipes_matrix_ao::add_cartesian_to_spherical`]): `harmonics` on
 //!   the CPU and `upload U` on the stream (U into a pinned row,
@@ -40,6 +44,7 @@
 //! | C++ | Here |
 //! |---|---|
 //! | `overlap(res, classes, s.cartesian())` | the `overlap` task, the records' [`ClassRows`](fb_integrals_sys::ClassRows) passed in by the caller |
+//! | `symmetrize(res, WWRBLAS_FILL_MODE_UPPER, n_ao, s.data(), n_ao)` after `launch_each`, the lower triangle mirrored | [`fb_recipes_symmetrize::symmetrize_from`] with the same fill mode, on the task's stream after the forks join |
 //! | `launch_each`: one stream per class, its `device_stream()`'s fork stream, forked from `res.stream()` and joined back | with [`ClassRows::fork`](fb_integrals_sys::ClassRows::fork) set (off by default: every class in order on lane 0), [`DeviceStream::fork_join`](fb_core_thread_pool::DeviceStream::fork_join) in the `overlap` task: a fork per class from the worker's fork streams, joined back before the task returns, never a lane's stream; the task declares a fork per class ([`GpuTask::forks`](fb_core_planner::GpuTask::forks)) |
 //! | `upload_spherical_transform_matrix`, `MatrixAOPair::cartesian_to_spherical` | [`fb_recipes_matrix_ao::add_cartesian_to_spherical`], U's slot passed in by the caller |
 //! | `OverlapStep::run`, `write_overlap_npy` | [`Run`], S returned to the caller |

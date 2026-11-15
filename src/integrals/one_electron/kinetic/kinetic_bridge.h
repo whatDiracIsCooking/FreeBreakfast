@@ -35,8 +35,9 @@ namespace free_breakfast::device {
 /// record.
 ///
 /// Reads @p cls's zeta, pa_{x,y,z}, pb_{x,y,z}, s, eb and offsets. Each value is
-/// atomically added at (m, n) and at (n, m), so @p t must be zeroed before the first class
-/// of a build and is symmetric after the last.
+/// atomically added into the lower triangle only (m >= n), so @p t must be
+/// zeroed before the first class of a build, and the caller mirrors the lower
+/// triangle onto the upper after the last.
 ///
 /// cls.n_rec must be positive, and cls.la <= cls.lb <= the largest momentum
 /// kernels/kinetic.h's table covers. The kernels index @p t as a 32-bit

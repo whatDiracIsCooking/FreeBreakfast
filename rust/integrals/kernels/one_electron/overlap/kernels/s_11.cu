@@ -22,7 +22,8 @@ __global__ void overlap<1, 1>(
     // overlap, class (la, lb) = (1, 1): S_ab as the t = 0 column of the dressed E
     // block (ao/overlap.py)
     // PRECONDITION: S is zeroed by the caller before the first S launch of a
-    // build; this kernel only adds
+    // build; this kernel only adds, and only into the lower triangle (row >= col):
+    // the caller mirrors it onto the upper after the last launch
     // launch: one thread per primitive-pair record
     int32_t rec = static_cast<int32_t>(threadIdx.x + blockIdx.x * blockDim.x);
     if (rec < n_rec) {
@@ -81,43 +82,48 @@ __global__ void overlap<1, 1>(
         double v6 = (sk * E0[6]);
         double v7 = (sk * E0[7]);
         double v8 = (sk * E0[8]);
-        // scatter into S_mn and its mirror S_nm
-        if ((oa < ob) + (ob < oa)) {
-            // AtomicAdd: several primitive records of one shell pair, and both mirror
-            // positions, add into the same S elements (kernel_jab's scatter rule)
+        // scatter into the lower triangle of S
+        if (ob < oa) {
+            // off_a > off_b: the block (off_a + i, off_b + j) lies wholly below the
+            // diagonal (two shells' AO ranges are disjoint)
+            // AtomicAdd: several primitive records of one shell pair add into the same S
+            // elements; one add per element, into the lower triangle only
             atomicAdd(&S[((oa + 0) * n_ao + (ob + 0))], v0);
-            atomicAdd(&S[((ob + 0) * n_ao + (oa + 0))], v0);
             atomicAdd(&S[((oa + 0) * n_ao + (ob + 1))], v1);
-            atomicAdd(&S[((ob + 1) * n_ao + (oa + 0))], v1);
             atomicAdd(&S[((oa + 0) * n_ao + (ob + 2))], v2);
-            atomicAdd(&S[((ob + 2) * n_ao + (oa + 0))], v2);
             atomicAdd(&S[((oa + 1) * n_ao + (ob + 0))], v3);
-            atomicAdd(&S[((ob + 0) * n_ao + (oa + 1))], v3);
             atomicAdd(&S[((oa + 1) * n_ao + (ob + 1))], v4);
-            atomicAdd(&S[((ob + 1) * n_ao + (oa + 1))], v4);
             atomicAdd(&S[((oa + 1) * n_ao + (ob + 2))], v5);
-            atomicAdd(&S[((ob + 2) * n_ao + (oa + 1))], v5);
             atomicAdd(&S[((oa + 2) * n_ao + (ob + 0))], v6);
-            atomicAdd(&S[((ob + 0) * n_ao + (oa + 2))], v6);
             atomicAdd(&S[((oa + 2) * n_ao + (ob + 1))], v7);
-            atomicAdd(&S[((ob + 1) * n_ao + (oa + 2))], v7);
             atomicAdd(&S[((oa + 2) * n_ao + (ob + 2))], v8);
-            atomicAdd(&S[((ob + 2) * n_ao + (oa + 2))], v8);
         } else {
-            // diagonal shell pair (off_a == off_b): the lower triangle i >= j only, each
-            // mirrored once -- kernel_jab's diagonal rule, so the diagonal is not double-
-            // counted
-            // AtomicAdd: several primitive records of one shell pair, and both mirror
-            // positions, add into the same S elements (kernel_jab's scatter rule)
-            atomicAdd(&S[((oa + 0) * n_ao + (oa + 0))], v0);
-            atomicAdd(&S[((oa + 1) * n_ao + (oa + 0))], v3);
-            atomicAdd(&S[((oa + 0) * n_ao + (oa + 1))], v3);
-            atomicAdd(&S[((oa + 1) * n_ao + (oa + 1))], v4);
-            atomicAdd(&S[((oa + 2) * n_ao + (oa + 0))], v6);
-            atomicAdd(&S[((oa + 0) * n_ao + (oa + 2))], v6);
-            atomicAdd(&S[((oa + 2) * n_ao + (oa + 1))], v7);
-            atomicAdd(&S[((oa + 1) * n_ao + (oa + 2))], v7);
-            atomicAdd(&S[((oa + 2) * n_ao + (oa + 2))], v8);
+            if (oa < ob) {
+                // off_a < off_b: the block lies wholly above the diagonal, so its transpose
+                // (off_b + j, off_a + i) is written instead
+                // AtomicAdd: several primitive records of one shell pair add into the same S
+                // elements; one add per element, into the lower triangle only
+                atomicAdd(&S[((ob + 0) * n_ao + (oa + 0))], v0);
+                atomicAdd(&S[((ob + 1) * n_ao + (oa + 0))], v1);
+                atomicAdd(&S[((ob + 2) * n_ao + (oa + 0))], v2);
+                atomicAdd(&S[((ob + 0) * n_ao + (oa + 1))], v3);
+                atomicAdd(&S[((ob + 1) * n_ao + (oa + 1))], v4);
+                atomicAdd(&S[((ob + 2) * n_ao + (oa + 1))], v5);
+                atomicAdd(&S[((ob + 0) * n_ao + (oa + 2))], v6);
+                atomicAdd(&S[((ob + 1) * n_ao + (oa + 2))], v7);
+                atomicAdd(&S[((ob + 2) * n_ao + (oa + 2))], v8);
+            } else {
+                // diagonal shell pair (off_a == off_b): the block's lower triangle i >= j
+                // only, no mirror
+                // AtomicAdd: several primitive records of one shell pair add into the same S
+                // elements; one add per element, into the lower triangle only
+                atomicAdd(&S[((oa + 0) * n_ao + (oa + 0))], v0);
+                atomicAdd(&S[((oa + 1) * n_ao + (oa + 0))], v3);
+                atomicAdd(&S[((oa + 1) * n_ao + (oa + 1))], v4);
+                atomicAdd(&S[((oa + 2) * n_ao + (oa + 0))], v6);
+                atomicAdd(&S[((oa + 2) * n_ao + (oa + 1))], v7);
+                atomicAdd(&S[((oa + 2) * n_ao + (oa + 2))], v8);
+            }
         }
     }
 }

@@ -202,8 +202,8 @@ TEST_P(OverlapMixedSquare, MatchesLibcintAndOverlap) {
   const std::vector<double> got = device_overlap_mixed(res, basis, basis);
   expect_matches(got, want, n, n, scale, "libcint");
 
-  // overlap's S, symmetric to rounding, so its column-major storage is also
-  // its row-major one to that rounding.
+  // overlap's S, bitwise symmetric (its lower triangle mirrored), so its
+  // column-major storage is also its row-major one.
   const auto classes = fb::primitive_pair_classes(res, basis);
   ASSERT_TRUE(classes);
   fb::CartesianMatrixAO square(res, basis);

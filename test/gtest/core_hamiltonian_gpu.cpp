@@ -119,8 +119,8 @@ std::vector<double> device_build(fb::DeviceResources &res, const Golden &g, cons
   return download(res, m);
 }
 
-// got against want, element by element and against its own mirror, at
-// kRelTol * max|want|; the worst absolute error is recorded.
+// got against want, element by element at kRelTol * max|want|, and against its
+// own mirror bitwise; the worst absolute error is recorded.
 void expect_matches(const std::vector<double> &got, const std::vector<double> &want,
                     const std::size_t n, const std::string_view name) {
   ASSERT_EQ(got.size(), want.size());
@@ -134,9 +134,9 @@ void expect_matches(const std::vector<double> &got, const std::vector<double> &w
       const double err = std::abs(got[i * n + j] - want[i * n + j]);
       worst = std::max(worst, err);
       EXPECT_LE(err, kRelTol * scale) << name << "(" << i << ", " << j << ")";
-      // The atomics add each mirror pair in their own order, so symmetric to
-      // rounding, not bitwise.
-      EXPECT_LE(std::abs(got[i * n + j] - got[j * n + i]), kRelTol * scale);
+      // The kernels write the lower triangle and the build mirrors it, so
+      // symmetric bitwise.
+      EXPECT_EQ(got[i * n + j], got[j * n + i]) << name << "(" << i << ", " << j << ") mirror";
     }
   }
   ::testing::Test::RecordProperty("worst_abs_error", std::format("{:.3e}", worst));

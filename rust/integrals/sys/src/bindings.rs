@@ -349,8 +349,9 @@ unsafe extern "C" {
     /// t, on stream: the generated kernel t_{la}{lb}, one thread per record.
     ///
     /// Reads cls's zeta, pa_*, pb_*, s, eb and offsets. Each value is atomically
-    /// added at (m, n) and at (n, m), so t must be zeroed before the first class
-    /// of a build and is symmetric after the last. t is a device array; the
+    /// added into the lower triangle only (m >= n), so t must be zeroed before
+    /// the first class of a build, and the caller mirrors the lower triangle onto
+    /// the upper after the last. t is a device array; the
     /// kernels index it as a 32-bit m * n_ao + n, so n_ao * n_ao must fit an
     /// int32_t.
     ///
@@ -364,9 +365,9 @@ unsafe extern "C" {
     /// stream: the generated kernel s_{la}{lb}, one thread per record.
     ///
     /// Reads cls's zeta, pa_*, pb_*, s and offsets. Each value is atomically
-    /// added at (m, n) and at (n, m), once on a diagonal shell pair, so s must be
-    /// zeroed before the first class of a build and is symmetric after the last.
-    /// s is a device array; the kernels index it as a 32-bit m * n_ao + n, so
+    /// added into the lower triangle only (m >= n), so s must be zeroed before
+    /// the first class of a build, and the caller mirrors the lower triangle onto
+    /// the upper after the last. s is a device array; the kernels index it as a 32-bit m * n_ao + n, so
     /// n_ao * n_ao must fit an int32_t.
     ///
     /// Returns FB_LAUNCH_INVALID_ARGUMENT for a null cls or s, a view with no
@@ -380,9 +381,10 @@ unsafe extern "C" {
     /// record, the nuclei serial inside it.
     ///
     /// Reads cls's zeta, p_* (the product centre), pa_*, pb_*, s and offsets,
-    /// and nuclei's charges and positions. Each value is atomically added at
-    /// (m, n) and at (n, m), so v must be zeroed before the first class of a
-    /// build and is symmetric after the last. v is a device array; the kernels
+    /// and nuclei's charges and positions. Each value is atomically added into
+    /// the lower triangle only (m >= n), so v must be zeroed before the first
+    /// class of a build, and the caller mirrors the lower triangle onto the upper
+    /// after the last. v is a device array; the kernels
     /// index it as a 32-bit m * n_ao + n, so n_ao * n_ao must fit an int32_t.
     ///
     /// Returns FB_LAUNCH_INVALID_ARGUMENT for a null cls, nuclei or v, a view

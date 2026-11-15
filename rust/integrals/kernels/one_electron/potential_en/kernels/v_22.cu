@@ -30,7 +30,8 @@ __global__ void potential_en<2, 2>(
     // E^{ab}_t [t]^(0)(P - C, sqrt(zeta)), the J engine's recurrence at Hermite
     // order 4 with the ket a unit point charge (ao/potential.py)
     // PRECONDITION: V is zeroed by the caller before the first V launch of a
-    // build; this kernel only adds
+    // build; this kernel only adds, and only into the lower triangle (row >= col):
+    // the caller mirrors it onto the upper after the last launch
     // launch: one thread per primitive-pair record
     int32_t rec = static_cast<int32_t>(threadIdx.x + blockIdx.x * blockDim.x);
     if (rec < n_rec) {
@@ -708,124 +709,117 @@ __global__ void potential_en<2, 2>(
         double v33 = (sk * acc33);
         double v34 = (sk * acc34);
         double v35 = (sk * acc35);
-        // scatter into V_mn and its mirror V_nm
-        if ((oa < ob) + (ob < oa)) {
-            // AtomicAdd: several primitive records of one shell pair, and both mirror
-            // positions, add into the same V elements (kernel_jab's scatter rule)
+        // scatter into the lower triangle of V
+        if (ob < oa) {
+            // off_a > off_b: the block (off_a + i, off_b + j) lies wholly below the
+            // diagonal (two shells' AO ranges are disjoint)
+            // AtomicAdd: several primitive records of one shell pair add into the same V
+            // elements; one add per element, into the lower triangle only
             atomicAdd(&V[((oa + 0) * n_ao + (ob + 0))], v0);
-            atomicAdd(&V[((ob + 0) * n_ao + (oa + 0))], v0);
             atomicAdd(&V[((oa + 0) * n_ao + (ob + 1))], v1);
-            atomicAdd(&V[((ob + 1) * n_ao + (oa + 0))], v1);
             atomicAdd(&V[((oa + 0) * n_ao + (ob + 2))], v2);
-            atomicAdd(&V[((ob + 2) * n_ao + (oa + 0))], v2);
             atomicAdd(&V[((oa + 0) * n_ao + (ob + 3))], v3);
-            atomicAdd(&V[((ob + 3) * n_ao + (oa + 0))], v3);
             atomicAdd(&V[((oa + 0) * n_ao + (ob + 4))], v4);
-            atomicAdd(&V[((ob + 4) * n_ao + (oa + 0))], v4);
             atomicAdd(&V[((oa + 0) * n_ao + (ob + 5))], v5);
-            atomicAdd(&V[((ob + 5) * n_ao + (oa + 0))], v5);
             atomicAdd(&V[((oa + 1) * n_ao + (ob + 0))], v6);
-            atomicAdd(&V[((ob + 0) * n_ao + (oa + 1))], v6);
             atomicAdd(&V[((oa + 1) * n_ao + (ob + 1))], v7);
-            atomicAdd(&V[((ob + 1) * n_ao + (oa + 1))], v7);
             atomicAdd(&V[((oa + 1) * n_ao + (ob + 2))], v8);
-            atomicAdd(&V[((ob + 2) * n_ao + (oa + 1))], v8);
             atomicAdd(&V[((oa + 1) * n_ao + (ob + 3))], v9);
-            atomicAdd(&V[((ob + 3) * n_ao + (oa + 1))], v9);
             atomicAdd(&V[((oa + 1) * n_ao + (ob + 4))], v10);
-            atomicAdd(&V[((ob + 4) * n_ao + (oa + 1))], v10);
             atomicAdd(&V[((oa + 1) * n_ao + (ob + 5))], v11);
-            atomicAdd(&V[((ob + 5) * n_ao + (oa + 1))], v11);
             atomicAdd(&V[((oa + 2) * n_ao + (ob + 0))], v12);
-            atomicAdd(&V[((ob + 0) * n_ao + (oa + 2))], v12);
             atomicAdd(&V[((oa + 2) * n_ao + (ob + 1))], v13);
-            atomicAdd(&V[((ob + 1) * n_ao + (oa + 2))], v13);
             atomicAdd(&V[((oa + 2) * n_ao + (ob + 2))], v14);
-            atomicAdd(&V[((ob + 2) * n_ao + (oa + 2))], v14);
             atomicAdd(&V[((oa + 2) * n_ao + (ob + 3))], v15);
-            atomicAdd(&V[((ob + 3) * n_ao + (oa + 2))], v15);
             atomicAdd(&V[((oa + 2) * n_ao + (ob + 4))], v16);
-            atomicAdd(&V[((ob + 4) * n_ao + (oa + 2))], v16);
             atomicAdd(&V[((oa + 2) * n_ao + (ob + 5))], v17);
-            atomicAdd(&V[((ob + 5) * n_ao + (oa + 2))], v17);
             atomicAdd(&V[((oa + 3) * n_ao + (ob + 0))], v18);
-            atomicAdd(&V[((ob + 0) * n_ao + (oa + 3))], v18);
             atomicAdd(&V[((oa + 3) * n_ao + (ob + 1))], v19);
-            atomicAdd(&V[((ob + 1) * n_ao + (oa + 3))], v19);
             atomicAdd(&V[((oa + 3) * n_ao + (ob + 2))], v20);
-            atomicAdd(&V[((ob + 2) * n_ao + (oa + 3))], v20);
             atomicAdd(&V[((oa + 3) * n_ao + (ob + 3))], v21);
-            atomicAdd(&V[((ob + 3) * n_ao + (oa + 3))], v21);
             atomicAdd(&V[((oa + 3) * n_ao + (ob + 4))], v22);
-            atomicAdd(&V[((ob + 4) * n_ao + (oa + 3))], v22);
             atomicAdd(&V[((oa + 3) * n_ao + (ob + 5))], v23);
-            atomicAdd(&V[((ob + 5) * n_ao + (oa + 3))], v23);
             atomicAdd(&V[((oa + 4) * n_ao + (ob + 0))], v24);
-            atomicAdd(&V[((ob + 0) * n_ao + (oa + 4))], v24);
             atomicAdd(&V[((oa + 4) * n_ao + (ob + 1))], v25);
-            atomicAdd(&V[((ob + 1) * n_ao + (oa + 4))], v25);
             atomicAdd(&V[((oa + 4) * n_ao + (ob + 2))], v26);
-            atomicAdd(&V[((ob + 2) * n_ao + (oa + 4))], v26);
             atomicAdd(&V[((oa + 4) * n_ao + (ob + 3))], v27);
-            atomicAdd(&V[((ob + 3) * n_ao + (oa + 4))], v27);
             atomicAdd(&V[((oa + 4) * n_ao + (ob + 4))], v28);
-            atomicAdd(&V[((ob + 4) * n_ao + (oa + 4))], v28);
             atomicAdd(&V[((oa + 4) * n_ao + (ob + 5))], v29);
-            atomicAdd(&V[((ob + 5) * n_ao + (oa + 4))], v29);
             atomicAdd(&V[((oa + 5) * n_ao + (ob + 0))], v30);
-            atomicAdd(&V[((ob + 0) * n_ao + (oa + 5))], v30);
             atomicAdd(&V[((oa + 5) * n_ao + (ob + 1))], v31);
-            atomicAdd(&V[((ob + 1) * n_ao + (oa + 5))], v31);
             atomicAdd(&V[((oa + 5) * n_ao + (ob + 2))], v32);
-            atomicAdd(&V[((ob + 2) * n_ao + (oa + 5))], v32);
             atomicAdd(&V[((oa + 5) * n_ao + (ob + 3))], v33);
-            atomicAdd(&V[((ob + 3) * n_ao + (oa + 5))], v33);
             atomicAdd(&V[((oa + 5) * n_ao + (ob + 4))], v34);
-            atomicAdd(&V[((ob + 4) * n_ao + (oa + 5))], v34);
             atomicAdd(&V[((oa + 5) * n_ao + (ob + 5))], v35);
-            atomicAdd(&V[((ob + 5) * n_ao + (oa + 5))], v35);
         } else {
-            // diagonal shell pair (off_a == off_b): the lower triangle i >= j only, each
-            // mirrored once -- kernel_jab's diagonal rule, so the diagonal is not double-
-            // counted
-            // AtomicAdd: several primitive records of one shell pair, and both mirror
-            // positions, add into the same V elements (kernel_jab's scatter rule)
-            atomicAdd(&V[((oa + 0) * n_ao + (oa + 0))], v0);
-            atomicAdd(&V[((oa + 1) * n_ao + (oa + 0))], v6);
-            atomicAdd(&V[((oa + 0) * n_ao + (oa + 1))], v6);
-            atomicAdd(&V[((oa + 1) * n_ao + (oa + 1))], v7);
-            atomicAdd(&V[((oa + 2) * n_ao + (oa + 0))], v12);
-            atomicAdd(&V[((oa + 0) * n_ao + (oa + 2))], v12);
-            atomicAdd(&V[((oa + 2) * n_ao + (oa + 1))], v13);
-            atomicAdd(&V[((oa + 1) * n_ao + (oa + 2))], v13);
-            atomicAdd(&V[((oa + 2) * n_ao + (oa + 2))], v14);
-            atomicAdd(&V[((oa + 3) * n_ao + (oa + 0))], v18);
-            atomicAdd(&V[((oa + 0) * n_ao + (oa + 3))], v18);
-            atomicAdd(&V[((oa + 3) * n_ao + (oa + 1))], v19);
-            atomicAdd(&V[((oa + 1) * n_ao + (oa + 3))], v19);
-            atomicAdd(&V[((oa + 3) * n_ao + (oa + 2))], v20);
-            atomicAdd(&V[((oa + 2) * n_ao + (oa + 3))], v20);
-            atomicAdd(&V[((oa + 3) * n_ao + (oa + 3))], v21);
-            atomicAdd(&V[((oa + 4) * n_ao + (oa + 0))], v24);
-            atomicAdd(&V[((oa + 0) * n_ao + (oa + 4))], v24);
-            atomicAdd(&V[((oa + 4) * n_ao + (oa + 1))], v25);
-            atomicAdd(&V[((oa + 1) * n_ao + (oa + 4))], v25);
-            atomicAdd(&V[((oa + 4) * n_ao + (oa + 2))], v26);
-            atomicAdd(&V[((oa + 2) * n_ao + (oa + 4))], v26);
-            atomicAdd(&V[((oa + 4) * n_ao + (oa + 3))], v27);
-            atomicAdd(&V[((oa + 3) * n_ao + (oa + 4))], v27);
-            atomicAdd(&V[((oa + 4) * n_ao + (oa + 4))], v28);
-            atomicAdd(&V[((oa + 5) * n_ao + (oa + 0))], v30);
-            atomicAdd(&V[((oa + 0) * n_ao + (oa + 5))], v30);
-            atomicAdd(&V[((oa + 5) * n_ao + (oa + 1))], v31);
-            atomicAdd(&V[((oa + 1) * n_ao + (oa + 5))], v31);
-            atomicAdd(&V[((oa + 5) * n_ao + (oa + 2))], v32);
-            atomicAdd(&V[((oa + 2) * n_ao + (oa + 5))], v32);
-            atomicAdd(&V[((oa + 5) * n_ao + (oa + 3))], v33);
-            atomicAdd(&V[((oa + 3) * n_ao + (oa + 5))], v33);
-            atomicAdd(&V[((oa + 5) * n_ao + (oa + 4))], v34);
-            atomicAdd(&V[((oa + 4) * n_ao + (oa + 5))], v34);
-            atomicAdd(&V[((oa + 5) * n_ao + (oa + 5))], v35);
+            if (oa < ob) {
+                // off_a < off_b: the block lies wholly above the diagonal, so its transpose
+                // (off_b + j, off_a + i) is written instead
+                // AtomicAdd: several primitive records of one shell pair add into the same V
+                // elements; one add per element, into the lower triangle only
+                atomicAdd(&V[((ob + 0) * n_ao + (oa + 0))], v0);
+                atomicAdd(&V[((ob + 1) * n_ao + (oa + 0))], v1);
+                atomicAdd(&V[((ob + 2) * n_ao + (oa + 0))], v2);
+                atomicAdd(&V[((ob + 3) * n_ao + (oa + 0))], v3);
+                atomicAdd(&V[((ob + 4) * n_ao + (oa + 0))], v4);
+                atomicAdd(&V[((ob + 5) * n_ao + (oa + 0))], v5);
+                atomicAdd(&V[((ob + 0) * n_ao + (oa + 1))], v6);
+                atomicAdd(&V[((ob + 1) * n_ao + (oa + 1))], v7);
+                atomicAdd(&V[((ob + 2) * n_ao + (oa + 1))], v8);
+                atomicAdd(&V[((ob + 3) * n_ao + (oa + 1))], v9);
+                atomicAdd(&V[((ob + 4) * n_ao + (oa + 1))], v10);
+                atomicAdd(&V[((ob + 5) * n_ao + (oa + 1))], v11);
+                atomicAdd(&V[((ob + 0) * n_ao + (oa + 2))], v12);
+                atomicAdd(&V[((ob + 1) * n_ao + (oa + 2))], v13);
+                atomicAdd(&V[((ob + 2) * n_ao + (oa + 2))], v14);
+                atomicAdd(&V[((ob + 3) * n_ao + (oa + 2))], v15);
+                atomicAdd(&V[((ob + 4) * n_ao + (oa + 2))], v16);
+                atomicAdd(&V[((ob + 5) * n_ao + (oa + 2))], v17);
+                atomicAdd(&V[((ob + 0) * n_ao + (oa + 3))], v18);
+                atomicAdd(&V[((ob + 1) * n_ao + (oa + 3))], v19);
+                atomicAdd(&V[((ob + 2) * n_ao + (oa + 3))], v20);
+                atomicAdd(&V[((ob + 3) * n_ao + (oa + 3))], v21);
+                atomicAdd(&V[((ob + 4) * n_ao + (oa + 3))], v22);
+                atomicAdd(&V[((ob + 5) * n_ao + (oa + 3))], v23);
+                atomicAdd(&V[((ob + 0) * n_ao + (oa + 4))], v24);
+                atomicAdd(&V[((ob + 1) * n_ao + (oa + 4))], v25);
+                atomicAdd(&V[((ob + 2) * n_ao + (oa + 4))], v26);
+                atomicAdd(&V[((ob + 3) * n_ao + (oa + 4))], v27);
+                atomicAdd(&V[((ob + 4) * n_ao + (oa + 4))], v28);
+                atomicAdd(&V[((ob + 5) * n_ao + (oa + 4))], v29);
+                atomicAdd(&V[((ob + 0) * n_ao + (oa + 5))], v30);
+                atomicAdd(&V[((ob + 1) * n_ao + (oa + 5))], v31);
+                atomicAdd(&V[((ob + 2) * n_ao + (oa + 5))], v32);
+                atomicAdd(&V[((ob + 3) * n_ao + (oa + 5))], v33);
+                atomicAdd(&V[((ob + 4) * n_ao + (oa + 5))], v34);
+                atomicAdd(&V[((ob + 5) * n_ao + (oa + 5))], v35);
+            } else {
+                // diagonal shell pair (off_a == off_b): the block's lower triangle i >= j
+                // only, no mirror
+                // AtomicAdd: several primitive records of one shell pair add into the same V
+                // elements; one add per element, into the lower triangle only
+                atomicAdd(&V[((oa + 0) * n_ao + (oa + 0))], v0);
+                atomicAdd(&V[((oa + 1) * n_ao + (oa + 0))], v6);
+                atomicAdd(&V[((oa + 1) * n_ao + (oa + 1))], v7);
+                atomicAdd(&V[((oa + 2) * n_ao + (oa + 0))], v12);
+                atomicAdd(&V[((oa + 2) * n_ao + (oa + 1))], v13);
+                atomicAdd(&V[((oa + 2) * n_ao + (oa + 2))], v14);
+                atomicAdd(&V[((oa + 3) * n_ao + (oa + 0))], v18);
+                atomicAdd(&V[((oa + 3) * n_ao + (oa + 1))], v19);
+                atomicAdd(&V[((oa + 3) * n_ao + (oa + 2))], v20);
+                atomicAdd(&V[((oa + 3) * n_ao + (oa + 3))], v21);
+                atomicAdd(&V[((oa + 4) * n_ao + (oa + 0))], v24);
+                atomicAdd(&V[((oa + 4) * n_ao + (oa + 1))], v25);
+                atomicAdd(&V[((oa + 4) * n_ao + (oa + 2))], v26);
+                atomicAdd(&V[((oa + 4) * n_ao + (oa + 3))], v27);
+                atomicAdd(&V[((oa + 4) * n_ao + (oa + 4))], v28);
+                atomicAdd(&V[((oa + 5) * n_ao + (oa + 0))], v30);
+                atomicAdd(&V[((oa + 5) * n_ao + (oa + 1))], v31);
+                atomicAdd(&V[((oa + 5) * n_ao + (oa + 2))], v32);
+                atomicAdd(&V[((oa + 5) * n_ao + (oa + 3))], v33);
+                atomicAdd(&V[((oa + 5) * n_ao + (oa + 4))], v34);
+                atomicAdd(&V[((oa + 5) * n_ao + (oa + 5))], v35);
+            }
         }
     }
 }

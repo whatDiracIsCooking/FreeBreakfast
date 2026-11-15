@@ -10,7 +10,12 @@
 //! V into the matrix that holds T reorders no sum inside either, so H's
 //! rounding is theirs and one addition per element, and the two GEMMs of the
 //! transform at these sizes (at most 60 spherical and 70 Cartesian AOs) sit
-//! two decades under it. Symmetry is not gated: the reference is symmetric.
+//! two decades under it. Symmetry against the reference is not gated: the
+//! reference is symmetric. But the build mirrors its lower triangle once,
+//! after the last V launch, so the Cartesian H is bitwise symmetric, and
+//! where no shell is above p, U is a permutation of ones and both GEMMs are
+//! exact (each sum one product by 1 and exact zeros), so H itself is:
+//! STO-3G's water is held to `H[i][j] == H[j][i]`, bit for bit.
 
 mod common;
 
@@ -58,6 +63,17 @@ fn matches_pyscf(fork: bool) {
         let want = fb_io_npy::read_npy(&common::data(&format!("{stem}.npy"))).unwrap();
         assert_eq!(want.shape, [n, n], "{stem}: the AO count");
         assert_eq!(got.len(), n * n, "{stem}: H downloaded");
+        if basis == "sto-3g" {
+            for i in 0..n {
+                for j in 0..i {
+                    assert_eq!(
+                        got[i + j * n].to_bits(),
+                        got[j + i * n].to_bits(),
+                        "{stem}: H({i}, {j}) and H({j}, {i}) differ"
+                    );
+                }
+            }
+        }
         let scale = want.data.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
         let worst = got
             .iter()

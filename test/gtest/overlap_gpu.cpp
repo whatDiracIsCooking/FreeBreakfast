@@ -93,9 +93,9 @@ TEST_P(OverlapGolden, MatchesLibcint) {
       const double err = std::abs(got[i * n + j] - g.ovlp[i * n + j]);
       worst = std::max(worst, err);
       EXPECT_LE(err, kRelTol * scale) << "S(" << i << ", " << j << ")";
-      // The atomics add each mirror pair in their own order, so symmetric to
-      // rounding, not bitwise.
-      EXPECT_LE(std::abs(got[i * n + j] - got[j * n + i]), kRelTol * scale);
+      // The kernels write the lower triangle and the build mirrors it, so
+      // symmetric bitwise.
+      EXPECT_EQ(got[i * n + j], got[j * n + i]) << "S(" << i << ", " << j << ") mirror";
     }
   }
   RecordProperty("worst_abs_error", std::format("{:.3e}", worst));

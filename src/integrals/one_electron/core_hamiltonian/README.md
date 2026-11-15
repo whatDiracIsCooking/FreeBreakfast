@@ -14,7 +14,10 @@ The Cartesian core Hamiltonian H = T + V on the GPU, formed in place from the
 (`launch`) first, so a refused input launches nothing. Then `kinetic` zeroes H
 and writes T, and `add_nuclear_attraction` adds V on top. Both kernels only add,
 so T + V is formed without a T or V matrix of its own and without a separate
-addition.
+addition. Each build mirrors its lower triangle onto the upper after its
+classes join; the second mirror, over T + V, is the one that counts (the first
+is a redundant `n²` copy, kept so `kinetic` alone stays a whole symmetric T),
+and H comes back bitwise symmetric.
 
 No kernels of its own, so no bridge header, launcher or device library: the
 module and its implementation unit are the whole directory.

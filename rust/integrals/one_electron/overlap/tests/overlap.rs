@@ -6,7 +6,12 @@
 //! The bar is fixed by analysis, one run: `max |S - S_ref| <= 1e-12 * max
 //! |S_ref|`, the rounding bound of the atomic sums and the two GEMMs at
 //! these sizes (at most 60 spherical and 70 Cartesian AOs) with three
-//! decades of margin. Symmetry is not gated: the reference is symmetric.
+//! decades of margin. Symmetry against the reference is not gated: the
+//! reference is symmetric. But the build mirrors its lower triangle, so the
+//! Cartesian S is bitwise symmetric, and where no shell is above p, U is a
+//! permutation of ones and both GEMMs are exact (each sum one product by 1
+//! and exact zeros), so S itself is: STO-3G's water is held to
+//! `S[i][j] == S[j][i]`, bit for bit.
 //!
 //! The run's timing record has an entry per task, and every stream task's
 //! entry has a stream scope; each class's records ran on a lane of its
@@ -152,6 +157,17 @@ fn overlap_matches_pyscf() {
 
         let (shape, want) = read_npy(&common::data(&format!("{stem}.npy")));
         assert_eq!(shape, [n, n], "{stem}: the AO count");
+        if basis == "sto-3g" {
+            for i in 0..n {
+                for j in 0..i {
+                    assert_eq!(
+                        s[i + j * n].to_bits(),
+                        s[j + i * n].to_bits(),
+                        "{stem}: S({i}, {j}) and S({j}, {i}) differ"
+                    );
+                }
+            }
+        }
         let scale = want.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
         let worst = s
             .iter()

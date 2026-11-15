@@ -16,6 +16,7 @@ import free_breakfast.core.resources;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.launch;
 import free_breakfast.recipes.matrix_ao;
+import free_breakfast.recipes.symmetrize;
 
 #include "diagnostics.h"
 
@@ -32,9 +33,13 @@ Status kinetic(DeviceResources &res, const std::span<const PrimitivePairClass> c
   // The kernels only add, so the build starts from zero.
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(t.data(), 0, sizeof(double) * t.num_elements(), stream)));
   const auto n_ao = static_cast<int32_t>(t.n());
-  return gpu_status(launch_each(classes, stream, [&](const PrimitivePairClass &cls) {
+  FBF_TRY(gpu_status(launch_each(classes, stream, [&](const PrimitivePairClass &cls) {
     return device::kinetic_class(cls.device_stream()->stream(), cls.view(), n_ao, t.data());
-  }));
+  })));
+  // The kernels write the lower triangle only (row-major, row >= col); the
+  // upper is mirrored from it once every class has joined. Row-major lower is
+  // column-major upper, the recipe's vocabulary.
+  return symmetrize(res, wwr::WWRBLAS_FILL_MODE_UPPER, n_ao, t.data(), n_ao);
 }
 
 } // namespace free_breakfast

@@ -41,6 +41,8 @@ free_breakfast_add_gpu_device_library(
 # implementation unit includes the bridge header in its GMF and calls the
 # launcher, and a static library's private link dependencies still reach the
 # final link.
+# recipes::symmetrize is PRIVATE too: the implementation mirrors the lower
+# triangle the kernels write onto the upper.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.one_electron.kinetic
@@ -59,4 +61,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::integrals::one_electron::kinetic::device
+  free_breakfast::recipes::symmetrize
 )

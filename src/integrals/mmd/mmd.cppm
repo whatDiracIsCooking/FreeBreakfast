@@ -57,8 +57,8 @@ using free_breakfast::PrimitivePairClassView;
 /// angular momentum is stored swapped, B as the bra and A as the ket, so the
 /// kernels need one class per unordered pair of momenta: (s|p) and no (p|s).
 /// The overlap, kinetic and nuclear-attraction matrices are symmetric, and the
-/// kernels write each value at (m, n) and at (n, m), so the swap changes
-/// nothing about the matrix built.
+/// kernels write each value into the lower triangle, whichever way the pair is
+/// stored, so the swap changes nothing about the matrix built.
 ///
 /// Movable, not copyable.
 struct PrimitivePairClass {

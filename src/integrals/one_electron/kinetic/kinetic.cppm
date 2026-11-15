@@ -19,20 +19,21 @@ export namespace free_breakfast {
 /// @brief The Cartesian kinetic energy T_mn = <m| -1/2 grad^2 |n> into @p t.
 ///
 /// Zeroes @p t, then launches the generated kernel of each class, which adds
-/// every record's contributions at (m, n) and (n, m); the kernels also read each
+/// every record's contributions into the lower triangle (m >= n), then mirrors
+/// it onto the upper, so @p t is bitwise symmetric; the kernels also read each
 /// record's ket exponent. @p classes must come from the basis @p t was made for:
 /// a record's AO offsets are not checked against t.n().
 ///
 /// Queued on res.stream(), each class on its own stream, forked from it after
-/// the zeroing and joined back into it (@c launch_each),
+/// the zeroing and joined back into it (@c launch_each), then the mirror,
 /// with no host synchronization. The device res.dev_idx() names is made
 /// current for the call and the previous one restored.
 ///
 /// @return Success; InvalidConfig if @p res is not on @p t's or @p classes'
 ///         device, if a class is above f (or not la <= lb), or if t.n() is too
 ///         large for the kernels' 32-bit index (t.n()^2 above INT32_MAX, about
-///         46k AOs); or the GpuRuntime error of the first memset, fork, launch
-///         or join that failed, which leaves @p t unspecified.
+///         46k AOs); or the GpuRuntime error of the first memset, fork, launch,
+///         join or mirror that failed, which leaves @p t unspecified.
 [[nodiscard]] Status kinetic(DeviceResources &res, std::span<const PrimitivePairClass> classes,
                              CartesianMatrixAO &t);
 

@@ -23,9 +23,12 @@ use crate::{
 
 /// Adds `class`'s overlap contributions into the `n_cart × n_cart` matrix
 /// `s` on `stream`: [`fb_overlap_class`], over records only the records
-/// task makes and a matrix it checks. Each value is added atomically at
-/// `(m, n)` and `(n, m)`, once on a diagonal shell pair, so `s` is zeroed
-/// before a build's first class and symmetric after its last.
+/// task makes and a matrix it checks. Each value is added atomically into
+/// the lower triangle alone, row-major `(m, n)` with `m >= n` (the
+/// column-major upper), so `s` is zeroed before a build's first class, and
+/// the task that launches its last class mirrors that triangle onto the
+/// other (`fb_recipes_symmetrize::symmetrize_from` with
+/// `WWR_BLAS_FILL_MODE_UPPER`).
 ///
 /// `stream` is the stream of the task whose layout read the class's
 /// [`Fields::OVERLAP`] ([`ClassRows::read`]), or a fork of it inside that
@@ -75,9 +78,11 @@ pub fn overlap_class(
 
 /// Adds `class`'s kinetic-energy contributions into the `n_cart × n_cart`
 /// matrix `t` on `stream`: [`fb_kinetic_class`], as [`overlap_class`] is
-/// over the overlap's, the class read with [`Fields::KINETIC`]. Each value is added atomically at `(m, n)` and
-/// `(n, m)`, so `t` is zeroed (or holds what T is added to) before a
-/// build's first class and symmetric after its last when it was before.
+/// over the overlap's, the class read with [`Fields::KINETIC`]. Each value is
+/// added atomically into the lower triangle alone, as [`overlap_class`]'s,
+/// so `t` is zeroed (or holds what T is added to) before a build's first
+/// class, and the task that launches its last class mirrors the lower
+/// triangle onto the upper.
 ///
 /// # Errors
 /// As [`overlap_class`].
@@ -115,9 +120,10 @@ pub fn kinetic_class(
 /// `n_cart × n_cart` matrix `v` on `stream`: [`fb_potential_en_class`],
 /// as [`overlap_class`] is over the overlap's, the class read with
 /// [`Fields::POTENTIAL_EN`], the [`fb_nuclei_view`] formed from the two
-/// slices. Each value is added atomically at `(m, n)`
-/// and `(n, m)`, so `v` is zeroed (or holds what V is added to) before a
-/// build's first class and symmetric after its last when it was before.
+/// slices. Each value is added atomically into the lower triangle alone, as
+/// [`overlap_class`]'s, so `v` is zeroed (or holds what V is added to)
+/// before a build's first class, and the task that launches its last class
+/// mirrors the lower triangle onto the upper.
 ///
 /// # Errors
 /// As [`overlap_class`]; the launcher refuses no nuclei as

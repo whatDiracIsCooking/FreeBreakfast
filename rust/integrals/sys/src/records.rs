@@ -569,7 +569,8 @@ impl ClassRows {
 /// Cartesian AOs and `off_b` the ket basis's, and each rank is among its
 /// own basis's shells. The fields, their order and their bounds are a
 /// [`ClassRows`]', which this is not: a one-basis build reads a basis's
-/// `i <= j` pairs and mirrors each value, so a two-basis class handed to
+/// `i <= j` pairs and folds each value into one triangle that the build
+/// then mirrors, so a two-basis class handed to
 /// one would build the wrong matrix, and no one-basis launcher takes this
 /// type. What makes its offsets trustworthy is [`ClassRows`]' argument,
 /// with each offset's block inside its own basis's AOs

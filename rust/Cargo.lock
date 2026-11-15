@@ -441,7 +441,9 @@ dependencies = [
  "fb-io-xyz",
  "fb-molecule-nuclei",
  "fb-recipes-matrix-ao",
+ "fb-recipes-symmetrize",
  "fb-test-support",
+ "wwr-sys",
 ]
 
 [[package]]
@@ -462,7 +464,9 @@ dependencies = [
  "fb-io-npy",
  "fb-io-xyz",
  "fb-recipes-matrix-ao",
+ "fb-recipes-symmetrize",
  "fb-test-support",
+ "wwr-sys",
 ]
 
 [[package]]
@@ -482,7 +486,9 @@ dependencies = [
  "fb-io-basis",
  "fb-io-xyz",
  "fb-recipes-matrix-ao",
+ "fb-recipes-symmetrize",
  "fb-test-support",
+ "wwr-sys",
 ]
 
 [[package]]
@@ -504,7 +510,9 @@ dependencies = [
  "fb-io-xyz",
  "fb-molecule-nuclei",
  "fb-recipes-matrix-ao",
+ "fb-recipes-symmetrize",
  "fb-test-support",
+ "wwr-sys",
 ]
 
 [[package]]

@@ -38,9 +38,10 @@ namespace free_breakfast::device {
 ///
 /// Reads @p cls's zeta, p_{x,y,z} (the product centre), pa_{x,y,z}, pb_{x,y,z},
 /// s and offsets, and
-/// @p nuclei's charges and positions. Each value is atomically added at (m, n)
-/// and at (n, m), so @p v must be zeroed before the first class of a build and
-/// is symmetric after the last.
+/// @p nuclei's charges and positions. Each value is
+/// atomically added into the lower triangle only (m >= n), so @p v must be
+/// zeroed before the first class of a build, and the caller mirrors the lower
+/// triangle onto the upper after the last.
 ///
 /// cls.n_rec and nuclei.n_nuc must be positive, and cls.la <= cls.lb <= the
 /// largest momentum kernels/potential_en.h's table covers. The kernels index

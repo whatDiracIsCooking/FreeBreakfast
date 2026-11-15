@@ -30,7 +30,8 @@ __global__ void potential_en<0, 2>(
     // E^{ab}_t [t]^(0)(P - C, sqrt(zeta)), the J engine's recurrence at Hermite
     // order 2 with the ket a unit point charge (ao/potential.py)
     // PRECONDITION: V is zeroed by the caller before the first V launch of a
-    // build; this kernel only adds
+    // build; this kernel only adds, and only into the lower triangle (row >= col):
+    // the caller mirrors it onto the upper after the last launch
     // launch: one thread per primitive-pair record
     int32_t rec = static_cast<int32_t>(threadIdx.x + blockIdx.x * blockDim.x);
     if (rec < n_rec) {
@@ -162,22 +163,31 @@ __global__ void potential_en<0, 2>(
         double v3 = (sk * acc3);
         double v4 = (sk * acc4);
         double v5 = (sk * acc5);
-        // scatter into V_mn and its mirror V_nm
-        if ((oa < ob) + (ob < oa)) {
-            // AtomicAdd: several primitive records of one shell pair, and both mirror
-            // positions, add into the same V elements (kernel_jab's scatter rule)
+        // scatter into the lower triangle of V
+        if (ob < oa) {
+            // off_a > off_b: the block (off_a + i, off_b + j) lies wholly below the
+            // diagonal (two shells' AO ranges are disjoint)
+            // AtomicAdd: several primitive records of one shell pair add into the same V
+            // elements; one add per element, into the lower triangle only
             atomicAdd(&V[((oa + 0) * n_ao + (ob + 0))], v0);
-            atomicAdd(&V[((ob + 0) * n_ao + (oa + 0))], v0);
             atomicAdd(&V[((oa + 0) * n_ao + (ob + 1))], v1);
-            atomicAdd(&V[((ob + 1) * n_ao + (oa + 0))], v1);
             atomicAdd(&V[((oa + 0) * n_ao + (ob + 2))], v2);
-            atomicAdd(&V[((ob + 2) * n_ao + (oa + 0))], v2);
             atomicAdd(&V[((oa + 0) * n_ao + (ob + 3))], v3);
-            atomicAdd(&V[((ob + 3) * n_ao + (oa + 0))], v3);
             atomicAdd(&V[((oa + 0) * n_ao + (ob + 4))], v4);
-            atomicAdd(&V[((ob + 4) * n_ao + (oa + 0))], v4);
             atomicAdd(&V[((oa + 0) * n_ao + (ob + 5))], v5);
-            atomicAdd(&V[((ob + 5) * n_ao + (oa + 0))], v5);
+        } else {
+            if (oa < ob) {
+                // off_a < off_b: the block lies wholly above the diagonal, so its transpose
+                // (off_b + j, off_a + i) is written instead
+                // AtomicAdd: several primitive records of one shell pair add into the same V
+                // elements; one add per element, into the lower triangle only
+                atomicAdd(&V[((ob + 0) * n_ao + (oa + 0))], v0);
+                atomicAdd(&V[((ob + 1) * n_ao + (oa + 0))], v1);
+                atomicAdd(&V[((ob + 2) * n_ao + (oa + 0))], v2);
+                atomicAdd(&V[((ob + 3) * n_ao + (oa + 0))], v3);
+                atomicAdd(&V[((ob + 4) * n_ao + (oa + 0))], v4);
+                atomicAdd(&V[((ob + 5) * n_ao + (oa + 0))], v5);
+            }
         }
     }
 }

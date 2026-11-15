@@ -85,8 +85,9 @@ the files stay byte-for-byte as emitted, so a fix belongs in the generator.
 `la <= lb`, so `(s|p)` has a kernel and `(p|s)` does not need one. K is the
 exception: it is not symmetric inside a pair, so `exchange/pairs` holds both
 orientations, and its record bound has a kernel per ordered class. The
-matrices are symmetric and the kernels write each value at `(m, n)` and
-`(n, m)`, so the swap changes nothing about the result.
+matrices are symmetric and the one-electron kernels write each value into the
+lower triangle whichever way the pair is stored (the build mirrors it), so the
+swap changes nothing about the result.
 
 **Not done, in J and K alike: batching.** Each build's scratch is its
 classes', allocated once per basis, and each launches one kernel per class (or

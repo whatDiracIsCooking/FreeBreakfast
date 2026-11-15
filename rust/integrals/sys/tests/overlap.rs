@@ -59,9 +59,10 @@ fn ulps(a: f64, b: f64) -> u64 {
     a.to_bits().abs_diff(b.to_bits())
 }
 
-/// Needs a GPU. One (s|s) record, bra AO 0 and ket AO 1 of a 2 x 2 matrix:
-/// both mirror positions get the closed form within 4 ulp, the diagonal
-/// stays 0.
+/// Needs a GPU. One (s|s) record, bra AO 0 and ket AO 1 of a 2 x 2
+/// row-major matrix: the kernel adds into the lower triangle alone, so
+/// `S_10` gets the closed form within 4 ulp, and `S_01` and the diagonal
+/// stay 0 (the caller mirrors the lower triangle onto the upper).
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn one_ss_record_is_the_closed_form_overlap() {
@@ -121,13 +122,13 @@ fn one_ss_record_is_the_closed_form_overlap() {
         .collect();
     assert_eq!(got[0].to_bits(), 0, "S_00 was written");
     assert_eq!(got[3].to_bits(), 0, "S_11 was written");
-    for (at, value) in [("S_01", got[1]), ("S_10", got[2])] {
-        let off = ulps(value, expected);
-        assert!(
-            off <= 4,
-            "{at} = {value:e}, the closed form {expected:e}: {off} ulp apart"
-        );
-    }
+    assert_eq!(got[1].to_bits(), 0, "S_01, above the diagonal, was written");
+    let off = ulps(got[2], expected);
+    assert!(
+        off <= 4,
+        "S_10 = {:e}, the closed form {expected:e}: {off} ulp apart",
+        got[2]
+    );
 }
 
 /// Every class outside the overlap's table is FB_LAUNCH_UNSUPPORTED, and a

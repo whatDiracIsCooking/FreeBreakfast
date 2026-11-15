@@ -39,8 +39,9 @@ namespace free_breakfast::device {
 /// @p s, on @p stream: the generated kernel s_{la}{lb}, one thread per record.
 ///
 /// Reads @p cls's zeta, pa_{x,y,z}, pb_{x,y,z}, s and offsets. Each value is
-/// atomically added at (m, n) and at (n, m), so @p s must be zeroed before the
-/// first class of a build and is symmetric after the last.
+/// atomically added into the lower triangle only (m >= n), so @p s must be
+/// zeroed before the first class of a build, and the caller mirrors the lower
+/// triangle onto the upper after the last.
 ///
 /// cls.n_rec must be positive, and cls.la <= cls.lb <= the largest momentum
 /// kernels/overlap.h's table covers. The kernels index @p s as a 32-bit

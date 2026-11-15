@@ -34,10 +34,13 @@ per geometry. A build then zeroes a `CartesianMatrixAO` and launches one generat
 kernel per class, one thread per record: `overlap<la, lb>` for S,
 `kinetic<la, lb>` for T, `potential_en<la, lb>` for V (the nuclei serial inside
 each record). Each thread adds
-its values at `(m, n)` and `(n, m)` with fp64 atomics, so a matrix is symmetric
-to rounding (the two mirror positions are summed in different orders), not
-bitwise. The spherical matrix is `MatrixAOPair::cartesian_to_spherical` of the
-result.
+its values into the lower triangle only (row-major, `m >= n`), one fp64 atomic
+per element, and once every class has joined the build mirrors the lower
+triangle onto the upper with `recipes/symmetrize` (`WWRBLAS_FILL_MODE_UPPER`:
+the recipe is column-major, and row-major lower is column-major upper). So a
+matrix is bitwise symmetric, and the kernels issue half the atomics a
+both-positions scatter would. The spherical matrix is
+`MatrixAOPair::cartesian_to_spherical` of the result.
 
 **One stream per class.** `primitive_pair_classes` gives every class its own
 `DeviceStream` on `res.device()`, and its records are allocated and copied

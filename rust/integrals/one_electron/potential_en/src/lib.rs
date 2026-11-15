@@ -10,19 +10,22 @@
 //! - [`potential_en_classes`]: every class's [`potential_en_class`] launch,
 //!   in order on the task's stream, or each on a fork of it joined back
 //!   ([`DeviceStream::fork_join`]) when the classes opt in
-//!   ([`ClassRows::fork`]), each adding into a Cartesian matrix the
-//!   caller zeroed (or filled), over the [`NucleiRows`]' device rows. It
-//!   neither zeroes nor transforms, so a task that launches several
-//!   families into one matrix (the core Hamiltonian's, T and then V on
-//!   top) calls it after
-//!   `fb_integrals_one_electron_kinetic::kinetic_classes`.
+//!   ([`ClassRows::fork`]), each adding into the lower triangle of a
+//!   Cartesian matrix the caller zeroed (or filled), over the
+//!   [`NucleiRows`]' device rows. It neither zeroes, mirrors nor
+//!   transforms, so a task that launches several families into one matrix
+//!   (the core Hamiltonian's, T and then V on top) calls it after
+//!   `fb_integrals_one_electron_kinetic::kinetic_classes` and mirrors
+//!   once, after it.
 //! - [`add_nuclear_attraction`], V of a [`BasisSet`] and a molecule's nuclei
 //!   added to a [`Dag`] after the records
 //!   ([`fb_integrals_mmd::add_records`]) and the nuclei's upload
 //!   ([`fb_molecule_nuclei::add_nuclei`]): **`potential en`**, on the
-//!   worker's stream, the Cartesian matrix zeroed and then
+//!   worker's stream, the Cartesian matrix zeroed, then
 //!   [`potential_en_classes`], reading each class's records and the nuclei
-//!   as edges; then the spherical transform, `V = Uᵀ V_cart U`
+//!   as edges, then the lower triangle mirrored onto the upper
+//!   ([`symmetrize_from`]), so the Cartesian V is exactly symmetric; then
+//!   the spherical transform, `V = Uᵀ V_cart U`
 //!   ([`fb_recipes_matrix_ao::add_cartesian_to_spherical`]), U's slot passed
 //!   in so a plan stages U once. The records and the nuclei are passed in
 //!   too, so one build and one upload serve every reader of the plan.
@@ -36,6 +39,7 @@
 //! | `nuclear_attraction(res, classes, molecule, v)`: zeroed, then one launch per class | the `potential en` task of [`add_nuclear_attraction`]: zeroed, then [`potential_en_classes`] on the worker's lane 0, each class's records, formed on a lane of their own, an event wait on the device; the records' [`ClassRows`] passed in by the caller |
 //! | `launch_each`: one stream per class, its `device_stream()`'s fork stream, forked from `res.stream()` and joined back | with [`ClassRows::fork`] set (off by default: every class in order on lane 0), [`DeviceStream::fork_join`] in [`potential_en_classes`]: a fork per class from the worker's fork streams, joined back before the task returns, never a lane's stream, so no class orders the task behind work the planner did not; the task declares a fork per class ([`GpuTask::forks`]) |
 //! | `add_nuclear_attraction(res, classes, molecule, m)`, V added into `m` unzeroed | [`potential_en_classes`], called by the task that zeroed the matrix |
+//! | `symmetrize(res, WWRBLAS_FILL_MODE_UPPER, n_ao, m.data(), n_ao)` at the end of `launch_potential_en`, the lower triangle mirrored | [`symmetrize_from`] with the same fill mode, in the `potential en` task (and the core Hamiltonian's) after [`potential_en_classes`] returns, not inside it |
 //! | `molecule.view()`, the `NucleiView` | [`NucleiRows`] from [`fb_molecule_nuclei::add_nuclei`], passed in; its rows handed to [`potential_en_class`] by [`potential_en_classes`] |
 //! | `check_nuclei`'s `InvalidConfig` for nuclei on another device | [`add_nuclear_attraction`]'s `InvalidConfig` at planning for [`NucleiRows`] with no nucleus (the wrapper's `n_nuc >= 1`), adding nothing; nuclei of another worker are another table's rows, which [`Dag::add_gpu`] refuses with a panic |
 //! | `check_one_electron_build`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | [`potential_en_class`]'s contract for the class, and its always-on contracts on the matrix's `n_cart²` and the `i32` bound; [`add_nuclear_attraction`] has the `i32` bound as an always-on contract at planning too, and the records hold only `la <= lb` |
@@ -58,16 +62,20 @@ use fb_core_wwr::memset;
 use fb_integrals_sys::{ClassRows, Fields, potential_en_class};
 use fb_molecule_nuclei::NucleiRows;
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
+use fb_recipes_symmetrize::symmetrize_from;
+use wwr_sys::wwr_blas_fill_mode::WWR_BLAS_FILL_MODE_UPPER;
 
 /// Add every class's nuclear-attraction contributions over `nuclei` into the
 /// Cartesian matrix `v`, `n_cart` × `n_cart`: one [`potential_en_class`]
-/// launch per class, each adding at `(m, n)` and `(n, m)`, in order on
-/// `stream`; or, when any class has [`ClassRows::fork`] set, each on a fork
+/// launch per class, each adding into the lower triangle alone (row-major
+/// `m >= n`), in order on `stream`; or, when any class has [`ClassRows::fork`] set, each on a fork
 /// of `stream` joined back into it before the call returns
 /// ([`DeviceStream::fork_join`]), so the classes run at once. Either way
-/// everything enqueued on `stream` afterwards sees all of V. Enqueues only, and zeroes nothing:
-/// `v` must be zeroed (or hold what the caller adds V to) before the call,
-/// and is symmetric after it when it was before.
+/// everything enqueued on `stream` afterwards sees all of V. Enqueues only,
+/// and neither zeroes nor mirrors: `v` must be zeroed (or hold what the
+/// caller adds V to) before the call, and the caller mirrors its lower
+/// triangle onto the upper ([`symmetrize_from`] with
+/// `WWR_BLAS_FILL_MODE_UPPER`) after the last family it adds.
 ///
 /// `stream` is the calling task's, `device` its view, and every class's
 /// [`Fields::POTENTIAL_EN`] and the nuclei's two rows were declared read by
@@ -109,11 +117,13 @@ pub fn potential_en_classes(
 
 /// Add the spherical AO nuclear-attraction matrix of `basis` over `nuclei`
 /// to `dag` on GPU worker `worker`, and return V: an output row of
-/// `nao_sphe²` doubles, column-major, symmetric up to rounding.
+/// `nao_sphe²` doubles, column-major, symmetric up to the transform's
+/// rounding.
 ///
-/// `potential en` (stream: the Cartesian matrix zeroed and
+/// `potential en` (stream: the Cartesian matrix zeroed,
 /// [`potential_en_classes`], a fork per class when they opt in, reading the records and the
-/// nuclei as edges),
+/// nuclei as edges, and the lower triangle mirrored onto the upper,
+/// [`symmetrize_from`]),
 /// then the spherical transform of
 /// [`add_cartesian_to_spherical`]: `harmonics` and `upload U` (U
 /// into a pinned row, then its device row), only when `u` is `None`, and `spherical transform` (stream:
@@ -166,8 +176,10 @@ pub fn add_nuclear_attraction(
     ))
 }
 
-/// GPU: the Cartesian nuclear-attraction matrix, `nao_cart²`, zeroed and
-/// then summed class by class ([`potential_en_classes`]).
+/// GPU: the Cartesian nuclear-attraction matrix, `nao_cart²`, zeroed,
+/// summed class by class into its lower triangle
+/// ([`potential_en_classes`]) and mirrored onto the upper
+/// ([`symmetrize_from`]).
 struct PotentialEn {
     classes: Vec<ClassRows>,
     nuclei: NucleiRows,
@@ -202,6 +214,15 @@ impl GpuTask for PotentialEn {
     ) -> Status {
         let mut v = device.take_mut(*v);
         memset::zero(&mut v, stream)?;
-        potential_en_classes(stream, device, &self.classes, &self.nuclei, &mut v)
+        potential_en_classes(stream, device, &self.classes, &self.nuclei, &mut v)?;
+        // The kernels wrote the row-major lower triangle, the column-major
+        // upper in the recipe's BLAS vocabulary.
+        symmetrize_from(
+            stream,
+            WWR_BLAS_FILL_MODE_UPPER,
+            self.n_cart,
+            &mut v,
+            self.n_cart,
+        )
     }
 }

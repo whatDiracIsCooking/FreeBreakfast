@@ -19,6 +19,8 @@ export namespace free_breakfast {
 /// Checks every input first, then @c kinetic zeroes @p h and writes T, and
 /// @c add_nuclear_attraction adds V on top: both kernels only add, so the sum
 /// is formed in place, with no T or V of its own and no separate addition.
+/// Each mirrors its lower triangle onto the upper, the second over T + V, so
+/// @p h is bitwise symmetric.
 /// Otherwise @c kinetic's and @c nuclear_attraction's contract.
 ///
 /// @return Success; InvalidConfig, before anything is launched, if @p res is
