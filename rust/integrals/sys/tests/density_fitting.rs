@@ -21,8 +21,8 @@ use fb_core_wwr::runtime::tests::DeviceBytes;
 use fb_integrals_sys::{
     FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, FB_LAUNCH_UNSUPPORTED, FB_METRIC_MAX_MOMENTUM,
     FB_METRIC_PAIR_FIELDS, FB_METRIC_RECORD_FIELDS, FB_THREE_CENTER_AUX_FIELDS,
-    FB_THREE_CENTER_AUX_MAX_MOMENTUM, FB_THREE_CENTER_BRA_FIELDS, FB_THREE_CENTER_CELL_FIELDS,
-    FB_THREE_CENTER_MAX_MOMENTUM, fb_metric_class, fb_three_center_class,
+    FB_THREE_CENTER_AUX_MAX_MOMENTUM, FB_THREE_CENTER_CELL_FIELDS, FB_THREE_CENTER_MAX_MOMENTUM,
+    fb_metric_class, fb_primitive_pair_class_view, fb_three_center_class,
     fb_three_center_symmetrize,
 };
 use std::f64::consts::PI;
@@ -32,6 +32,37 @@ use std::ptr::{NonNull, null, null_mut};
 // own is not stable yet.
 unsafe extern "C" {
     safe fn erf(x: f64) -> f64;
+}
+
+/// A class view of `n_rec` records with the three-center launcher's eleven
+/// bra fields, in its order (ζ, P, P − A, P − B, `s`), and every other
+/// pointer null.
+fn bra_view(la: i32, lb: i32, n_rec: i32, f: [*const f64; 11]) -> fb_primitive_pair_class_view {
+    fb_primitive_pair_class_view {
+        la,
+        lb,
+        n_rec,
+        zeta: f[0],
+        p_x: f[1],
+        p_y: f[2],
+        p_z: f[3],
+        pa_x: f[4],
+        pa_y: f[5],
+        pa_z: f[6],
+        pb_x: f[7],
+        pb_y: f[8],
+        pb_z: f[9],
+        s: f[10],
+        ea: null(),
+        eb: null(),
+        bound: null(),
+        bound_ab: null(),
+        bound_ba: null(),
+        off_a: null(),
+        off_b: null(),
+        rank_a: null(),
+        rank_b: null(),
+    }
 }
 
 /// The Boys function of order 0, through libm's `erf`.
@@ -144,7 +175,8 @@ fn one_ss_s_cell_is_the_closed_form_three_center() {
         * (-mu_r2).exp()
         * boys_f0(theta2 * pc2);
 
-    // One bra record: zeta, P, P - A, P - B, s.
+    // One bra record: zeta, P, P - A, P - B, s, each field a row of its
+    // own on the device, as a class's records are.
     let bra = [
         zeta,
         p_x,
@@ -158,7 +190,6 @@ fn one_ss_s_cell_is_the_closed_form_three_center() {
         0.0,
         c_a * c_b * (PI / zeta).powf(1.5),
     ];
-    assert_eq!(bra.len(), FB_THREE_CENTER_BRA_FIELDS as usize);
     let aux = [c[0], c[1], c[2], gamma, c_c * (PI / gamma).powf(1.5)];
     assert_eq!(aux.len(), FB_THREE_CENTER_AUX_FIELDS as usize);
     // One cell: bra records [0, 1), aux records [0, 1), at AOs 0 and 1 and
@@ -167,22 +198,26 @@ fn one_ss_s_cell_is_the_closed_form_three_center() {
     assert_eq!(cells.len(), FB_THREE_CENTER_CELL_FIELDS as usize);
 
     let stream = Stream::new(0);
-    let d_bra = DeviceBytes::upload(&bra, &stream);
+    let d_bra = bra.map(|v| DeviceBytes::upload(&[v], &stream));
+    let view = bra_view(
+        0,
+        0,
+        1,
+        std::array::from_fn(|f| d_bra[f].0.cast_const().cast()),
+    );
     let d_aux = DeviceBytes::upload(&aux, &stream);
     let d_cells = DeviceBytes::upload(&cells, &stream);
     let (n_ao, n_aux) = (2, 1);
     let d_eri3 = DeviceBytes::upload(&[0.0_f64; 4], &stream);
-    // SAFETY: each array is its field count of one-element segments, the
-    // cell names record 0 of each and offsets within n_ao and n_aux, the
-    // tensor n_ao x n_ao x n_aux; none overlap.
+    // SAFETY: each bra field is one record on the device and the aux its
+    // field count of one-element segments, the cell names record 0 of each
+    // and offsets within n_ao and n_aux, the tensor n_ao x n_ao x n_aux;
+    // none overlap.
     let status = unsafe {
         fb_three_center_class(
             stream.stream(),
+            &view,
             0,
-            0,
-            0,
-            1,
-            d_bra.0.cast(),
             1,
             d_aux.0.cast(),
             1,
@@ -295,9 +330,10 @@ fn metric_refuses_before_launching() {
 }
 
 /// Every class outside the three-center table is FB_LAUNCH_UNSUPPORTED, and
-/// a null array, a count not positive or a tensor past an int32's index is
-/// FB_LAUNCH_INVALID_ARGUMENT; the symmetrization refuses the same counts
-/// and arrays, and an input and output that overlap. No device is touched.
+/// a null array (the view or one of its bra fields among them), a count not
+/// positive or a tensor past an int32's index is FB_LAUNCH_INVALID_ARGUMENT;
+/// the symmetrization refuses the same counts and arrays, and an input and
+/// output that overlap. No device is touched.
 #[test]
 fn three_center_wrappers_refuse_before_launching() {
     let d = NonNull::<f64>::dangling().as_ptr();
@@ -307,15 +343,13 @@ fn three_center_wrappers_refuse_before_launching() {
         FB_THREE_CENTER_AUX_MAX_MOMENTUM,
     );
     // SAFETY: every call below is refused before it reads a device pointer.
-    let eri3 = |l: [i32; 3], counts: [i32; 5], bra, aux, cells, out| unsafe {
+    let eri3 = |l: [i32; 3], counts: [i32; 5], bra: *const f64, aux, cells, out| unsafe {
         let [n_bra, n_aux_rec, n_cell, n_ao, n_aux] = counts;
+        let view = bra_view(l[0], l[1], n_bra, [bra; 11]);
         fb_three_center_class(
             null_mut(),
-            l[0],
-            l[1],
+            &view,
             l[2],
-            n_bra,
-            bra,
             n_aux_rec,
             aux,
             n_cell,
@@ -354,6 +388,18 @@ fn three_center_wrappers_refuse_before_launching() {
         eri3([0; 3], ones, null(), d, i, d),
         FB_LAUNCH_INVALID_ARGUMENT
     );
+    // Each bra field alone null, and no view at all.
+    for f in 0..11 {
+        let mut fields = [d.cast_const(); 11];
+        fields[f] = null();
+        let view = bra_view(0, 0, 1, fields);
+        // SAFETY: as above.
+        let status = unsafe { fb_three_center_class(null_mut(), &view, 0, 1, d, 1, i, 1, 1, d) };
+        assert_eq!(status, FB_LAUNCH_INVALID_ARGUMENT, "bra field {f} null");
+    }
+    // SAFETY: as above.
+    let status = unsafe { fb_three_center_class(null_mut(), null(), 0, 1, d, 1, i, 1, 1, d) };
+    assert_eq!(status, FB_LAUNCH_INVALID_ARGUMENT, "a null view");
     assert_eq!(
         eri3([0; 3], ones, d, null(), i, d),
         FB_LAUNCH_INVALID_ARGUMENT

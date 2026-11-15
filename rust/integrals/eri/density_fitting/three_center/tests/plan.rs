@@ -125,8 +125,10 @@ fn u_and_u_aux_are_read_from_the_slots() {
     assert_eq!(uploads.len(), 2, "one upload per basis: {names:?}");
     let last = names.len() - 1;
     assert_eq!(names[last], "three-center", "{names:?}");
+    // The second build adds `three-center tables` and `three-center` alone.
+    assert_eq!(names[last - 1], "three-center tables", "{names:?}");
     assert!(
-        uploads.iter().all(|&t| t < last - 2),
+        uploads.iter().all(|&t| t < last - 1),
         "the second build adds no harmonics: {names:?}"
     );
     let reads = planned.device_table(0).reads();

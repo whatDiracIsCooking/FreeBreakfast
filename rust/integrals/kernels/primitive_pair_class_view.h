@@ -1,8 +1,9 @@
 /* fb_primitive_pair_class_view: one primitive-pair class's records on the
  * device, by pointer, for the launch wrappers. Forked from
  * src/integrals/mmd/primitive_pair_class_view.h, the same fields in the same
- * order, as plain C (rust/docs/gpu_layer.md, "Shared types"): mmd/mmd.h and
- * one_electron/overlap/overlap.h include it, and devtools/rust-bindings.py
+ * order, as plain C (rust/docs/gpu_layer.md, "Shared types"): mmd/mmd.h,
+ * one_electron/overlap/overlap.h and eri/density_fitting/three_center/
+ * three_center.h include it, and devtools/rust-bindings.py
  * reads it into fb-integrals-sys's #[repr(C)] mirror. */
 #pragma once
 

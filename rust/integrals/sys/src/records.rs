@@ -313,9 +313,9 @@ impl RecordTables {
 /// hands its kernel a view with these pointers and null for the rest.
 ///
 /// Each family's set is every field its forked kernels dereference
-/// through the view, and no other: a test scans
-/// `integrals/kernels/one_electron/<family>/` and holds each set to it,
-/// which is what makes the null pointers sound.
+/// through the view, and no other: a test scans each family's directory
+/// under `integrals/kernels/` and holds each set to it, which is what
+/// makes the null pointers sound.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fields(u32);
 
@@ -328,6 +328,11 @@ impl Fields {
     pub const KINETIC: Self = Self(Self::OVERLAP.0 | 1 << F_EB);
     /// The nuclear attraction's: the overlap's, and P.
     pub const POTENTIAL_EN: Self = Self(Self::OVERLAP.0 | 0b111 << F_P_X);
+    /// The three-center integrals' bra: ζ, P, P − A, P − B and `s`, the
+    /// first eleven double fields. The offsets are not among them: each
+    /// cell carries its pair's, formed at planning.
+    pub const THREE_CENTER: Self =
+        Self(1 << F_ZETA | 0b111 << F_P_X | 0b111 << F_PA_X | 0b111 << F_PB_X | 1 << F_S);
 
     /// The fields of either set: a task that launches two families over
     /// one class, as the core Hamiltonian does, reads both.
@@ -360,7 +365,9 @@ const I_OFF_B: usize = 17;
 /// class to a launcher:
 /// [`overlap_class`](crate::overlap_class),
 /// [`kinetic_class`](crate::kinetic_class) or
-/// [`potential_en_class`](crate::potential_en_class).
+/// [`potential_en_class`](crate::potential_en_class); the three-center
+/// task ([`add_three_center_tasks`](crate::add_three_center_tasks)) reads
+/// its bra fields in place the same way.
 ///
 /// The fields are the C++ `PrimitivePairClass`'s (its README's design has
 /// each one), in enumeration order: shell pair, then bra primitive, then
@@ -1075,12 +1082,12 @@ mod tests {
     ];
 
     /// The view's pointer fields that the forked sources under
-    /// `integrals/kernels/one_electron/<family>/` dereference: `name->field`
-    /// or `name.field` for every `name` declared there as a
+    /// `integrals/kernels/<family>/` dereference: `name->field` or
+    /// `name.field` for every `name` declared there as a
     /// `fb_primitive_pair_class_view` pointer or reference.
     fn dereferenced(family: &str) -> std::collections::BTreeSet<String> {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../kernels/one_electron")
+            .join("../kernels")
             .join(family);
         let mut sources = Vec::new();
         let mut todo = vec![dir.clone()];
@@ -1146,9 +1153,10 @@ mod tests {
     #[test]
     fn each_family_reads_exactly_its_fields() {
         for (family, fields) in [
-            ("overlap", Fields::OVERLAP),
-            ("kinetic", Fields::KINETIC),
-            ("potential_en", Fields::POTENTIAL_EN),
+            ("one_electron/overlap", Fields::OVERLAP),
+            ("one_electron/kinetic", Fields::KINETIC),
+            ("one_electron/potential_en", Fields::POTENTIAL_EN),
+            ("eri/density_fitting/three_center", Fields::THREE_CENTER),
         ] {
             let set: std::collections::BTreeSet<String> = VIEW_FIELDS
                 .iter()
