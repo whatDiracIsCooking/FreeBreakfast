@@ -7,11 +7,13 @@
 //!
 //! Two layers:
 //!
-//! - [`potential_en_classes`]: every class's [`potential_en_class`] launch
-//!   on one stream, each adding into a Cartesian matrix the caller zeroed
-//!   (or filled), over the [`NucleiRows`]' device rows. It neither zeroes nor transforms, so a task that
-//!   launches several families on one stream into one matrix (the core
-//!   Hamiltonian's, T and then V on top) calls it after
+//! - [`potential_en_classes`]: every class's [`potential_en_class`] launch,
+//!   each on a fork of the task's stream and joined back
+//!   ([`DeviceStream::fork_join`]), each adding into a Cartesian matrix the
+//!   caller zeroed (or filled), over the [`NucleiRows`]' device rows. It
+//!   neither zeroes nor transforms, so a task that launches several
+//!   families into one matrix (the core Hamiltonian's, T and then V on
+//!   top) calls it after
 //!   `fb_integrals_one_electron_kinetic::kinetic_classes`.
 //! - [`add_nuclear_attraction`], V of a [`BasisSet`] and a molecule's nuclei
 //!   added to a [`Dag`] after the records
@@ -29,8 +31,9 @@
 //!
 //! | C++ | Here |
 //! |---|---|
-//! | `potential_en_class(stream, cls, nuclei, n_ao, v)` (`potential_en_bridge.h`), one class | [`potential_en_class`], `fb-integrals-sys`'s safe launcher over a [`ClassRows`] and the nuclei's two rows; [`potential_en_classes`]`(stream, device, classes, nuclei, v)`, every class in order on one stream, over the [`NucleiRows`] |
-//! | `nuclear_attraction(res, classes, molecule, v)`: zeroed, then one launch per class, each on a stream forked from `res.stream()` | the `potential en` task of [`add_nuclear_attraction`]: zeroed, then [`potential_en_classes`] on the worker's lane 0, each class's records, formed on a lane of their own, an event wait on the device; the records' [`ClassRows`] passed in by the caller |
+//! | `potential_en_class(stream, cls, nuclei, n_ao, v)` (`potential_en_bridge.h`), one class | [`potential_en_class`], `fb-integrals-sys`'s safe launcher over a [`ClassRows`] and the nuclei's two rows; [`potential_en_classes`]`(stream, device, classes, nuclei, v)`, every class on a fork of the task's stream, over the [`NucleiRows`] |
+//! | `nuclear_attraction(res, classes, molecule, v)`: zeroed, then one launch per class | the `potential en` task of [`add_nuclear_attraction`]: zeroed, then [`potential_en_classes`] on the worker's lane 0, each class's records, formed on a lane of their own, an event wait on the device; the records' [`ClassRows`] passed in by the caller |
+//! | `launch_each`: one stream per class, its `device_stream()`'s fork stream, forked from `res.stream()` and joined back | [`DeviceStream::fork_join`] in [`potential_en_classes`]: a fork per class from the worker's fork streams, joined back before the task returns, never a lane's stream, so no class orders the task behind work the planner did not; the task declares a fork per class ([`GpuTask::forks`]) |
 //! | `add_nuclear_attraction(res, classes, molecule, m)`, V added into `m` unzeroed | [`potential_en_classes`], called by the task that zeroed the matrix |
 //! | `molecule.view()`, the `NucleiView` | [`NucleiRows`] from [`fb_molecule_nuclei::add_nuclei`], passed in; its rows handed to [`potential_en_class`] by [`potential_en_classes`] |
 //! | `check_nuclei`'s `InvalidConfig` for nuclei on another device | [`add_nuclear_attraction`]'s `InvalidConfig` at planning for [`NucleiRows`] with no nucleus (the wrapper's `n_nuc >= 1`), adding nothing; nuclei of another worker are another table's rows, which [`Dag::add_gpu`] refuses with a panic |
@@ -50,26 +53,30 @@ use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::device_slice::DeviceSliceMut;
 use fb_core_wwr::memset;
-use fb_core_wwr::runtime::Stream;
 use fb_integrals_sys::{ClassRows, Fields, potential_en_class};
 use fb_molecule_nuclei::NucleiRows;
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 
 /// Add every class's nuclear-attraction contributions over `nuclei` into the
-/// Cartesian matrix `v`, `n_cart` × `n_cart`, on `stream`: one
-/// [`potential_en_class`] launch per class, in order, each adding at
-/// `(m, n)` and `(n, m)`. Enqueues only, and zeroes nothing: `v` must be
-/// zeroed (or hold what the caller adds V to) before the call, and is
-/// symmetric after it when it was before.
+/// Cartesian matrix `v`, `n_cart` × `n_cart`: one [`potential_en_class`]
+/// launch per class, each on a fork of `stream` joined back into it before
+/// the call returns ([`DeviceStream::fork_join`]), each adding at `(m, n)`
+/// and `(n, m)`, so the classes run at once and everything enqueued on
+/// `stream` afterwards sees all of V. Enqueues only, and zeroes nothing:
+/// `v` must be zeroed (or hold what the caller adds V to) before the call,
+/// and is symmetric after it when it was before.
 ///
 /// `stream` is the calling task's, `device` its view, and every class's
 /// [`Fields::POTENTIAL_EN`] and the nuclei's two rows were declared read by
-/// its layout ([`ClassRows::read`], [`NucleiRows::read`]).
+/// its layout ([`ClassRows::read`], [`NucleiRows::read`]); the task
+/// declares a fork per class ([`GpuTask::forks`]), or the classes share the
+/// forks its worker has.
 ///
 /// # Errors
 /// The first launch's refusal or launch error, as [`potential_en_class`]
-/// names it with the class; the classes before it are enqueued, and `v` is
-/// then unspecified. The kernels' own faults surface at the stream's next
+/// names it with the class, or a fork's or join's status; no class after
+/// it is launched, the forks already made are joined back, and `v` is then
+/// unspecified. The kernels' own faults surface at the stream's next
 /// synchronization.
 ///
 /// # Panics
@@ -79,17 +86,16 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// was not declared.
 #[track_caller]
 pub fn potential_en_classes(
-    stream: &Stream,
+    stream: &DeviceStream,
     device: &Bufs<'_, Device>,
     classes: &[ClassRows],
     nuclei: &NucleiRows,
     v: &mut impl DeviceSliceMut<f64>,
 ) -> Status {
     let (z, c) = (device.get(nuclei.z), device.get(nuclei.c));
-    for cls in classes {
-        potential_en_class(stream, device, cls, &z, &c, v)?;
-    }
-    Ok(())
+    stream.fork_join(classes.len(), |i, fork| {
+        potential_en_class(fork, device, &classes[i], &z, &c, v)
+    })
 }
 
 /// Add the spherical AO nuclear-attraction matrix of `basis` over `nuclei`
@@ -97,7 +103,8 @@ pub fn potential_en_classes(
 /// `nao_sphe²` doubles, column-major, symmetric up to rounding.
 ///
 /// `potential en` (stream: the Cartesian matrix zeroed and
-/// [`potential_en_classes`], reading the records and the nuclei as edges),
+/// [`potential_en_classes`], a fork per class, reading the records and the
+/// nuclei as edges),
 /// then the spherical transform of
 /// [`add_cartesian_to_spherical`]: `harmonics` and `upload U` (U
 /// into a pinned row, then its device row), only when `u` is `None`, and `spherical transform` (stream:
@@ -168,6 +175,10 @@ impl GpuTask for PotentialEn {
         }
         self.nuclei.read(device);
         device.output("V cartesian", self.n_cart * self.n_cart)
+    }
+
+    fn forks(&self) -> usize {
+        self.classes.len()
     }
 
     fn run(

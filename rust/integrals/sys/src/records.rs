@@ -384,7 +384,11 @@ const I_OFF_B: usize = 17;
 /// `n_cart²` long and `n_cart²` fits the kernels' 32-bit index. The one
 /// thing assumed rather than checked is the one the arena's own
 /// `DeviceSlice` rows assume: the launch goes on the stream of the task
-/// that reads the rows, the stream the executor ordered.
+/// that reads the rows, the stream the executor ordered, or on a fork of
+/// it inside that task's
+/// [`DeviceStream::fork_join`](fb_core_thread_pool::DeviceStream::fork_join),
+/// which starts after everything on the stream and is joined back before
+/// the task returns.
 #[derive(Clone, Copy, Debug)]
 pub struct ClassRows {
     la: i32,

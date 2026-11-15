@@ -91,7 +91,7 @@ svg .fh{fill:currentColor}
 </head>
 <body>
 <div class="wrap">
-<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#the-pipeline-is-already-an-instance">The pipeline is already an instance</a></li><li class="l2"><a href="#three-owners">Three owners</a></li><li class="l3"><a href="#a-task-declares">A task declares</a></li><li class="l3"><a href="#an-edge-declares">An edge declares</a></li><li class="l3"><a href="#the-orchestrator-derives">The orchestrator derives</a></li><li class="l3"><a href="#a-builder-adds-tasks">A builder adds tasks</a></li><li class="l2"><a href="#memory-layouts-and-arenas">Memory: layouts and arenas</a></li><li class="l3"><a href="#the-arena-is-a-table-and-a-block">The arena is a table and a block</a></li><li class="l3"><a href="#blocks-plans-and-the-process">Blocks, plans and the process</a></li><li class="l3"><a href="#memory-kinds">Memory kinds</a></li><li class="l2"><a href="#plan-once-run-many">Plan once, run many</a></li><li class="l2"><a href="#two-kinds-of-distribution">Two kinds of distribution</a></li><li class="l2"><a href="#workers-are-a-hierarchy">Workers are a hierarchy</a></li><li class="l3"><a href="#cpu-workers">CPU workers</a></li><li class="l3"><a href="#capabilities-are-enforced-by-lints">Capabilities are enforced by lints</a></li><li class="l2"><a href="#reproducibility-across-placements">Reproducibility across placements</a></li><li class="l2"><a href="#example-the-coulomb-build-under-two-placements">Example: the Coulomb build under two placements</a></li><li class="l2"><a href="#granularity">Granularity</a></li><li class="l2"><a href="#open-questions">Open questions</a></li></ol><div class="sib"><div class="kicker">See also</div><ol><li><a href="memory.html">memory</a></li></ol></div></nav>
+<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#the-pipeline-is-already-an-instance">The pipeline is already an instance</a></li><li class="l2"><a href="#three-owners">Three owners</a></li><li class="l3"><a href="#a-task-declares">A task declares</a></li><li class="l3"><a href="#an-edge-declares">An edge declares</a></li><li class="l3"><a href="#the-orchestrator-derives">The orchestrator derives</a></li><li class="l3"><a href="#a-builder-adds-tasks">A builder adds tasks</a></li><li class="l2"><a href="#memory-layouts-and-arenas">Memory: layouts and arenas</a></li><li class="l3"><a href="#the-arena-is-a-table-and-a-block">The arena is a table and a block</a></li><li class="l3"><a href="#blocks-plans-and-the-process">Blocks, plans and the process</a></li><li class="l3"><a href="#memory-kinds">Memory kinds</a></li><li class="l2"><a href="#plan-once-run-many">Plan once, run many</a></li><li class="l2"><a href="#two-kinds-of-distribution">Two kinds of distribution</a></li><li class="l2"><a href="#workers-are-a-hierarchy">Workers are a hierarchy</a></li><li class="l3"><a href="#forks-inside-a-task">Forks inside a task</a></li><li class="l3"><a href="#cpu-workers">CPU workers</a></li><li class="l3"><a href="#capabilities-are-enforced-by-lints">Capabilities are enforced by lints</a></li><li class="l2"><a href="#reproducibility-across-placements">Reproducibility across placements</a></li><li class="l2"><a href="#example-the-coulomb-build-under-two-placements">Example: the Coulomb build under two placements</a></li><li class="l2"><a href="#granularity">Granularity</a></li><li class="l2"><a href="#open-questions">Open questions</a></li></ol><div class="sib"><div class="kicker">See also</div><ol><li><a href="memory.html">memory</a></li></ol></div></nav>
 <main>
 <h1><span class="pre">Rust rebuild</span>Programming model</h1>
 <p>We design a feature as a DAG of tasks before we write it as code. A node is a
@@ -846,6 +846,56 @@ through the handoffs, rather than exploiting only the paths the DAG
 already has. Giving a reuse up for concurrency when the cap leaves room is
 admission's search, and not built (<a href="memory.html"><code>memory.md</code></a>, &quot;Open
 questions&quot;).</p>
+<h3 id="forks-inside-a-task">Forks inside a task</h3>
+<p>A lane is the planner's: nodes are placed on it, the executor orders the
+edges between lanes, and it costs a stream, library handles and a
+workspace row. Some concurrency lives inside one node instead, where the
+DAG does not look: the one-electron builds launch a kernel per
+primitive-pair class into one matrix, every class adding atomically, as
+the C++ <code>launch_each</code> does on a stream per class. A GPU task reaches it
+through its stream, <code>DeviceStream::fork_join(n, |i, fork| ...)</code>:</p>
+<ul>
+<li><strong>Fork.</strong> The task's stream records an event, and each fork stream
+waits on it, so each starts after everything already on the task's
+stream: the executor's waits for its inputs and what the task enqueued
+before the call.</li>
+<li><strong>Items.</strong> The closure runs once per item, on the host and in order,
+each enqueueing on its fork; item <code>i</code> goes on fork <code>i mod k</code>. The items
+are not ordered among themselves, so they must not conflict: they add
+atomically, as the class kernels do, or write disjoint bytes.</li>
+<li><strong>Join.</strong> Each fork records an event, and the task's stream waits on
+each, before <code>fork_join</code> returns. Every wait is on the device; a fork
+is no host sync, and a task that forks is still one task
+(&quot;Granularity&quot;).</li>
+</ul>
+<p><strong>The forks are a worker's own streams, not its lanes.</strong> Each GPU worker
+has a pool of fork streams beside its lanes, with no library handles,
+made with the backend as its lanes are, never during a run. Its size is
+the most any of the worker's tasks declares it forks onto
+(<code>GpuTask::forks</code>, none by default), and <code>k</code> is the smaller of that and
+<code>n</code>; with fewer than two, the items run on the task's stream itself, so a
+count left out costs concurrency, never order. Forking onto another
+lane's stream, as the C++ forks onto a stream each class carries, would
+order the task behind whatever is queued on that lane, a dependency
+the planner cannot see. Two nodes of one worker that fork share its pool, so their forked
+items keep the order the worker's thread enqueued them in; that never
+deadlocks, since the one thread enqueues all of a worker's work and every
+wait it enqueues is on an event already recorded. No node is placed on a
+fork and no edge names one, so the plan's text, its tables and its
+goldens are those of the same DAG without forks.</p>
+<p><strong>The scope is what makes a fork sound.</strong> The forks start after the
+task's input waits and are joined before its body returns, so everything
+the executor records on the task's lane afterwards covers the forked
+work: its completion event, which every consumer on another lane waits
+on, and every handoff of its rows' bytes to a later owner. What a row's
+<code>DeviceSlice</code> promise and the class records' <code>ClassRows</code> argument rest
+on, that a launch goes on the stream the executor ordered, holds in
+effect. The API allows no fork without its join: a fork stream is
+reached only as the closure's borrowed <code>&amp;Stream</code>, as a scoped thread is
+only inside <code>std::thread::scope</code>, and a failed item or fork still joins
+every fork already made before the error returns, as <code>launch_each</code> does.
+A worker drains its forks with its lanes as it exits, so a run returns
+with nothing outstanding even after a failed join.</p>
 <h3 id="cpu-workers">CPU workers</h3>
 <p>A CPU node is a file write, a host decision between runs of a sub-DAG, or a
 small host-side assembly. It runs on a CPU worker, which is one thread the
@@ -1178,7 +1228,9 @@ between them could be put on two lanes by the planner instead, but a
 lane is a stream, and a library handle pair and a BLAS workspace row
 when its tasks call a library, so the
 count is a cost, and which nodes are worth splitting is the schedule
-search's question below.</li>
+search's question below. Forks inside a task do not answer it: they
+are concurrency within one node, which the DAG does not see into
+(&quot;Forks inside a task&quot;).</li>
 <li><strong>How loose is too loose.</strong> A bound from the dimensions is the preferred
 answer to a data-dependent size. At what ratio of bound to typical size
 does a sizing node pay for its extra host round trip?</li>

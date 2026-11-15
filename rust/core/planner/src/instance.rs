@@ -34,6 +34,9 @@ pub struct Instance<'a, H: StagingKind = Pinned, S = DeviceStream> {
     /// Per worker, per lane, whether the lane has library handles.
     #[cfg_attr(not(feature = "device"), allow(dead_code))]
     libraries: Vec<Vec<bool>>,
+    /// Per worker, its fork streams.
+    #[cfg_attr(not(feature = "device"), allow(dead_code))]
+    forks: Vec<usize>,
     /// Per worker, its BLAS workspace rows, each with its lane, if declared.
     #[cfg_attr(not(feature = "device"), allow(dead_code))]
     pub(super) blas_workspaces: Vec<Vec<(usize, RowId<Device, u8>)>>,
@@ -120,6 +123,7 @@ impl<'a, H: StagingKind, S: 'a> Planned<'a, H, S> {
             blocks,
             heap,
             libraries: self.libraries,
+            forks: self.forks,
             blas_workspaces: self.blas_workspaces,
         }
     }
@@ -193,7 +197,9 @@ impl<H: StagingKind> Instance<'_, H, DeviceStream> {
     /// [`thread_pool::Device`] whose GPU worker `w` is on worker `w`'s
     /// device with the lanes its tasks name, with an event pair for every
     /// GPU node of this plan, library handles on lane 0 and on each lane a
-    /// task that uses them is placed on ([`GpuTask::uses_libraries`]), and
+    /// task that uses them is placed on ([`GpuTask::uses_libraries`]), as
+    /// many fork streams per worker as its most forking task declares
+    /// ([`GpuTask::forks`]), and
     /// each such lane's declared BLAS workspace ([`Dag::blas_workspace`])
     /// handed to its BLAS handle. A handle holds
     /// its row as a
@@ -210,10 +216,12 @@ impl<H: StagingKind> Instance<'_, H, DeviceStream> {
     ///
     /// [`Dag::blas_workspace`]: super::Dag::blas_workspace
     /// [`GpuTask::uses_libraries`]: super::GpuTask::uses_libraries
+    /// [`GpuTask::forks`]: super::GpuTask::forks
     #[track_caller]
     pub fn backend(&self) -> thread_pool::Device {
         let devices: Vec<i32> = self.blocks.iter().map(|(d, _)| d.dev_idx()).collect();
-        let mut backend = thread_pool::Device::new(&devices, &self.plan, &self.libraries);
+        let mut backend =
+            thread_pool::Device::new(&devices, &self.plan, &self.libraries, &self.forks);
         for (worker, rows) in self.blas_workspaces.iter().enumerate() {
             for &(lane, row) in rows {
                 let held = self.blocks[worker].0.hold(row);
