@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use contracts::debug_requires;
+use contracts::{debug_ensures, debug_requires};
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
@@ -89,6 +89,13 @@ impl AuxTable {
     /// If `l` is negative, the shell's block `ao_offset + (l + 1)(l + 2) / 2`
     /// passes `n_cart`, or the records pass an `i32` count: each is an
     /// index the kernel follows.
+    #[debug_ensures(
+        self.n_shells() == old(self.n_shells()) + 1
+            && self.ao_offset.len() == self.n_shells()
+            && self.rec_begin.len() == self.n_shells() + 1
+            && self.rec_begin.last().is_some_and(|&end| end as usize == self.n_rec()),
+        "one shell appended, every per-shell array in step"
+    )]
     #[track_caller]
     pub fn push_shell(
         &mut self,
@@ -178,10 +185,10 @@ struct Staging {
 impl Staging {
     /// The tables of `aux`: as FelizJueves's `metric_classes` stages them,
     /// a pair whose first shell has the higher momentum swapped, since the
-    /// kernel stores every element with its mirror.
+    /// kernel stores every element with its mirror. The pairs are grouped
+    /// by class here and laid out by [`Staging::from_runs`], whose
+    /// contracts state the promise.
     fn new(aux: &AuxTable) -> Staging {
-        let n_rec = aux.n_rec();
-        let records = aux.field_major();
         let n_l = FB_METRIC_MAX_MOMENTUM.max(aux.momentum.iter().copied().max().unwrap_or(0))
             as usize
             + 1;
@@ -205,7 +212,25 @@ impl Staging {
                 ]);
             }
         }
-        let mut pairs = Vec::with_capacity(PAIR_FIELDS * n_shells * (n_shells + 1) / 2);
+        Staging::from_runs(aux, n_l, &by_class)
+    }
+
+    /// The tables of `aux` from its shell pairs grouped by class, class
+    /// `(lp, lq)` at `by_class[lp n_l + lq]`: the records field-major, and
+    /// each class that has a pair one run, field-major, in class order.
+    #[debug_ensures(
+        ret.classes.iter().try_fold(0, |at, &(lp, lq, first, n)| {
+            (lp <= lq && first == at && n > 0).then_some(at + n)
+        }) == Some(aux.n_shells() * (aux.n_shells() + 1) / 2),
+        "each class lp <= lq is one non-empty run, and the runs hold every pair P <= Q once"
+    )]
+    #[debug_ensures(
+        ret.classes.windows(2).all(|w| (w[0].0, w[0].1) < (w[1].0, w[1].1)),
+        "the classes ascend"
+    )]
+    fn from_runs(aux: &AuxTable, n_l: usize, by_class: &[Vec<[i32; PAIR_FIELDS]>]) -> Staging {
+        let mut pairs =
+            Vec::with_capacity(PAIR_FIELDS * by_class.iter().map(Vec::len).sum::<usize>());
         let mut classes = Vec::new();
         for (class, run) in by_class.iter().enumerate() {
             if run.is_empty() {
@@ -223,8 +248,8 @@ impl Staging {
         }
         Staging {
             n_cart: aux.n_cart,
-            n_rec,
-            records,
+            n_rec: aux.n_rec(),
+            records: aux.field_major(),
             pairs,
             classes,
         }
@@ -401,6 +426,72 @@ mod tests {
         assert_eq!(run(0), [1, 3, 1, 3, 6, 6], "(s, s)");
         assert_eq!(run(1), [1, 3, 0, 1, 6, 0], "(d, s) staged as (s, d)");
         assert_eq!(run(2), [0, 1, 0, 1, 0, 0], "(d, d)");
+    }
+
+    /// Two s shells and a p: three pairs in (s, s) and two in (s, p), so a
+    /// class's run is longer than one pair, each field's run in pair order.
+    #[test]
+    fn a_class_of_several_pairs_is_one_run_in_pair_order() {
+        let mut t = AuxTable::new(5);
+        t.push_shell(0, [0.0; 3], 0, [(1.0, 1.0)]);
+        t.push_shell(0, [0.0; 3], 1, [(2.0, 1.0), (0.5, 1.0)]);
+        t.push_shell(1, [0.0; 3], 2, [(1.5, 1.0)]);
+        let s = Staging::new(&t);
+        assert_eq!(s.classes, [(0, 0, 0, 3), (0, 1, 3, 2), (1, 1, 5, 1)]);
+        // (s, s) holds pairs (0,0), (0,1), (1,1), each field a run of three;
+        // (s, p) then holds (0,2), (1,2), each field a run of two.
+        let field = |first: usize, n: usize, f: usize| &s.pairs[6 * first + n * f..][..n];
+        assert_eq!(field(0, 3, 0), [0, 0, 1], "(s, s): P's first record");
+        assert_eq!(field(0, 3, 2), [0, 1, 1], "(s, s): Q's first record");
+        assert_eq!(field(0, 3, 5), [0, 1, 1], "(s, s): off_q");
+        assert_eq!(field(3, 2, 0), [0, 1], "(s, p): P's first record");
+        assert_eq!(field(3, 2, 3), [4, 4], "(s, p): Q's last record");
+        assert_eq!(field(3, 2, 4), [0, 1], "(s, p): off_p");
+        assert_eq!(field(5, 1, 5), [2], "(p, p): off_q");
+        assert_eq!(s.pairs.len(), 6 * 6);
+    }
+
+    /// A grouping that dropped a pair: the runs no longer hold every pair
+    /// P <= Q, and the layout's postcondition fires.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(
+        expected = "each class lp <= lq is one non-empty run, and the runs hold every pair P <= Q once"
+    )]
+    fn a_grouping_short_of_a_pair_breaks_the_layouts_promise() {
+        let t = table();
+        let n_l = FB_METRIC_MAX_MOMENTUM as usize + 1;
+        let mut by_class = vec![Vec::new(); n_l * n_l];
+        by_class[0] = vec![[1, 3, 1, 3, 6, 6]];
+        by_class[2] = vec![[1, 3, 0, 1, 6, 0]];
+        Staging::from_runs(&t, n_l, &by_class);
+    }
+
+    /// A pair grouped under (d, s), unswapped: a class with lp > lq.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(
+        expected = "each class lp <= lq is one non-empty run, and the runs hold every pair P <= Q once"
+    )]
+    fn a_class_above_the_diagonal_breaks_the_layouts_promise() {
+        let t = table();
+        let n_l = FB_METRIC_MAX_MOMENTUM as usize + 1;
+        let mut by_class = vec![Vec::new(); n_l * n_l];
+        by_class[0] = vec![[1, 3, 1, 3, 6, 6]];
+        by_class[2 * n_l] = vec![[0, 1, 1, 3, 0, 6]];
+        by_class[2 * n_l + 2] = vec![[0, 1, 0, 1, 0, 0]];
+        Staging::from_runs(&t, n_l, &by_class);
+    }
+
+    /// A table whose record prefix is out of step with its shells before a
+    /// push is still out of step after it: the push's postcondition fires.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "one shell appended, every per-shell array in step")]
+    fn a_push_onto_a_table_out_of_step_breaks_its_promise() {
+        let mut t = AuxTable::new(7);
+        t.rec_begin.clear();
+        t.push_shell(0, [0.0; 3], 0, [(1.0, 1.0)]);
     }
 
     /// A shell whose block runs past the metric: its offset is a place the

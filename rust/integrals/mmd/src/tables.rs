@@ -5,19 +5,29 @@
 
 use std::collections::BTreeMap;
 
+use contracts::debug_ensures;
 use fb_basis::{BasisSet, Shell};
 use fb_core_error_handling::{Error, check_or_abort};
 use fb_integrals_sys::{ClassPairs, RecordTables, ShellTable};
 
 /// The sweep of `basis`: every shell pair `i <= j`, swapped when `i` has
 /// the higher momentum, listed in its class with its first record, and the
-/// shell table, ascending in `(la, lb)`, none empty. A class past
-/// `i32::MAX` records, or a basis past `i32::MAX` primitives, aborts, as
+/// shell table, ascending in `(la, lb)`, none empty (checked by
+/// [`classes`]'s contracts). A class past `i32::MAX` records, or a basis
+/// past `i32::MAX` primitives, aborts, as
 /// the C++ does: the kernels index both in `int32_t`. `BasisSet` already
 /// bounds the AO offsets, which [`RecordTables::new`] checks again.
 ///
 /// # Panics
 /// As [`RecordTables::new`], which a basis's own sweep never trips.
+#[debug_ensures(
+    ret.n_pairs() == basis.nshells() as usize * (basis.nshells() as usize + 1) / 2,
+    "every shell pair i <= j once"
+)]
+#[debug_ensures(
+    ret.classes().iter().all(|c| c.la <= c.lb),
+    "every class swapped to la <= lb"
+)]
 #[track_caller]
 pub(crate) fn tables(basis: &BasisSet) -> RecordTables {
     let shells = basis.shells();
@@ -52,13 +62,18 @@ pub(crate) fn tables(basis: &BasisSet) -> RecordTables {
 /// The sweep of two bases, `rows` and `cols`, as the C++
 /// `mixed_primitive_pair_classes` forms it: every ordered shell pair (`i`
 /// of `rows`, `j` of `cols`), never swapped, in its class `(l_i, l_j)`,
-/// ascending, none empty; the shell table `rows`' shells and then `cols'`,
-/// so `j` is `n_rows + j` there, each shell's offset into its own basis's
-/// Cartesian AOs and its rank among its own basis's shells. Aborts as
-/// [`tables`] does, the primitives of both bases counted together.
+/// ascending, none empty (checked by [`classes`]'s contracts); the shell
+/// table `rows`' shells and then `cols'`, so `j` is `n_rows + j` there,
+/// each shell's offset into its own basis's Cartesian AOs and its rank
+/// among its own basis's shells. Aborts as [`tables`] does, the primitives
+/// of both bases counted together.
 ///
 /// # Panics
 /// As [`RecordTables::mixed`], which two bases' own sweep never trips.
+#[debug_ensures(
+    ret.n_pairs() == rows.nshells() as usize * cols.nshells() as usize,
+    "every ordered shell pair once"
+)]
 #[track_caller]
 pub(crate) fn mixed_tables(rows: &BasisSet, cols: &BasisSet) -> RecordTables {
     let mut t = ShellTable {
@@ -85,7 +100,7 @@ pub(crate) fn mixed_tables(rows: &BasisSet, cols: &BasisSet) -> RecordTables {
 /// Each class's bra shells, ket shells and record prefix (in `i64`, so a
 /// class past `i32::MAX` is caught before it is sized), keyed by
 /// `(la, lb)` so the classes come out ascending.
-type Sweep = BTreeMap<(i32, i32), (Vec<u32>, Vec<u32>, Vec<i64>)>;
+pub(crate) type Sweep = BTreeMap<(i32, i32), (Vec<u32>, Vec<u32>, Vec<i64>)>;
 
 /// The pair (`bra`, `ket`) of shells `sb` and `sk`, at those indices of the
 /// shell table, listed in its class with its first record.
@@ -134,8 +149,13 @@ fn push_shells(t: &mut ShellTable, basis: &BasisSet) {
 
 /// The sweep's classes, ascending, each prefix narrowed to `i32`. A class
 /// past `i32::MAX` records aborts.
+#[debug_ensures(
+    ret.windows(2).all(|w| (w[0].la, w[0].lb) < (w[1].la, w[1].lb))
+        && ret.iter().all(|c| !c.bra.is_empty() && c.bra.len() == c.ket.len()),
+    "the classes ascend, each a pair list, none empty"
+)]
 #[track_caller]
-fn classes(sweep: Sweep) -> Vec<ClassPairs> {
+pub(crate) fn classes(sweep: Sweep) -> Vec<ClassPairs> {
     sweep
         .into_iter()
         .map(|((la, lb), (bra, ket, rec_begin))| {

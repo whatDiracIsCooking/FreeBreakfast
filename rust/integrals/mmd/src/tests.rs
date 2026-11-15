@@ -7,7 +7,7 @@ use fb_core_types::Double3;
 
 use fb_integrals_sys::{ClassPairs, ShellTable};
 
-use super::tables::{mixed_tables, tables};
+use super::tables::{Sweep, classes, mixed_tables, tables};
 
 /// Four shells on two centres, a p before the s shells so the swap is
 /// needed: 0 p on A (2 primitives), 1 s on B (3), 2 s on A (1), 3 d on B (1).
@@ -126,4 +126,15 @@ fn mixed_tables_of_two_hand_built_bases() {
     assert_eq!(t.n_cart(), 11);
     assert_eq!(t.n_pairs(), 8);
     assert_eq!(t.n_max(), 8);
+}
+
+/// A sweep holding a class with no pair: the classes' postcondition fires.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "the classes ascend, each a pair list, none empty")]
+fn a_sweep_with_an_empty_class_breaks_the_classes_promise() {
+    let mut sweep = Sweep::new();
+    sweep.insert((0, 0), (vec![0], vec![1], vec![0, 1]));
+    sweep.insert((0, 1), (Vec::new(), Vec::new(), vec![0]));
+    classes(sweep);
 }
