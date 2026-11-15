@@ -5,6 +5,7 @@ use contracts::debug_requires;
 use fb_basis::BasisSet;
 use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
+use fb_core_log::fits_i32;
 use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::memset;
@@ -30,10 +31,13 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// `worker`, shared with every other matrix the plan transforms.
 ///
 /// # Panics
-/// If `nao_cart²` does not fit an `i32` (the overlap kernels index the
-/// matrix in 32 bits), or `classes` are rows of another worker's or another
-/// plan's table ([`Dag::add_gpu`]).
+/// If `classes` are rows of another worker's or another plan's table
+/// ([`Dag::add_gpu`]).
 #[debug_requires(basis.nshells() > 0, "a basis of at least one shell")]
+#[requires(
+    fits_i32!(basis.nao_cart().checked_mul(basis.nao_cart())),
+    "nao_cart² fits the kernels' 32-bit index"
+)]
 #[track_caller]
 pub fn add_overlap(
     dag: &mut Dag<'_>,
@@ -43,10 +47,6 @@ pub fn add_overlap(
     u: &mut Option<RowId<Device, f64>>,
 ) -> RowId<Device, f64> {
     let n_cart = basis.nao_cart() as usize;
-    assert!(
-        i32::try_from(n_cart * n_cart).is_ok(),
-        "add_overlap: {n_cart}² Cartesian AOs do not fit the kernels' 32-bit index"
-    );
     let s_cart = dag.add_gpu(
         "overlap",
         worker,

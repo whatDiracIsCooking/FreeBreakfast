@@ -60,7 +60,7 @@
 //! |---|---|
 //! | `core_hamiltonian(res, classes, molecule, h.cartesian())`: `kinetic` (zeroed, then one launch per class) and `add_nuclear_attraction` on top | the `core hamiltonian` task of [`add_core_hamiltonian`]: zeroed, then [`kinetic_classes`] and [`potential_en_classes`] on the worker's lane 0, each class's records, formed on a lane of their own, an event wait on the device; the records' [`ClassRows`] passed in by the caller |
 //! | `launch_each` in each: one stream per class, its `device_stream()`'s fork stream, forked from `res.stream()` and joined back | with [`ClassRows::fork`] set (off by default: every class in order on lane 0), [`DeviceStream::fork_join`] in each of [`kinetic_classes`] and [`potential_en_classes`]: a fork per class from the worker's fork streams, joined back into lane 0 before the next family forks, so every V launch follows every T launch; never a lane's stream |
-//! | `check_one_electron_build`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | `fb-integrals-sys`'s launchers: a contract for the class, an always-on `assert!` of the matrix's `n_cart²` and the `i32` bound; [`add_core_hamiltonian`] asserts the `i32` bound at planning, and the records hold only `la <= lb` |
+//! | `check_one_electron_build`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | `fb-integrals-sys`'s launchers: a contract for the class, always-on contracts on the matrix's `n_cart²` and the `i32` bound; [`add_core_hamiltonian`] has the `i32` bound as an always-on contract at planning, and the records hold only `la <= lb` |
 //! | `check_nuclei`'s `InvalidConfig`, before anything launches | [`add_core_hamiltonian`]'s `InvalidConfig` at planning for [`NucleiRows`] with no nucleus, adding nothing; nuclei of another worker are another table's rows, which [`Dag::add_gpu`] refuses with a panic |
 //! | `molecule.view()`, the `NucleiView` | [`NucleiRows`] from [`fb_molecule_nuclei::add_nuclei`], passed in, so one upload serves every reader of the plan |
 //! | `upload_spherical_transform_matrix`, `MatrixAOPair::cartesian_to_spherical` | [`fb_recipes_matrix_ao::add_cartesian_to_spherical`], U's slot passed in by the caller |
@@ -75,6 +75,7 @@ use contracts::debug_requires;
 use fb_basis::BasisSet;
 use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, Result, Status};
+use fb_core_log::fits_i32;
 use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::memset;
@@ -107,13 +108,16 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// added.
 ///
 /// # Panics
-/// If `nao_cart²` does not fit an `i32` (the kernels index the matrix in
-/// 32 bits), or `classes` or `nuclei` are rows of another worker's or
-/// another plan's table ([`Dag::add_gpu`]).
+/// If `classes` or `nuclei` are rows of another worker's or another plan's
+/// table ([`Dag::add_gpu`]).
 ///
 /// [`kinetic_classes`]: fb_integrals_one_electron_kinetic::kinetic_classes
 /// [`potential_en_classes`]: fb_integrals_one_electron_potential_en::potential_en_classes
 #[debug_requires(basis.nshells() > 0, "a basis of at least one shell")]
+#[requires(
+    fits_i32!(basis.nao_cart().checked_mul(basis.nao_cart())),
+    "nao_cart² fits the kernels' 32-bit index"
+)]
 #[track_caller]
 pub fn add_core_hamiltonian(
     dag: &mut Dag<'_>,
@@ -130,10 +134,6 @@ pub fn add_core_hamiltonian(
         )));
     }
     let n_cart = basis.nao_cart() as usize;
-    assert!(
-        i32::try_from(n_cart * n_cart).is_ok(),
-        "add_core_hamiltonian: {n_cart}² Cartesian AOs do not fit the kernels' 32-bit index"
-    );
     let h_cart = dag.add_gpu(
         "core hamiltonian",
         worker,

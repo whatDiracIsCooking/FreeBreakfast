@@ -44,7 +44,7 @@
 //! | the trsm queued after the sync | the `density fit` task, which reads `checked` and so runs after the check |
 //! | `wwr::trsm<double, int32_t>(…, LEFT, LOWER, N, NON_UNIT, naux, nao², 1, metric, naux, b, naux)` | [`trsm`], the same modes, on the stream worker's handle |
 //! | `nao == 0` or `naux == 0`: an empty success; a negative count: `InvalidConfig` | refused at planning: both counts are at least 1 |
-//! | `nao²` past `int32_t`: `InvalidConfig` | an always-on assert, since the BLAS's column count is an `i32` |
+//! | `nao²` past `int32_t`: `InvalidConfig` | an always-on contract, since the BLAS's column count is an `i32` |
 //! | `ScopedDeviceIndex` for the call | nothing: a stream worker's tasks run on its device |
 //! | `lindep > 0`, the fit over M's eigenmodes above it (#630) | not ported: no basis the tree carries needs it, and the C++ Eri step never sets it |
 //! | `density_fit_footprint(…)`, nothing on the Cholesky path | the tasks' layouts: L, B, and the factor's scratch, read off the plan's table |
@@ -56,6 +56,7 @@
 use contracts::debug_requires;
 use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2d};
 use fb_core_error_handling::{Result, Status};
+use fb_core_log::fits_i32;
 use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::trsm;
@@ -84,10 +85,11 @@ use wwr_sys::{wwr_blas_diag_type, wwr_blas_fill_mode, wwr_blas_operation, wwr_bl
 /// anything is added.
 ///
 /// # Panics
-/// If `naux` or `nao²` does not fit an `i32`, the BLAS's integer, or a row
-/// is of another worker's table ([`Dag::add_gpu`]).
+/// If a row is of another worker's table ([`Dag::add_gpu`]).
 #[debug_requires(naux > 0, "a fitting set of at least one function")]
 #[debug_requires(nao > 0, "an orbital basis of at least one function")]
+#[requires(fits_i32!(naux), "naux fits the BLAS's i32")]
+#[requires(fits_i32!(nao.checked_mul(nao)), "nao² fits the BLAS's i32")]
 #[track_caller]
 pub fn add_density_fit(
     dag: &mut Dag<'_>,
@@ -97,15 +99,6 @@ pub fn add_density_fit(
     metric: RowId<Device, f64>,
     tensor: RowId<Device, f64>,
 ) -> Result<(RowId<Device, f64>, RowId<Device, f64>)> {
-    assert!(
-        i32::try_from(naux).is_ok(),
-        "add_density_fit: naux = {naux} does not fit the BLAS's i32"
-    );
-    assert!(
-        nao.checked_mul(nao)
-            .is_some_and(|pairs| i32::try_from(pairs).is_ok()),
-        "add_density_fit: nao² = {nao}² does not fit the BLAS's i32"
-    );
     let (l, checked) = add_cholesky(dag, worker, "L", naux, metric)?;
     let b = dag.add_gpu(
         "density fit",

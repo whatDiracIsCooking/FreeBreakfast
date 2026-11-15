@@ -1,4 +1,4 @@
-//! `fb_integrals_sys::overlap_class`'s own check (tier 4, device 0): a
+//! `fb_integrals_sys::overlap_class`'s own contract (tier 4, device 0): a
 //! matrix that is not the records' `n_cart²` panics before anything is
 //! enqueued, since the kernel writes wherever the records' device-held AO
 //! offsets say.
@@ -46,7 +46,7 @@ impl GpuTask for Short {
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 #[should_panic(
-    expected = "overlap_class: the matrix holds 48 doubles, but the records' basis has 7² Cartesian AOs"
+    expected = "Pre-condition of overlap_class violated: the matrix is the records' n_cart² doubles"
 )]
 fn a_matrix_short_of_n_cart_squared_panics() {
     let molecule = fb_io_xyz::read_xyz(

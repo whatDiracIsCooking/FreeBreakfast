@@ -30,7 +30,7 @@
 //! | `kinetic_class(stream, cls, n_ao, t)` (`kinetic_bridge.h`), one class | [`kinetic_class`], `fb-integrals-sys`'s safe launcher over a [`ClassRows`]; [`kinetic_classes`]`(stream, device, classes, t)`, every class in order on the task's stream, or on a fork of it with [`ClassRows::fork`] |
 //! | `kinetic(res, classes, t.cartesian())`: zeroed, then one launch per class | the `kinetic` task of [`add_kinetic`]: zeroed, then [`kinetic_classes`] on the worker's lane 0, each class's records, formed on a lane of their own, an event wait on the device; the records' [`ClassRows`] passed in by the caller |
 //! | `launch_each`: one stream per class, its `device_stream()`'s fork stream, forked from `res.stream()` and joined back | with [`ClassRows::fork`] set (off by default: every class in order on lane 0), [`DeviceStream::fork_join`] in [`kinetic_classes`]: a fork per class from the worker's fork streams, joined back before the task returns, never a lane's stream, so no class orders the task behind work the planner did not; the task declares a fork per class ([`GpuTask::forks`]) |
-//! | `kinetic`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | [`kinetic_class`]'s contract for the class, and its always-on `assert!` of the matrix's `n_cart²` and the `i32` bound; [`add_kinetic`] asserts the `i32` bound at planning too, and the records hold only `la <= lb` |
+//! | `kinetic`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | [`kinetic_class`]'s contract for the class, and its always-on contracts on the matrix's `n_cart²` and the `i32` bound; [`add_kinetic`] has the `i32` bound as an always-on contract at planning too, and the records hold only `la <= lb` |
 //! | `upload_spherical_transform_matrix`, `MatrixAOPair::cartesian_to_spherical` | [`fb_recipes_matrix_ao::add_cartesian_to_spherical`], U's slot passed in by the caller |
 //! | `res.dev_idx()` made current for the call | nothing: a stream task runs with its worker's device current |
 //!
@@ -42,6 +42,7 @@ use contracts::debug_requires;
 use fb_basis::BasisSet;
 use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
+use fb_core_log::fits_i32;
 use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::device_slice::DeviceSliceMut;
@@ -106,10 +107,13 @@ pub fn kinetic_classes(
 /// `basis` on `worker`, shared with every other matrix the plan transforms.
 ///
 /// # Panics
-/// If `nao_cart²` does not fit an `i32` (the kinetic kernels index the
-/// matrix in 32 bits), or `classes` are rows of another worker's or another
-/// plan's table ([`Dag::add_gpu`]).
+/// If `classes` are rows of another worker's or another plan's table
+/// ([`Dag::add_gpu`]).
 #[debug_requires(basis.nshells() > 0, "a basis of at least one shell")]
+#[requires(
+    fits_i32!(basis.nao_cart().checked_mul(basis.nao_cart())),
+    "nao_cart² fits the kernels' 32-bit index"
+)]
 #[track_caller]
 pub fn add_kinetic(
     dag: &mut Dag<'_>,
@@ -119,10 +123,6 @@ pub fn add_kinetic(
     u: &mut Option<RowId<Device, f64>>,
 ) -> RowId<Device, f64> {
     let n_cart = basis.nao_cart() as usize;
-    assert!(
-        i32::try_from(n_cart * n_cart).is_ok(),
-        "add_kinetic: {n_cart}² Cartesian AOs do not fit the kernels' 32-bit index"
-    );
     let t_cart = dag.add_gpu(
         "kinetic",
         worker,
