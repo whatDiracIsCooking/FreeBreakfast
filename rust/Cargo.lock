@@ -639,6 +639,7 @@ dependencies = [
  "fb-io-xyz",
  "fb-molecule",
  "fb-test-support",
+ "serde",
 ]
 
 [[package]]
@@ -661,6 +662,7 @@ dependencies = [
  "fb-molecule",
  "fb-sad",
  "fb-test-support",
+ "serde",
 ]
 
 [[package]]

@@ -42,7 +42,8 @@
 //!
 //! | C++ (`free_breakfast`) | Here |
 //! |---|---|
-//! | `GuessType`, `GuessStep::type` | `fb_pipeline_config`'s `GuessKind` and `GuessStep`, the binary's config: SAD is the only kind |
+//! | `GuessType`, `GuessStep::type` | [`GuessKind`] and [`GuessStep`], the config's `[guess]` table, deserialized by `fb-pipeline-config`: SAD is the only kind |
+//! | `[guess] from` with another key: `loads 'from' a file, so takes no option` | the same refusal, `InvalidConfig`, from [`GuessStep::check`] |
 //! | `GuessStep::run(in, subflow)`, over `sad_density(flow, …, builtin_sad_density)` | [`add_sad_guess`]: a node per stamp and `sad guess` |
 //! | `sad_density`'s task form: one task, a subtask per distinct stamp, its explicit join | the stamp nodes and `sad guess`, ordered by the rows they write and read |
 //! | `GuessStep::load(from, in)`, the file read and its shape checked when it runs | [`add_loaded_guess`]: the file's header checked at planning ([`fb_io_npy::read_npy_shape`]), and the `load guess` node, which reads it when it runs |
@@ -60,6 +61,56 @@ use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{CpuTask, Dag};
 use fb_io_sad::{builtin_sad_density, carries_sad_stamp};
 use fb_sad::{AtomicDensityStamp, SadStampLookup, distinct_stamps, stamp_density};
+use serde::Deserialize;
+
+/// `[guess]`: the config's table of the initial-guess density D, computed
+/// or loaded. Each field is a key, and any other key is refused by name.
+///
+/// ```text
+/// [guess]
+/// type = "sad"        # or, in its place:
+/// from = "d.npy"      # D read back, as a run of "guess" wrote it
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuessStep {
+    /// `type`: the guess computed. Default `"sad"`, the only kind. Refused
+    /// beside [`GuessStep::from`].
+    #[serde(rename = "type", default)]
+    pub kind: Option<GuessKind>,
+    /// `from`: a float64 `.npy` file of D, `nao_sphe × nao_sphe` in the
+    /// basis's spherical AO order, read in place of computing one
+    /// ([`add_loaded_guess`]), its header checked when the run is planned.
+    /// A path, relative to the config file's directory. Optional; no
+    /// default.
+    pub from: Option<PathBuf>,
+}
+
+impl GuessStep {
+    /// Check the table's keys against each other, so a reader of a config
+    /// can refuse them before anything is planned.
+    ///
+    /// # Errors
+    /// `InvalidConfig`, naming the keys: `type` beside `from`.
+    pub fn check(&self) -> Status {
+        if self.from.is_some() && self.kind.is_some() {
+            return Err(Error::config(
+                "[guess] loads 'from' a file, so takes no option 'type'",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// `[guess] type`: the kind of guess computed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuessKind {
+    /// `"sad"`: the superposition of atomic densities ([`add_sad_guess`]),
+    /// a spherically averaged atomic RHF per distinct (Z, shells), a
+    /// compiled-in stamp when the basis is named and carries one.
+    Sad,
+}
 
 /// Add the SAD guess of `atoms` in `basis` to `dag` on GPU worker `worker`,
 /// and return D: a host output row of `nao_sphe²` doubles, column-major.

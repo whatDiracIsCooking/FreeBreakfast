@@ -18,6 +18,7 @@ fb-core-thread-pool = { workspace = true, features = ["device"] }
 fb-io-npy.workspace = true
 fb-io-sad.workspace = true
 fb-sad.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 fb-core-arena = { workspace = true, features = ["test-support"] }

@@ -49,6 +49,7 @@
 //! | C++ (`free_breakfast`) | Here |
 //! |---|---|
 //! | `EriStep::run` with `mode = DensityFitting`, `DensityFitted` | [`add_df_eri`], returning [`DensityFitted`] |
+//! | `[eri] mode`, `aux_basis`, `EriStep`'s options read by `src/pipeline/config` | [`EriStep`], [`EriMode`]: the config's `[eri]` table, deserialized by `fb-pipeline-config`, its name checked by [`EriStep::check`] |
 //! | `EriMode::IntegralDirect`, J's and K's pair classes | not ported |
 //! | `default_aux_basis`, `<name>-acCD-6-6` when `aux_basis` is empty | not ported: the aux basis is always named |
 //! | `resolve_aux_basis(spec)` over a name or a path, an unknown name `IO` | a compiled-in name alone, an unknown one `InvalidConfig` at planning |
@@ -63,13 +64,64 @@
 
 use fb_basis::BasisSet;
 use fb_core_arena::{Device, RowId};
-use fb_core_error_handling::{Error, Result};
+use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::Dag;
 use fb_integrals_eri_density_fitting_fit::add_density_fit;
 use fb_integrals_eri_density_fitting_metric::add_metric;
 use fb_integrals_eri_density_fitting_three_center::add_three_center;
 use fb_integrals_sys::ClassRows;
 use fb_molecule::Molecule;
+use serde::Deserialize;
+
+/// `[eri]`: the config's table of the two-electron integrals, built once
+/// for every reader of the plan ([`add_df_eri`]). Each field is a key, and
+/// any other key is refused by name.
+///
+/// ```text
+/// [eri]
+/// mode = "density_fitting"
+/// aux_basis = "cc-pvdz-jkfit"
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EriStep {
+    /// `mode`: how the integrals are built. Required: `"density_fitting"`
+    /// is the only mode, and the C++ default, `"integral_direct"`, is not
+    /// ported, so no default stands in for it.
+    pub mode: EriMode,
+    /// `aux_basis`: the fitting set, a compiled-in name in any spelling
+    /// [`fb_io_basis::is_builtin_aux_basis`] folds (`"cc-pvdz-jkfit"`),
+    /// placed over the molecule when the run is planned. Never a path.
+    /// Required; no default (the C++ `<basis>-acCD-6-6` is not ported).
+    pub aux_basis: String,
+}
+
+impl EriStep {
+    /// Check the table's values, so a reader of a config can refuse them
+    /// before anything is planned; [`add_df_eri`] checks the name too.
+    ///
+    /// # Errors
+    /// `InvalidConfig`, naming the key: an `aux_basis` that is not a
+    /// compiled-in fitting set.
+    pub fn check(&self) -> Status {
+        if !fb_io_basis::is_builtin_aux_basis(&self.aux_basis) {
+            return Err(Error::config(format!(
+                "[eri] aux_basis: '{}' is not a compiled-in fitting set",
+                self.aux_basis
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// `[eri] mode`: how the two-electron integrals are built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EriMode {
+    /// `"density_fitting"`: the fitted factor B = L⁻¹ (P|mn) over
+    /// [`EriStep::aux_basis`], with M = (P|Q) = L Lᵀ ([`add_df_eri`]).
+    DensityFitting,
+}
 
 /// The density-fitted integrals of a plan, [`add_df_eri`]'s product.
 pub struct DensityFitted {

@@ -18,9 +18,8 @@ use std::cell::Cell;
 use fb_core_arena::{Bufs, Heap, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, Planned};
-use fb_pipeline_config::{
-    Calculation, DEVICE_RESERVE, GuessKind, GuessStep, MemoryCaps, admit_plan, plan, read_config,
-};
+use fb_pipeline_config::{Calculation, DEVICE_RESERVE, MemoryCaps, admit_plan, plan, read_config};
+use fb_pipeline_guess::{GuessKind, GuessStep};
 use fb_pipeline_scf::ScfStep;
 use fb_test_support::golden;
 
@@ -202,12 +201,12 @@ fn eri_refusals() {
         (
             "eri_beside_guess",
             format!("{GUESS}[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n"),
-            "[eri] is read by calculation = \"rhf\" alone, and calculation = \"guess\"",
+            "[eri] is read by calculation = \"rhf\" alone",
         ),
         (
             "eri_absent_beside_rhf",
             RHF.replace(ERI, ""),
-            "calculation = \"rhf\" needs an [eri] table",
+            "calculation = \"rhf\" needs the [eri] table",
         ),
         (
             "eri_aux_not_carried",
@@ -349,7 +348,7 @@ const SHOWN_IN_A_COMMENT: [&str; 1] = ["guess.from"];
 /// Every key the config accepts is set by an example
 /// (`docs/documentation.md`, "Configuration: the reference is emitted
 /// from the type"), the keys read from the type itself, so a key added to
-/// `Config` or to `ScfStep` fails here until an example sets it. A key that
+/// `Config` or to a step's table (`GuessStep`, `EriStep`, `ScfStep`) fails here until an example sets it. A key that
 /// excludes one an example sets is listed in [`SHOWN_IN_A_COMMENT`], and
 /// must then appear as `key =` in an example's comment.
 #[test]

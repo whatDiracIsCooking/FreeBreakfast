@@ -258,9 +258,15 @@ nucleus, adds one GPU task, hands that task's row to
 <p>It is a convention a source scan holds, not a trait. A trait could not
 stop a free function taking a <code>&amp;mut Dag</code> beside it, since <code>Dag::add_gpu</code>
 is public to every task crate, and nothing yet calls builders generically;
-each call names its builder. A planner that reads each step's needs and
-outputs from a table is that caller, and the trait is worth its types
-then. A private function that adds nodes for a builder, and the planner's
+each call names its builder. The config's table of which tables each
+calculation requires and accepts (<code>pipeline/config</code>) is not that caller:
+it checks keys, and each calculation's plan still names its builders.
+A <code>Step</code> trait for the pipeline's steps, never for a recipe's or an
+integral's builders, is revisited when the first nested chain rerun
+appears (an optimization, a semi-numerical Hessian or an IRC replanning
+the chain up to <code>[scf]</code> at each geometry), or when two calculations'
+plans first build the same product (both calling <code>add_df_eri</code>), whichever
+comes first. A private function that adds nodes for a builder, and the planner's
 own <code>Dag</code> methods in <code>core/</code>, are not held to the shape.</p>
 <h2 id="memory-layouts-and-arenas">Memory: layouts and arenas</h2>
 <p>The C++ tree's footprints

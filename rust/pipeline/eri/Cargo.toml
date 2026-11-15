@@ -19,6 +19,7 @@ fb-integrals-eri-density-fitting-three-center.workspace = true
 fb-integrals-sys.workspace = true
 fb-io-basis.workspace = true
 fb-molecule.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 fb-core-thread-pool = { workspace = true, features = ["device"] }
