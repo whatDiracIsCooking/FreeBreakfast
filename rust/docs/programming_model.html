@@ -1030,11 +1030,12 @@ undocumented_unsafe_blocks = &quot;deny&quot;
 multiple_unsafe_ops_per_block = &quot;deny&quot;
 missing_panics_doc = &quot;deny&quot;
 </code></pre>
-<p>All four are on. <code>missing_panics_doc</code> holds the other half of the
-<code>unsafe</code> rule: the length an <code>unsafe</code> call trusts is an always-on
-<code>assert!</code>, and the lint fails a public function that can panic and whose
-doc has no <code># Panics</code> naming it (<a href="testing.md"><code>testing.md</code></a>, &quot;Contracts are
-part of the spec&quot;).</p>
+<p>All four are on. <code>missing_panics_doc</code> holds part of the other half of
+the <code>unsafe</code> rule: the length an <code>unsafe</code> call trusts is checked in every
+build, and where that check is a body <code>assert!</code> the lint fails a public
+function whose doc has no <code># Panics</code> naming it. It does not see a
+<code>#[requires]</code>, which rustdoc renders in <code>§ Contracts</code> instead
+(<a href="testing.md"><code>testing.md</code></a>, &quot;Contracts are part of the spec&quot;).</p>
 <h2 id="reproducibility-across-placements">Reproducibility across placements</h2>
 <p>The same planned DAG must give the same answer, to a declared tolerance,
 under every placement. Where every reduce is ordered, that tolerance is zero

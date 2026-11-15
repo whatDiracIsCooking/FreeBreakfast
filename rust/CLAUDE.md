@@ -19,11 +19,15 @@ rule below, fix the counter-example (or file an issue) rather than copy it.
   renders it as the item's `§ Contracts` section, so never restate it in the
   doc comment; `fb-doc-check` fails a restatement.
 - A check that memory safety rests on (the length an `unsafe` call trusts,
-  an `n²` that must fit a 32-bit index) is an always-on `assert!`, named in
-  the item's `# Panics`. clippy's `missing_panics_doc` is on. Beside an
-  `unsafe` block, a `#[debug_requires]` on an integer or a `.len()` is
-  always on or carries a `// RELEASE:` comment saying what holds it in
-  release (`doc_check/tests/unsafe_contracts.rs`).
+  an `n²` that must fit a 32-bit index) is always on: a `#[requires]` when
+  it is a plain condition on the arguments with a static message, rendered
+  in `§ Contracts` and not repeated under `# Panics`; otherwise, on a
+  computed value or printing runtime values, an `assert!` named in the
+  item's `# Panics`. clippy's `missing_panics_doc` is on, and
+  `fb-doc-check` fails a leading static `assert!` that should be a
+  `#[requires]`. Beside an `unsafe` block, a `#[debug_requires]` on an
+  integer or a `.len()` is always on or carries a `// RELEASE:` comment
+  saying what holds it in release (`doc_check/tests/unsafe_contracts.rs`).
 - The outcome of a GPU call that can fail is a status or a `Result`, never
   a contract or a panic.
 - `debug_assert!` is only for an invariant no caller can break, with an

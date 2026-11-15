@@ -25,11 +25,12 @@
 //!   free function of `fb_core_wwr::blas` (`core/wwr/src/blas.rs`), and
 //!   no `pub use` there re-exports a glob (`docs/gpu_layer.md`,
 //!   "Layering").
-//! - **A test that trips a contract is debug-only**: a
-//!   `#[should_panic(expected = …)]` whose text is a `#[debug_requires]`,
-//!   `#[debug_ensures]` or `#[debug_invariant]` message is under
-//!   `#[cfg(debug_assertions)]` (`docs/testing.md`, "Contracts are part of
-//!   the spec").
+//! - **A test that trips a contract is debug-only exactly when the
+//!   contract is**: a `#[should_panic(expected = …)]` whose text is a
+//!   `#[debug_requires]`, `#[debug_ensures]` or `#[debug_invariant]`
+//!   message is under `#[cfg(debug_assertions)]`, and one whose text is only
+//!   an always-on `#[requires]`, `#[ensures]` or `#[invariant]` message is
+//!   not (`docs/testing.md`, "Contracts are part of the spec").
 //! - **A DAG builder is `add_*(dag, worker, …)`**: outside `core/` and test
 //!   code, a public function that takes a `&mut Dag` is named `add_*`,
 //!   takes `dag` first after any `self`, and `worker`, when it has one,
@@ -52,6 +53,8 @@ use std::path::Path;
 const DEVICE_REASON: &str = "tier 4: needs a GPU";
 /// The contract attributes compiled out of a release build.
 const DEBUG_CONTRACTS: [&str; 3] = ["debug_requires", "debug_ensures", "debug_invariant"];
+/// The contract attributes checked in every build.
+const ALWAYS_CONTRACTS: [&str; 3] = ["requires", "ensures", "invariant"];
 /// The types whose associated functions, called in a doc example
 /// (`Stream::new(…)`), mean it reaches a device: the handle, stream, event
 /// and arena types of `fb-core-wwr`, `fb-core-arena` and
@@ -864,13 +867,14 @@ fn a_wrapper_links_what_it_calls_or_what_its_helper_does() {
 
 // ------------------------------------------------ contract-tripping tests
 
-/// The messages of every debug-only contract in the workspace.
-fn contract_messages(sources: &[(String, String)]) -> BTreeSet<String> {
+/// The messages of every contract in the workspace whose attribute is one
+/// of `kinds`.
+fn contract_messages(sources: &[(String, String)], kinds: &[&str]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for (_, source) in sources {
         let code = code_only(source);
         for a in attributes(&code) {
-            if DEBUG_CONTRACTS.contains(&a.name.as_str()) {
+            if kinds.contains(&a.name.as_str()) {
                 out.extend(string_literals(&source[a.start..a.end]).pop());
             }
         }
@@ -879,14 +883,21 @@ fn contract_messages(sources: &[(String, String)]) -> BTreeSet<String> {
     out
 }
 
-/// Every `#[should_panic(expected = …)]` test in one file whose text is a
-/// debug contract's message and that is not under `#[cfg(debug_assertions)]`,
+/// One `#[should_panic(expected = …)]` test: the line of its attribute,
+/// the expected text, and whether it is under `#[cfg(debug_assertions)]`,
 /// on itself or on a module, `impl` or file around it.
-fn undebugged(path: &str, source: &str, messages: &BTreeSet<String>) -> Vec<String> {
+struct PanicTest {
+    line: usize,
+    expected: String,
+    debug: bool,
+}
+
+/// Every `#[should_panic(expected = …)]` test of one file.
+fn panic_tests(source: &str) -> Vec<PanicTest> {
     let code = code_only(source);
     let b = code.as_bytes();
     let attrs = attributes(&code);
-    let mut failures = Vec::new();
+    let mut out = Vec::new();
     // One flag per open brace: whether what it opens is debug-only.
     let mut frames = vec![false];
     let mut pending: Vec<&Attr> = Vec::new();
@@ -938,18 +949,12 @@ fn undebugged(path: &str, source: &str, messages: &BTreeSet<String>) -> Vec<Stri
                             let expected = string_literals(&source[a.start..a.end])
                                 .pop()
                                 .unwrap_or_default();
-                            let tripped = messages.iter().find(|m| {
-                                !expected.is_empty()
-                                    && (m.contains(expected.as_str())
-                                        || expected.contains(m.as_str()))
-                            });
-                            if let (Some(m), false) = (tripped, here_debug || debug) {
-                                failures.push(format!(
-                                    "{path}:{}: a test that trips the contract \"{m}\" is not \
-                                     #[cfg(debug_assertions)]; a release build compiles the \
-                                     contract out",
-                                    a.line
-                                ));
+                            if !expected.is_empty() {
+                                out.push(PanicTest {
+                                    line: a.line,
+                                    expected,
+                                    debug: here_debug || debug,
+                                });
                             }
                         }
                         next_brace = debug;
@@ -964,13 +969,66 @@ fn undebugged(path: &str, source: &str, messages: &BTreeSet<String>) -> Vec<Stri
         }
         i += 1;
     }
-    failures
+    out
+}
+
+/// The message of `messages` a test's expected text trips: one that holds
+/// it, or that it holds.
+fn tripped<'m>(messages: &'m BTreeSet<String>, expected: &str) -> Option<&'m String> {
+    messages
+        .iter()
+        .find(|m| m.contains(expected) || expected.contains(m.as_str()))
+}
+
+/// Every `#[should_panic(expected = …)]` test in one file whose text is a
+/// debug contract's message and that is not under `#[cfg(debug_assertions)]`,
+/// on itself or on a module, `impl` or file around it.
+fn undebugged(path: &str, source: &str, messages: &BTreeSet<String>) -> Vec<String> {
+    panic_tests(source)
+        .into_iter()
+        .filter(|t| !t.debug)
+        .filter_map(|t| {
+            tripped(messages, &t.expected).map(|m| {
+                format!(
+                    "{path}:{}: a test that trips the contract \"{m}\" is not \
+                     #[cfg(debug_assertions)]; a release build compiles the contract out",
+                    t.line
+                )
+            })
+        })
+        .collect()
+}
+
+/// Every `#[should_panic(expected = …)]` test in one file whose text is an
+/// always-on contract's message, and no debug contract's, and that is under
+/// `#[cfg(debug_assertions)]`: the contract holds in release too, so its
+/// test runs there.
+fn needlessly_debug(
+    path: &str,
+    source: &str,
+    always: &BTreeSet<String>,
+    debug: &BTreeSet<String>,
+) -> Vec<String> {
+    panic_tests(source)
+        .into_iter()
+        .filter(|t| t.debug && tripped(debug, &t.expected).is_none())
+        .filter_map(|t| {
+            tripped(always, &t.expected).map(|m| {
+                format!(
+                    "{path}:{}: a test that trips the always-on contract \"{m}\" is \
+                     #[cfg(debug_assertions)]; the contract holds in release, so its test \
+                     runs there",
+                    t.line
+                )
+            })
+        })
+        .collect()
 }
 
 #[test]
 fn a_test_that_trips_a_contract_is_debug_only() {
     let sources = workspace_sources();
-    let messages = contract_messages(&sources);
+    let messages = contract_messages(&sources, &DEBUG_CONTRACTS);
     assert!(
         messages.len() > 10,
         "only {} contract messages",
@@ -990,11 +1048,14 @@ fn a_test_that_trips_a_contract_is_debug_only() {
 
 #[test]
 fn a_contract_test_is_debug_by_its_own_cfg_or_its_modules() {
-    let messages = contract_messages(&[(
-        "c.rs".to_string(),
-        "#[debug_requires(n > 0, \"a matrix of at least one row\")]\nfn f(n: usize) {}\n"
-            .to_string(),
-    )]);
+    let messages = contract_messages(
+        &[(
+            "c.rs".to_string(),
+            "#[debug_requires(n > 0, \"a matrix of at least one row\")]\nfn f(n: usize) {}\n"
+                .to_string(),
+        )],
+        &DEBUG_CONTRACTS,
+    );
     assert_eq!(messages.len(), 1);
     let ok = "#[test]\n#[cfg(debug_assertions)] // compiled out\n\
               #[should_panic(expected = \"at least one row\")]\nfn a() {}\n\
@@ -1252,4 +1313,46 @@ fn a_dag_builder_is_judged_by_its_name_and_its_parameters() {
         f[3].starts_with("bad.rs:7: add_z takes `d: &mut Dag` as parameter 1"),
         "{f:#?}"
     );
+}
+
+#[test]
+fn a_test_that_trips_an_always_on_contract_runs_in_release() {
+    let sources = workspace_sources();
+    let always = contract_messages(&sources, &ALWAYS_CONTRACTS);
+    let debug = contract_messages(&sources, &DEBUG_CONTRACTS);
+    let failures: Vec<String> = sources
+        .iter()
+        .flat_map(|(p, s)| needlessly_debug(p, s, &always, &debug))
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{} always-on contract test(s) built in debug only:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn an_always_on_contract_test_is_found_under_a_debug_cfg() {
+    let src = "#[requires(n > 0, \"a matrix of at least one row\")]\nfn f(n: usize) {}\n\
+               #[debug_requires(m > 0, \"m is positive\")]\nfn g(m: usize) {}\n";
+    let sources = [("c.rs".to_string(), src.to_string())];
+    let always = contract_messages(&sources, &ALWAYS_CONTRACTS);
+    let debug = contract_messages(&sources, &DEBUG_CONTRACTS);
+    assert_eq!(always.len(), 1);
+    assert_eq!(debug.len(), 1);
+    let ok = "#[test]\n#[should_panic(expected = \"at least one row\")]\nfn a() {}\n\
+              #[test]\n#[cfg(debug_assertions)]\n#[should_panic(expected = \"m is positive\")]\nfn b() {}\n";
+    assert_eq!(
+        needlessly_debug("t.rs", ok, &always, &debug),
+        Vec::<String>::new()
+    );
+    let bad = "#[test]\n#[cfg(debug_assertions)]\n#[should_panic(expected = \"one row\")]\nfn a() {}\n\
+               #[cfg(all(test, debug_assertions))]\nmod tests {\n    #[test]\n    \
+               #[should_panic(expected = \"a matrix of at least one row\")]\n    fn b() {}\n}\n";
+    let f = needlessly_debug("t.rs", bad, &always, &debug);
+    assert_eq!(f.len(), 2, "{f:#?}");
+    assert!(f[0].starts_with("t.rs:3:"), "{f:#?}");
+    // And the debug-only check does not take an always-on message for one.
+    assert_eq!(undebugged("t.rs", ok, &debug), Vec::<String>::new());
 }

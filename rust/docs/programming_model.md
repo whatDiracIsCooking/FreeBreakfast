@@ -778,11 +778,12 @@ multiple_unsafe_ops_per_block = "deny"
 missing_panics_doc = "deny"
 ```
 
-All four are on. `missing_panics_doc` holds the other half of the
-`unsafe` rule: the length an `unsafe` call trusts is an always-on
-`assert!`, and the lint fails a public function that can panic and whose
-doc has no `# Panics` naming it ([`testing.md`](testing.md), "Contracts are
-part of the spec").
+All four are on. `missing_panics_doc` holds part of the other half of
+the `unsafe` rule: the length an `unsafe` call trusts is checked in every
+build, and where that check is a body `assert!` the lint fails a public
+function whose doc has no `# Panics` naming it. It does not see a
+`#[requires]`, which rustdoc renders in `§ Contracts` instead
+([`testing.md`](testing.md), "Contracts are part of the spec").
 
 ## Reproducibility across placements
 

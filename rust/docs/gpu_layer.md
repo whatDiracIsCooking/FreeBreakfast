@@ -532,13 +532,15 @@ comments become checks, and which kind of check each becomes follows
 launch's memory safety rests on is checked in every build, and what only its
 correctness rests on is a contract.
 
-- **Buffers are typed slices with lengths, and the lengths are asserted.** A
-  device buffer carved from the arena knows its length and element type, so
-  "`bound` is `n_rec` long, written whole" is a check on the length, not a
-  sentence. A release build that skipped it would let the kernel read or
-  write past the buffer, so it is an always-on `assert!`, named in the
-  wrapper's `# Panics`, as is an extent that must fit the kernel's 32-bit
-  index (`n²` for an `n × n` matrix).
+- **Buffers are typed slices with lengths, and the lengths are checked in
+  every build.** A device buffer carved from the arena knows its length and
+  element type, so "`bound` is `n_rec` long, written whole" is a check on
+  the length, not a sentence. A release build that skipped it would let the
+  kernel read or write past the buffer, so it is always on, as is an extent
+  that must fit the kernel's 32-bit index (`n²` for an `n × n` matrix): a
+  `#[requires]` when it is a plain condition on the arguments with a static
+  message, and otherwise, on a computed value or printing the lengths it
+  compares, an `assert!` named in the wrapper's `# Panics`.
 - **What the kernel trusts in device data travels as a type.** A class
   launcher writes at the AO offsets its records hold, which are in device
   memory, written by the records kernel, so no host check can read them.

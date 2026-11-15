@@ -25,19 +25,28 @@ what the function does, and the attributes say what it assumes and promises.
 
 The rules already in the crate carry over:
 
-- **Contracts are debug-only.** A release build pays nothing for them.
-  `cargo test --release` skips the tests that exist only to trip a contract.
+- **A contract is debug-only unless memory safety rests on it.** A
+  `debug_*` contract costs a release build nothing, and
+  `cargo test --release` skips the tests that exist only to trip one. Its
+  always-on form, `#[requires]`, `#[ensures]`, `#[invariant]`, is an
+  `assert!` in every build, and its failing test runs in release too.
 - **The outcome of a GPU call is not a contract.** If a GPU call can fail, it
   returns a status or a `Result`, and failure is an expected result, not a
   broken promise. Making it a contract would turn it into a panic.
-- **A check that soundness rests on is not a contract.** If a release build
-  that skipped it could read or write out of bounds, it is an `assert!`,
-  always on, and the item's `# Panics` names it: an `n²` that must fit a
-  kernel's or BLAS's 32-bit index, the length an `unsafe` copy trusts, the
-  arena's row flags ([`memory.md`](memory.md), "The Rust shape"). Anything
-  else a caller must ensure (a basis has shells, a matrix has a row, a
-  predecessor is in the plan) is a `debug_requires`, and its failing test is
-  `#[cfg(debug_assertions)]`.
+- **Which form a check takes follows what rests on it:**
+
+  | Check | Form | Where the reader sees it |
+  |---|---|---|
+  | A caller's precondition only correctness rests on (a basis has shells, a matrix has a row, a predecessor is in the plan) | `#[debug_requires]` | `§ Contracts`, as `Pre-condition - debug` |
+  | A caller's precondition memory safety rests on, a plain condition on the arguments with a static message (the length an `unsafe` copy trusts, an `n²` that must fit a kernel's or BLAS's 32-bit index) | `#[requires]` | `§ Contracts`, as `Pre-condition`; not repeated under `# Panics` |
+  | A safety check on a value the body computes, or one whose message must print runtime values (`count is 5, but data holds 4`), or the arena's row flags ([`memory.md`](memory.md), "The Rust shape") | a body `assert!` | `# Panics` |
+  | An invariant no caller can break | `debug_assert!` under an `// INVARIANT:` comment | the source alone |
+  | The outcome of a GPU call | a status or a `Result` | `# Errors` |
+
+  A safety check is anything a release build that skipped it could read or
+  write out of bounds through. Its message is one string literal when it is
+  a `#[requires]`, so the values in a crash log are the reason one stays an
+  `assert!`.
 - **An `unsafe` block never rests on a debug-only contract.** In a function
   whose body holds an `unsafe` block, a `debug_requires` on an integer
   parameter or a parameter's `.len()` is the kind of bound the block may
@@ -48,14 +57,18 @@ The rules already in the crate carry over:
 
 The rules are held by checks, not by review. clippy's `missing_panics_doc`
 fails a public function whose body can panic and whose doc has no
-`# Panics`. rustdoc renders each contract as the item's `§ Contracts`
-section, so a doc comment never restates one, and a `debug_assert!` in a
-body is left for an invariant of the function's own making, which no
-caller can break, with an `// INVARIANT:` comment above it saying why.
-`fb-doc-check`'s `tests/contracts.rs` holds both: clippy's
-`disallowed_macros` cannot, since a `#[debug_requires]` expands to a
-`debug_assert!` at the contract's own span. Its `tests/unsafe_contracts.rs`
-holds the `// RELEASE:` marker.
+`# Panics`; it sees a body `assert!`, not a contract. rustdoc renders each
+contract as the item's `§ Contracts` section, so a doc comment never restates
+one, `# Panics` included, and a `debug_assert!` in a body is left for an
+invariant of the function's own making, which no caller can break, with an
+`// INVARIANT:` comment above it saying why. `fb-doc-check`'s
+`tests/contracts.rs` holds both, and that a public function's leading
+`assert!` on its arguments with a static message is a `#[requires]`;
+clippy's `disallowed_macros` cannot, since a `#[debug_requires]` expands to
+a `debug_assert!` at the contract's own span. Its `tests/source_rules.rs`
+holds that a test tripping a debug contract is
+`#[cfg(debug_assertions)]` and one tripping an always-on contract is not,
+and its `tests/unsafe_contracts.rs` holds the `// RELEASE:` marker.
 
 A contract's reach is every caller, but its strength is only as good as the
 inputs those callers happen to pass. It complements a dedicated test; it does
