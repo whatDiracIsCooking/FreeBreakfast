@@ -403,6 +403,7 @@ dependencies = [
 name = "fb-integrals-mmd"
 version = "0.1.0"
 dependencies = [
+ "contracts",
  "fb-atom",
  "fb-basis",
  "fb-core-arena",

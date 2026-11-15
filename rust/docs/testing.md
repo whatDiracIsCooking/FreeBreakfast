@@ -103,6 +103,15 @@ A contract's reach is every caller, but its strength is only as good as the
 inputs those callers happen to pass. It complements a dedicated test; it does
 not replace one.
 
+A postcondition, `#[debug_ensures]`, earns its place where a function
+promises something about host-side state that its callers or the kernels
+rely on, and no test pins the promise in general, only on the inputs it
+happens to build: a staging's runs tile its records, a push keeps every
+per-shell array in step. It is debug-only, since its failure is a bug in the
+function itself, not a caller's mistake, and it costs one pass over what the
+function built. A device result is not one: the host cannot read it without
+a copy, and its check is a test against a reference.
+
 ## Tiers: where a check lives
 
 Push each check to the cheapest tier that can express it:

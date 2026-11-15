@@ -35,7 +35,7 @@
 
 use std::sync::Arc;
 
-use contracts::debug_requires;
+use contracts::{debug_ensures, debug_requires};
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_p2d};
 use fb_core_error_handling::{Error, Status};
 use fb_core_planner::{CpuTask, Dag, GpuTask};
@@ -169,6 +169,18 @@ pub fn add_three_center_tasks(
 
 /// The staging of [`add_three_center_tasks`], every extent it asserts
 /// checked.
+#[debug_ensures(
+    ret.n_cells == n_pairs.iter().sum::<usize>() * aux.n_shells(),
+    "every shell pair meets every aux shell in exactly one cell"
+)]
+#[debug_ensures(
+    ret.cells.iter().try_fold(0, |at, c| (c.begin == at).then_some(at + c.n_cell)) == Some(ret.n_cells),
+    "the cell classes tile 0..n_cells in order"
+)]
+#[debug_ensures(
+    ret.n_bra == classes.iter().map(|c| c.n_rec() as usize).sum::<usize>(),
+    "the bra records are every class's"
+)]
 #[track_caller]
 fn staging(
     classes: &[ClassRows],
