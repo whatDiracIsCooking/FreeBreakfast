@@ -703,13 +703,12 @@ _LINKING = {
         # Through a link-free crate: log has no tier 4 of its own.
         (["rust/core/log/src/lib.rs"], _LINKING),
         (["rust/atom/src/lib.rs"], set()),
-        # The path rules: kernels are every kernel library's -sys crate's
-        # (one library links another); docs and the bindings generator are
-        # tier-3 crates'; the examples are the crate's that runs them.
-        (
-            ["rust/recipes/kernels/merge_sort.cu"],
-            {"fb-recipes-sys", "fb-integrals-sys"},
-        ),
+        # The path rules: kernels are their module's -sys crate's, and so
+        # its reverse dependents' (no library links another); docs and the
+        # bindings generator are tier-3 crates'; the examples are the
+        # crate's that runs them.
+        (["rust/recipes/kernels/merge_sort.cu"], {"fb-recipes-sys"}),
+        (["rust/integrals/kernels/mmd/mmd.h"], {"fb-integrals-sys"}),
         (["rust/docs/testing.md", "rust/README.md"], set()),
         (["devtools/rust-bindings.py"], set()),
         (["rust/examples/overlap.toml"], {"fb-pipeline-config"}),

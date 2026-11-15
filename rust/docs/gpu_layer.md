@@ -639,10 +639,11 @@ separable compilation with the device link resolved inside the `.so`
 links the shared vendor runtime, not CMake's static default, so that the
 launches inside it and the C ABI's `wwr_get_last_error()` read the same
 last error. Under HIP the `.cu` compiles as C++ with `hip::device` private
-to the library. A library may link another for a host call, with no device
-symbol crossing between them; none does today
-(`libfb_integrals_kernels.so` linked the recipes library for the records'
-sort until the fork left that order out). The generated units find
+to the library. A library links no other, and includes none of another's
+sources (`libfb_integrals_kernels.so` linked the recipes library for the
+records' sort until the fork left that order out), so a file under a
+module's `kernels/` reaches that module's `-sys` crate and its dependents
+alone. The generated units find
 FelizJueves' runtime header with `FJ_WAVEFRONT` set to `WWR_WARP_SIZE`.
 
 One Rust `-sys` crate per library, `fb-recipes-sys`, `fb-integrals-sys`
@@ -650,8 +651,8 @@ and `fb-localization-sys`,
 which is the workspace graph the test selection runs on. Their `build.rs`
 include `rust/kernel_lib.rs` after `capi_dir.rs`: `link_kernel_lib(module)`
 finds the library in the same `<build>` the C ABI library came from, links
-it and sets the rpaths. A file under a module's `kernels/` re-runs every
-kernel `-sys` crate's tier 4, since a library may link another
+it and sets the rpaths. A file under a module's `kernels/` re-runs the tier
+4 of that module's `-sys` crate and of every crate that depends on it
 ([`testing.md`](testing.md), "Selecting GPU tiers in cargo"); the cargo half
 of the gates builds this project for its card's backend before it runs, so a
 broken device link fails there.

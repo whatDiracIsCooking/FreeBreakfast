@@ -313,7 +313,8 @@ graph declares no `links` has no device case to run, and its tests ran in
 tier 3): each changed file's crate and its reverse dependents through any
 edge, read from `cargo metadata`, in debug and on one test thread. The
 hand-written path rules of "Selection" below are in `devtools/test.py`:
-a module's `kernels/` affect every kernel `-sys` crate, `docs/` and
+a module's `kernels/` affect its `-sys` crate (`rust/<module>/sys/`) and
+so that crate's reverse dependents, `docs/` and
 `README.md` only `fb-doc-check`, `examples/` only `fb-pipeline-config`
 (whose tests run them through the binary), and any other file outside
 every crate the whole workspace (`clippy.toml` and `Cargo.toml` among
