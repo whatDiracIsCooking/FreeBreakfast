@@ -5,6 +5,9 @@
 include!("../../capi_dir.rs");
 
 fn main() {
+    if doc_only() {
+        return;
+    }
     let dir = capi_dir();
     println!("cargo:rustc-link-search=native={}", dir.display());
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());

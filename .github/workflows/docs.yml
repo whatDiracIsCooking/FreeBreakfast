@@ -1,0 +1,98 @@
+# The rust/ workspace's rustdoc, published to GitHub Pages
+# (rust/docs/documentation.md, "Publishing"). The API lands under /api/ and
+# the site root redirects there, which leaves the root to the book once it
+# exists.
+#
+# The runner has no CUDA or HIP toolchain, so it has no
+# libwwr_capi_runtime_api.so and no kernel library: FB_RUST_DOC_ONLY=1 tells
+# every build.rs under rust/ to link nothing (rust/capi_dir.rs). rustdoc never
+# links, so every member documents. Doctests do link, so they stay on the card
+# hosts with the gates' tiers; this job runs none.
+#
+# A PR that touches rust/ builds the pages, under RUSTDOCFLAGS=-D warnings, and
+# deploys nothing: the one server-side check of the rustdoc of the members that
+# link the library, which `lint`'s cargo-lint never documents. A push to main
+# builds and deploys. Not a required check (ci.yml's header names those).
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "rust/**"
+      - "deps/WarpWraps"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "rust/**"
+      - "deps/WarpWraps"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        # wwr-sys is a path dependency inside deps/WarpWraps.
+        with:
+          submodules: recursive
+      # ci.yml's lint job pins the same toolchain, docker/Dockerfile.base's
+      # RUST_VERSION: keep the three in step.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+      - name: cargo doc
+        working-directory: rust
+        env:
+          FB_RUST_DOC_ONLY: "1"
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --locked --workspace --no-deps
+      # rustdoc writes no workspace index on stable, so list the crates, and
+      # point the root at /api/.
+      - name: assemble site
+        run: |
+          mkdir -p site/api
+          cp -r rust/target/doc/. site/api/
+          {
+            echo '<!doctype html><meta charset="utf-8">'
+            echo '<meta name="viewport" content="width=device-width">'
+            echo '<title>free-breakfast rust API</title>'
+            echo '<h1>free-breakfast: the Rust rebuild</h1>'
+            echo '<p>The API of the <code>rust/</code> workspace, an'
+            echo 'experimental rebuild of the C++ tree, built from'
+            echo "<code>main</code> at <code>${GITHUB_SHA::8}</code>.</p><ul>"
+            for d in site/api/*/index.html; do
+              c=$(basename "$(dirname "$d")")
+              echo "<li><a href=\"$c/index.html\">$c</a></li>"
+            done
+            echo '</ul>'
+          } > site/api/index.html
+          printf '%s\n' '<!doctype html><meta charset="utf-8">' \
+            '<meta http-equiv="refresh" content="0; url=api/">' \
+            '<a href="api/">API</a>' > site/index.html
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    # One deploy at a time, and a newer push never cancels one mid-flight.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

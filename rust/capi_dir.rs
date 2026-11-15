@@ -6,6 +6,19 @@
 // and FB_RUST_BUILD_DIR must name one. Only the library chosen is watched: a
 // second backend built later is not noticed until FB_RUST_BUILD_DIR changes or
 // the target directory is cleaned.
+//
+// FB_RUST_DOC_ONLY=1 is the one way round it: for `cargo doc` on a host with
+// no CMake build (the Pages workflow, `.github/workflows/docs.yml`), every
+// build.rs here asks `doc_only()` first and links nothing. rustdoc never
+// links, so the docs build; a test or binary built so fails at the link.
+// The crates' env!() backends are set to CUDA then (`rust/kernel_lib.rs`,
+// `core/wwr/build.rs`), which no rendered page shows.
+
+/// Whether `FB_RUST_DOC_ONLY` is `1`: document, and link nothing.
+fn doc_only() -> bool {
+    println!("cargo:rerun-if-env-changed=FB_RUST_DOC_ONLY");
+    std::env::var_os("FB_RUST_DOC_ONLY").is_some_and(|v| v == "1")
+}
 
 /// `<build>/deps/WarpWraps/src/capi`, checked to hold the library.
 fn capi_dir() -> std::path::PathBuf {
