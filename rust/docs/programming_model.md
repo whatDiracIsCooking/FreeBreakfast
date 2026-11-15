@@ -603,7 +603,7 @@ questions").
 A lane is the planner's: nodes are placed on it, the executor orders the
 edges between lanes, and it costs a stream, library handles and a
 workspace row. Some concurrency lives inside one node instead, where the
-DAG does not look: the one-electron builds launch a kernel per
+DAG does not look: the one-electron builds can launch a kernel per
 primitive-pair class into one matrix, every class adding atomically, as
 the C++ `launch_each` does on a stream per class. A GPU task reaches it
 through its stream, `DeviceStream::fork_join(n, |i, fork| ...)`:
@@ -636,6 +636,16 @@ deadlocks, since the one thread enqueues all of a worker's work and every
 wait it enqueues is on an event already recorded. No node is placed on a
 fork and no edge names one, so the plan's text, its tables and its
 goldens are those of the same DAG without forks.
+
+**The one-electron builds fork only when asked.** On the gfx1200 the
+forks' events cost more than the classes' overlap wins at the sizes
+tested, so their forking is an option, off: a builder sets
+`ClassRows::fork` on the records it passes in, and with it unset the
+builds declare no fork and launch in order on their lane, the order they
+had before forks existed. The bench is in
+`fb_integrals_one_electron_core_hamiltonian`'s crate doc; the
+density-fitted three-center build, with larger classes, is the likelier
+payoff.
 
 **The scope is what makes a fork sound.** The forks start after the
 task's input waits and are joined before its body returns, so everything

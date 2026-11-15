@@ -19,7 +19,7 @@ use fb_test_support::golden;
 #[test]
 fn plan_goldens() {
     for (stem, xyz, basis) in common::FIXTURES {
-        let fixture = common::plan(xyz, basis);
+        let fixture = common::plan(xyz, basis, false);
         // The table's text ends an empty handoffs line in a space, which the
         // trailing-whitespace hook strips from the committed file.
         let text: String = fixture

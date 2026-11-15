@@ -23,9 +23,25 @@ const BAR: f64 = 1e-12;
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn core_hamiltonian_matches_pyscf() {
+    matches_pyscf(false);
+}
+
+/// As [`core_hamiltonian_matches_pyscf`], with the records set to fork
+/// (`ClassRows::fork`): every class of T, then of V, on a fork of the
+/// task's stream, the task declaring a fork per class, so the fork streams
+/// are real. The bar is the same: the classes add atomically in either
+/// order. Needs a GPU.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn core_hamiltonian_matches_pyscf_with_forks() {
+    matches_pyscf(true);
+}
+
+/// Each fixture, its records set to fork if `fork`, against PySCF's H.
+fn matches_pyscf(fork: bool) {
     let mut misses = Vec::new();
     for (stem, xyz, basis) in common::FIXTURES {
-        let fixture = common::plan(xyz, basis);
+        let fixture = common::plan(xyz, basis, fork);
         let n = fixture.n_ao;
         let mut instance = fixture.planned.instantiate(&[0]);
         let mut backend = instance.backend();

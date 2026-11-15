@@ -16,8 +16,9 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// column-major, symmetric up to rounding.
 ///
 /// `overlap` (stream: the Cartesian matrix zeroed and one
-/// [`overlap_class`] launch per class, each on a fork of the stream joined
-/// back before the task returns, `DeviceStream::fork_join`, reading the
+/// [`overlap_class`] launch per class, in order, or each on a fork of the
+/// stream joined back before the task returns when the classes opt in
+/// ([`ClassRows::fork`], `DeviceStream::fork_join`), reading the
 /// records as an edge),
 /// then the spherical transform of [`add_cartesian_to_spherical`]:
 /// `harmonics` and `upload U` (U into a pinned row, then its
@@ -58,9 +59,9 @@ pub fn add_overlap(
 }
 
 /// GPU: the Cartesian overlap, `nao_cart²`, zeroed and then summed over
-/// the classes, a fork per class ([`DeviceStream::fork_join`]), every
-/// class's contributions added atomically at both mirror positions, so
-/// the classes run at once.
+/// the classes, in order on the stream or, when they opt in
+/// ([`ClassRows::fork`]), a fork per class ([`DeviceStream::fork_join`]),
+/// every class's contributions added atomically at both mirror positions.
 struct Overlap {
     classes: Vec<ClassRows>,
     n_cart: usize,
@@ -77,7 +78,11 @@ impl GpuTask for Overlap {
     }
 
     fn forks(&self) -> usize {
-        self.classes.len()
+        if self.classes.iter().any(|c| c.fork) {
+            self.classes.len()
+        } else {
+            0
+        }
     }
 
     fn run(
@@ -89,8 +94,14 @@ impl GpuTask for Overlap {
     ) -> Status {
         let mut s = device.take_mut(*s);
         memset::zero(&mut s, stream)?;
-        stream.fork_join(self.classes.len(), |c, fork| {
-            overlap_class(fork, device, &self.classes[c], &mut s)
-        })
+        if self.classes.iter().any(|c| c.fork) {
+            stream.fork_join(self.classes.len(), |c, fork| {
+                overlap_class(fork, device, &self.classes[c], &mut s)
+            })
+        } else {
+            self.classes
+                .iter()
+                .try_for_each(|c| overlap_class(stream, device, c, &mut s))
+        }
     }
 }
