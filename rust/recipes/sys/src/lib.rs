@@ -24,13 +24,13 @@
 //! [`merge_sort_workspace_bytes`], [`symmetrize`], [`mirror_triangle`],
 //! [`cholesky_diagonal`] and [`diis_solve`] are what a caller uses
 //! (`docs/gpu_layer.md`, "The safe wrapper"), as `fb_core_wwr::blas::gemm`
-//! is over the BLAS: device memory as
-//! [`DeviceSlice`]s, which the
-//! arena's rows implement, each length the launch trusts asserted against
-//! them in every build, and the launch status a [`Status`] through
-//! [`fb_kernel_abi::launch_status`]. They live beside the generated
-//! bindings, not in a crate of their own: this crate is already where the
-//! library's `unsafe` is allowed, and it is never published.
+//! is over the BLAS: device memory as [`DeviceSlice`]s, which the arena's
+//! rows implement, each length the launch trusts checked against them in
+//! every build, by an always-on contract or an `assert!`, and the launch
+//! status a [`Status`] through [`fb_kernel_abi::launch_status`]. They live
+//! beside the generated bindings, not in a crate of their own: this crate
+//! is already where the library's `unsafe` is allowed, and it is never
+//! published.
 
 #![allow(non_camel_case_types, reason = "the C header's names, kept as written")]
 
@@ -39,8 +39,9 @@ mod bindings;
 
 pub use bindings::*;
 
-use contracts::debug_requires;
+use contracts::{debug_requires, requires};
 use fb_core_error_handling::Status;
+use fb_core_log::{eq, le};
 use fb_core_wwr::common::wwr_status_from_code;
 use fb_core_wwr::device_slice::{DeviceSlice, DeviceSliceMut};
 use fb_core_wwr::gpu_status_at;
@@ -82,7 +83,9 @@ fn launched(what: &str, status: fb_launch_status) -> Status {
     })
 }
 
-/// A count as the `u32` the C ABI takes.
+/// A count as the `u32` the C ABI takes. A public call whose count is a
+/// parameter holds it to a `u32` by a contract first, so the panic here is
+/// `sort`'s alone, on a slice's length.
 #[track_caller]
 fn count_u32(routine: &str, name: &str, count: usize) -> u32 {
     let Ok(count) = u32::try_from(count) else {
@@ -109,10 +112,12 @@ fn count_u32(routine: &str, name: &str, count: usize) -> u32 {
 /// # Errors
 /// The launch's failure, as [`fb_kernel_abi::launch_status`] maps it. A
 /// fault inside the kernel surfaces at the next synchronization.
-///
-/// # Panics
-/// If `count` is more than `data` holds, or does not fit a `u32`, or
-/// `floor_scale` is empty; before anything is enqueued.
+#[requires(le!(count, data.len()), "count is within data")]
+#[requires(le!(count, u32::MAX as usize), "count fits the launch's u32")]
+#[requires(
+    floor_scale.is_none_or(|s| !s.is_empty()),
+    "floor_scale, when given, holds a value"
+)]
 #[debug_requires(floor >= 0.0, "the floor is non-negative")]
 #[track_caller]
 pub fn inverse_sqrt(
@@ -122,24 +127,13 @@ pub fn inverse_sqrt(
     floor: f64,
     floor_scale: Option<&dyn DeviceSlice<f64>>,
 ) -> Status {
-    assert!(
-        count <= data.len(),
-        "inverse_sqrt: count is {count}, but data holds {}",
-        data.len()
-    );
-    let scale = match floor_scale {
-        Some(scale) => {
-            assert!(!scale.is_empty(), "inverse_sqrt: floor_scale is empty");
-            scale.as_ptr()
-        }
-        None => std::ptr::null(),
-    };
+    let scale = floor_scale.map_or(std::ptr::null(), |scale| scale.as_ptr());
     let count = count_u32("inverse_sqrt", "count", count);
     let data = data.as_mut_ptr();
     // SAFETY: the stream is live; data is device memory of at least count
-    // doubles, checked above, and stays so, with no other user, until the
+    // doubles, by the contract, and stays so, with no other user, until the
     // enqueued work finishes (DeviceSliceMut's promise); scale is null or
-    // device memory of at least one double, checked above, with no writer
+    // device memory of at least one double, by the contract, with no writer
     // until then (DeviceSlice's promise).
     let status = unsafe { fb_inverse_sqrt(stream.stream(), count, data, floor, scale) };
     launched("fb_inverse_sqrt", status)
@@ -148,9 +142,7 @@ pub fn inverse_sqrt(
 /// The bytes of the workspace [`merge_sort`] (`with_values`) or
 /// [`merge_sort_keys`] needs for `n` keys: [`fb_merge_sort_workspace_bytes`].
 /// Zero up to one tile (2816 keys). A host function: it needs no device.
-///
-/// # Panics
-/// If `n` does not fit a `u32`.
+#[requires(le!(n, u32::MAX as usize), "n fits the launch's u32")]
 #[track_caller]
 pub fn merge_sort_workspace_bytes(n: usize, with_values: bool) -> usize {
     let n = count_u32("merge_sort_workspace_bytes", "n", n);
@@ -169,10 +161,10 @@ pub fn merge_sort_workspace_bytes(n: usize, with_values: bool) -> usize {
 /// fault inside a kernel surfaces at the next synchronization.
 ///
 /// # Panics
-/// If `values` is not as long as `keys`, the key count does not fit a
-/// `u32`, or `workspace` is shorter than
+/// If the key count does not fit a `u32`, or `workspace` is shorter than
 /// [`merge_sort_workspace_bytes`]`(keys.len(), true)` or, when that is not
 /// zero, not [`FB_DEVICE_ALIGNMENT`]-aligned; before anything is enqueued.
+#[requires(eq!(values.len(), keys.len()), "values is as long as keys")]
 #[track_caller]
 pub fn merge_sort(
     stream: &Stream,
@@ -180,12 +172,6 @@ pub fn merge_sort(
     values: &mut impl DeviceSliceMut<u32>,
     workspace: &mut impl DeviceSliceMut<u8>,
 ) -> Status {
-    assert!(
-        values.len() == keys.len(),
-        "merge_sort: values holds {}, but keys {}",
-        values.len(),
-        keys.len()
-    );
     sort(stream, keys, values.as_mut_ptr(), workspace)
 }
 
@@ -356,8 +342,9 @@ fn square_block(
 ///
 /// # Panics
 /// If `first` or `lda` does not fit an `i32`, `a` is shorter than the tile,
-/// `lda (jb - 1) + jb` elements, `l11` shorter than `jb²`, or `info` empty;
-/// before anything is enqueued.
+/// `lda (jb - 1) + jb` elements, or `l11` shorter than `jb²`; before
+/// anything is enqueued.
+#[requires(!info.is_empty(), "info holds the flag")]
 // RELEASE: the body clamps jb to one past FB_CHOLESKY_TILE, and the launcher
 // refuses a jb outside 1 to FB_CHOLESKY_TILE as FB_LAUNCH_INVALID_ARGUMENT
 // before anything is touched.
@@ -396,13 +383,12 @@ pub fn cholesky_diagonal(
         "cholesky_diagonal: l11 holds {}, short of the {jb} × {jb} tile",
         l11.len()
     );
-    assert!(!info.is_empty(), "cholesky_diagonal: info is empty");
     let (a, l11, info) = (a.as_mut_ptr(), l11.as_mut_ptr(), info.as_mut_ptr());
-    // SAFETY: the stream is live; a holds the tile at lda, l11 jb² doubles
-    // and info one flag, each checked above, and each stays so, with no
-    // other user, until the enqueued work finishes (DeviceSliceMut's
-    // promise), so none overlaps another. jb fits an i32: it is at most one
-    // past the tile.
+    // SAFETY: the stream is live; a holds the tile at lda and l11 jb²
+    // doubles, checked above, and info one flag, by the contract; each
+    // stays so, with no other user, until the enqueued work finishes
+    // (DeviceSliceMut's promise), so none overlaps another. jb fits an
+    // i32: it is at most one past the tile.
     let status =
         unsafe { fb_cholesky_diagonal(stream.stream(), jb as i32, first32, a, lda32, l11, info) };
     launched("fb_cholesky_diagonal", status)
@@ -429,8 +415,8 @@ pub fn cholesky_diagonal(
 ///
 /// # Panics
 /// If `gram` is shorter than the triangle it reads, `ld (m - 1) + m`
-/// elements, `coeff` shorter than `m`, or `singular` empty; before
-/// anything is enqueued.
+/// elements, or `coeff` shorter than `m`; before anything is enqueued.
+#[requires(!singular.is_empty(), "singular holds the flag")]
 // RELEASE: the launcher refuses an m of 0 as FB_LAUNCH_INVALID_ARGUMENT
 // before reading anything.
 #[debug_requires(m >= 1, "a subspace of at least one pair")]
@@ -474,13 +460,12 @@ pub fn diis_solve(
         "diis_solve: coeff holds {}, short of the {m} coefficients",
         coeff.len()
     );
-    assert!(!singular.is_empty(), "diis_solve: singular is empty");
     let (coeff, singular) = (coeff.as_mut_ptr(), singular.as_mut_ptr());
     // SAFETY: the stream is live; gram covers the triangle the kernel
-    // reads, coeff m doubles and singular one flag, each checked above,
-    // and each stays so until the enqueued work finishes (DeviceSlice's
-    // and DeviceSliceMut's promises), the two written ones apart from
-    // everything else. m, ld and newest are at most the bound, an i32.
+    // reads and coeff m doubles, checked above, and singular one flag, by
+    // the contract; each stays so until the enqueued work finishes
+    // (DeviceSlice's and DeviceSliceMut's promises), the two written ones
+    // apart from everything else. m, ld and newest are at most the bound, an i32.
     let status = unsafe {
         fb_diis_solve(
             stream.stream(),

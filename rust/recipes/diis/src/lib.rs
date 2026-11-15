@@ -92,11 +92,12 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use contracts::debug_requires;
+use contracts::{debug_requires, requires};
 use fb_core_arena::{
     Bufs, CopyOnly, Device, DeviceMut, Layout, Pinned, RowId, memcpy_d2d, memcpy_d2p,
 };
 use fb_core_error_handling::{Error, Result, Status};
+use fb_core_log::fits_i32;
 use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::{geam, gemv};
@@ -236,9 +237,7 @@ fn lock(cursor: &Mutex<Cursor>) -> std::sync::MutexGuard<'_, Cursor> {
 /// # Errors
 /// A `GpuRuntime` error with the check's message, if the loaded
 /// `libfb_recipes_kernels.so` is not the one the bindings describe.
-///
-/// # Panics
-/// If `len` does not fit an `i32`, the BLAS's integer.
+#[requires(fits_i32!(len), "len fits the BLAS's i32")]
 #[debug_requires(len > 0, "a vector of at least one element")]
 #[debug_requires(
     (1..=DIIS_MAX_HISTORY_LIMIT).contains(&max_history),
@@ -252,10 +251,6 @@ pub fn add_diis(
     len: usize,
     max_history: usize,
 ) -> Result<Diis> {
-    assert!(
-        i32::try_from(len).is_ok(),
-        "add_diis: len = {len} does not fit the BLAS's i32"
-    );
     // Not `map_err(Error::gpu)`: through a function pointer the error's
     // origin would be core's, not this call's caller.
     if let Err(e) = fb_recipes_sys::check_library() {

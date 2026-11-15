@@ -39,11 +39,12 @@
 
 #![forbid(unsafe_code)]
 
-use contracts::debug_requires;
+use contracts::requires;
 use fb_core_arena::{
     Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, StagingKind, memcpy_d2d, memcpy_d2p,
 };
 use fb_core_error_handling::{Error, Result, Status};
+use fb_core_log::fits_i32;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::solver::{self, SolverHandle};
@@ -94,8 +95,9 @@ pub fn syevd_lwork(solver: &SolverHandle, n: usize) -> Result<usize> {
 /// is the check's error either way.
 ///
 /// # Panics
-/// If `n²` or `lwork` does not fit an `i32`, or `a` is a row of another
-/// worker's table ([`Dag::add_gpu`]).
+/// If `a` is a row of another worker's table ([`Dag::add_gpu`]).
+#[requires(fits_i32!(n.checked_mul(n)), "n² fits the solver's i32")]
+#[requires(fits_i32!(lwork), "lwork fits the solver's i32")]
 #[debug_requires(n > 0, "a matrix of at least one row")]
 #[track_caller]
 pub fn add_diagonalize(
@@ -106,14 +108,6 @@ pub fn add_diagonalize(
     lwork: usize,
     a: RowId<Device, f64>,
 ) -> (RowId<Device, f64>, RowId<Device, f64>) {
-    assert!(
-        n.checked_mul(n).is_some_and(|n2| i32::try_from(n2).is_ok()),
-        "add_diagonalize: n = {n}: n² does not fit the solver's i32"
-    );
-    assert!(
-        i32::try_from(lwork).is_ok(),
-        "add_diagonalize: lwork = {lwork} does not fit the solver's i32"
-    );
     let rows = dag.add_gpu(
         "syevd",
         worker,

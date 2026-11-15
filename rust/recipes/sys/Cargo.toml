@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 contracts.workspace = true
 fb-core-error-handling.workspace = true
+fb-core-log.workspace = true
 # The safe calls' slices, stream and status mapping.
 fb-core-wwr.workspace = true
 fb-kernel-abi.workspace = true

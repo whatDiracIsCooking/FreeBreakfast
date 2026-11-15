@@ -119,7 +119,7 @@ fn a_scaled_floor_is_the_floor_by_value() {
 /// enqueued.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
-#[should_panic(expected = "inverse_sqrt: count is 5, but data holds 4")]
+#[should_panic(expected = "Pre-condition of inverse_sqrt violated: count is within data")]
 fn the_safe_call_refuses_a_count_past_the_slice() {
     let stream = Stream::new(0);
     let mut device = DeviceBytes::new(4 * size_of::<f64>());
