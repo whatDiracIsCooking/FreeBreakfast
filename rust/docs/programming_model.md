@@ -112,6 +112,36 @@ placement, and placement is the orchestrator's.
   mechanism that moves it.
 - **Error propagation**: a failed node fails its successors and nothing else.
 
+### A builder adds tasks
+
+A computation is not one task, and the code that wires its tasks together
+is a builder: a public function that takes the DAG and adds nodes to it
+through `Dag::add_gpu` and `Dag::add_cpu` ("Memory: layouts and arenas"
+below). Every builder has one shape, `add_x(dag, worker, inputs…) ->
+outputs`:
+
+- **Named `add_*`**, for what it adds: `add_overlap`, `add_scf`.
+- **`dag: &mut Dag` first**, after `self` for a method
+  (`Diis::add_push`), and **`worker`, when it takes one, second**.
+  Then the rows of earlier builders it reads, and the planning input
+  (a basis, a molecule, a step's settings).
+- **Rows out**: the row ids the next builder reads, which is how one wires
+  to the next. A builder that can refuse its input returns a `Result` and
+  refuses at planning, before it adds anything, so a refused plan holds no
+  half of a builder.
+
+`add_core_hamiltonian` is the pattern whole: it refuses nuclei with no
+nucleus, adds one GPU task, hands that task's row to
+`add_cartesian_to_spherical`, and returns the row that adds.
+
+It is a convention a source scan holds, not a trait. A trait could not
+stop a free function taking a `&mut Dag` beside it, since `Dag::add_gpu`
+is public to every task crate, and nothing yet calls builders generically;
+each call names its builder. A planner that reads each step's needs and
+outputs from a table is that caller, and the trait is worth its types
+then. A private function that adds nodes for a builder, and the planner's
+own `Dag` methods in `core/`, are not held to the shape.
+
 ## Memory: layouts and arenas
 
 The C++ tree's footprints
