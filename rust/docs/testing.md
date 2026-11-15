@@ -87,7 +87,9 @@ one, `# Panics` included, and a `debug_assert!` in a body is left for an
 invariant of the function's own making, which no caller can break, with an
 `// INVARIANT:` comment above it saying why. `fb-doc-check`'s
 `tests/contracts.rs` holds both, that a public function's leading
-`assert!` on its arguments with a static message is a `#[requires]`, and
+precondition on its arguments is a `#[requires]` whatever its message (an
+`assert!`, interpolated or not, an `assert_eq!` or `assert_ne!`, or an
+`if … { panic!() }` guard), and
 that a value check appears only in a contract's condition, as a whole
 `&&` term of it;
 clippy's `disallowed_macros` cannot, since a `#[debug_requires]` expands to

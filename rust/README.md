@@ -566,7 +566,9 @@ a type, a test file or a test in one, does not exist.
 `doc_check/tests/contracts.rs` checks that no doc comment restates a
 contract, which rustdoc renders on its own, that every `debug_assert!`
 carries an `// INVARIANT:` comment, and that a public function's leading
-`assert!` on its arguments with a static message is a `#[requires]`, and
+precondition on its arguments is a `#[requires]` whatever its message (an
+`assert!`, interpolated or not, an `assert_eq!` or `assert_ne!`, or an
+`if … { panic!() }` guard), and
 that a value check (`le!`, `lt!`, `eq!`, `fits_i32!`) appears only in a
 contract's condition, as a whole `&&` term of it
 ([`testing.md`](docs/testing.md), "Contracts are part of the spec").

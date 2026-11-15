@@ -6,7 +6,9 @@
 //! as allowed it; `tests/contracts.rs`, which checks that no doc comment
 //! restates a contract rustdoc already renders, that every
 //! `debug_assert!` is an internal invariant that says so, that a
-//! leading static `assert!` is a `#[requires]`, and, in
+//! leading precondition (an `assert!` whatever its message, an
+//! `assert_eq!` or `assert_ne!`, or an `if … { panic!() }` guard) is a
+//! `#[requires]`, and, in
 //! `a_value_check_is_only_in_a_contract` and
 //! `a_value_check_is_a_whole_term_of_its_condition`, that `fb_core_log`'s
 //! value checks are written only in a contract's condition, each a whole
