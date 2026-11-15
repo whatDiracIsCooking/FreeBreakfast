@@ -547,7 +547,7 @@ correctness rests on is a contract.
   `fits_i32!(n.checked_mul(n))`, checked so it never wraps), and an
   `assert!` named in the wrapper's `# Panics` only for state the body
   produces, a recomputation too long for an attribute, or a private
-  helper whose message names its caller's operand
+  helper called once per operand whose message names that operand
   ([`testing.md`](testing.md), "Contracts are part of the spec").
 - **What the kernel trusts in device data travels as a type.** A class
   launcher writes at the AO offsets its records hold, which are in device

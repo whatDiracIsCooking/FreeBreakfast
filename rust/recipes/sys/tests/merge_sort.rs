@@ -190,9 +190,8 @@ fn a_query_past_u32_shows_its_values() {
 /// anything is enqueued.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
-#[should_panic(
-    expected = "merge_sort: 2817 keys need a workspace of 34052 bytes, but it holds 34051"
-)]
+#[should_panic(expected = "Pre-condition of merge_sort violated: workspace holds \
+                merge_sort_workspace_bytes(keys.len(), true)")]
 fn the_safe_call_refuses_a_short_workspace() {
     let stream = Stream::new(0);
     let mut keys = DeviceBytes::new(2817 * size_of::<f64>());
@@ -206,7 +205,10 @@ fn the_safe_call_refuses_a_short_workspace() {
 /// a buffer one byte longer, cut at its first byte.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
-#[should_panic(expected = "-byte aligned")]
+#[should_panic(
+    expected = "Pre-condition of merge_sort violated: workspace is FB_DEVICE_ALIGNMENT-aligned \
+                when it is used"
+)]
 fn the_safe_call_refuses_a_misaligned_workspace() {
     let stream = Stream::new(0);
     let mut keys = DeviceBytes::new(2817 * size_of::<f64>());

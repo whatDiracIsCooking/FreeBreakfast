@@ -283,8 +283,8 @@ build pays nothing and the PR gate, a debug build, has every one on, unless
 soundness rests on it; then it is always on, a `#[requires]` when it is a
 condition on the arguments, whose value checks carry its operands into the
 panic's line, and a body `assert!` only for state the body produces, a
-recomputation too long for an attribute, or a helper naming its caller's
-operand ([`testing.md`](testing.md), "Contracts are part of the spec"). The
+recomputation too long for an attribute, or a helper called once per operand,
+naming it ([`testing.md`](testing.md), "Contracts are part of the spec"). The
 outcome of a GPU call that can fail is not a contract; the call returns a
 status or a `Result`, a failure is an expected result, and making it a
 contract would turn it into a panic. A

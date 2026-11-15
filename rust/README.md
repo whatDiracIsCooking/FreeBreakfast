@@ -202,8 +202,8 @@ is always on, a `#[requires]` on the arguments, its condition written with
 `fb_core_log`'s value checks so a tripped one prints its operands
 (`#[requires(le!(count, data.len()), "count is within data")]`), and a
 body `assert!` named in `# Panics` only for state the body produces, a
-recomputation too long for an attribute, or a helper naming its caller's
-operand ([`testing.md`](docs/testing.md), "Contracts are part of the spec").
+recomputation too long for an attribute, or a helper called once per operand,
+naming it ([`testing.md`](docs/testing.md), "Contracts are part of the spec").
 
 Outcomes of GPU calls are deliberately not contracts. A call that can fail
 returns a status or a `Result`, and a failure is an expected result, not a

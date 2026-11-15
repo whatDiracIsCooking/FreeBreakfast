@@ -21,10 +21,13 @@
 //!
 //! - **A leading precondition is a `#[requires]`.** In a `pub fn`, an
 //!   `assert!`, `assert_eq!`, `assert_ne!` or `if … { panic!(…) }` before
-//!   any other statement, whose condition names only the parameters, is a
-//!   plain condition on the arguments, so it is written where rustdoc
-//!   shows it, whatever its message prints: the value checks carry the
-//!   values. A site kept on purpose is listed in `KEPT`, with why.
+//!   any other statement but a `let` of the parameters, whose condition
+//!   names only the parameters and what those `let`s bound, is a plain
+//!   condition on the arguments, so it is written where rustdoc shows it,
+//!   whatever its message prints: the value checks carry the values. A
+//!   `pub fn` whose body is one call to a private function of its file is
+//!   followed into it, since that body's checks are the public function's.
+//!   A site kept on purpose is listed in `KEPT`, with why.
 //!
 //! - **A value check is a whole `&&` term of a contract's condition.**
 //!   `fb_core_log`'s `le!`, `lt!`, `eq!` and `fits_i32!` store their
@@ -320,7 +323,11 @@ const CONDITION_WORDS: [&str; 6] = ["as", "true", "false", "self", "Self", "crat
 /// The leading preconditions the tree keeps as body checks, each
 /// `path:function` with why. An entry whose site is gone fails
 /// [`a_leading_precondition_is_a_requires`], so the list only shrinks.
-const KEPT: &[(&str, &str)] = &[];
+const KEPT: &[(&str, &str)] = &[(
+    "core/arena/src/bufs.rs:hold",
+    "the arena's row flags: `taken` is what the body's compare_exchange did to the row's \
+     flag, state the body produces, though the scan reads it as a `let` of the arguments",
+)];
 
 /// One leading check at the head of a public function's body that could
 /// be a `#[requires]`: `path:function`, and the line it is on.
@@ -368,35 +375,31 @@ fn only_a_panic(body: &str) -> bool {
     matches!(t[close + 1..].trim(), "" | ";")
 }
 
-/// The leading preconditions of one file's public functions: each check in
-/// the run that opens a `pub fn`'s body, before any other statement, whose
-/// condition names nothing lower-case but the function's parameters
-/// ([`only_params`]). A check is an `assert!`, `assert_eq!` or
-/// `assert_ne!`, whatever its message, or an `if <condition> { panic!(…) }`
-/// with no `else`; the run ends at the first statement that is neither.
-/// Test files and `#[cfg(test)]` modules are skipped, and so is a
-/// `const fn`, which `#[requires]` cannot carry.
-fn leading_preconditions(path: &str, source: &str) -> Vec<Leading> {
-    if test_file(path) {
-        return Vec::new();
-    }
-    let code = code_only(source);
+/// One function of a file: its name, whether it is checked as a public
+/// function (`pub`, not `pub(crate)`, not `const`), its parameters, and its
+/// body's braces, or `None` when it has none.
+struct FnItem<'a> {
+    name: &'a str,
+    public: bool,
+    params: Vec<&'a str>,
+    body: Option<(usize, usize)>,
+}
+
+/// The functions of one file (`code_only`) outside `skipped`.
+fn functions<'a>(code: &'a str, skipped: &[(usize, usize)]) -> Vec<FnItem<'a>> {
     let b = code.as_bytes();
-    let skipped = test_modules(&code);
-    let words = idents(&code);
+    let words = idents(code);
     let mut out = Vec::new();
     for (k, &(at, w)) in words.iter().enumerate() {
         if w != "fn" || skipped.iter().any(|&(s, e)| s <= at && at < e) {
             continue;
         }
-        // `pub fn`, `pub const fn`, `pub unsafe fn`, …, not `pub(crate)`.
+        // `pub fn`, `pub unsafe fn`, …, not `pub(crate)` nor `const`.
         let head = code[..at]
             .rfind(['\n', ';', '{', '}', ']'])
             .map_or(0, |p| p + 1);
         let vis: Vec<&str> = code[head..at].split_whitespace().collect();
-        if vis.first() != Some(&"pub") || vis.contains(&"const") {
-            continue;
-        }
+        let public = vis.first() == Some(&"pub") && !vis.contains(&"const");
         let Some(&(name_at, name)) = words.get(k + 1) else {
             continue;
         };
@@ -417,13 +420,122 @@ fn leading_preconditions(path: &str, source: &str) -> Vec<Leading> {
                     .rfind(|w| *w != "mut")
             })
             .collect();
-        let Some(open) = code[close..].find(['{', ';']).map(|j| close + j) else {
-            continue;
-        };
-        if b[open] == b';' {
+        let body = code[close..]
+            .find(['{', ';'])
+            .map(|j| close + j)
+            .filter(|&open| b[open] == b'{')
+            .map(|open| (open, closing(b, open)));
+        out.push(FnItem {
+            name,
+            public,
+            params,
+            body,
+        });
+    }
+    out
+}
+
+/// The function a body (`code_only`, inside its braces) delegates to when
+/// it is one call and nothing else, `f(…)` or `Self::f(…)`, a trailing `;`
+/// aside.
+fn sole_call(body: &str) -> Option<&str> {
+    let t = body.trim();
+    let t = t.strip_prefix("Self::").unwrap_or(t);
+    let name_len = t.bytes().take_while(|&c| is_ident(c)).count();
+    let (name, rest) = t.split_at(name_len);
+    if name.is_empty() || !rest.starts_with('(') {
+        return None;
+    }
+    let close = closing(rest.as_bytes(), 0);
+    matches!(rest[close + 1..].trim(), "" | ";").then_some(name)
+}
+
+/// The name a leading `let` at the head of `rest` binds and the byte length
+/// of the statement, its `;` included, when it binds one plain name
+/// (`let n`, `let mut n`, `let n: T`) to an expression that names nothing
+/// lower-case but `params`, `unsafe` aside ([`only_params`]); not a
+/// `let … else`.
+fn leading_let<'a>(rest: &'a str, params: &[&str]) -> Option<(&'a str, usize)> {
+    let b = rest.as_bytes();
+    let (mut depth, mut eq, mut semi) = (0i32, None, None);
+    for (j, &c) in b.iter().enumerate() {
+        match c {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'=' if depth == 0
+                && eq.is_none()
+                && !matches!(b.get(j + 1), Some(b'=' | b'>'))
+                && !matches!(b.get(j.wrapping_sub(1)), Some(b'=' | b'!' | b'<' | b'>')) =>
+            {
+                eq = Some(j);
+            }
+            b';' if depth == 0 => {
+                semi = Some(j);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let (eq, semi) = (eq?, semi?);
+    let pat = rest[3..eq].split(':').next().unwrap_or("");
+    let pat: Vec<&str> = pat.split_whitespace().filter(|w| *w != "mut").collect();
+    let [name] = pat[..] else {
+        return None;
+    };
+    let expr = &rest[eq + 1..semi];
+    let has_else = idents(expr).iter().any(|(_, w)| *w == "else");
+    let mut names = params.to_vec();
+    names.push("unsafe");
+    let ok = name.bytes().all(is_ident) && !has_else && only_params(expr, &names);
+    ok.then_some((name, semi + 1))
+}
+
+/// The leading preconditions of one file's public functions: each check in
+/// the run that opens a `pub fn`'s body whose condition names nothing
+/// lower-case but the function's parameters ([`only_params`]), and the
+/// names the run has bound. A check is an `assert!`, `assert_eq!` or
+/// `assert_ne!`, whatever its message, or an `if <condition> { panic!(…) }`
+/// with no `else`; a `let` of one name to an expression of those names
+/// ([`leading_let`]) is passed over, its name joining them; the run ends at
+/// the first statement that is none of these. A `pub fn` whose body is one
+/// call to another function of the file ([`sole_call`]) is followed into
+/// it: that body's run is the public function's, under the callee's name,
+/// so a private helper two public functions share holds their contracts no
+/// less. Test files and `#[cfg(test)]` modules are skipped, and so is a
+/// `const fn`, which `#[requires]` cannot carry.
+fn leading_preconditions(path: &str, source: &str) -> Vec<Leading> {
+    if test_file(path) {
+        return Vec::new();
+    }
+    let code = code_only(source);
+    let b = code.as_bytes();
+    let skipped = test_modules(&code);
+    let fns = functions(&code, &skipped);
+    let mut scanned: Vec<usize> = Vec::new();
+    for (k, f) in fns.iter().enumerate() {
+        if !f.public {
             continue;
         }
-        let end = closing(b, open);
+        scanned.push(k);
+        let Some((open, end)) = f.body else {
+            continue;
+        };
+        if let Some(callee) = sole_call(&code[open + 1..end])
+            && let Some(c) = fns.iter().position(|g| g.name == callee && !g.public)
+        {
+            scanned.push(c);
+        }
+    }
+    scanned.sort_unstable();
+    scanned.dedup();
+    let mut out = Vec::new();
+    for k in scanned {
+        let f = &fns[k];
+        let Some((open, end)) = f.body else {
+            continue;
+        };
+        let name = f.name;
+        let mut params = f.params.clone();
         // The run of checks that opens the body.
         let mut i = open + 1;
         loop {
@@ -435,6 +547,14 @@ fn leading_preconditions(path: &str, source: &str) -> Vec<Leading> {
                 rest.starts_with(w)
                     && !rest[w.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
             };
+            if starts_word("let") {
+                let Some((bound, len)) = leading_let(rest, &params) else {
+                    break;
+                };
+                params.push(bound);
+                i += len;
+                continue;
+            }
             if starts_word("if") {
                 // `if <cond> { panic!(…) }`, the condition up to the first
                 // brace outside brackets.
@@ -789,7 +909,7 @@ fn a_leading_precondition_is_judged_by_its_place_and_its_names() {
         "    assert!(x.len() >= n, \"x holds n\");\n",
         "    assert_eq!(n % 2, 0);\n",
         "    let m = n;\n",
-        "    assert!(m > 0, \"not leading\");\n",
+        "    assert!(m > 0, \"a let of the arguments is passed over\");\n",
         "}\n",
         "pub fn b(count: usize, data: &[f64]) {\n",
         "    assert!(count <= data.len(), \"count is {count}, data {}\", data.len());\n",
@@ -823,6 +943,7 @@ fn a_leading_precondition_is_judged_by_its_place_and_its_names() {
     let want = [
         (key("a"), 2),
         (key("a"), 3),
+        (key("a"), 5),
         (key("b"), 8),
         (key("b"), 9),
         (key("d"), 14),
@@ -832,6 +953,31 @@ fn a_leading_precondition_is_judged_by_its_place_and_its_names() {
     assert_eq!(got, want);
     assert!(leading_preconditions("a/tests/t.rs", src).is_empty());
     assert!(leading_preconditions("a/src/x.rs", &format!("#![cfg(test)]\n{src}")).is_empty());
+}
+
+#[test]
+fn a_public_function_is_followed_into_the_private_body_it_calls() {
+    let src = concat!(
+        "pub fn a(n: usize, w: &[u8]) -> u32 { body(n, w) }\n",
+        "pub fn b(n: usize, w: &[u8]) -> u32 { Self::body(n, w); }\n",
+        "fn body(n: usize, w: &[u8]) -> u32 {\n",
+        "    let m = count(n);\n",
+        "    let need = unsafe { query(m) };\n",
+        "    assert!(w.len() >= need, \"short\");\n",
+        "    let Ok(k) = u32::try_from(n) else { panic!(\"k\") };\n",
+        "    assert!(k > 0);\n",
+        "}\n",
+        "pub fn c(n: usize) { log(n); helper(n) }\n",
+        "fn helper(n: usize) { assert!(n > 0); }\n",
+        "fn unused(n: usize) { assert!(n > 0); }\n",
+        "pub fn d(n: usize) { let x = local + n; assert!(x > 0); }\n",
+    );
+    let found = leading_preconditions("a/src/lib.rs", src);
+    let got: Vec<(String, usize)> = found.iter().map(|l| (l.key.clone(), l.line)).collect();
+    // `body` once, though two public functions call it; past the `let … else`
+    // the run has ended; `helper` is called after a statement, `unused` by
+    // none, and `x` is bound from a local.
+    assert_eq!(got, [("a/src/lib.rs:body".to_owned(), 6)]);
 }
 
 #[test]
