@@ -92,13 +92,16 @@ impl<H: StagingKind, S> Declared<'_, H, S> {
 
 /// One GPU worker's rows, of both kinds, shared by its lanes; its lane
 /// count, one past the highest a GPU task named; per lane, whether a GPU
-/// task on it uses the library handles ([`GpuTask::uses_libraries`]); and
-/// its BLAS workspace rows, each with its lane, once declared.
+/// task on it uses the library handles ([`GpuTask::uses_libraries`]); its
+/// fork streams, the most any of its GPU tasks forks onto
+/// ([`GpuTask::forks`]); and its BLAS workspace rows, each with its lane,
+/// once declared.
 struct Worker<H> {
     device: TableBuilder<Device>,
     host: TableBuilder<H>,
     lanes: usize,
     libraries: Vec<bool>,
+    forks: usize,
     blas_workspace: Vec<(usize, RowId<Device, u8>)>,
 }
 
@@ -202,6 +205,7 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
             w.libraries.resize(w.lanes, false);
         }
         w.libraries[at.lane] |= task.uses_libraries();
+        w.forks = w.forks.max(task.forks());
         let rows = task.layout(&mut w.device.node(pos), &mut w.host.node(pos));
         let kept = rows.clone();
         self.nodes.push(Declared {
@@ -453,6 +457,7 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
             .map(|w| std::mem::take(&mut w.libraries))
             .collect();
         let lanes = self.workers.iter().map(|w| w.lanes).collect();
+        let forks = self.workers.iter().map(|w| w.forks).collect();
         let loops = &self.loops;
         let mut heap = self.heap;
         for l in loops {
@@ -507,6 +512,7 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
             heap,
             lanes,
             libraries,
+            forks,
             blas_workspaces,
             nodes: self.nodes,
             deps: deps.into_iter().map(|d| d.into_iter().collect()).collect(),
@@ -521,6 +527,7 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
                 host: TableBuilder::new(),
                 lanes: 0,
                 libraries: Vec::new(),
+                forks: 0,
                 blas_workspace: Vec::new(),
             });
         }
@@ -549,6 +556,9 @@ pub struct Planned<'a, H: StagingKind = Pinned, S = DeviceStream> {
     /// Per worker, per lane, whether the lane has library handles: lane 0
     /// always, a lane above it if a task on it uses them.
     pub(super) libraries: Vec<Vec<bool>>,
+    /// Per worker, its fork streams: the most any of its GPU tasks forks
+    /// onto.
+    pub(super) forks: Vec<usize>,
     /// Per worker, its BLAS workspace rows, each with its lane: one per
     /// lane with library handles, if declared.
     pub(super) blas_workspaces: Vec<Vec<(usize, RowId<Device, u8>)>>,

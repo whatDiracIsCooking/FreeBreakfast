@@ -20,7 +20,9 @@
 //!   `device` feature) is the real one, over `fb_core_wwr::runtime`: each
 //!   lane's stream and its library handles ([`DeviceStream`], a BLAS and a
 //!   dense-solver handle), made with the backend before any run and reached
-//!   by a GPU node through its [`Lane`].
+//!   by a GPU node through its [`Lane`]; and each worker's fork streams,
+//!   outside its lanes, over which a node forks its own work and joins it
+//!   back before it returns (`DeviceStream::fork_join`).
 //! - [`run`]: open one [`std::thread::scope`] with `n_cpu` CPU workers and
 //!   one thread per GPU worker, run every node once (a loop's body and
 //!   decision once per iteration, a counted loop's body once per trip),

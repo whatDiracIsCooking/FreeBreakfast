@@ -6,11 +6,12 @@
 //!
 //! Two layers:
 //!
-//! - [`kinetic_classes`]: every class's [`kinetic_class`] launch on one
-//!   stream, each adding into a Cartesian matrix the caller zeroed.
-//!   It neither zeroes nor transforms, so a task that launches several
-//!   families on one stream into one matrix (the core Hamiltonian's, T and
-//!   then V on top) calls it between its own launches.
+//! - [`kinetic_classes`]: every class's [`kinetic_class`] launch, each on
+//!   a fork of the task's stream and joined back
+//!   ([`DeviceStream::fork_join`]), each adding into a Cartesian matrix the
+//!   caller zeroed. It neither zeroes nor transforms, so a task that
+//!   launches several families into one matrix (the core Hamiltonian's, T
+//!   and then V on top) calls it between its own launches.
 //! - [`add_kinetic`], T of a [`BasisSet`] added to a
 //!   [`Dag`] after the records
 //!   ([`fb_integrals_mmd::add_records`]), which the caller adds and passes
@@ -25,8 +26,9 @@
 //!
 //! | C++ | Here |
 //! |---|---|
-//! | `kinetic_class(stream, cls, n_ao, t)` (`kinetic_bridge.h`), one class | [`kinetic_class`], `fb-integrals-sys`'s safe launcher over a [`ClassRows`]; [`kinetic_classes`]`(stream, device, classes, t)`, every class in order on one stream |
-//! | `kinetic(res, classes, t.cartesian())`: zeroed, then one launch per class, each on a stream forked from `res.stream()` | the `kinetic` task of [`add_kinetic`]: zeroed, then [`kinetic_classes`] on the worker's lane 0, each class's records, formed on a lane of their own, an event wait on the device; the records' [`ClassRows`] passed in by the caller |
+//! | `kinetic_class(stream, cls, n_ao, t)` (`kinetic_bridge.h`), one class | [`kinetic_class`], `fb-integrals-sys`'s safe launcher over a [`ClassRows`]; [`kinetic_classes`]`(stream, device, classes, t)`, every class on a fork of the task's stream |
+//! | `kinetic(res, classes, t.cartesian())`: zeroed, then one launch per class | the `kinetic` task of [`add_kinetic`]: zeroed, then [`kinetic_classes`] on the worker's lane 0, each class's records, formed on a lane of their own, an event wait on the device; the records' [`ClassRows`] passed in by the caller |
+//! | `launch_each`: one stream per class, its `device_stream()`'s fork stream, forked from `res.stream()` and joined back | [`DeviceStream::fork_join`] in [`kinetic_classes`]: a fork per class from the worker's fork streams, joined back before the task returns, never a lane's stream, so no class orders the task behind work the planner did not; the task declares a fork per class ([`GpuTask::forks`]) |
 //! | `kinetic`'s `InvalidConfig` for a class above f, `la > lb` or `n_ao²` past `INT32_MAX` | [`kinetic_class`]'s contract for the class, and its always-on `assert!` of the matrix's `n_cart²` and the `i32` bound; [`add_kinetic`] asserts the `i32` bound at planning too, and the records hold only `la <= lb` |
 //! | `upload_spherical_transform_matrix`, `MatrixAOPair::cartesian_to_spherical` | [`fb_recipes_matrix_ao::add_cartesian_to_spherical`], U's slot passed in by the caller |
 //! | `res.dev_idx()` made current for the call | nothing: a stream task runs with its worker's device current |
@@ -43,23 +45,27 @@ use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::device_slice::DeviceSliceMut;
 use fb_core_wwr::memset;
-use fb_core_wwr::runtime::Stream;
 use fb_integrals_sys::{ClassRows, Fields, kinetic_class};
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 
 /// Add every class's kinetic-energy contributions into the Cartesian matrix
-/// `t`, `n_cart` × `n_cart`, on `stream`: one [`kinetic_class`] launch per
-/// class, in order, each adding at `(m, n)` and `(n, m)`. Enqueues only,
-/// and zeroes nothing: `t` must be zeroed (or hold what the caller adds T
-/// to) before the call, and is symmetric after it when it was before.
+/// `t`, `n_cart` × `n_cart`: one [`kinetic_class`] launch per class, each
+/// on a fork of `stream` joined back into it before the call returns
+/// ([`DeviceStream::fork_join`]), each adding at `(m, n)` and `(n, m)`, so
+/// the classes run at once and everything enqueued on `stream` afterwards
+/// sees all of T. Enqueues only, and zeroes nothing: `t` must be zeroed
+/// (or hold what the caller adds T to) before the call, and is symmetric
+/// after it when it was before.
 ///
 /// `stream` is the calling task's, `device` its view, and every class's
 /// [`Fields::KINETIC`] were declared read by its layout
-/// ([`ClassRows::read`]).
+/// ([`ClassRows::read`]); the task declares a fork per class
+/// ([`GpuTask::forks`]), or the classes share the forks its worker has.
 ///
 /// # Errors
 /// The first launch's refusal or launch error, as [`kinetic_class`] names
-/// it with the class; the classes before it are enqueued, and `t` is then
+/// it with the class, or a fork's or join's status; no class after it is
+/// launched, the forks already made are joined back, and `t` is then
 /// unspecified. The kernels' own faults surface at the stream's next
 /// synchronization.
 ///
@@ -68,15 +74,14 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// a class's field was not declared by the task's layout.
 #[track_caller]
 pub fn kinetic_classes(
-    stream: &Stream,
+    stream: &DeviceStream,
     device: &Bufs<'_, Device>,
     classes: &[ClassRows],
     t: &mut impl DeviceSliceMut<f64>,
 ) -> Status {
-    for c in classes {
-        kinetic_class(stream, device, c, t)?;
-    }
-    Ok(())
+    stream.fork_join(classes.len(), |c, fork| {
+        kinetic_class(fork, device, &classes[c], t)
+    })
 }
 
 /// Add the spherical AO kinetic-energy matrix of `basis` to `dag` on GPU
@@ -84,7 +89,7 @@ pub fn kinetic_classes(
 /// column-major, symmetric up to rounding.
 ///
 /// `kinetic` (stream: the Cartesian matrix zeroed and [`kinetic_classes`],
-/// reading the records as an edge), then the spherical transform of
+/// a fork per class, reading the records as an edge), then the spherical transform of
 /// [`add_cartesian_to_spherical`]: `harmonics` and `upload U` (U
 /// into a pinned row, then its device row), only when `u` is `None`, and `spherical transform` (stream:
 /// `T = Uᵀ T_cart U`). `classes` are the records of `basis`, added on
@@ -136,6 +141,10 @@ impl GpuTask for Kinetic {
             c.read(device, Fields::KINETIC);
         }
         device.output("T cartesian", self.n_cart * self.n_cart)
+    }
+
+    fn forks(&self) -> usize {
+        self.classes.len()
     }
 
     fn run(

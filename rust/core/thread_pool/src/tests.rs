@@ -1223,7 +1223,7 @@ fn device_edges_wait_for_the_work_they_consume() {
         *seen_by_cpu.lock().unwrap() = dst.read(&Stream::new(0));
         Ok(())
     });
-    let mut device = Device::new(&[0], &plan, &[]);
+    let mut device = Device::new(&[0], &plan, &[], &[]);
     let record = run(&mut plan, &mut device, 1);
     record.result.as_ref().unwrap();
     assert_eq!(*devices_seen.lock().unwrap(), [0]);
@@ -1244,6 +1244,231 @@ fn device_edges_wait_for_the_work_they_consume() {
             (None, "gpu0.1", copy),
         ]
     );
+}
+
+/// `n` bytes of `(i + seed) mod 251`: a pattern a zeroed buffer cannot
+/// match, distinct per seed.
+#[cfg(feature = "device-tests")]
+fn pattern(n: usize, seed: usize) -> Vec<u8> {
+    (0..n).map(|i| ((i + seed) % 251) as u8).collect()
+}
+
+/// Enqueue a device-to-device copy of `n` bytes on `stream`, left in
+/// flight: a helper that synced would hide a missing wait.
+#[cfg(feature = "device-tests")]
+fn d2d_on(
+    to: &fb_core_wwr::runtime::tests::DeviceBytes,
+    from: &fb_core_wwr::runtime::tests::DeviceBytes,
+    n: usize,
+    stream: &fb_core_wwr::runtime::Stream,
+) {
+    use fb_core_wwr::handle::DeviceHandleStream;
+    use wwr_sys::wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_DEVICE;
+    // SAFETY: both device ranges are at least n bytes and outlive the run.
+    fb_core_wwr::runtime::tests::ok(unsafe {
+        wwr_sys::wwr_memcpy_async(
+            to.0,
+            from.0,
+            n,
+            WWR_MEMCPY_DEVICE_TO_DEVICE,
+            stream.stream(),
+        )
+    });
+}
+
+/// Device 0: the work a node forks ([`DeviceStream::fork_join`]) is
+/// ordered before what the executor queues after the node on its lane and
+/// before a node on another lane that reads its output, both on the
+/// device, and the forks are the worker's own streams, not a lane's.
+///
+/// The node forks three items over a pool of two, so one fork carries two.
+/// Item `c` enqueues a chain of device-to-device copies that ends by
+/// writing `src[c]`, so it is still running when the node returns. A node
+/// after it on the same lane, and one on another lane, each copy every
+/// `src[c]` on; without the joins either reads the zeros `src` started as,
+/// and the comparison on the host, after the CPU node's event syncs,
+/// fails.
+#[cfg(feature = "device-tests")]
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn forked_work_precedes_the_lane_and_the_readers_after_the_node() {
+    use fb_core_wwr::handle::DeviceHandleStream;
+    use fb_core_wwr::runtime::Stream;
+    use fb_core_wwr::runtime::tests::DeviceBytes;
+
+    const N: usize = 32 << 20;
+    const HOPS: usize = 32;
+    const ITEMS: usize = 3;
+    let patterns: Vec<Vec<u8>> = (0..ITEMS).map(|c| pattern(N, c)).collect();
+    let zeros = vec![0u8; N];
+    // Each upload is drained before it returns, so all of it is before the run.
+    let setup = Stream::new(0);
+    let scratch: Vec<(DeviceBytes, DeviceBytes)> = patterns
+        .iter()
+        .map(|p| (DeviceBytes::upload(p, &setup), DeviceBytes::new(N)))
+        .collect();
+    let [src, same, other] = [(); 3].map(|_| {
+        (0..ITEMS)
+            .map(|_| DeviceBytes::upload(&zeros, &setup))
+            .collect::<Vec<_>>()
+    });
+    let streams = Mutex::new(Vec::new());
+    let seen = Mutex::new(Vec::new());
+
+    let mut plan: Plan<'_, DeviceStream> = Plan::new();
+    let fork = plan.add("fork", on(0, 0), &[], |lane| {
+        let Lane::Stream { stream, .. } = lane else {
+            unreachable!()
+        };
+        let mut used = vec![stream.stream() as usize];
+        stream.fork_join(ITEMS, |c, s| {
+            let (a, b) = &scratch[c];
+            for _ in 0..HOPS / 2 {
+                d2d_on(b, a, N, s);
+                d2d_on(a, b, N, s);
+            }
+            d2d_on(&src[c], a, N, s);
+            used.push(s.stream() as usize);
+            Ok(())
+        })?;
+        *streams.lock().unwrap() = used;
+        Ok(())
+    });
+    let after = plan.add("after", on(0, 0), &[fork], |lane| {
+        let Lane::Stream { stream, .. } = lane else {
+            unreachable!()
+        };
+        (0..ITEMS).for_each(|c| d2d_on(&same[c], &src[c], N, stream));
+        Ok(())
+    });
+    let reader = plan.add("other lane", on(0, 1), &[fork], |lane| {
+        let Lane::Stream { stream, .. } = lane else {
+            unreachable!()
+        };
+        (0..ITEMS).for_each(|c| d2d_on(&other[c], &src[c], N, stream));
+        Ok(())
+    });
+    plan.add("read", Placement::Cpu, &[after, reader], |_| {
+        // A fresh non-blocking stream, synced alone: the edges' event
+        // syncs are all that order the copies before this read.
+        let fresh = Stream::new(0);
+        *seen.lock().unwrap() = [&same, &other]
+            .map(|bufs| bufs.iter().map(|b| b.read(&fresh)).collect::<Vec<_>>())
+            .to_vec();
+        Ok(())
+    });
+    let mut device = Device::new(&[0], &plan, &[], &[2]);
+    run(&mut plan, &mut device, 1).result.unwrap();
+
+    let used = streams.lock().unwrap().clone();
+    let lanes = [0, 1].map(|l| device.stream(LaneId { worker: 0, lane: l }).stream() as usize);
+    assert_eq!(used.len(), 1 + ITEMS);
+    assert_eq!(used[0], lanes[0]);
+    let (f0, f1) = (used[1], used[2]);
+    assert_ne!(f0, f1, "two items, two forks");
+    assert_eq!(used[3], f0, "item 2 on fork 2 mod 2");
+    for f in [f0, f1] {
+        assert!(!lanes.contains(&f), "a fork is no lane's stream");
+    }
+    let seen = seen.lock().unwrap();
+    for (which, bufs) in ["the lane after the node", "another lane"]
+        .iter()
+        .zip(seen.iter())
+    {
+        for (c, got) in bufs.iter().enumerate() {
+            assert!(*got == patterns[c], "{which} ran ahead of fork item {c}");
+        }
+    }
+}
+
+/// Device 0: a [`DeviceStream::fork_join`] whose item fails runs no item
+/// after it, returns that failure, and still joins every fork it made, so
+/// the forking stream does not run ahead of the items in flight.
+///
+/// Items 0 and 1 write `src[0]` and `src[1]` after a chain of copies, item
+/// 2 fails. The node then copies both on, on its own stream; the host
+/// reads the copies after the run.
+#[cfg(feature = "device-tests")]
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn a_failed_fork_item_still_joins_the_forks_made() {
+    use fb_core_wwr::runtime::Stream;
+    use fb_core_wwr::runtime::tests::DeviceBytes;
+
+    const N: usize = 32 << 20;
+    const HOPS: usize = 32;
+    let patterns: Vec<Vec<u8>> = (0..2).map(|c| pattern(N, c)).collect();
+    let zeros = vec![0u8; N];
+    let setup = Stream::new(0);
+    let scratch: Vec<(DeviceBytes, DeviceBytes)> = patterns
+        .iter()
+        .map(|p| (DeviceBytes::upload(p, &setup), DeviceBytes::new(N)))
+        .collect();
+    let [src, out] = [(); 2].map(|_| {
+        (0..2)
+            .map(|_| DeviceBytes::upload(&zeros, &setup))
+            .collect::<Vec<_>>()
+    });
+    let ran = Mutex::new(Vec::new());
+
+    let mut plan: Plan<'_, DeviceStream> = Plan::new();
+    plan.add("fork", on(0, 0), &[], |lane| {
+        let Lane::Stream { stream, .. } = lane else {
+            unreachable!()
+        };
+        let failed = stream.fork_join(4, |c, s| {
+            ran.lock().unwrap().push(c);
+            if c == 2 {
+                return Err(Error::gpu("item 2"));
+            }
+            let (a, b) = &scratch[c];
+            for _ in 0..HOPS / 2 {
+                d2d_on(b, a, N, s);
+                d2d_on(a, b, N, s);
+            }
+            d2d_on(&src[c], a, N, s);
+            Ok(())
+        });
+        assert_eq!(failed.unwrap_err().message, "item 2");
+        (0..2).for_each(|c| d2d_on(&out[c], &src[c], N, stream));
+        Ok(())
+    });
+    let mut device = Device::new(&[0], &plan, &[], &[4]);
+    run(&mut plan, &mut device, 1).result.unwrap();
+
+    assert_eq!(*ran.lock().unwrap(), [0, 1, 2], "no item after the failure");
+    let fresh = Stream::new(0);
+    for (c, buf) in out.iter().enumerate() {
+        assert!(
+            buf.read(&fresh) == patterns[c],
+            "the stream ran ahead of item {c}"
+        );
+    }
+}
+
+/// Device 0: a worker with fewer than two fork streams declared has none,
+/// and [`DeviceStream::fork_join`] runs every item on the forking stream
+/// itself, in order.
+#[cfg(feature = "device-tests")]
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn a_worker_with_no_forks_runs_the_items_on_the_lane() {
+    use fb_core_wwr::handle::DeviceHandleStream;
+
+    let plan: Plan<'_, DeviceStream> = Plan::new();
+    for forks in [&[][..], &[1]] {
+        let device = Device::new(&[0], &plan, &[], forks);
+        let stream = device.stream(LaneId { worker: 0, lane: 0 });
+        let mut items = Vec::new();
+        stream
+            .fork_join(3, |c, s| {
+                items.push((c, s.stream()));
+                Ok(())
+            })
+            .unwrap();
+        let lane = stream.stream();
+        assert_eq!(items, [(0, lane), (1, lane), (2, lane)], "{forks:?}");
+    }
 }
 
 /// Device 0: each lane's BLAS and dense-solver handles are made with the
@@ -1284,7 +1509,7 @@ fn device_library_handles_are_the_workers_made_before_the_run() {
             Ok(())
         });
     }
-    let mut device = Device::new(&[0], &plan, &[vec![true, true]]);
+    let mut device = Device::new(&[0], &plan, &[vec![true, true]], &[]);
     let mut runs = Vec::new();
     for _ in 0..2 {
         run(&mut plan, &mut device, 1).result.unwrap();
@@ -1309,7 +1534,7 @@ fn a_lane_with_no_library_user_has_no_handles() {
     for s in 0..4 {
         plan.add(format!("kernel{s}"), on(0, s), &[], |_| Ok(()));
     }
-    let device = Device::new(&[0], &plan, &[vec![true, false, true]]);
+    let device = Device::new(&[0], &plan, &[vec![true, false, true]], &[]);
     let made = |f: &dyn Fn()| std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_ok();
     let has: Vec<(bool, bool)> = (0..4)
         .map(|l| {
@@ -1389,7 +1614,7 @@ fn device_loop_reads_each_iterations_stream_scope() {
             ControlFlow::Break(())
         })
     });
-    let mut device = Device::new(&[0], &plan, &[]);
+    let mut device = Device::new(&[0], &plan, &[], &[]);
     let record = run(&mut plan, &mut device, 1);
     record.result.as_ref().unwrap();
 
@@ -1541,7 +1766,7 @@ fn device_counted_loop_times_each_trip() {
         Ok(())
     });
     plan.add_counted(copies, TRIPS, 2);
-    let mut device = Device::new(&[0], &plan, &[]);
+    let mut device = Device::new(&[0], &plan, &[], &[]);
     let record = run(&mut plan, &mut device, 1);
     record.result.as_ref().unwrap();
 

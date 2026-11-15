@@ -72,7 +72,8 @@ pub trait Backend: sealed::Sealed {
     /// On a CPU worker, before a node that consumes GPU node `node`'s trip
     /// `trip`: wait for it on the host.
     fn host_wait(&self, node: NodeId, trip: usize) -> Status;
-    /// On `lane`'s worker, as it exits: wait for all the lane's work.
+    /// On `lane`'s worker, as it exits: wait for all the lane's work, and
+    /// for the worker's fork streams' (`DeviceStream::fork_join`).
     fn sync(&self, lane: LaneId) -> Status;
     /// After the run, every stream synced: the device time of GPU node
     /// `node`'s stream scope in trip `trip`, which
@@ -155,6 +156,9 @@ impl Backend for HostOnly {
 /// none does today. The libraries are BLAS and the dense solver. The BLAS
 /// handle's workspace is the backend's to hand over
 /// ([`Device::bind_blas_workspace`]), never a node's.
+///
+/// A node may also fork its own work across its worker's fork streams and
+/// join it back before it returns ([`DeviceStream::fork_join`]).
 #[cfg(feature = "device")]
 pub struct DeviceStream {
     // Fields drop in declaration order: the handles before the stream they
@@ -163,27 +167,148 @@ pub struct DeviceStream {
     blas: Option<BlasHandle>,
     solver: Option<SolverHandle>,
     stream: Rc<Stream>,
+    /// The worker's fork streams, shared by its lanes; `None` for a worker
+    /// none of whose tasks forks onto two or more.
+    forks: Option<Rc<Forks>>,
+}
+
+/// A GPU worker's fork streams ([`DeviceStream::fork_join`]): outside its
+/// lanes, with no library handles, made with the backend and shared by the
+/// worker's lanes, which its one thread drives one node at a time.
+#[cfg(feature = "device")]
+struct Forks {
+    /// Recorded on the forking stream; every fork waits on it.
+    fork: Event,
+    /// Each fork's stream, and the event its join records on it, which the
+    /// forking stream waits on.
+    streams: Vec<(Stream, Event)>,
+}
+
+#[cfg(feature = "device")]
+impl Forks {
+    /// `n` non-blocking streams on `dev_idx` and their events, none of
+    /// them timed. Aborts if any cannot be made.
+    #[track_caller]
+    fn new(dev_idx: i32, n: usize) -> Self {
+        let untimed = || Event::with_flags(dev_idx, event::DISABLE_TIMING);
+        Forks {
+            fork: untimed(),
+            streams: (0..n).map(|_| (Stream::new(dev_idx), untimed())).collect(),
+        }
+    }
 }
 
 #[cfg(feature = "device")]
 impl DeviceStream {
     /// A non-blocking stream on `dev_idx`, and a BLAS and a dense-solver
-    /// handle bound to it. Aborts if any cannot be made.
+    /// handle bound to it, with no fork streams. Aborts if any cannot be
+    /// made.
     #[track_caller]
     pub fn new(dev_idx: i32) -> Self {
-        Self::with_libraries(dev_idx, true)
+        Self::with_libraries(dev_idx, true, None)
     }
 
-    /// A non-blocking stream on `dev_idx`, and its two handles if
-    /// `libraries`. Aborts if any cannot be made.
+    /// A non-blocking stream on `dev_idx`, its two handles if `libraries`,
+    /// and its worker's `forks`. Aborts if any cannot be made.
     #[track_caller]
-    fn with_libraries(dev_idx: i32, libraries: bool) -> Self {
+    fn with_libraries(dev_idx: i32, libraries: bool, forks: Option<Rc<Forks>>) -> Self {
         let stream = Rc::new(Stream::new(dev_idx));
         DeviceStream {
             blas: libraries.then(|| BlasHandle::new(Rc::clone(&stream))),
             solver: libraries.then(|| SolverHandle::new(Rc::clone(&stream))),
             stream,
+            forks,
         }
+    }
+
+    /// Run `f(i, fork)` for every `i` in `0..n`, each enqueueing on `fork`,
+    /// a stream forked from this one, and join every fork back into this
+    /// stream before returning (`docs/programming_model.md`, "Forks inside
+    /// a task").
+    ///
+    /// Every fork waits on the device for all the work already on this
+    /// stream, the task's input waits and whatever it enqueued before the
+    /// call, and this stream then waits on the device for every fork, so
+    /// what is enqueued on it afterwards, the task's own later launches,
+    /// the event the executor records when the task returns and every
+    /// edge and handoff ordered by that event, follows every fork's work.
+    /// No wait is on the host. The items are not ordered among
+    /// themselves, so they must not conflict: the one-electron class
+    /// kernels add atomically into one matrix, which is the case this is
+    /// for.
+    ///
+    /// The forks are the worker's fork streams, as many as its most
+    /// forking task declared at planning (the planner's `GpuTask::forks`),
+    /// item `i` on fork `i mod k` where `k` is the smaller of `n` and that
+    /// count; with `k` below two, every item runs on this stream itself,
+    /// in order, and nothing is forked. The forks are not other lanes'
+    /// streams, so a fork orders the task behind nothing the planner did
+    /// not order it behind; two nodes of one worker that fork share them,
+    /// and their forked items keep the order the worker enqueued them in.
+    ///
+    /// # Errors
+    /// The first failure of the fork, of an `f(i, ..)` or of a join. After
+    /// a failure no further item runs, but every fork already made is
+    /// still joined back, so this stream never runs ahead of an item in
+    /// flight.
+    ///
+    /// ```no_run
+    /// use fb_core_error_handling::Status;
+    /// use fb_core_thread_pool::DeviceStream;
+    /// use fb_core_wwr::runtime::Stream;
+    ///
+    /// fn launch(class: usize, on: &Stream) -> Status {
+    ///     // A class's kernel, enqueued on `on`.
+    ///     Ok(())
+    /// }
+    ///
+    /// let stream = DeviceStream::new(0);
+    /// stream.fork_join(4, |c, fork| launch(c, fork))?;
+    /// // Enqueued after every class's work.
+    /// # Ok::<(), fb_core_error_handling::Error>(())
+    /// ```
+    ///
+    /// A fork is a borrow for the call, so none outlives its join:
+    ///
+    /// ```compile_fail,E0521
+    /// use fb_core_thread_pool::DeviceStream;
+    /// use fb_core_wwr::runtime::Stream;
+    ///
+    /// let stream = DeviceStream::new(0);
+    /// let mut kept: Option<&Stream> = None;
+    /// stream.fork_join(2, |_, fork| {
+    ///     kept = Some(fork);
+    ///     Ok(())
+    /// })?;
+    /// # Ok::<(), fb_core_error_handling::Error>(())
+    /// ```
+    pub fn fork_join<F>(&self, n: usize, mut f: F) -> Status
+    where
+        F: FnMut(usize, &Stream) -> Status,
+    {
+        let Some(pool) = self.forks.as_deref().filter(|_| n >= 2) else {
+            return (0..n).try_for_each(|i| f(i, &self.stream));
+        };
+        let forks = &pool.streams[..pool.streams.len().min(n)];
+        gpu_status(pool.fork.record(&self.stream))?;
+        let mut made = 0;
+        let mut result = Ok(());
+        for (fork, _) in forks {
+            result = gpu_status(fork.wait_event(&pool.fork, 0));
+            if result.is_err() {
+                break;
+            }
+            made += 1;
+        }
+        if result.is_ok() {
+            result = (0..n).try_for_each(|i| f(i, &forks[i % forks.len()].0));
+        }
+        for (fork, join) in &forks[..made] {
+            let joined = gpu_status(join.record(fork))
+                .and_then(|()| gpu_status(self.stream.wait_event(join, 0)));
+            result = result.and(joined);
+        }
+        result
     }
 
     /// The lane's BLAS handle, bound to its stream: pass its `get()` to
@@ -230,7 +355,8 @@ pub enum DeviceStream {}
 #[cfg(feature = "device")]
 /// GPU workers, each on its own device with one non-blocking stream per
 /// lane and, on the lanes that call a library, the lane's library handles
-/// bound to it ([`DeviceStream`]), and
+/// bound to it ([`DeviceStream`]), its fork streams if a task forks
+/// ([`DeviceStream::fork_join`]), and
 /// two timing events per GPU node and trip: its stream scope, recorded
 /// before it runs and after it returns. The second is also what its
 /// consumers wait on. A node outside every counted loop has one trip; one
@@ -239,8 +365,8 @@ pub enum DeviceStream {}
 /// a later iteration of the same run.
 ///
 /// Built once per plan and reused every run, one run at a time
-/// ([`run`](super::run) borrows it exclusively): the streams, handles and
-/// events are created here, never during a run.
+/// ([`run`](super::run) borrows it exclusively): the streams, fork
+/// streams, handles and events are created here, never during a run.
 ///
 /// Neither `Send` nor `Sync`, as the raw runtime handles inside it are not:
 /// only a run shares it across threads, its workers, through `run`'s own
@@ -267,13 +393,21 @@ impl Device {
     /// for every GPU node of `plan` and trip of the counted loop it is in.
     /// Lane `l` of worker `w` has library handles if `libraries[w][l]`, and
     /// none if it is false or missing, so a lane whose nodes call no
-    /// library costs no handle and no library workspace.
+    /// library costs no handle and no library workspace. Worker `w` has
+    /// `forks[w]` fork streams ([`DeviceStream::fork_join`]), outside its
+    /// lanes and with no library handles, and none if that is below two or
+    /// missing, since one fork would only serialize what this stream does.
     #[debug_requires(
         plan.lanes().len() <= devices.len(),
         "a device for every GPU worker of the plan"
     )]
     #[track_caller]
-    pub fn new(devices: &[i32], plan: &Plan<'_, DeviceStream>, libraries: &[Vec<bool>]) -> Self {
+    pub fn new(
+        devices: &[i32],
+        plan: &Plan<'_, DeviceStream>,
+        libraries: &[Vec<bool>],
+        forks: &[usize],
+    ) -> Self {
         let lanes = plan.lanes();
         let streams = devices
             .iter()
@@ -281,8 +415,13 @@ impl Device {
             .map(|(w, &d)| {
                 let n = lanes.get(w).copied().unwrap_or(0).max(1);
                 let has = |l: usize| libraries.get(w).and_then(|v| v.get(l)).copied();
+                let pool = forks
+                    .get(w)
+                    .copied()
+                    .filter(|&k| k >= 2)
+                    .map(|k| Rc::new(Forks::new(d, k)));
                 (0..n)
-                    .map(|l| DeviceStream::with_libraries(d, has(l).unwrap_or(false)))
+                    .map(|l| DeviceStream::with_libraries(d, has(l).unwrap_or(false), pool.clone()))
                     .collect()
             })
             .collect();
@@ -380,7 +519,15 @@ impl Backend for Device {
         reason = "the executor drains a lane at the end of a run (docs/programming_model.md, \"The orchestrator derives\")"
     )]
     fn sync(&self, lane: LaneId) -> Status {
-        gpu_status(self.stream(lane).sync())
+        let stream = self.stream(lane);
+        gpu_status(stream.sync())?;
+        // The worker's forks too: each fork_join joins its forks back into
+        // the forking stream, so they are idle here unless a join failed.
+        stream
+            .forks
+            .iter()
+            .flat_map(|f| &f.streams)
+            .try_for_each(|(fork, _)| gpu_status(fork.sync()))
     }
     fn elapsed(&self, node: NodeId, trip: usize) -> Result<Option<Duration>> {
         let (start, end) = self.events(node, trip);

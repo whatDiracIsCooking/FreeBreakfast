@@ -1428,6 +1428,54 @@ fn a_lane_with_no_library_user_has_no_workspace_row_or_handles() {
     assert!(total < 3 * BLAS_WORKSPACE_BYTES, "{total}");
 }
 
+/// A task that forks its run onto `.1` streams, as `Declares` would
+/// otherwise.
+struct Forks(Declares, usize);
+
+impl GpuTask<PinnedStandIn, ()> for Forks {
+    type Rows = Vec<RowId<Device, f64>>;
+
+    fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, PinnedStandIn>) -> Self::Rows {
+        self.0.layout(d, h)
+    }
+
+    fn forks(&self) -> usize {
+        self.1
+    }
+
+    fn run(
+        &self,
+        r: &Self::Rows,
+        d: &Bufs<'_, Device>,
+        h: &CopyOnly<'_, PinnedStandIn>,
+        s: &(),
+    ) -> Status {
+        self.0.run(r, d, h, s)
+    }
+}
+
+/// A worker's fork streams are the most any of its GPU tasks forks onto,
+/// whatever lane each is on, and a worker none of whose tasks forks has
+/// none; the fork streams change no table, so the plan's text is the
+/// same as with no forks.
+#[test]
+fn a_workers_forks_are_its_most_forking_tasks() {
+    use Decl::*;
+    let n = 24 * 24;
+    let at = |worker, lane| LaneId { worker, lane };
+    let build = |forks: [usize; 3]| {
+        let mut dag = Dag::<PinnedStandIn, ()>::new();
+        dag.add_gpu("A", at(0, 0), Forks(Declares(vec![Out("a", n)]), forks[0]));
+        dag.add_gpu("B", at(0, 1), Forks(Declares(vec![Out("b", n)]), forks[1]));
+        dag.add_gpu("C", at(1, 0), Forks(Declares(vec![Out("c", n)]), forks[2]));
+        dag.add_gpu("D", at(2, 0), Declares(vec![Out("d", n)]));
+        dag.plan()
+    };
+    let planned = build([3, 10, 4]);
+    assert_eq!(planned.forks, [10, 4, 0]);
+    assert_eq!(planned.to_string(), build([0, 0, 0]).to_string());
+}
+
 /// CPU: a heap row of one count, zeroed.
 struct Zero;
 

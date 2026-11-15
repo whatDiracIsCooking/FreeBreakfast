@@ -85,6 +85,19 @@ pub trait GpuTask<H: StagingKind = Pinned, S = DeviceStream>: Send + Sync {
         true
     }
 
+    /// The most streams its `run` forks onto at once through
+    /// `DeviceStream::fork_join`, such as its class count: its worker gets
+    /// as many fork streams as its most forking task declares, made with
+    /// the backend, outside the lanes and with no library handles
+    /// (`docs/programming_model.md`, "Forks inside a task"). Called once,
+    /// at planning; none by default, and a task that forks past its
+    /// worker's count shares the forks it has, or runs on its own stream
+    /// with fewer than two, so a count left out costs concurrency, never
+    /// order.
+    fn forks(&self) -> usize {
+        0
+    }
+
     /// Enqueue its work on `stream`, through the rows `layout` returned,
     /// and return. Called once per run, and in a loop once per iteration,
     /// whose index its views give ([`Bufs::iteration`]): a counted loop's

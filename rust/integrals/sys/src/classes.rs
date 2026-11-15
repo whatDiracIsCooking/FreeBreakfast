@@ -45,8 +45,8 @@ fn matrix_extent(routine: &str, class: &ClassRows, len: usize) -> i32 {
 /// before a build's first class and symmetric after its last.
 ///
 /// `stream` is the stream of the task whose layout read the class's
-/// [`Fields::OVERLAP`] ([`ClassRows::read`]), and `device` that task's
-/// view. The kernel gets those fields, and null for every other.
+/// [`Fields::OVERLAP`] ([`ClassRows::read`]), or a fork of it inside that
+/// task's `DeviceStream::fork_join`, and `device` that task's view. The kernel gets those fields, and null for every other.
 ///
 /// # Errors
 /// The launcher's refusal or launch error, as
@@ -74,8 +74,9 @@ pub fn overlap_class(
     // SAFETY: the view's arrays are the class's n_rec-long rows of
     // Fields::OVERLAP, every field the overlap kernels read (a test scans
     // them), the rest null; the class's records task wrote them before
-    // this task's stream work, on its lane or ordered by an event on the
-    // device (ClassRows's argument), so every offset they hold opens a
+    // this task's stream work, and so before the work of any fork of it,
+    // on its lane or ordered by an event on the device (ClassRows's
+    // argument), so every offset they hold opens a
     // block inside n_cart;
     // `s` is n_cart² doubles, checked above, with no other user until the
     // enqueued work finishes (DeviceSliceMut's promise); the view is a host

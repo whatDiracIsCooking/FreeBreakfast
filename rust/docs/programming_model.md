@@ -598,6 +598,59 @@ already has. Giving a reuse up for concurrency when the cap leaves room is
 admission's search, and not built ([`memory.md`](memory.md), "Open
 questions").
 
+### Forks inside a task
+
+A lane is the planner's: nodes are placed on it, the executor orders the
+edges between lanes, and it costs a stream, library handles and a
+workspace row. Some concurrency lives inside one node instead, where the
+DAG does not look: the one-electron builds launch a kernel per
+primitive-pair class into one matrix, every class adding atomically, as
+the C++ `launch_each` does on a stream per class. A GPU task reaches it
+through its stream, `DeviceStream::fork_join(n, |i, fork| ...)`:
+
+- **Fork.** The task's stream records an event, and each fork stream
+  waits on it, so each starts after everything already on the task's
+  stream: the executor's waits for its inputs and what the task enqueued
+  before the call.
+- **Items.** The closure runs once per item, on the host and in order,
+  each enqueueing on its fork; item `i` goes on fork `i mod k`. The items
+  are not ordered among themselves, so they must not conflict: they add
+  atomically, as the class kernels do, or write disjoint bytes.
+- **Join.** Each fork records an event, and the task's stream waits on
+  each, before `fork_join` returns. Every wait is on the device; a fork
+  is no host sync, and a task that forks is still one task
+  ("Granularity").
+
+**The forks are a worker's own streams, not its lanes.** Each GPU worker
+has a pool of fork streams beside its lanes, with no library handles,
+made with the backend as its lanes are, never during a run. Its size is
+the most any of the worker's tasks declares it forks onto
+(`GpuTask::forks`, none by default), and `k` is the smaller of that and
+`n`; with fewer than two, the items run on the task's stream itself, so a
+count left out costs concurrency, never order. Forking onto another
+lane's stream, as the C++ forks onto a stream each class carries, would
+order the task behind whatever is queued on that lane, a dependency
+the planner cannot see. Two nodes of one worker that fork share its pool, so their forked
+items keep the order the worker's thread enqueued them in; that never
+deadlocks, since the one thread enqueues all of a worker's work and every
+wait it enqueues is on an event already recorded. No node is placed on a
+fork and no edge names one, so the plan's text, its tables and its
+goldens are those of the same DAG without forks.
+
+**The scope is what makes a fork sound.** The forks start after the
+task's input waits and are joined before its body returns, so everything
+the executor records on the task's lane afterwards covers the forked
+work: its completion event, which every consumer on another lane waits
+on, and every handoff of its rows' bytes to a later owner. What a row's
+`DeviceSlice` promise and the class records' `ClassRows` argument rest
+on, that a launch goes on the stream the executor ordered, holds in
+effect. The API allows no fork without its join: a fork stream is
+reached only as the closure's borrowed `&Stream`, as a scoped thread is
+only inside `std::thread::scope`, and a failed item or fork still joins
+every fork already made before the error returns, as `launch_each` does.
+A worker drains its forks with its lanes as it exits, so a run returns
+with nothing outstanding even after a failed join.
+
 ### CPU workers
 
 A CPU node is a file write, a host decision between runs of a sub-DAG, or a
@@ -876,7 +929,9 @@ itself, split it there.
   lane is a stream, and a library handle pair and a BLAS workspace row
   when its tasks call a library, so the
   count is a cost, and which nodes are worth splitting is the schedule
-  search's question below.
+  search's question below. Forks inside a task do not answer it: they
+  are concurrency within one node, which the DAG does not see into
+  ("Forks inside a task").
 - **How loose is too loose.** A bound from the dimensions is the preferred
   answer to a data-dependent size. At what ratio of bound to typical size
   does a sizing node pay for its extra host round trip?
