@@ -563,6 +563,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "fb-localization-pipek-mezey"
+version = "0.1.0"
+dependencies = [
+ "fb-basis",
+ "fb-core-arena",
+ "fb-core-error-handling",
+ "fb-core-planner",
+ "fb-core-thread-pool",
+ "fb-core-wwr",
+ "fb-io-basis",
+ "fb-io-npy",
+ "fb-io-xyz",
+ "fb-localization-sys",
+ "fb-test-support",
+ "log",
+ "wwr-sys",
+]
+
+[[package]]
+name = "fb-localization-sys"
+version = "0.1.0"
+dependencies = [
+ "contracts",
+ "fb-core-arena",
+ "fb-core-error-handling",
+ "fb-core-planner",
+ "fb-core-thread-pool",
+ "fb-core-wwr",
+ "fb-kernel-abi",
+ "wwr-sys",
+]
+
+[[package]]
 name = "fb-molecule"
 version = "0.1.0"
 dependencies = [

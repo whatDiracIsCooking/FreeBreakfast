@@ -1,13 +1,14 @@
 /// @file
-/// @brief Integer rounding and two element-wise functions in
+/// @brief Integer rounding and a few element-wise functions in
 /// free_breakfast::math, written once for host and device code.
 ///
 /// Forked from src/core/primitives/primitives.h and trimmed to what rust/'s
-/// launch wrappers use: idivup, pow and fma. The other element-wise
-/// functions, the combinatorics and align_up come back with the first wrapper
-/// that names them; the host side's are Rust's own (fb_core_primitives).
+/// launch wrappers use: idivup, pow, fma, sqrt, sin, cos and atan2. The other
+/// element-wise functions, the combinatorics and align_up come back with the
+/// first wrapper that names them; the host side's are Rust's own
+/// (fb_core_primitives).
 ///
-/// pow and fma call the C math library's global names, as src/'s do: both
+/// The element-wise functions call the C math library's global names, as src/'s do: both
 /// vendors declare them __host__ __device__, so in a device pass they resolve
 /// to the vendor's device implementation. Each accepts exactly float or
 /// double, dispatching to the f-suffixed name for float, so an int argument
@@ -70,6 +71,50 @@ template <typename T>
     return ::fmaf(x, y, z);
   } else {
     return ::fma(x, y, z);
+  }
+}
+
+/// @brief The square root of @p x
+template <typename T>
+  requires(std::is_same_v<T, float> || std::is_same_v<T, double>)
+[[nodiscard]] FBF_HOST_DEVICE T sqrt(const T x) {
+  if constexpr (std::is_same_v<T, float>) {
+    return ::sqrtf(x);
+  } else {
+    return ::sqrt(x);
+  }
+}
+
+/// @brief The sine of @p x, in radians
+template <typename T>
+  requires(std::is_same_v<T, float> || std::is_same_v<T, double>)
+[[nodiscard]] FBF_HOST_DEVICE T sin(const T x) {
+  if constexpr (std::is_same_v<T, float>) {
+    return ::sinf(x);
+  } else {
+    return ::sin(x);
+  }
+}
+
+/// @brief The cosine of @p x, in radians
+template <typename T>
+  requires(std::is_same_v<T, float> || std::is_same_v<T, double>)
+[[nodiscard]] FBF_HOST_DEVICE T cos(const T x) {
+  if constexpr (std::is_same_v<T, float>) {
+    return ::cosf(x);
+  } else {
+    return ::cos(x);
+  }
+}
+
+/// @brief The angle of the point (@p x, @p y), in [-pi, pi]
+template <typename T>
+  requires(std::is_same_v<T, float> || std::is_same_v<T, double>)
+[[nodiscard]] FBF_HOST_DEVICE T atan2(const T y, const T x) {
+  if constexpr (std::is_same_v<T, float>) {
+    return ::atan2f(y, x);
+  } else {
+    return ::atan2(y, x);
   }
 }
 

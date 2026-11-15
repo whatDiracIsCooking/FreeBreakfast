@@ -722,7 +722,7 @@ list is in two tiers:
 
 - **Core:** `fb-core-wwr`, `fb-core-arena`, `fb-core-log`,
   `fb-core-thread-pool`.
-- **Bindings:** `fb-integrals-sys`, `fb-recipes-sys`.
+- **Bindings:** `fb-integrals-sys`, `fb-localization-sys`, `fb-recipes-sys`.
 
 The core crates hold the wrappers: `fb-core-wwr` over the `wwr-sys`
 bindings, the arena over the raw allocation and copy bindings, the two
@@ -732,7 +732,9 @@ with its workers, which rests on a run borrowing the backend exclusively
 and on `Backend` being sealed ("Plan once, run many"). The binding crates declare a kernel
 library's `extern "C"` functions, check its version at load, and wrap its
 launches safely beside the bindings (`fb-integrals-sys` its records tasks
-too, since the class launchers trust records only those tasks write). There
+too, since the class launchers trust records only those tasks write, and
+`fb-localization-sys` its Pipek-Mezey tasks, whose launches trust an
+orbital schedule and atom offsets only those tasks stage). There
 was a third tier, the method crates, whose `unsafe` was a direct call into
 their kernels' launchers, the BLAS or the solver; each such call has moved
 into a safe wrapper in the core and binding crates, and a method crate that

@@ -1,11 +1,11 @@
 /// @file
-/// @brief The build target's warp width, kWarpSize, the block kFourWarps and
-/// the block limit kMaxThreads, for device code.
+/// @brief The build target's warp width, kWarpSize, the block kFourWarps,
+/// the block limit kMaxThreads and the warps-per-block concept NumWarps, for
+/// device code.
 ///
 /// Forked from src/core/kernel/block_params.h and trimmed to what rust/'s
-/// launch wrappers use: kWarpSize, kFourWarps and kMaxThreads, their
-/// definitions unchanged. NumWarps comes back with the first wrapper that
-/// names it. Rust never sees any of it:
+/// launch wrappers use: kWarpSize, kFourWarps, kMaxThreads and NumWarps,
+/// their definitions unchanged. Rust never sees any of it:
 /// the launch shape stays with the kernel (rust/docs/gpu_layer.md, "Launch
 /// shape and dispatch").
 ///
@@ -14,7 +14,9 @@
 
 #pragma once
 
-// free_breakfast::uint32_t. Standard headers only, so this is safe ahead of a
+#include <concepts>
+
+// free_breakfast::uint32_t and uint64_t. Standard headers only, so this is safe ahead of a
 // vendor header in any includer (primitives.h has why that order matters).
 #include "integral_types.h"
 
@@ -40,5 +42,16 @@ inline constexpr uint32_t kMaxThreads = 1024;
 static_assert(kWarpSize == 32 || kWarpSize == 64,
               "WWR_WARP_SIZE must be 32 (NVIDIA, RDNA) or 64 (CDNA)");
 static_assert(kMaxThreads % kWarpSize == 0, "a full block must be whole warps");
+
+/// @brief A warps-per-block count @p N: integral, >= 1, a power of two, and at
+/// most kMaxThreads threads once multiplied by kWarpSize
+///
+/// Constrains a value, not a type: `template <auto W> requires NumWarps<W>`.
+/// The bound is checked as N <= kMaxThreads / kWarpSize so a huge N cannot overflow
+/// the product, and in uint64_t so a 64-bit N (1ull << 32, say) is not
+/// truncated to 0 and let through; N >= 1 has already ruled out negatives.
+template <auto N>
+concept NumWarps = std::integral<decltype(N)> && (N >= 1) && ((N & (N - 1)) == 0) &&
+                   (static_cast<uint64_t>(N) <= kMaxThreads / kWarpSize);
 
 } // namespace free_breakfast
