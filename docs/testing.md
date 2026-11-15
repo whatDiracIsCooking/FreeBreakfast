@@ -79,7 +79,7 @@ and skips, exit 0, where cargo is absent.
 crates that link the library: each changed file's crate and its reverse
 dependents, read from `cargo metadata`, less those whose default graph
 declares no `links` (their tests ran in tier 3). A module's `kernels/`
-select every kernel `-sys` crate, `rust/docs/` none, and any other file
+select its own `-sys` crate and that crate's dependents, `rust/docs/` none, and any other file
 under `rust/` outside every crate selects them all, `clippy.toml` and the
 workspace `Cargo.toml` (its `[workspace.lints]`) among them; `pr --all`
 does too. First `cargo clippy --all-targets -- -D warnings` over those

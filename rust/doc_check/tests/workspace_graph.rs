@@ -15,7 +15,9 @@
 //! - a path rule in `devtools/test.py` (the files that lie in no crate but
 //!   belong to one) names a source that does not exist or a crate that is
 //!   not a member, or a `kernels/` directory under `rust/` is one the rule
-//!   does not cover or has no `-sys` crate wrapping it;
+//!   does not cover or has no `-sys` crate wrapping it, or a kernel library
+//!   links or includes another ([`cross_links`]), which the rule's mapping
+//!   of a module's kernels to its own `-sys` crate alone would then miss;
 //! - a member declares a direct dependency its sources never name
 //!   ([`check_unused`]), unless [`UNNAMED`] gives the reason;
 //! - a member reaches a thread-pool crate ([`POOL_CRATES`]) through any
@@ -385,28 +387,33 @@ struct Rule {
     /// The pattern, for a regex constant; empty for a file.
     pattern: String,
     /// A member's directory relative to the repo root (`rust/doc_check/`),
-    /// or `None` for every member that declares `links`.
+    /// or `None` for the kernels rule ([`KERNELS_ACTION`]): each module's
+    /// `-sys` crate, `rust/<module>/sys/`.
     target: Option<String>,
 }
 
 /// The function that holds the path rules.
 const RULES_FN: &str = "def affected_crates(";
 
+/// The kernels rule's action: a file under `rust/<module>/kernels/` is
+/// given to `rust/<module>/sys/`.
+const KERNELS_ACTION: &str = "f = kernels_sys_dir(f)";
+
 /// The lines of `affected_crates` that give a file to a crate
-/// (`f = "..."` or `hit |= kernel_crates`), so a rule [`parse_rules`] does
+/// (`f = "..."` or [`KERNELS_ACTION`]), so a rule [`parse_rules`] does
 /// not understand is a failure rather than a rule silently unchecked.
 fn rule_actions(test_py: &str) -> usize {
     let body = test_py.split_once(RULES_FN).map_or("", |(_, b)| b);
     let body = body.split("\ndef ").next().unwrap_or(body);
     body.lines()
         .map(str::trim)
-        .filter(|l| l.starts_with("f = \"") || *l == "hit |= kernel_crates")
+        .filter(|l| l.starts_with("f = \"") || *l == KERNELS_ACTION)
         .count()
 }
 
 /// The path rules `test_py` holds: in `affected_crates`, each
 /// `if f == "<file>":` or `if NAME.match(f):` (or `elif`) followed by
-/// `f = "<member dir>"` or `hit |= kernel_crates`, with each `NAME`'s
+/// `f = "<member dir>"` or [`KERNELS_ACTION`], with each `NAME`'s
 /// `re.compile(r"...")` from the module's top level.
 fn parse_rules(test_py: &str) -> Vec<Rule> {
     let Some(body) = test_py.split_once(RULES_FN).map(|(_, b)| b) else {
@@ -443,7 +450,7 @@ fn parse_rules(test_py: &str) -> Vec<Rule> {
         let next = lines.get(i + 1).copied().unwrap_or("");
         let target = if let Some(dir) = next.strip_prefix("f = \"") {
             Some(dir.trim_end_matches('"').to_owned())
-        } else if next == "hit |= kernel_crates" {
+        } else if next == KERNELS_ACTION {
             None
         } else {
             continue;
@@ -505,7 +512,7 @@ fn check_rules(
     let mut failures = Vec::new();
     if !rules.iter().any(|r| r.target.is_none()) {
         failures.push(format!(
-            "devtools/test.py: no kernels rule (`hit |= kernel_crates`) found in {RULES_FN}"
+            "devtools/test.py: no kernels rule (`{KERNELS_ACTION}`) found in {RULES_FN}"
         ));
     }
     let member_dirs: BTreeMap<String, &str> = g
@@ -517,9 +524,7 @@ fn check_rules(
         let edge = format!(
             "{} -> {}",
             r.source,
-            r.target
-                .as_deref()
-                .unwrap_or("every crate that declares links")
+            r.target.as_deref().unwrap_or("its module's -sys crate")
         );
         if let Some(target) = &r.target
             && !member_dirs.contains_key(target)
@@ -579,6 +584,35 @@ fn check_rules(
                     )),
                 }
             }
+        }
+    }
+    failures
+}
+
+/// A kernel library's links to or includes of another, from the
+/// `CMakeLists.txt` of `rust/<module>/kernels/`: outside comments, a
+/// `fb_<other>_kernels` target or a `../<other>/kernels` path. The kernels
+/// rule gives a module's kernels to its own `-sys` crate only, so a library
+/// that reached another's would leave that one's crates unselected.
+fn cross_links(module: &str, cmake: &str) -> Vec<String> {
+    let own = format!("fb_{module}_kernels");
+    let mut failures = Vec::new();
+    for line in cmake.lines() {
+        let code = line.split('#').next().unwrap_or("");
+        for word in code.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            if word.starts_with("fb_") && word.ends_with("_kernels") && word != own {
+                failures.push(format!(
+                    "rust/{module}/kernels/CMakeLists.txt: names {word}: a kernel library \
+                     that links another breaks devtools/test.py's kernels rule"
+                ));
+            }
+        }
+        if code.contains("../") && code.contains("/kernels") {
+            failures.push(format!(
+                "rust/{module}/kernels/CMakeLists.txt: `{}` reaches another module's \
+                 kernels, which devtools/test.py's kernels rule does not follow",
+                code.trim()
+            ));
         }
     }
     failures
@@ -689,12 +723,21 @@ fn the_path_rules_match_the_layout() {
     );
     let mut kernels = Vec::new();
     kernels_dirs(&root, &repo, &mut kernels);
-    let failures = check_rules(
+    let mut failures = check_rules(
         &rules,
         &read_graph(&root),
         &|p| repo.join(p).exists(),
         &kernels,
     );
+    for dir in &kernels {
+        let module = dir
+            .strip_prefix("rust/")
+            .and_then(|d| d.strip_suffix("/kernels/"))
+            .unwrap_or(dir);
+        let cmake =
+            std::fs::read_to_string(repo.join(dir).join("CMakeLists.txt")).unwrap_or_default();
+        failures.extend(cross_links(module, &cmake));
+    }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
@@ -902,9 +945,8 @@ DOC_PATHS = re.compile(r\"^rust/docs/|^rust/README\\.md$\")
 def affected_crates(files):
     for f in files:
         if KERNELS_PATH.match(f):
-            hit |= kernel_crates
-            continue
-        if f == \"devtools/gone.py\":
+            f = kernels_sys_dir(f)
+        elif f == \"devtools/gone.py\":
             f = \"rust/doc_check/\"
         elif DOC_PATHS.match(f):
             f = \"rust/doc_chek/\"
@@ -939,6 +981,29 @@ def other():
     assert!(failures[0].contains("rust/fft/kernels/ has no -sys crate at rust/fft/sys/"));
     assert!(failures[1].contains("devtools/gone.py does not exist"));
     assert!(failures[2].contains("DOC_PATHS -> rust/doc_chek/: rust/doc_chek/ is no member"));
+}
+
+/// Catches a kernel library that reaches another's, which the kernels rule
+/// would leave unselected, while comments and its own target pass.
+#[test]
+fn a_kernel_library_linking_another_fails() {
+    let cmake = "\
+# as in ../../recipes/kernels, and fb_recipes_kernels's query
+add_library(fb_integrals_kernels SHARED abi.cu)
+target_link_libraries(fb_integrals_kernels PRIVATE fb_recipes_kernels)
+target_include_directories(fb_integrals_kernels PRIVATE ../../recipes/kernels)
+";
+    let failures = cross_links("integrals", cmake);
+    assert_eq!(failures.len(), 2, "{failures:#?}");
+    assert!(failures[0].contains("names fb_recipes_kernels"));
+    assert!(failures[1].contains("../../recipes/kernels"));
+    assert!(
+        cross_links(
+            "integrals",
+            "add_library(fb_integrals_kernels SHARED abi.cu)\n"
+        )
+        .is_empty()
+    );
 }
 
 /// The direct dependencies a member may declare without naming them in its

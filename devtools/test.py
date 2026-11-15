@@ -1209,8 +1209,9 @@ TEST_OUTCOME = re.compile(r"^test (.+?) \.\.\. (ok|FAILED|ignored)(?:, .*)?$")
 CARGO_RECORD_FLAG = "--message-format=json-render-diagnostics"
 # Files that lie in no crate but belong to one, determinator's path rules
 # (rust/docs/testing.md, "Selection"): a module's forked kernels belong to
-# every kernel library's -sys crate (a member that declares `links`), since
-# one kernel library may link another (none does today); rust/docs/ is read
+# its -sys crate (rust/<module>/sys/, which declares `links`), and so to
+# every crate that depends on it; no kernel library links another, which
+# fb-doc-check's workspace graph test holds; rust/docs/ is read
 # by fb-doc-check alone, rust/examples/ by fb-pipeline-config (whose tests
 # run them through the binary), and devtools/rust-bindings.py by
 # fb-device-check. Any other file outside every crate affects the whole
@@ -1230,6 +1231,12 @@ DEVICE_PROBE = (
 )
 
 
+def kernels_sys_dir(f: str) -> str:
+    """The -sys crate's directory of the module whose kernels/ holds `f`:
+    rust/<module>/kernels/... gives rust/<module>/sys/."""
+    return f"rust/{f.split('/')[1]}/sys/"
+
+
 def affected_crates(files: list[str] | None, meta: dict) -> set[str]:
     """The workspace members a diff can have broken: the crate each changed
     file lies in, and every member that depends on one of them, through any
@@ -1247,17 +1254,13 @@ def affected_crates(files: list[str] | None, meta: dict) -> set[str]:
     every = set(dirs.values())
     if files is None:
         return every
-    kernel_crates = {
-        p["name"] for p in meta["packages"] if p["id"] in ids and p.get("links")
-    }
     hit: set[str] = set()
     for f in files:
         if not CARGO_FILES.match(f):
             continue
         if KERNELS_PATH.match(f):
-            hit |= kernel_crates
-            continue
-        if f == "devtools/rust-bindings.py":
+            f = kernels_sys_dir(f)
+        elif f == "devtools/rust-bindings.py":
             f = "rust/device_check/"
         elif DOC_PATHS.match(f):
             f = "rust/doc_check/"
