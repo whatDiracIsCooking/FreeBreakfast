@@ -27,6 +27,16 @@
 //! `d.npy` and of `scf.json`, a stream download of ε and a CPU write of it
 //! beside the last build's energy, residual and iteration count.
 //!
+//! **Tables by calculation.** A step's table is its step crate's type,
+//! used from there (no umbrella re-exports them): [`GuessStep`],
+//! [`EriStep`], [`ScfStep`](fb_pipeline_scf::ScfStep), each with its own
+//! `check` of its values. Which of these optional tables a calculation requires and which
+//! it accepts is one row per calculation, and [`read_config`] holds a
+//! config to its row in one loop: a table set beside a calculation that
+//! does not read it is refused, naming those that do, and a required one
+//! missing is refused. A calculation is one row; a table is one entry of
+//! the list of optional tables beside it.
+//!
 //! **Neutral molecules alone.** `[molecule]` has no charge or multiplicity
 //! key, so every molecule is the neutral singlet: the C++ guess's rescale
 //! by `N / Σ Z` for an ion has nothing to do here, and a key that admits
@@ -66,10 +76,10 @@
 //! | `[overlap] write_npy`, `OverlapStep::npy` | [`Calculation::Overlap`], which always writes `overlap.npy` |
 //! | `[guess] type`, `GuessStep::type`, `GuessType::Sad` | [`GuessStep::kind`], [`GuessKind::Sad`] |
 //! | `[guess] from`, `Load<GuessStep>`, `GuessStep::load` | [`GuessStep::from`], [`fb_pipeline_guess::add_loaded_guess`], its file's header checked at planning |
-//! | `[guess] from` with another key: `loads 'from' a file, so takes no option` | the same refusal, `InvalidConfig` |
+//! | `[guess] from` with another key: `loads 'from' a file, so takes no option` | the same refusal, `InvalidConfig`, from [`GuessStep::check`] |
 //! | `[eri] mode`, `EriStep::mode`, `EriMode` | [`EriStep::mode`], [`EriMode::DensityFitting`] alone and required: integral-direct is not ported |
 //! | `[eri] aux_basis`, a fitting set's name or a path joined to the input directory, `<basis>-acCD-6-6` when empty | [`EriStep::aux_basis`], a compiled-in name alone and required, never joined, refused by [`read_config`] when not carried |
-//! | `[eri]` beside an SCF, the integral-direct default when absent | required beside [`Calculation::Rhf`], refused beside every other |
+//! | `[eri]` beside an SCF, the integral-direct default when absent | required beside [`Calculation::Rhf`], refused beside every other, by its row of tables |
 //! | `[scf]`, `ScfStep` and its keys | [`Config::scf`], [`fb_pipeline_scf::ScfStep`] itself, its range checked by [`read_config`] |
 //! | `[molecule] charge`, `multiplicity`; the guess rescaled by `N / Σ Z` | not ported: every molecule is the neutral singlet |
 //! | the RHF calculation, `ScfStep::run` over the steps before it | [`Calculation::Rhf`], [`plan`] composing the steps' tasks; `scf.json`, `c.npy`, `d.npy` its products |
@@ -85,6 +95,15 @@
 //! | `main`, `print_products` | `src/main.rs`: the error logged once, the exit code, `timing.json` |
 //!
 //! [`ErrorKind::exit_code`]: fb_core_error_handling::ErrorKind::exit_code
+//! [`GuessStep`]: fb_pipeline_guess::GuessStep
+//! [`GuessStep::kind`]: fb_pipeline_guess::GuessStep::kind
+//! [`GuessStep::from`]: fb_pipeline_guess::GuessStep::from
+//! [`GuessStep::check`]: fb_pipeline_guess::GuessStep::check
+//! [`GuessKind::Sad`]: fb_pipeline_guess::GuessKind::Sad
+//! [`EriStep`]: fb_pipeline_eri::EriStep
+//! [`EriStep::mode`]: fb_pipeline_eri::EriStep::mode
+//! [`EriStep::aux_basis`]: fb_pipeline_eri::EriStep::aux_basis
+//! [`EriMode::DensityFitting`]: fb_pipeline_eri::EriMode::DensityFitting
 //! [`Planned`]: fb_core_planner::Planned
 
 #![forbid(unsafe_code)]
@@ -98,8 +117,5 @@ mod write;
 pub use admit::{DEVICE_RESERVE, KERNEL_STACK_BYTES, admit_plan};
 pub use plan::plan;
 pub use read::read_config;
-pub use schema::{
-    BasisSetStep, Calculation, Config, EriMode, EriStep, GuessKind, GuessStep, MemoryCaps,
-    MoleculeStep,
-};
+pub use schema::{BasisSetStep, Calculation, Config, MemoryCaps, MoleculeStep};
 pub use write::{add_write_host_npy, add_write_npy};

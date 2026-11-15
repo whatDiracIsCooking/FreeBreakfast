@@ -3,6 +3,8 @@
 
 use std::path::PathBuf;
 
+use fb_pipeline_eri::EriStep;
+use fb_pipeline_guess::GuessStep;
 use fb_pipeline_scf::ScfStep;
 use serde::{Deserialize, Deserializer};
 
@@ -85,6 +87,10 @@ pub enum Calculation {
 }
 
 impl Calculation {
+    /// Every calculation.
+    pub(crate) const ALL: [Calculation; 3] =
+        [Calculation::Overlap, Calculation::Guess, Calculation::Rhf];
+
     /// The value as the config spells it.
     pub(crate) fn key(self) -> &'static str {
         match self {
@@ -92,6 +98,40 @@ impl Calculation {
             Calculation::Guess => "guess",
             Calculation::Rhf => "rhf",
         }
+    }
+
+    /// The optional tables of [`Config::tables`] this calculation reads, by
+    /// key, as `(requires, accepts)`: a required table has no default and
+    /// its absence is refused; an accepted one is read at its default when
+    /// absent. Every other optional table is refused beside it
+    /// ([`read_config`](crate::read_config)). A calculation is one row.
+    pub(crate) fn tables(self) -> (&'static [&'static str], &'static [&'static str]) {
+        match self {
+            Calculation::Overlap => (&[], &[]),
+            Calculation::Guess => (&[], &["guess"]),
+            Calculation::Rhf => (&["eri"], &["guess", "scf"]),
+        }
+    }
+
+    /// Whether this calculation reads the optional table `table`, required
+    /// or accepted.
+    pub(crate) fn reads(self, table: &str) -> bool {
+        let (requires, accepts) = self.tables();
+        requires.contains(&table) || accepts.contains(&table)
+    }
+}
+
+impl Config {
+    /// The optional tables, by key, each with whether the config sets it:
+    /// those [`Calculation::tables`] places. `[molecule]` and `[basis_set]`
+    /// are required by every calculation and `[memory]` read by every one,
+    /// so the type holds them.
+    pub(crate) fn tables(&self) -> [(&'static str, bool); 3] {
+        [
+            ("guess", self.guess.is_some()),
+            ("eri", self.eri.is_some()),
+            ("scf", self.scf.is_some()),
+        ]
     }
 }
 
@@ -114,71 +154,6 @@ pub struct BasisSetStep {
     /// relative to the config file's directory
     /// ([`fb_io_basis::resolve_basis`]). Required; no default.
     pub basis: String,
-}
-
-/// `[guess]`: the initial-guess density D, computed or loaded.
-///
-/// ```text
-/// [guess]
-/// type = "sad"        # or, in its place:
-/// from = "d.npy"      # D read back, as a run of "guess" wrote it
-/// ```
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GuessStep {
-    /// `type`: the guess computed. Default `"sad"`, the only kind. Refused
-    /// beside [`GuessStep::from`].
-    #[serde(rename = "type", default)]
-    pub kind: Option<GuessKind>,
-    /// `from`: a float64 `.npy` file of D, `nao_sphe × nao_sphe` in the
-    /// basis's spherical AO order, read in place of computing one
-    /// ([`fb_pipeline_guess::add_loaded_guess`]), its header checked when
-    /// the run is planned. A path, relative to the config file's directory.
-    /// Optional; no default.
-    pub from: Option<PathBuf>,
-}
-
-/// `[guess] type`: the kind of guess computed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GuessKind {
-    /// `"sad"`: the superposition of atomic densities
-    /// ([`fb_pipeline_guess::add_sad_guess`]), a spherically averaged atomic
-    /// RHF per distinct (Z, shells), a compiled-in stamp when the basis is
-    /// named and carries one.
-    Sad,
-}
-
-/// `[eri]`: the two-electron integrals, built once for every reader of the
-/// plan ([`fb_pipeline_eri::add_df_eri`]).
-///
-/// ```text
-/// [eri]
-/// mode = "density_fitting"
-/// aux_basis = "cc-pvdz-jkfit"
-/// ```
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EriStep {
-    /// `mode`: how the integrals are built. Required: `"density_fitting"`
-    /// is the only mode, and the C++ default, `"integral_direct"`, is not
-    /// ported, so no default stands in for it.
-    pub mode: EriMode,
-    /// `aux_basis`: the fitting set, a compiled-in name in any spelling
-    /// [`fb_io_basis::is_builtin_aux_basis`] folds (`"cc-pvdz-jkfit"`),
-    /// placed over the molecule when the run is planned. Never a path.
-    /// Required; no default (the C++ `<basis>-acCD-6-6` is not ported).
-    pub aux_basis: String,
-}
-
-/// `[eri] mode`: how the two-electron integrals are built.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EriMode {
-    /// `"density_fitting"`: the fitted factor B = L⁻¹ (P|mn) over
-    /// [`EriStep::aux_basis`], with M = (P|Q) = L Lᵀ
-    /// (`fb_pipeline_eri::add_df_eri`).
-    DensityFitting,
 }
 
 /// `[memory]`: the caps on each GPU worker's blocks, the keys of the C++
@@ -329,4 +304,38 @@ fn byte_size<'de, D: Deserializer<'de>>(deserializer: D) -> std::result::Result<
 
 fn default_output() -> PathBuf {
     PathBuf::from("fbf_output")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Calculation, Config};
+
+    /// The table of tables is whole: every optional table is read by some
+    /// calculation, and each row names only optional tables, none both
+    /// required and accepted.
+    #[test]
+    fn every_optional_table_has_a_reader() {
+        let config: Config = toml::from_str(
+            "calculation = \"overlap\"\n[molecule]\nxyz = \"m.xyz\"\n[basis_set]\nbasis = \
+             \"sto-3g\"\n",
+        )
+        .unwrap();
+        let tables = config.tables().map(|(table, _)| table);
+        for table in tables {
+            assert!(
+                Calculation::ALL.iter().any(|c| c.reads(table)),
+                "[{table}] is read by no calculation"
+            );
+        }
+        for calculation in Calculation::ALL {
+            let (requires, accepts) = calculation.tables();
+            for table in requires.iter().chain(accepts) {
+                assert!(tables.contains(table), "{calculation:?}: [{table}]");
+            }
+            assert!(
+                requires.iter().all(|t| !accepts.contains(t)),
+                "{calculation:?} both requires and accepts a table"
+            );
+        }
+    }
 }

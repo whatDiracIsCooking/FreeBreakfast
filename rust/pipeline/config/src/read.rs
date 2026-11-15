@@ -3,7 +3,10 @@
 
 use std::path::Path;
 
-use fb_core_error_handling::{Error, ErrorKind, Result};
+use fb_core_error_handling::{Error, ErrorKind, Result, Status};
+use fb_pipeline_eri::EriStep;
+use fb_pipeline_guess::GuessStep;
+use fb_pipeline_scf::ScfStep;
 
 use crate::admit::gib;
 use crate::{Calculation, Config, MemoryCaps};
@@ -20,14 +23,16 @@ use crate::{Calculation, Config, MemoryCaps};
 /// - `InvalidConfig`, `<file>:<line>: ...`: a `[memory]` value that is not
 ///   a byte size ([`MemoryCaps`]).
 /// - `InvalidConfig`, `<file>: ...` naming the table or the key: a
-///   `[guess]` beside [`Calculation::Overlap`], or one with both `type`
-///   and `from`; an `[eri]` or an `[scf]` beside a calculation other than
-///   [`Calculation::Rhf`], or no `[eri]` beside it; an `[eri] aux_basis`
-///   that is not a compiled-in fitting set; an `[scf]` option out of range
-///   ([`ScfStep::check`]); a `[memory]` key under its floor, its default,
+///   `[guess]`, `[eri]` or `[scf]` beside a calculation that does not read
+///   it, naming those that do (`[eri] is read by calculation = "rhf"
+///   alone`), or a table its calculation requires missing
+///   (`calculation = "rhf" needs the [eri] table: it has no default`), as
+///   each [`Calculation`]'s doc says which it reads; then each table's own
+///   check: a `[guess]` with both `type` and `from` ([`GuessStep::check`]),
+///   an `[eri] aux_basis` that is not a compiled-in fitting set
+///   ([`EriStep::check`]), an `[scf]` option out of range
+///   ([`ScfStep::check`]); then a `[memory]` key under its floor, its default,
 ///   naming the value.
-///
-/// [`ScfStep::check`]: fb_pipeline_scf::ScfStep::check
 pub fn read_config(path: &Path) -> Result<Config> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| Error::io(format!("cannot open '{}': {e}", path.display())))?;
@@ -37,36 +42,15 @@ pub fn read_config(path: &Path) -> Result<Config> {
     let mut config: Config =
         toml::from_str(&text).map_err(|e| refusal(ErrorKind::InvalidConfig, path, &text, &e))?;
     let file = path.display();
-    let rhf = config.calculation == Calculation::Rhf;
-    match &config.eri {
-        Some(_) if !rhf => {
-            return Err(Error::config(format!(
-                "{file}: [eri] is read by calculation = \"rhf\" alone, and calculation = \
-                 \"{}\" builds no two-electron integrals",
-                config.calculation.key()
-            )));
-        }
-        Some(eri) if !fb_io_basis::is_builtin_aux_basis(&eri.aux_basis) => {
-            return Err(Error::config(format!(
-                "{file}: [eri] aux_basis: '{}' is not a compiled-in fitting set",
-                eri.aux_basis
-            )));
-        }
-        None if rhf => {
-            return Err(Error::config(format!(
-                "{file}: calculation = \"rhf\" needs an [eri] table: it has no default"
-            )));
-        }
-        _ => {}
-    }
-    if let Some(scf) = &config.scf {
-        if !rhf {
-            return Err(Error::config(format!(
-                "{file}: [scf] is read by calculation = \"rhf\" alone"
-            )));
-        }
-        scf.check()
-            .map_err(|e| Error::config(format!("{file}: {}", e.message)))?;
+    let at = |e: Error| Error::config(format!("{file}: {}", e.message));
+    check_tables(&config).map_err(at)?;
+    let checks = [
+        config.guess.as_ref().map(GuessStep::check),
+        config.eri.as_ref().map(EriStep::check),
+        config.scf.as_ref().map(ScfStep::check),
+    ];
+    for check in checks.into_iter().flatten() {
+        check.map_err(at)?;
     }
     let floor = MemoryCaps::default();
     for (key, value, floor) in [
@@ -100,24 +84,51 @@ pub fn read_config(path: &Path) -> Result<Config> {
     if !fb_io_basis::is_builtin_basis(&config.basis_set.basis) {
         config.basis_set.basis = dir.join(&config.basis_set.basis).display().to_string();
     }
-    if let Some(guess) = &mut config.guess {
-        if config.calculation == Calculation::Overlap {
-            return Err(Error::config(format!(
-                "{}: [guess] is read by calculation = \"guess\" and \"rhf\" alone",
-                path.display()
-            )));
-        }
-        if guess.from.is_some() && guess.kind.is_some() {
-            return Err(Error::config(format!(
-                "{}: [guess] loads 'from' a file, so takes no option 'type'",
-                path.display()
-            )));
-        }
-        if let Some(from) = &mut guess.from {
-            *from = dir.join(&*from);
-        }
+    if let Some(from) = config.guess.as_mut().and_then(|g| g.from.as_mut()) {
+        *from = dir.join(&*from);
     }
     Ok(config)
+}
+
+/// Hold `config`'s optional tables to its calculation's row of
+/// [`Calculation::tables`]: each table set must be one it reads, and each it
+/// requires must be set.
+///
+/// # Errors
+/// `InvalidConfig`, naming the first table out of place and, for one set
+/// beside a calculation that does not read it, the calculations that do.
+fn check_tables(config: &Config) -> Status {
+    let calculation = config.calculation;
+    for (table, set) in config.tables() {
+        if set && !calculation.reads(table) {
+            let readers: Vec<String> = Calculation::ALL
+                .into_iter()
+                .filter(|c| c.reads(table))
+                .map(|c| format!("\"{}\"", c.key()))
+                .collect();
+            let readers = match readers.split_last() {
+                Some((last, [])) => last.clone(),
+                Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+                None => "none".to_owned(),
+            };
+            return Err(Error::config(format!(
+                "[{table}] is read by calculation = {readers} alone"
+            )));
+        }
+        if !set && calculation.tables().0.contains(&table) {
+            return Err(needs(calculation, table));
+        }
+    }
+    Ok(())
+}
+
+/// The refusal of a config whose `calculation` requires `table` and does
+/// not set it.
+pub(crate) fn needs(calculation: Calculation, table: &str) -> Error {
+    Error::config(format!(
+        "calculation = \"{}\" needs the [{table}] table: it has no default",
+        calculation.key()
+    ))
 }
 
 /// The TOML reader's refusal as an error of `kind`: `<file>:<line>: `

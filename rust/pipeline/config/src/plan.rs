@@ -13,7 +13,7 @@ use fb_pipeline_guess::{add_guess_upload, add_loaded_guess, add_sad_guess};
 use fb_pipeline_scf::{add_scf, occupied_orbitals};
 use fb_recipes_orthogonalize::{ORTHOGONALIZE_EIGENVALUE_FLOOR, add_orthogonalize};
 
-use crate::{Calculation, Config, add_write_host_npy, add_write_npy, write};
+use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write};
 
 /// Plan the run `config` asks for, on GPU worker 0: the geometry read, the
 /// basis resolved, normalized and placed on it, then the calculation's
@@ -53,7 +53,7 @@ use crate::{Calculation, Config, add_write_host_npy, add_write_npy, write};
 /// and the kernel libraries' load checks ([`add_records`], [`add_df_eri`],
 /// [`add_scf`]). The guess's data is read when the plan runs.
 ///
-/// [`GuessStep::from`]: crate::GuessStep::from
+/// [`GuessStep::from`]: fb_pipeline_guess::GuessStep::from
 /// [`ScfStep::check`]: fb_pipeline_scf::ScfStep::check
 pub fn plan(
     config: &Config,
@@ -80,10 +80,10 @@ pub fn plan(
             add_write_host_npy(&mut dag, 0, d, n, config.output.join("d.npy"));
         }
         Calculation::Rhf => {
+            // read_config refuses this config by the same table; a Config
+            // built in code reaches it here.
             let Some(eri) = &config.eri else {
-                return Err(Error::config(
-                    "calculation = \"rhf\" needs an [eri] table: it has no default",
-                ));
+                return Err(read::needs(Calculation::Rhf, "eri"));
             };
             let step = config.scf.clone().unwrap_or_default();
             // Refused here, before lwork can touch a device; add_scf checks
