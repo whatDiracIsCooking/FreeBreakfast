@@ -599,6 +599,7 @@ dependencies = [
  "contracts",
  "fb-core-arena",
  "fb-core-error-handling",
+ "fb-core-log",
  "fb-core-planner",
  "fb-core-thread-pool",
  "fb-core-wwr",
