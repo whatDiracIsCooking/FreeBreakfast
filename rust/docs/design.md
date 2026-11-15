@@ -271,7 +271,7 @@ a check lives"):
 |---|---|
 | A dimension, a buffer's memory kind, a shell's angular momentum | A type: a newtype, a distinct buffer type, a `const` generic. Misuse does not build, and the `compile_fail` doctest is the test |
 | What may cross between workers | `Send` and `Sync` |
-| A precondition: shapes agree, an index is in range, `la <= lb`, a buffer is in the layout | `#[debug_requires]`, `#[debug_ensures]`, `#[debug_invariant]`; `#[contract_trait]` on a trait every implementation must honour. One memory safety rests on, a condition on the arguments, is the always-on `#[requires]`, its operands' values printed by `fb_core_log`'s value checks (`le!`, `lt!`, `eq!`, `fits_i32!`) |
+| A contract: a precondition (shapes agree, an index is in range, `la <= lb`, a buffer is in the layout), a postcondition on host-side state the function builds (a staging's cells tile its records), an invariant | `#[debug_requires]`, `#[debug_ensures]`, `#[debug_invariant]`; `#[contract_trait]` on a trait every implementation must honour. One memory safety rests on, a condition on the arguments, is the always-on `#[requires]`, its operands' values printed by `fb_core_log`'s value checks (`le!`, `lt!`, `eq!`, `fits_i32!`) |
 | The layout | The arena size, a committed tier-3 golden |
 | The DAG's shape | The emitted diagram, a committed tier-3 golden |
 | The boundary and the bar | The reference comparison, one run |
