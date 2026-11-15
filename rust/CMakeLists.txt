@@ -2,9 +2,9 @@ cmake_minimum_required(VERSION 4.2)
 
 # What the crates here link, built without the C++ tree: WarpWraps' C ABI
 # libraries libwwr_capi_runtime_api.so, libwwr_capi_blas.so and
-# libwwr_capi_solver.so, and the
-# per-module kernel shared objects, libfb_recipes_kernels.so and
-# libfb_integrals_kernels.so so far ("The kernel shared objects" below). The
+# libwwr_capi_solver.so, and the per-module kernel shared objects,
+# libfb_recipes_kernels.so, libfb_integrals_kernels.so and
+# libfb_localization_kernels.so so far ("The kernel shared objects" below). The
 # root CMakeLists.txt does not add this directory, and this one adds nothing
 # under src/.
 #
@@ -136,3 +136,4 @@ set(FB_RUST_CAPI_GEN "${_fb_wwr}/src/capi/gen")
 
 add_subdirectory(recipes/kernels)
 add_subdirectory(integrals/kernels)
+add_subdirectory(localization/kernels)

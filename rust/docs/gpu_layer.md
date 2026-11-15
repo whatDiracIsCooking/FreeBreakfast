@@ -47,8 +47,10 @@ and they say how much a full port forks. Forked so far: the merge sort
 (`rust/recipes/kernels/`), and the launchers and emitted units of the
 primitive-pair records, the overlap, the kinetic energy and the nuclear
 attraction (`rust/integrals/kernels/`, the last with the emitted Boys
-routine, `eval_boys.h` and its `eval_boys_<m>.h`, in `shared/` there), over
-a trimmed fork of the device headers they include (`rust/device_headers/`).
+routine, `eval_boys.h` and its `eval_boys_<m>.h`, in `shared/` there), and
+the Pipek-Mezey localizer's kernels (`rust/localization/kernels/`), over a
+trimmed fork of the device headers they include (`rust/device_headers/`,
+the block and warp reductions among them).
 
 ## What the port changes
 
@@ -126,7 +128,8 @@ merge sort, then as the inverse square root took its floor's factor from the
 device;
 `FB_INTEGRALS_ABI_VERSION` is 3, bumped as the kinetic and
 nuclear-attraction wrappers with `fb_nuclei_view`, then density fitting's
-metric and three-center launchers, joined the overlap; `fb-doc-check`'s
+metric and three-center launchers, joined the overlap;
+`FB_LOCALIZATION_ABI_VERSION` is 1, the Pipek-Mezey launchers; `fb-doc-check`'s
 `doc_lists.rs` holds these numbers to the headers). The bump is held:
 `devtools/rust-bindings.py` records in each module's bindings, beside the
 version, a digest of the declarations the header reaches (its own, its
@@ -553,6 +556,14 @@ correctness rests on is a contract.
   (`fb_integrals_sys::Fields`), and its launcher's view carries those and
   null for the rest, which is sound only because a test holds each
   family's field set to exactly what its forked kernels dereference.
+  Where the safe layer forms the indices itself, the tasks that stage them
+  and the launches that read them are the binding crate's together, and no
+  other task can name the rows: the metric's shell pairs
+  (`fb_integrals_sys::add_metric_tasks`), and the Pipek-Mezey round-robin
+  schedule and atom offsets, which `fb_localization_sys::add_pm_start`
+  stages and uploads and a `PmRows` holds in private fields for
+  `add_pm_sweep`, whose pair kernel then writes the partners the
+  rotations read, in rows of its own.
 - **Non-overlap is checked from offsets.** "No array may overlap another" is
   decidable from arena offsets at tier 2.
 - **Correctness-only rules are `debug_requires`.** `la <= lb` for a basis's
@@ -610,7 +621,9 @@ primitive-pair records, the overlap, the kinetic energy, the nuclear
 attraction, and density fitting's metric, three-center integrals and their
 symmetrization: `fb_mmd_*`, `fb_ordered_pair_bound`, `fb_overlap_class`,
 `fb_kinetic_class`, `fb_potential_en_class`, `fb_metric_class`,
-`fb_three_center_class` and `fb_three_center_symmetrize`) today, each beside
+`fb_three_center_class` and `fb_three_center_symmetrize`) and
+`libfb_localization_kernels.so` (Pipek-Mezey's populations, pair angles,
+rotations, functional and identity: `fb_pm_*`) today, each beside
 its two ABI entries; `fb-doc-check`'s `doc_lists.rs` fails a function a
 library's bindings declare that this list does not name. Under CUDA each uses
 separable compilation with the device link resolved inside the `.so`
@@ -623,7 +636,8 @@ to the library. A library may link another for a host call:
 and no device symbol crosses between them. The generated units find
 FelizJueves' runtime header with `FJ_WAVEFRONT` set to `WWR_WARP_SIZE`.
 
-One Rust `-sys` crate per library, `fb-recipes-sys` and `fb-integrals-sys`,
+One Rust `-sys` crate per library, `fb-recipes-sys`, `fb-integrals-sys`
+and `fb-localization-sys`,
 which is the workspace graph the test selection runs on. Their `build.rs`
 include `rust/kernel_lib.rs` after `capi_dir.rs`: `link_kernel_lib(module)`
 finds the library in the same `<build>` the C ABI library came from, links
