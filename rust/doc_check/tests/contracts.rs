@@ -25,6 +25,16 @@
 //!   is a plain condition on the arguments, so it is written where rustdoc
 //!   shows it.
 //!
+//! - **A value check is a whole `&&` term of a contract's condition.**
+//!   `fb_core_log`'s `le!`, `lt!`, `eq!` and `fits_i32!` store their
+//!   operands when false, for the panic hook to print, so a false one must
+//!   end in its contract's panic. Each appears only inside a contract
+//!   attribute (any of the six), and there only as the whole condition or a
+//!   whole term of a top-level `&&` chain of it, parentheses aside: never
+//!   negated (`!le!(…)` stores exactly when the check passes), never under
+//!   `||`, in a closure or as an operand, any of which can leave a false
+//!   check's values for the thread's next panic.
+//!
 //! clippy's `disallowed_macros` cannot hold the second rule: a
 //! `#[debug_requires]` expands to a `debug_assert!` spanned at the
 //! contract, so the lint flags every contract in the tree.
@@ -35,7 +45,8 @@
 #![forbid(unsafe_code)]
 
 use fb_doc_check::{
-    attributes, code_only, is_ident, string_literals, without_comments, words, workspace_sources,
+    attributes, code_only, is_ident, line_of, string_literals, without_comments, words,
+    workspace_sources,
 };
 
 /// The phrase every hand-written restatement used, matched
@@ -52,6 +63,8 @@ const CONTRACTS: [&str; 6] = [
     "ensures",
     "invariant",
 ];
+/// `fb_core_log`'s value checks, which store their operands when false.
+const VALUE_CHECKS: [&str; 4] = ["le", "lt", "eq", "fits_i32"];
 /// The macros only an internal invariant may use.
 const DEBUG_ASSERTS: [&str; 3] = ["debug_assert", "debug_assert_eq", "debug_assert_ne"];
 
@@ -478,6 +491,220 @@ fn leading_failures(found: &[Leading]) -> Vec<String> {
             )
         })
         .collect()
+}
+
+/// The byte spans of the value-check calls in `code` (`code_only`), each
+/// from its name to its closing bracket: a [`VALUE_CHECKS`] name, not after
+/// `.`, then `!` (not `!=`), then a bracket.
+fn value_checks(code: &str) -> Vec<(usize, usize)> {
+    let b = code.as_bytes();
+    let mut out = Vec::new();
+    for (at, w) in idents(code) {
+        if !VALUE_CHECKS.contains(&w) || code[..at].trim_end().ends_with('.') {
+            continue;
+        }
+        let rest = &code[at + w.len()..];
+        let Some(after) = rest.trim_start().strip_prefix('!') else {
+            continue;
+        };
+        if !after.trim_start().starts_with(['(', '[', '{']) {
+            continue;
+        }
+        let open = code.len() - after.trim_start().len();
+        out.push((at, closing(b, open) + 1));
+    }
+    out
+}
+
+/// The contract attributes of `code` (`code_only`), each as the byte span
+/// of its argument list, inside the parentheses.
+fn contract_args(code: &str) -> Vec<(usize, usize)> {
+    let b = code.as_bytes();
+    attributes(code)
+        .iter()
+        .filter(|a| CONTRACTS.contains(&a.name.as_str()))
+        .filter_map(|a| {
+            let open = a.start + code[a.start..a.end].find('(')?;
+            Some((open + 1, closing(b, open)))
+        })
+        .collect()
+}
+
+/// The value checks of one file outside every contract attribute.
+fn misplaced_value_checks(path: &str, source: &str) -> Vec<String> {
+    let code = code_only(source);
+    let contracts = contract_args(&code);
+    value_checks(&code)
+        .into_iter()
+        .filter(|&(s, e)| !contracts.iter().any(|&(cs, ce)| cs <= s && e <= ce))
+        .map(|(s, e)| {
+            format!(
+                "{path}:{}: {} outside a contract attribute; a false check stores its values \
+                 for this thread's next panic, so it is written only in a contract's condition",
+                line_of(&code, s),
+                &code[s..e]
+            )
+        })
+        .collect()
+}
+
+/// `(from, to)` with whitespace and every pair of parentheses enclosing the
+/// whole of it trimmed off, in `code`.
+fn bare(code: &str, (mut from, mut to): (usize, usize)) -> (usize, usize) {
+    loop {
+        let part = &code[from..to];
+        from += part.len() - part.trim_start().len();
+        to = from + part.trim().len();
+        if to > from && code.as_bytes()[from] == b'(' && closing(code.as_bytes(), from) == to - 1 {
+            from += 1;
+            to -= 1;
+        } else {
+            return (from, to);
+        }
+    }
+}
+
+/// The top-level `&&` terms of `code[from..to]`, as byte spans of `code`,
+/// each [`bare`].
+fn and_terms(code: &str, from: usize, to: usize) -> Vec<(usize, usize)> {
+    let b = code.as_bytes();
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0i32, from);
+    let mut j = from;
+    while j < to {
+        match b[j] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'&' if depth == 0 && b.get(j + 1) == Some(&b'&') => {
+                out.push(bare(code, (start, j)));
+                start = j + 2;
+                j += 1;
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    out.push(bare(code, (start, to)));
+    out
+}
+
+/// The value checks of one file's contracts that are not a whole `&&` term
+/// of their condition: negated, under `||`, in a closure, an operand.
+fn buried_value_checks(path: &str, source: &str) -> Vec<String> {
+    let code = code_only(source);
+    let checks = value_checks(&code);
+    let mut failures = Vec::new();
+    for (from, to) in contract_args(&code) {
+        let inside = &code[from..to];
+        for (s, e) in top_level_args(inside, inside) {
+            let (s, e) = (from + s, from + e);
+            // A nested term may be a parenthesised chain of its own.
+            let mut terms = and_terms(&code, s, e);
+            let mut k = 0;
+            while k < terms.len() {
+                let (ts, te) = terms[k];
+                let inner = and_terms(&code, ts, te);
+                if inner.len() > 1 {
+                    terms.extend(inner);
+                }
+                k += 1;
+            }
+            for &(cs, ce) in checks.iter().filter(|&&(cs, ce)| s <= cs && ce <= e) {
+                if !terms.contains(&(cs, ce)) {
+                    failures.push(format!(
+                        "{path}:{}: {} is not a whole && term of its condition; negated, under \
+                         ||, in a closure or as an operand, a false check can leave its values \
+                         for this thread's next panic",
+                        line_of(&code, cs),
+                        &code[cs..ce]
+                    ));
+                }
+            }
+        }
+    }
+    failures
+}
+
+#[test]
+fn a_value_check_is_only_in_a_contract() {
+    let failures: Vec<String> = workspace_sources()
+        .iter()
+        .flat_map(|(p, s)| misplaced_value_checks(p, s))
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{} value check(s) outside a contract:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn a_value_check_outside_a_contract_is_found() {
+    let src = concat!(
+        "#[requires(le!(count, data.len()), \"count is within data\")]\n",
+        "#[debug_ensures(fb_core_log::lt!(ret, n) && eq ! (a, b))]\n",
+        "fn f(count: usize, data: &[f64]) {\n",
+        "    let ok = le!(count, data.len());\n",
+        "    assert!(fits_i32![count.checked_mul(count)], \"fits\");\n",
+        "    if a.le != b || x.eq(y) || lt!{a, b} {}\n",
+        "    // le!(a, b)\n",
+        "    let s = \"eq!(a, b)\";\n",
+        "}\n",
+        "macro_rules! le { ($a:expr) => {}; }\n",
+    );
+    let f = misplaced_value_checks("a.rs", src);
+    assert_eq!(f.len(), 3, "{f:#?}");
+    assert!(
+        f[0].starts_with("a.rs:4: le!(count, data.len()) outside"),
+        "{f:#?}"
+    );
+    assert!(f[1].starts_with("a.rs:5: fits_i32!"), "{f:#?}");
+    assert!(f[2].starts_with("a.rs:6: lt!{a, b}"), "{f:#?}");
+}
+
+#[test]
+fn a_value_check_is_a_whole_term_of_its_condition() {
+    let sources = workspace_sources();
+    // `core/log/tests/panic_hook.rs` trips one of each, so the scan sees some.
+    let seen: usize = sources
+        .iter()
+        .map(|(_, s)| value_checks(&code_only(s)).len())
+        .sum();
+    assert!(seen >= 4, "only {seen} value checks found");
+    let failures: Vec<String> = sources
+        .iter()
+        .flat_map(|(p, s)| buried_value_checks(p, s))
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{} value check(s) not a whole && term:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn a_negated_or_buried_value_check_is_found() {
+    let src = concat!(
+        "#[requires(le!(a, b), \"whole\")]\n",
+        "#[requires(n > 0 && (lt!(i, n)) && (eq!(a, b) && fits_i32!(n.checked_mul(n))))]\n",
+        "#[requires(n > 0, eq!(a, b), \"one assertion each\")]\n",
+        "#[requires(le!(a, if x && y { 1 } else { 2 }))]\n",
+        "#[requires(!le!(a, b), \"negated\")]\n",
+        "#[requires(! (lt!(a, b)), \"negated in parentheses\")]\n",
+        "#[debug_requires(le!(a, b) || c, \"or\")]\n",
+        "#[ensures(xs.iter().all(|x| eq!(*x, ret)), \"in a closure\")]\n",
+        "#[invariant(lt!(a, b) == c, \"an operand\")]\n",
+        "fn f() {}\n",
+    );
+    let f = buried_value_checks("a.rs", src);
+    let lines: Vec<&str> = f.iter().map(|m| m.split(':').nth(1).unwrap()).collect();
+    assert_eq!(lines, ["5", "6", "7", "8", "9"], "{f:#?}");
+    assert!(
+        f[0].starts_with("a.rs:5: le!(a, b) is not a whole && term"),
+        "{f:#?}"
+    );
 }
 
 #[test]

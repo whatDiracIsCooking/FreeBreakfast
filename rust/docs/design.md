@@ -271,18 +271,20 @@ a check lives"):
 |---|---|
 | A dimension, a buffer's memory kind, a shell's angular momentum | A type: a newtype, a distinct buffer type, a `const` generic. Misuse does not build, and the `compile_fail` doctest is the test |
 | What may cross between workers | `Send` and `Sync` |
-| A precondition: shapes agree, an index is in range, `la <= lb`, a buffer is in the layout | `#[debug_requires]`, `#[debug_ensures]`, `#[debug_invariant]`; `#[contract_trait]` on a trait every implementation must honour. One memory safety rests on, a plain condition on the arguments, is the always-on `#[requires]` |
+| A precondition: shapes agree, an index is in range, `la <= lb`, a buffer is in the layout | `#[debug_requires]`, `#[debug_ensures]`, `#[debug_invariant]`; `#[contract_trait]` on a trait every implementation must honour. One memory safety rests on, a condition on the arguments, is the always-on `#[requires]`, its operands' values printed by `fb_core_log`'s value checks (`le!`, `lt!`, `eq!`, `fits_i32!`) |
 | The layout | The arena size, a committed tier-3 golden |
 | The DAG's shape | The emitted diagram, a committed tier-3 golden |
 | The boundary and the bar | The reference comparison, one run |
 | The partition and its reduce order | One worker against many |
-| What a launch wrapper requires | The C header's `///` comment, carried into the `-sys` crate by `devtools/rust-bindings.py`. In the safe wrapper, every length or extent the launcher trusts is checked in every build, a `#[requires]` or, when the check is on a computed value or prints runtime values, an `assert!` named in `# Panics`, and only the rules a launch's correctness alone rests on (`la <= lb`, a momentum within the table, the stream's device current) are `debug_requires` ([`gpu_layer.md`](gpu_layer.md), "The safe wrapper") |
+| What a launch wrapper requires | The C header's `///` comment, carried into the `-sys` crate by `devtools/rust-bindings.py`. In the safe wrapper, every length or extent the launcher trusts is checked in every build, a `#[requires]` written with the value checks or, when the check is on state the body produces or its recomputation would be long, an `assert!` named in `# Panics`, and only the rules a launch's correctness alone rests on (`la <= lb`, a momentum within the table, the stream's device current) are `debug_requires` ([`gpu_layer.md`](gpu_layer.md), "The safe wrapper") |
 
 Three rules hold for all of them. A contract is debug-only, so a release
 build pays nothing and the PR gate, a debug build, has every one on, unless
 soundness rests on it; then it is always on, a `#[requires]` when it is a
-plain condition on the arguments and a body `assert!` otherwise
-([`testing.md`](testing.md), "Contracts are part of the spec"). The
+condition on the arguments, whose value checks carry its operands into the
+panic's line, and a body `assert!` only for state the body produces, a
+recomputation too long for an attribute, or a helper naming its caller's
+operand ([`testing.md`](testing.md), "Contracts are part of the spec"). The
 outcome of a GPU call that can fail is not a contract; the call returns a
 status or a `Result`, a failure is an expected result, and making it a
 contract would turn it into a panic. A
