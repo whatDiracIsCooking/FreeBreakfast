@@ -17,6 +17,7 @@
 //! | `warning_count` / `reset_warning_count` | [`warning_count`] / [`reset_warning_count`] |
 //! | nothing: the C++ `DestroyPolicy` logs a failed destroy and counts nothing | [`error_count`] |
 //! | `get_logger()`'s first-use construction | [`init`], or any function here |
+//! | nothing: the C++ tree has no contracts | [`le!`](crate::le), [`lt!`](crate::lt), [`eq!`](crate::eq), [`fits_i32!`](crate::fits_i32), whose operands the panic hook prints ([`check`]) |
 //!
 //! Output goes to stdout, formatted
 //! `[YYYY-MM-DD HH:MM:SS.mmm] [tid] [level] [file:line] message`, as the C++
@@ -75,7 +76,9 @@
 //! (which runs no exit handlers), then prints the backtrace to stderr (in a
 //! test, which unwinds, std's hook follows it and prints that). At level
 //! off, where the critical line is dropped, the hook writes the panic's
-//! message to stderr instead, so an abort never leaves a bare backtrace. Every
+//! message to stderr instead, so an abort never leaves a bare backtrace. On
+//! either path, a contract tripped by a [`check`] macro ends the line with
+//! the check's operands, `[count = 5, data.len() = 4]`. Every
 //! binary calls [`init`] first thing; a test binary gets the same hook from
 //! its first call into this module. The C++ tree has no panic, and its
 //! nearest thing, the abort tier, is a `critical` line and then
@@ -91,6 +94,8 @@ use std::panic::{Location, PanicHookInfo};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+pub mod check;
 
 thread_local! {
     /// The task this thread is running, as `task@worker`; see [`TaskScope`].
@@ -382,8 +387,13 @@ fn installed() -> &'static Logger {
 /// written (the level is off, or this thread holds the sinks and locking
 /// them again would deadlock), the same message goes to stderr instead, as
 /// `thread '<name>' panicked at <file>:<line>:<col>: <message>`.
+///
+/// On either path, when a [`check`] macro failed on this thread, the line
+/// ends with its operands, ` [text = value, ...]`, and the slot they were in
+/// is cleared, so the next panic carries only its own.
 fn panic_hook(info: &PanicHookInfo<'_>) {
     let message = info.payload_as_str().unwrap_or("Box<dyn Any>");
+    let values = check::take().map(|v| format!(" [{v}]")).unwrap_or_default();
     let thread = std::thread::current();
     let name = thread.name().unwrap_or("<unnamed>");
     let location = info.location().unwrap_or(Location::caller());
@@ -396,10 +406,10 @@ fn panic_hook(info: &PanicHookInfo<'_>) {
         log_at(
             LogLevel::Critical,
             location,
-            format_args!("thread '{name}' panicked: {message}"),
+            format_args!("thread '{name}' panicked: {message}{values}"),
         );
     } else {
-        eprintln!("thread '{name}' panicked at {location}: {message}");
+        eprintln!("thread '{name}' panicked at {location}: {message}{values}");
     }
     if cfg!(panic = "abort") {
         eprintln!("stack backtrace:\n{}", Backtrace::force_capture());

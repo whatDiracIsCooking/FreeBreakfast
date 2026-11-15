@@ -541,9 +541,14 @@ correctness rests on is a contract.
   the length, not a sentence. A release build that skipped it would let the
   kernel read or write past the buffer, so it is always on, as is an extent
   that must fit the kernel's 32-bit index (`n²` for an `n × n` matrix): a
-  `#[requires]` when it is a plain condition on the arguments with a static
-  message, and otherwise, on a computed value or printing the lengths it
-  compares, an `assert!` named in the wrapper's `# Panics`.
+  `#[requires]` on the arguments, written with `fb_core_log`'s value checks
+  so a tripped one prints the lengths it compares
+  (`#[requires(eq!(dst.len(), src.len()), "the two slices are one length")]`,
+  `fits_i32!(n.checked_mul(n))`, checked so it never wraps), and an
+  `assert!` named in the wrapper's `# Panics` only for state the body
+  produces, a recomputation too long for an attribute, or a private
+  helper whose message names its caller's operand
+  ([`testing.md`](testing.md), "Contracts are part of the spec").
 - **What the kernel trusts in device data travels as a type.** A class
   launcher writes at the AO offsets its records hold, which are in device
   memory, written by the records kernel, so no host check can read them.

@@ -66,9 +66,14 @@ full, with its check, in the section cited.
 - **Which check is which** (`docs/testing.md`, "Contracts are part of the
   spec"). A caller's precondition that only correctness rests on is a
   debug contract, and the doc comment does not restate it. A check that
-  memory safety rests on is always on: an always-on contract when it is a
-  plain condition on the arguments with a static message, not repeated
-  under the panics heading, and otherwise an assert named under it. The
+  memory safety rests on is always on: an always-on contract on the
+  arguments, not repeated under the panics heading, its condition written
+  with the logging crate's value checks (`le!`, `lt!`, `eq!`, `fits_i32!`)
+  so a tripped one prints its operands, each a whole `&&` term of the
+  condition, and any recomputed product checked. An assert named under the
+  panics heading is left for state the body produces partway through, a
+  recomputation too long for an attribute, and a private helper whose
+  message names its caller's operand. The
   outcome of a GPU call that can fail is a status or a result, never a
   contract or a panic. In a function holding an `unsafe` block, a debug
   contract on an integer or a length is always on, or a `// RELEASE:`

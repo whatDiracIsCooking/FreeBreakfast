@@ -38,15 +38,39 @@ The rules already in the crate carry over:
   | Check | Form | Where the reader sees it |
   |---|---|---|
   | A caller's precondition only correctness rests on (a basis has shells, a matrix has a row, a predecessor is in the plan) | `#[debug_requires]` | `§ Contracts`, as `Pre-condition - debug` |
-  | A caller's precondition memory safety rests on, a plain condition on the arguments with a static message (the length an `unsafe` copy trusts, an `n²` that must fit a kernel's or BLAS's 32-bit index) | `#[requires]` | `§ Contracts`, as `Pre-condition`; not repeated under `# Panics` |
-  | A safety check on a value the body computes, or one whose message must print runtime values (`count is 5, but data holds 4`), or the arena's row flags ([`memory.md`](memory.md), "The Rust shape") | a body `assert!` | `# Panics` |
+  | A caller's precondition memory safety rests on, a condition on the arguments (the length an `unsafe` copy trusts, an `n²` that must fit a kernel's or BLAS's 32-bit index), its values printed through the value checks | `#[requires]` | `§ Contracts`, as `Pre-condition`; not repeated under `# Panics` |
+  | A safety check on state the body produces partway through, one whose recomputation in an attribute would be long, a private helper's whose message names its caller's operand, or the arena's row flags ([`memory.md`](memory.md), "The Rust shape") | a body `assert!` | `# Panics` |
   | An invariant no caller can break | `debug_assert!` under an `// INVARIANT:` comment | the source alone |
   | The outcome of a GPU call | a status or a `Result` | `# Errors` |
 
   A safety check is anything a release build that skipped it could read or
-  write out of bounds through. Its message is one string literal when it is
-  a `#[requires]`, so the values in a crash log are the reason one stays an
-  `assert!`.
+  write out of bounds through.
+- **A contract carries its values through the value checks.** A
+  contract's message is one string literal, but its condition can be
+  written with `fb_core_log`'s `le!(a, b)`, `lt!(a, b)`, `eq!(a, b)` and
+  `fits_i32!(x)` (a `>=` is `le!(b, a)`): each is a `bool`, and when false
+  it stores its operands' source text and values for the thread's panic,
+  which `fb-core-log`'s panic hook appends to its one line
+  ([`diagnostics.md`](diagnostics.md), "Panics and profiles"):
+  `Pre-condition of inverse_sqrt violated: count is within data: le! (count, data.len()) [count = 5, data.len() = 4]`.
+  So printing runtime values (`count is 5, but data holds 4`) is no longer
+  a reason a precondition stays an `assert!`:
+  `#[requires(le!(count, data.len()), "count is within data")]`. A body
+  `assert!` remains for three things alone:
+  - a check on state the body produces partway through, which no
+    attribute can see;
+  - a check whose recomputation in an attribute would be long: as a guide,
+    a condition over about 70 characters, or one that needs a loop;
+  - a private helper's check whose message names its caller's operand (A,
+    B or C), as the BLAS wrappers' `check_*` helpers do, which a contract
+    on the helper cannot.
+
+  Every product or sum a contract recomputes is checked arithmetic,
+  `fits_i32!(n.checked_mul(n))` (`None` never fits): unchecked, it wraps in
+  a release build and passes. A value check is written only as a whole
+  `&&` term of a contract's condition, never negated, under `||`, in a
+  closure or anywhere else, since a false one that ends in no panic leaves
+  its values for the thread's next.
 - **An `unsafe` block never rests on a debug-only contract.** In a function
   whose body holds an `unsafe` block, a `debug_requires` on an integer
   parameter or a parameter's `.len()` is the kind of bound the block may
@@ -62,13 +86,18 @@ contract as the item's `§ Contracts` section, so a doc comment never restates
 one, `# Panics` included, and a `debug_assert!` in a body is left for an
 invariant of the function's own making, which no caller can break, with an
 `// INVARIANT:` comment above it saying why. `fb-doc-check`'s
-`tests/contracts.rs` holds both, and that a public function's leading
-`assert!` on its arguments with a static message is a `#[requires]`;
+`tests/contracts.rs` holds both, that a public function's leading
+`assert!` on its arguments with a static message is a `#[requires]`, and
+that a value check appears only in a contract's condition, as a whole
+`&&` term of it;
 clippy's `disallowed_macros` cannot, since a `#[debug_requires]` expands to
 a `debug_assert!` at the contract's own span. Its `tests/source_rules.rs`
 holds that a test tripping a debug contract is
 `#[cfg(debug_assertions)]` and one tripping an always-on contract is not,
 and its `tests/unsafe_contracts.rs` holds the `// RELEASE:` marker.
+`core/log/tests/panic_hook.rs` holds that the hook's line carries a
+tripped value check's operands, at level off on stderr too, and that a
+check which held leaves nothing for the next panic.
 
 A contract's reach is every caller, but its strength is only as good as the
 inputs those callers happen to pass. It complements a dedicated test; it does

@@ -14,14 +14,22 @@
 //! under `panic = "abort"`, and runs no exit handlers. (The runtime's own
 //! "panic in a function that cannot unwind" goes through the hook too, as a
 //! second critical line.)
+//!
+//! A contract written with the check macros (`fb_core_log::check`) ends the
+//! hook's line with its operands' text and values, at level off on stderr as
+//! at info in the sink, and a check that held leaves nothing for the next
+//! panic: the `values` children, which catch each panic and go on.
 
 #![forbid(unsafe_code)]
 
 use std::os::unix::process::ExitStatusExt;
+use std::panic::catch_unwind;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
 
+use contracts::requires;
 use fb_core_log as log;
+use fb_core_log::{eq, fits_i32, le, lt};
 
 /// The line `needle` is on in this file, 1-based.
 fn line_of(needle: &str) -> u32 {
@@ -43,10 +51,50 @@ extern "C" fn panic_where_no_unwind_can_go() {
     panic!("the worker lost its device"); // MARK abort
 }
 
+#[requires(le!(count, data.len()), "count is within data")]
+fn head(count: usize, data: &[f64]) -> &[f64] {
+    &data[..count]
+}
+
+#[requires(lt!(i, n), "i is below n")]
+fn below(i: usize, n: usize) -> usize {
+    n - i
+}
+
+#[requires(eq!(dst.len(), src.len()), "the two slices are one length")]
+fn copy(dst: &mut [f64], src: &[f64]) {
+    dst.copy_from_slice(src);
+}
+
+#[requires(fits_i32!(n.checked_mul(n)), "n squared fits an i32")]
+fn square(n: usize) -> usize {
+    n * n
+}
+
+/// Trip each check, then pass one and panic plainly; every panic caught.
+fn trip_each_check() {
+    assert!(catch_unwind(|| head(5, &[0.0; 4]).len()).is_err());
+    assert!(catch_unwind(|| below(3, 3)).is_err());
+    assert!(catch_unwind(|| copy(&mut [0.0; 2], &[1.0; 3])).is_err());
+    assert!(catch_unwind(|| square(46_341)).is_err());
+    assert_eq!(head(1, &[2.0]), [2.0]);
+    assert!(catch_unwind(|| panic!("a plain panic after a check that held")).is_err()); // MARK plain
+}
+
 /// What a child does, by `FB_PANIC_CHILD`; nothing when unset. `off`
-/// panics as `abort` does, with every line silenced.
+/// panics as `abort` does, with every line silenced. `values` and
+/// `values_off` trip each check macro's contract, at info into the sink
+/// and at off.
 fn child() {
     match std::env::var("FB_PANIC_CHILD").as_deref() {
+        Ok("values") => {
+            log::add_file_sink(child_sink().unwrap()).unwrap();
+            trip_each_check();
+        }
+        Ok("values_off") => {
+            log::set_level(log::LogLevel::Off);
+            trip_each_check();
+        }
         Ok("abort") => {
             log::add_file_sink(child_sink().unwrap()).unwrap();
             ::log::info!("buffered before the panic");
@@ -159,4 +207,74 @@ fn the_hook_leaves_should_panic_tests_passing() {
         line_of("MARK should_panic")
     );
     assert!(sink.contains(&want), "{sink}\n  wanted {want}");
+}
+
+/// Each check macro's tripped contract, as the hook ends its line.
+const TRIPPED: [&str; 4] = [
+    "Pre-condition of head violated: count is within data: le! (count, data.len()) \
+     [count = 5, data.len() = 4]",
+    "Pre-condition of below violated: i is below n: lt! (i, n) [i = 3, n = 3]",
+    "Pre-condition of copy violated: the two slices are one length: \
+     eq! (dst.len(), src.len()) [dst.len() = 2, src.len() = 3]",
+    "Pre-condition of square violated: n squared fits an i32: \
+     fits_i32! (n.checked_mul(n)) [n.checked_mul(n) = Some(2147488281)]",
+];
+
+#[test]
+fn a_tripped_check_ends_the_critical_line_with_its_operands() {
+    let (status, sink, output, _) = run_child("child_entry", "values");
+    assert!(status.success(), "{status:?}\n{output}");
+    for want in TRIPPED {
+        let line = format!("thread 'child_entry' panicked: {want}");
+        assert_eq!(sink.matches(&line).count(), 1, "{sink}\n  wanted {line}");
+    }
+    // The check that held stored nothing, and the hook cleared the slot
+    // after each panic, so the plain panic's line ends at its message.
+    let plain = sink
+        .lines()
+        .find(|l| l.contains("a plain panic"))
+        .unwrap_or_else(|| panic!("no plain panic in\n{sink}"));
+    let want = format!(
+        "[panic_hook.rs:{}] thread 'child_entry' panicked: a plain panic after a check that held",
+        line_of("MARK plain")
+    );
+    assert!(plain.ends_with(&want), "{plain}\n  wanted {want}");
+}
+
+#[test]
+fn at_level_off_a_tripped_check_has_its_operands_on_stderr() {
+    let (status, sink, output, stderr) = run_child("child_entry", "values_off");
+    assert!(status.success(), "{status:?}\n{output}");
+    assert!(!sink.contains("[critical]"), "{sink}");
+    for want in TRIPPED {
+        let line = stderr
+            .lines()
+            .find(|l| l.starts_with("thread 'child_entry' panicked at ") && l.ends_with(want));
+        assert!(line.is_some(), "{stderr}\n  wanted a line ending {want}");
+    }
+    let plain = stderr
+        .lines()
+        .find(|l| l.starts_with("thread 'child_entry' panicked at ") && l.contains("a plain panic"))
+        .unwrap_or_else(|| panic!("no plain panic in\n{stderr}"));
+    assert!(
+        plain.ends_with(": a plain panic after a check that held"),
+        "{plain}"
+    );
+}
+
+#[requires(fits_i32!(n.checked_mul(n)), "n squared fits an i32")]
+fn square_u32(n: u32) -> u32 {
+    n * n
+}
+
+/// i32's limit is 2^31 - 1 = 2,147,483,647: 46,340² = 2,147,395,600 fits
+/// it and 46,341² = 2,147,488,281 does not; a product that wrapped, `None`,
+/// never fits.
+#[test]
+fn fits_i32_holds_at_i32s_limit() {
+    log::init();
+    assert_eq!(square(46_340), 2_147_395_600);
+    assert!(catch_unwind(|| square(46_341)).is_err());
+    assert_eq!(square_u32(46_340), 2_147_395_600);
+    assert!(catch_unwind(|| square_u32(65_536)).is_err());
 }

@@ -19,11 +19,19 @@ rule below, fix the counter-example (or file an issue) rather than copy it.
   renders it as the item's `§ Contracts` section, so never restate it in the
   doc comment; `fb-doc-check` fails a restatement.
 - A check that memory safety rests on (the length an `unsafe` call trusts,
-  an `n²` that must fit a 32-bit index) is always on: a `#[requires]` when
-  it is a plain condition on the arguments with a static message, rendered
-  in `§ Contracts` and not repeated under `# Panics`; otherwise, on a
-  computed value or printing runtime values, an `assert!` named in the
-  item's `# Panics`. clippy's `missing_panics_doc` is on, and
+  an `n²` that must fit a 32-bit index) is always on: a `#[requires]` on
+  the arguments, rendered in `§ Contracts` and not repeated under
+  `# Panics`. Write its condition with `fb_core_log`'s value checks,
+  `le!`, `lt!`, `eq!` and `fits_i32!` (`>=` is `le!(b, a)`), so the panic
+  hook prints the operands' values:
+  `#[requires(le!(count, data.len()), "count is within data")]`. A
+  recomputed product is checked, `fits_i32!(n.checked_mul(n))`. A check is
+  a whole `&&` term of the condition, never negated, under `||` or used
+  anywhere else. An `assert!` named in `# Panics` is left only for state
+  the body produces partway through, a recomputation over about 70
+  characters or needing a loop, and a private helper whose message names
+  its caller's operand (the BLAS `check_*` helpers). clippy's
+  `missing_panics_doc` is on, and
   `fb-doc-check` fails a leading static `assert!` that should be a
   `#[requires]`. Beside an `unsafe` block, a `#[debug_requires]` on an
   integer or a `.len()` is always on or carries a `// RELEASE:` comment

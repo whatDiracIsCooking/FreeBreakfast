@@ -263,6 +263,7 @@ dependencies = [
 name = "fb-core-log"
 version = "0.1.0"
 dependencies = [
+ "contracts",
  "jiff",
  "libc",
  "log",
