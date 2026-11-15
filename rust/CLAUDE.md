@@ -29,8 +29,10 @@ rule below, fix the counter-example (or file an issue) rather than copy it.
   a whole `&&` term of the condition, never negated, under `||` or used
   anywhere else. An `assert!` named in `# Panics` is left only for state
   the body produces partway through, a recomputation over about 70
-  characters or needing a loop, and a private helper whose message names
-  its caller's operand (the BLAS `check_*` helpers). clippy's
+  characters or needing a loop, and a private helper called once per
+  operand whose message names it (the BLAS `check_*` helpers); a private
+  body a public function hands its work to is no helper, and its checks
+  on the arguments are that function's contracts. clippy's
   `missing_panics_doc` is on, and
   `fb-doc-check` fails a leading precondition that should be a
   `#[requires]`, whatever its message: an `assert!`, an `assert_eq!` or

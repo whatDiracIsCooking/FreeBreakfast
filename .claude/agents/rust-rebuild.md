@@ -72,8 +72,10 @@ full, with its check, in the section cited.
   so a tripped one prints its operands, each a whole `&&` term of the
   condition, and any recomputed product checked. An assert named under the
   panics heading is left for state the body produces partway through, a
-  recomputation too long for an attribute, and a private helper whose
-  message names its caller's operand. The
+  recomputation too long for an attribute, and a private helper called
+  once per operand whose message names that operand; a private body a
+  public function delegates to is no helper, its checks on the arguments
+  that function's contracts. The
   outcome of a GPU call that can fail is a status or a result, never a
   contract or a panic. In a function holding an `unsafe` block, a debug
   contract on an integer or a length is always on, or a `// RELEASE:`

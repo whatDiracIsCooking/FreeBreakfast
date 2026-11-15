@@ -39,7 +39,7 @@ The rules already in the crate carry over:
   |---|---|---|
   | A caller's precondition only correctness rests on (a basis has shells, a matrix has a row, a predecessor is in the plan) | `#[debug_requires]` | `§ Contracts`, as `Pre-condition - debug` |
   | A caller's precondition memory safety rests on, a condition on the arguments (the length an `unsafe` copy trusts, an `n²` that must fit a kernel's or BLAS's 32-bit index), its values printed through the value checks | `#[requires]` | `§ Contracts`, as `Pre-condition`; not repeated under `# Panics` |
-  | A safety check on state the body produces partway through, one whose recomputation in an attribute would be long, a private helper's whose message names its caller's operand, or the arena's row flags ([`memory.md`](memory.md), "The Rust shape") | a body `assert!` | `# Panics` |
+  | A safety check on state the body produces partway through, one whose recomputation in an attribute would be long, a private helper's called once per operand whose message names that operand, or the arena's row flags ([`memory.md`](memory.md), "The Rust shape") | a body `assert!` | `# Panics` |
   | An invariant no caller can break | `debug_assert!` under an `// INVARIANT:` comment | the source alone |
   | The outcome of a GPU call | a status or a `Result` | `# Errors` |
 
@@ -58,12 +58,21 @@ The rules already in the crate carry over:
   `#[requires(le!(count, data.len()), "count is within data")]`. A body
   `assert!` remains for three things alone:
   - a check on state the body produces partway through, which no
-    attribute can see;
+    attribute can see: a value only the body's work yields, not one a
+    function of the arguments recomputes, as `merge_sort`'s workspace size
+    is `merge_sort_workspace_bytes(keys.len(), true)`;
   - a check whose recomputation in an attribute would be long: as a guide,
     a condition over about 70 characters, or one that needs a loop;
-  - a private helper's check whose message names its caller's operand (A,
-    B or C), as the BLAS wrappers' `check_*` helpers do, which a contract
-    on the helper cannot.
+  - a private helper's check, the helper called once per operand, whose
+    message names that operand (A, B or C), as the BLAS wrappers'
+    `check_*` helpers do, which a contract on the helper cannot.
+
+  A public function that hands its work to a private body owns that
+  body's preconditions on its arguments: they are its contracts, rendered
+  in its `§ Contracts`, even when two public functions share the body and
+  so each carries the same ones (`merge_sort` and `merge_sort_keys` over
+  `sort`). A helper whose message would be the same from every caller is
+  not the third case but this one.
 
   Every product or sum a contract recomputes is checked arithmetic,
   `fits_i32!(n.checked_mul(n))` (`None` never fits): unchecked, it wraps in
@@ -89,7 +98,8 @@ invariant of the function's own making, which no caller can break, with an
 `tests/contracts.rs` holds both, that a public function's leading
 precondition on its arguments is a `#[requires]` whatever its message (an
 `assert!`, interpolated or not, an `assert_eq!` or `assert_ne!`, or an
-`if … { panic!() }` guard), and
+`if … { panic!() }` guard; past any `let` of the arguments, and into the
+private function a body that is one call hands its work to), and
 that a value check appears only in a contract's condition, as a whole
 `&&` term of it;
 clippy's `disallowed_macros` cannot, since a `#[debug_requires]` expands to

@@ -160,11 +160,18 @@ pub fn merge_sort_workspace_bytes(n: usize, with_values: bool) -> usize {
 /// The first failed launch, as [`fb_kernel_abi::launch_status`] maps it. A
 /// fault inside a kernel surfaces at the next synchronization.
 ///
-/// # Panics
-/// If the key count does not fit a `u32`, or `workspace` is shorter than
-/// [`merge_sort_workspace_bytes`]`(keys.len(), true)` or, when that is not
-/// zero, not [`FB_DEVICE_ALIGNMENT`]-aligned; before anything is enqueued.
+/// The contracts are checked before anything is enqueued.
 #[requires(eq!(values.len(), keys.len()), "values is as long as keys")]
+#[requires(le!(keys.len(), u32::MAX as usize), "the key count fits the launch's u32")]
+#[requires(
+    le!(merge_sort_workspace_bytes(keys.len(), true), workspace.len()),
+    "workspace holds merge_sort_workspace_bytes(keys.len(), true)"
+)]
+#[requires(
+    merge_sort_workspace_bytes(keys.len(), true) == 0
+        || (workspace.as_ptr() as usize).is_multiple_of(FB_DEVICE_ALIGNMENT),
+    "workspace is FB_DEVICE_ALIGNMENT-aligned when it is used"
+)]
 #[track_caller]
 pub fn merge_sort(
     stream: &Stream,
@@ -181,10 +188,17 @@ pub fn merge_sort(
 /// # Errors
 /// As [`merge_sort`].
 ///
-/// # Panics
-/// If the key count does not fit a `u32`, or `workspace` is shorter than
-/// [`merge_sort_workspace_bytes`]`(keys.len(), false)` or, when that is not
-/// zero, not [`FB_DEVICE_ALIGNMENT`]-aligned; before anything is enqueued.
+/// The contracts are checked before anything is enqueued.
+#[requires(le!(keys.len(), u32::MAX as usize), "the key count fits the launch's u32")]
+#[requires(
+    le!(merge_sort_workspace_bytes(keys.len(), false), workspace.len()),
+    "workspace holds merge_sort_workspace_bytes(keys.len(), false)"
+)]
+#[requires(
+    merge_sort_workspace_bytes(keys.len(), false) == 0
+        || (workspace.as_ptr() as usize).is_multiple_of(FB_DEVICE_ALIGNMENT),
+    "workspace is FB_DEVICE_ALIGNMENT-aligned when it is used"
+)]
 #[track_caller]
 pub fn merge_sort_keys(
     stream: &Stream,
@@ -195,7 +209,8 @@ pub fn merge_sort_keys(
 }
 
 /// The one launch of [`merge_sort`] and [`merge_sort_keys`], `values` null
-/// for the second or else as long as `keys`, checked by the caller.
+/// for the second or else as long as `keys`; every length, the workspace's
+/// size and its alignment are the callers' contracts.
 #[track_caller]
 fn sort(
     stream: &Stream,
@@ -204,22 +219,11 @@ fn sort(
     workspace: &mut impl DeviceSliceMut<u8>,
 ) -> Status {
     let n = count_u32("merge_sort", "the key count", keys.len());
-    // SAFETY: a host function of its arguments alone.
-    let need = unsafe { fb_merge_sort_workspace_bytes(n, !values.is_null()) };
-    assert!(
-        workspace.len() >= need,
-        "merge_sort: {n} keys need a workspace of {need} bytes, but it holds {}",
-        workspace.len()
-    );
     let workspace_ptr = workspace.as_mut_ptr();
-    assert!(
-        need == 0 || (workspace_ptr as usize).is_multiple_of(FB_DEVICE_ALIGNMENT),
-        "merge_sort: the workspace at {workspace_ptr:p} is not {FB_DEVICE_ALIGNMENT}-byte aligned"
-    );
     let keys = keys.as_mut_ptr();
     // SAFETY: the stream is live; keys is device memory of n doubles, values
     // null or n u32s, and the workspace at least the query's bytes and
-    // aligned as it partitions them, all checked here or by the caller; each
+    // aligned as it partitions them, all by the callers' contracts; each
     // stays so, with no other user, until the enqueued work finishes
     // (DeviceSliceMut's promise), so none overlaps another.
     let status = unsafe {
