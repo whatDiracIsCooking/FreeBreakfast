@@ -40,14 +40,14 @@
 //!   hand-written task (`docs/memory.md`, "The table").
 //!
 //! [`Bufs::iteration`]: fb_core_arena::Bufs::iteration
-//! - [`Planned`] ([`Dag::plan`]): each worker's device and host tables and
+//! - [`Plan`] ([`Dag::plan`]): each worker's device and host tables and
 //!   the plan's one heap table laid out, and each task's dependencies
 //!   derived, all pure. A task runs after
 //!   the producer of every row it reads ([`Table::reads`]) and after every
 //!   user of the bytes it takes over ([`Table::handoffs`]). Admission is
 //!   [`admit`](fb_core_arena::admit) on its tables; its text is the
 //!   plan's golden.
-//! - [`Instance`] ([`Planned::instantiate`]): the blocks, each worker's two
+//! - [`Instance`] ([`Plan::instantiate`]): the blocks, each worker's two
 //!   and the plan's heap block, and a
 //!   [`thread_pool::TaskGraph`] whose node for each task partitions the blocks
 //!   for it and calls its `run`. Run any number of times, one at a time:
@@ -151,7 +151,7 @@ mod task;
 #[cfg(test)]
 mod tests;
 
-pub use dag::{Dag, Planned};
+pub use dag::{Dag, Plan};
 pub use instance::Instance;
 pub use task::{CpuTask, Decision, GpuTask};
 

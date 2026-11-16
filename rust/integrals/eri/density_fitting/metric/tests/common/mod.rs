@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::Status;
-use fb_core_planner::{CpuTask, Dag, GpuTask, Planned};
+use fb_core_planner::{CpuTask, Dag, GpuTask, Plan};
 use fb_core_thread_pool::DeviceStream;
 use fb_integrals_eri_density_fitting_metric::add_metric;
 
@@ -37,7 +37,7 @@ pub fn data(file: &str) -> PathBuf {
 /// pinned row) and `collect` (CPU: the pinned row copied into `m`).
 #[allow(dead_code, reason = "the plan binary reads the plan alone")]
 pub struct Fixture {
-    pub planned: Planned<'static>,
+    pub planned: Plan<'static>,
     pub n_aux: usize,
     pub l_max: i32,
     pub m: Arc<Mutex<Vec<f64>>>,

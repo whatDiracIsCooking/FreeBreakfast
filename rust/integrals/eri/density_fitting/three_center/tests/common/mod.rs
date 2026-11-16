@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use fb_basis::{BasisSet, Shell};
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::Status;
-use fb_core_planner::{CpuTask, Dag, GpuTask, Planned};
+use fb_core_planner::{CpuTask, Dag, GpuTask, Plan};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_types::Double3;
 use fb_integrals_eri_density_fitting_three_center::add_three_center;
@@ -82,7 +82,7 @@ pub fn high_aux() -> (BasisSet, BasisSet) {
 /// A fixture planned.
 #[allow(dead_code, reason = "the plan binary reads the plan alone")]
 pub struct Fixture {
-    pub planned: Planned<'static>,
+    pub planned: Plan<'static>,
     pub n_ao: usize,
     pub n_aux: usize,
     pub out: Arc<Mutex<Vec<f64>>>,

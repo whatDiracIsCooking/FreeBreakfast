@@ -9,12 +9,12 @@
 //! is held to its floor from one side.
 
 use fb_core_error_handling::ErrorKind;
-use fb_core_planner::{Dag, Planned};
+use fb_core_planner::{Dag, Plan};
 use fb_core_thread_pool::DeviceStream;
 use fb_pipeline_config::{DEVICE_RESERVE, KERNEL_STACK_BYTES, MemoryCaps, admit_plan};
 
 /// A plan of one device worker row of `bytes`.
-fn device_row(bytes: usize) -> Planned<'static> {
+fn device_row(bytes: usize) -> Plan<'static> {
     let mut dag = Dag::new();
     let _ = dag.device_worker_row::<u8>(0, "device row", bytes);
     dag.plan()

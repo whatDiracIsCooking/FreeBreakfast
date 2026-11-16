@@ -31,7 +31,7 @@
 //! | `Molecule`'s nuclei, uploaded at construction (`upload`: a carve of `res`'s pinned workspace, two device buffers, two copies on `res.stream()` and a sync) | [`add_nuclei`]`(dag, worker, molecule)`: the `nuclei` task's pinned rows and the two upload nodes' device rows and copies, on the worker's one stream; the sync is the executor's edge |
 //! | `NucleiView` (`nuclei_view.h`), from `view()` | [`NucleiRows`]: `n_nuc` and the two device rows, declared by a reader with [`NucleiRows::read`]; the reader forms the launch wrappers' `fb_nuclei_view` (`fb_integrals_sys`) from its rows' pointers, since this crate links no kernel library |
 //! | `device_stream()`, the stream the nuclei were uploaded on | nothing: a reader runs after the upload by its edge |
-//! | `molecule_footprint(natoms)` | the plan's tables ([`Planned`](fb_core_planner::Planned)): the footprint is the layout |
+//! | `molecule_footprint(natoms)` | the plan's tables ([`Plan`](fb_core_planner::Plan)): the footprint is the layout |
 
 #![forbid(unsafe_code)]
 

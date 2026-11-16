@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use fb_core_arena::{Bufs, Heap, Layout, Pinned, RowId, memcpy_p2h};
 use fb_core_error_handling::{Result, Status};
-use fb_core_planner::{CpuTask, Dag, Planned};
+use fb_core_planner::{CpuTask, Dag, Plan};
 use fb_core_thread_pool::Record;
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
@@ -60,7 +60,7 @@ pub fn run(xyz_file: &str, basis: &str, lwork: impl FnOnce(usize) -> Result<usiz
 /// [`CoreRun::planned`] is the plan, its arena sizes among it, with no device;
 /// [`CoreRun::run`] lays the arena out on a device and runs it on one stream.
 pub struct CoreRun {
-    planned: Planned<'static>,
+    planned: Plan<'static>,
     n_ao: usize,
     out: Arc<Mutex<(Vec<f64>, Vec<f64>)>>,
 }
@@ -131,7 +131,7 @@ impl CoreRun {
     }
 
     /// The plan: its tasks, and each worker's device and pinned tables.
-    pub fn planned(&self) -> &Planned<'static> {
+    pub fn planned(&self) -> &Plan<'static> {
         &self.planned
     }
 

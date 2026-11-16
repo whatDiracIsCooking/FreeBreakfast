@@ -112,6 +112,13 @@ placement, and placement is the orchestrator's.
   mechanism that moves it.
 - **Error propagation**: a failed node fails its successors and nothing else.
 
+In the crates the orchestrator has two halves: the planner,
+`fb_core_planner`, which lays a `Dag` out and places it as a `Plan`
+(`Dag::plan`), and the executor, `fb_core_thread_pool`, which runs the
+`TaskGraph` that plan's `Instance` builds. "The planner" names
+`fb_core_planner` alone: the config-driven assembly in `fb_pipeline_config`,
+which reads a config and calls the builders, is not the planner.
+
 ### A builder adds tasks
 
 A computation is not one task, and the code that wires its tasks together

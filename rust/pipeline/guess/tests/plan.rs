@@ -334,7 +334,7 @@ fn a_loaded_guess_is_the_saved_density_bitwise() {
         assert!(dag.plan().is_empty());
     }
 
-    // Planned over the square file, which is then replaced: the node checks
+    // Plan over the square file, which is then replaced: the node checks
     // the file it reads.
     let replaced = dir.join("replaced.npy");
     write_npy(&replaced, &square.shape, &square.data).unwrap();
