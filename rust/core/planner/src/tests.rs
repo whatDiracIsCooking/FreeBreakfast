@@ -15,7 +15,7 @@ use fb_test_support::{golden, panic_message};
 
 /// One row declaration, in the order a [`Declares`] makes them.
 #[derive(Clone, Copy)]
-enum Decl {
+pub(super) enum Decl {
     Read(RowId<Device, f64>),
     /// A loop's carried row, written by its last user in the body.
     Write(RowId<Device, f64>),
@@ -25,7 +25,7 @@ enum Decl {
 
 /// A GPU task that only declares device rows, in a given order, and
 /// returns the ones it made. For planning tests; its run does nothing.
-struct Declares(Vec<Decl>);
+pub(super) struct Declares(pub(super) Vec<Decl>);
 
 impl GpuTask<PinnedStandIn, ()> for Declares {
     type Rows = Vec<RowId<Device, f64>>;
@@ -116,7 +116,7 @@ fn scf_plan_golden() {
 
 /// A decision that holds no row and ends the loop after its first
 /// iteration. For planning tests.
-struct Stops;
+pub(super) struct Stops;
 
 impl Decision<PinnedStandIn> for Stops {
     type Rows = ();
@@ -137,7 +137,7 @@ impl Decision<PinnedStandIn> for Stops {
 /// `arena::tests::scf_loop_fixture` declared as tasks: the SCF iteration's
 /// tasks as a loop's body, after the tasks that make S, H, X and the guess,
 /// the density writing the D the Fock build reads.
-fn scf_loop_dag(nbf: usize) -> Dag<'static, PinnedStandIn, ()> {
+pub(super) fn scf_loop_dag(nbf: usize) -> Dag<'static, PinnedStandIn, ()> {
     use Decl::*;
     let n2 = nbf * nbf;
     let lwork = 1 + 6 * nbf + 2 * n2;
@@ -316,6 +316,19 @@ impl CpuTask<PinnedStandIn> for Report {
     }
 }
 
+/// The iterate's DAG: `init`, the loop of `step` and `carry` closed by
+/// `converged`, then `report` writing the fixed point into `out`.
+pub(super) fn fixed_point_dag(out: &Arc<std::sync::Mutex<f64>>) -> Dag<'static, PinnedStandIn, ()> {
+    let mut dag = Dag::<PinnedStandIn, ()>::new();
+    let IterateRows { x, prev } = dag.add_cpu("init", 0, Iterate);
+    let body = dag.len();
+    let next = dag.add_gpu("step", 0, Step(x));
+    dag.add_cpu("carry", 0, Carry { next, x });
+    dag.add_loop("converged", 0, body, 100, Converged { next, prev });
+    dag.add_cpu("report", 0, Report(x, Arc::clone(out)));
+    dag
+}
+
 /// A loop through the planner and the executor: the body's rows in the
 /// region, `x` and `prev` carried, one by a task and one by the decision,
 /// and `x` read after the loop through the decision. The fixed point is 2,
@@ -324,14 +337,7 @@ impl CpuTask<PinnedStandIn> for Report {
 #[test]
 fn a_loop_carries_its_rows_to_the_fixed_point() {
     let out = Arc::new(std::sync::Mutex::new(0.0));
-    let mut dag = Dag::<PinnedStandIn, ()>::new();
-    let IterateRows { x, prev } = dag.add_cpu("init", 0, Iterate);
-    let body = dag.len();
-    let next = dag.add_gpu("step", 0, Step(x));
-    dag.add_cpu("carry", 0, Carry { next, x });
-    dag.add_loop("converged", 0, body, 100, Converged { next, prev });
-    dag.add_cpu("report", 0, Report(x, Arc::clone(&out)));
-    let planned = dag.plan();
+    let planned = fixed_point_dag(&out).plan();
     assert_eq!(
         planned.predecessors(2),
         &[0, 1],

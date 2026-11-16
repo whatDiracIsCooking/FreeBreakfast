@@ -106,6 +106,29 @@ plan by its arena size and profile, which is what a reader of the times
 needs from it. The second option's gain, the plan and its measurement read
 together, comes from the task names, which are the plan's own.
 
+### The plan beside the record
+
+The binary also writes the plan into the output directory, in files of
+their own for the reason above. `plan.txt` is the plan's text, the golden's
+format; `plan.dot` is its graph as Graphviz (`fb_core_planner::Graph`,
+`Plan::graph` and `Graph::dot`): each task's rank, name, lane and
+dimensions and, per kind, the bytes it produces and the bytes the block
+holds live while it runs, the table's peak drawn bold; each edge labelled
+with the rows behind it, or dashed for an ordering with none (a handoff of
+bytes, or a decision after its body), which is drawn only where no other
+path implies it, since most handoffs are, and the label counts those left
+out; each loop a cluster. Both are
+written after planning and **before admission**, so a plan admission
+refuses, the one whose memory a reader most wants to see, is still on
+disk. `timing.dot`, written after the run beside `timing.json` and
+whether or not the run failed, is the same graph with the record joined
+on by rank: each task's host and device time summed over its iterations,
+its fill its share of the most any task took, a task that did not run
+grey, each decision loop's iteration count, and the run's wall time,
+profile and error in the label. The graph is copied out of the plan
+before the blocks are made, so it outlives `Plan::instantiate`, which
+consumes the plan.
+
 In memory, the record is what a run returns: `fb_core_thread_pool::Record`,
 from `thread_pool::run` and the planner's `Instance::run`. Today it holds
 the run's result; the profile that built it (`debug` or `release`, from

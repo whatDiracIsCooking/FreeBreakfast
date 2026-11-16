@@ -47,6 +47,12 @@
 //!   user of the bytes it takes over ([`Table::handoffs`]). Admission is
 //!   [`admit`](fb_core_arena::admit) on its tables; its text is the
 //!   plan's golden.
+//! - [`Graph`] ([`Plan::graph`]): the plan's tasks, dependencies, loops
+//!   and memory, owned, so it outlives [`Plan::instantiate`];
+//!   [`Graph::dot`] writes it as Graphviz, each edge labelled with the rows
+//!   behind it and each task with the bytes it produces and the bytes live
+//!   while it runs, and with a run's [`Record`](fb_core_thread_pool::Record)
+//!   each task's times.
 //! - [`Instance`] ([`Plan::instantiate`]): the blocks, each worker's two
 //!   and the plan's heap block, and a
 //!   [`thread_pool::TaskGraph`] whose node for each task partitions the blocks
@@ -146,12 +152,16 @@ mod copy;
 mod dag;
 #[cfg(all(test, feature = "device-tests"))]
 mod device_tests;
+mod graph;
+#[cfg(test)]
+mod graph_tests;
 mod instance;
 mod task;
 #[cfg(test)]
 mod tests;
 
 pub use dag::{Dag, Plan};
+pub use graph::Graph;
 pub use instance::Instance;
 pub use task::{CpuTask, Decision, GpuTask};
 

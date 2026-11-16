@@ -125,7 +125,7 @@ pub use kind::{Device, Element, Heap, HostKind, Kind, Pinned, StagingKind};
 #[cfg(feature = "device")]
 pub use memcpy::{memcpy_d2d, memcpy_d2p, memcpy_p2d};
 pub use memcpy::{memcpy_h2p, memcpy_p2h};
-pub use table::{Access, Layout, Peak, RowId, Table, TableBuilder};
+pub use table::{Access, Layout, Owner, Peak, RowId, RowInfo, Table, TableBuilder};
 
 /// The alignment of every row's offset, in bytes, and the least the block
 /// itself has: the C++ `kWorkspaceAlignment`, and the pool's allocation
