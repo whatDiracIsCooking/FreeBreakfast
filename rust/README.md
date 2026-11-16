@@ -1419,3 +1419,13 @@ iterations, `c_local.npy` 24 × 5. The RHF's plan golden unchanged by the
 split into `plan_rhf`. On the RTX 3080 (CUDA), the `default` preset:
 `devtools/test.py pr --only cargo --all` passed, tier 4 382, none
 skipped. Not run on the gfx1200.
+
+2026-11-16, the plan as Graphviz (`fb-core-planner`'s `Graph`,
+`Plan::graph` and `Graph::dot`; `fb-core-arena`'s `Table::rows` and
+`Table::live_at`): the binary writes `plan.txt` and `plan.dot` before
+admission and `timing.dot`, the graph with the run's times, after the run.
+The RHF example's graph: 77 tasks, 217 edges drawn (178 with rows behind
+them, 39 orderings with none), 822 orderings implied by other paths left
+out. On the RTX 3080 (CUDA), the `default` preset: `devtools/test.py pr
+--only cargo` passed at 8c23f12b, tiers 1 to 3 373 tests, tier 4 271, none
+skipped, the examples' 16 among them. Not run on the gfx1200.
