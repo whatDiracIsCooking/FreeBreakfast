@@ -31,6 +31,8 @@
 //! PySCF's own SCF, at `conv_tol_grad` 1e-10, and the fitted integrals the
 //! two codes share add under 1e-11.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -460,8 +462,10 @@ fn rohf_example() {
 /// energy at the DF-RHF's bar, its `localization.json` L after within the
 /// bar of PySCF's maximum (the module's doc), L before under it and a
 /// sweep count within the bound, `c_local.npy` water's 24 AOs by its five
-/// occupied orbitals, and its `timing.json` the timing record with the
-/// loops' entries, the write nodes among them. Needs a GPU.
+/// occupied orbitals, in ascending `<i|F|i>` as the C++ step sorts them
+/// (S from the overlap example, run beside it), and its `timing.json` the
+/// timing record with the loops' entries, the write nodes among them.
+/// Needs a GPU.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn localization_example() {
@@ -512,6 +516,29 @@ fn localization_example() {
         c_local.shape,
         [24, 5],
         "water's cc-pVDZ AOs by its occupied"
+    );
+    // Its orbitals ascend in <i|F|i>, over the same water's S.
+    let overlap = free_breakfast(&cwd, &example("overlap.toml"));
+    assert_eq!(
+        overlap.status.code(),
+        Some(0),
+        "the overlap example exits 0"
+    );
+    let s = fb_io_npy::read_npy(&cwd.join("overlap").join("overlap.npy")).unwrap();
+    let c = fb_io_npy::read_npy(&dir.join("c.npy")).unwrap();
+    let text = std::fs::read_to_string(dir.join("scf.json")).unwrap();
+    let scf: serde_json::Value = serde_json::from_str(&text).expect("scf.json parses");
+    let eps: Vec<f64> = scf["epsilon"]
+        .as_array()
+        .expect("epsilon")
+        .iter()
+        .map(|e| e.as_f64().unwrap())
+        .collect();
+    let energies = common::fock_expectations(&c.data, &s.data, &c_local.data, &eps);
+    println!("<i|F|i> = {energies:?}");
+    assert!(
+        common::ascending(&energies),
+        "<i|F|i> {energies:?} does not ascend"
     );
     check_timing(
         &config,

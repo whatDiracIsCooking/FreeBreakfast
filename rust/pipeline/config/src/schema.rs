@@ -104,14 +104,15 @@ pub enum Calculation {
     /// the Pipek-Mezey localization of its occupied orbitals over Mulliken
     /// populations
     /// ([`fb_localization_pipek_mezey::add_pm_localize`]) with
-    /// [`Config::localization`]'s options. Writes `c_local.npy`, the
-    /// localized orbitals, `nao_sphe × n_occ`, in the order the sweeps
-    /// leave them; and `localization.json`, an object of the functional
+    /// [`Config::localization`]'s options, each occupied space among
+    /// itself: an open shell's `n_beta` doubly occupied orbitals, then its
+    /// `n_alpha - n_beta` singly occupied ones. Writes `c_local.npy`, the
+    /// localized orbitals, `nao_sphe × n_alpha`, the doubly occupied
+    /// first, each space in ascending order of `<i|F|i>`, as the C++ step
+    /// sorts them; and `localization.json`, an object of the functional
     /// `L` of the canonical occupied orbitals as `functional_before`, of
-    /// the localized ones as `functional_after`, and the `sweeps` it took.
-    /// A closed shell alone: a multiplicity above 1 is refused
-    /// `Unsupported`, since the C++ localization of an open shell, each
-    /// occupied space among itself, is not ported.
+    /// the localized ones as `functional_after`, and the `sweeps` it took,
+    /// each summed over the spaces.
     Localization,
 }
 
