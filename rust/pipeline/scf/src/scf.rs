@@ -177,7 +177,11 @@ impl ScfStep {
 /// built once; **`spin densities`** (stream), `Da = Db = D/2` into the
 /// carried `"Da"` and `"Db"`; and **`identity`** (CPU) with its upload,
 /// `"I"`. In the body, a second `df exchange`, of `"C b"`, each K with its
-/// rest's added by a `guess exchange` (`"Ka of D"`, `"Kb of D"`); then in
+/// rest's added by a `guess exchange` (`"Ka of D"`, `"Kb of D"`). With no
+/// beta electron (H, H₂⁺) there is no `"C b"` and no second `df exchange`:
+/// the beta `guess exchange` copies the rest's K alone, the guess's
+/// `Db = D/2`, into the first build's Kb, and every later Kb is 0, as
+/// `open density` zeroes Db, the C++ `K(Db) = 0`. Then in
 /// place of `fock`, **`open fock`** (`Fa = H + J - Ka/2`,
 /// `Fb = H + J - Kb/2`, `E = tr(D H + Da Fa + Db Fb)/2 + E_nuc`) and
 /// **`roothaan fock`** (the Roothaan effective F, its open block
@@ -201,7 +205,7 @@ impl ScfStep {
 /// At planning, before anything is added: `InvalidConfig` for an option
 /// out of range ([`ScfStep`]), an electron count of the wrong parity for
 /// the multiplicity ([`occupied_orbitals`]) or more alpha electrons than
-/// the `n` orbitals; `Unsupported` for an open shell with no beta electron.
+/// the `n` orbitals.
 /// Then the kernel library's load check
 /// ([`add_diis`], [`add_df_exchange`]), as `GpuRuntime`; `dag` may hold
 /// some of the tasks after it. At run time, the tasks' errors, and
@@ -242,13 +246,6 @@ pub fn add_scf(
         )));
     }
     let open = n_alpha != n_beta;
-    if n_beta == 0 {
-        return Err(Error::unsupported(format!(
-            "scf: {electrons} electron at multiplicity {} has no beta electron, which is not \
-             ported",
-            molecule.multiplicity()
-        )));
-    }
     let nocc = n_alpha;
     let naux = eri.aux.nao_sphe() as usize;
     let e_nuc = nuclear_repulsion_energy(molecule);
@@ -290,9 +287,9 @@ pub fn add_scf(
         )?),
         None => None,
     };
-    let beta = match factor.beta {
-        Some((cb, rest)) => Some((
-            cb,
+    let beta = match factor.beta_rest {
+        Some(rest) => Some((
+            factor.cb,
             add_df_exchange(dag, worker, n, naux, n - n_beta, eri.b, rest)?,
         )),
         None => None,
@@ -307,11 +304,20 @@ pub fn add_scf(
     let mut k = add_df_exchange(dag, worker, n, naux, nocc, eri.b, factor.c_occ)?;
     if let Some(rest) = rest_k {
         let name = if open { "Ka of D" } else { "K of D" };
-        k = dag.add_gpu("guess exchange", worker, GuessExchange { k, rest, n, name });
+        let guess_exchange = GuessExchange {
+            k: Some(k),
+            rest,
+            n,
+            name,
+        };
+        k = dag.add_gpu("guess exchange", worker, guess_exchange);
     }
     let (f, spin_fock, e, scalars) = match (beta, spin) {
         (Some((cb, rest)), Some([da, db, identity])) => {
-            let kb = add_df_exchange(dag, worker, n, naux, n_beta, eri.b, cb)?;
+            // No beta electron, no beta factor: Kb is the rest's alone.
+            let kb = cb
+                .map(|cb| add_df_exchange(dag, worker, n, naux, n_beta, eri.b, cb))
+                .transpose()?;
             let kb = dag.add_gpu(
                 "guess exchange",
                 worker,
@@ -331,7 +337,7 @@ pub fn add_scf(
                 [guess, da, db],
                 [s, x, identity],
             );
-            (f, Some((fs, [da, db, cb, identity])), e, scalars)
+            (f, Some((fs, [da, db, identity], cb)), e, scalars)
         }
         _ => {
             let (f, e, scalars) = add_fock(dag, worker, n, e_nuc, h, j, k, guess, s, x);
@@ -341,14 +347,14 @@ pub fn add_scf(
     let (f_star, singular) = diis.add_push(dag, f, e);
     let (_, c_next) = add_solve_fock(dag, worker, n, lwork, f_star, x);
     match spin_fock {
-        Some((_, [da, db, cb, _])) => add_open_density(
+        Some((_, [da, db, _], cb)) => add_open_density(
             dag,
             worker,
             n,
             [n_alpha, n_beta],
             c_next,
             [guess, da, db],
-            [factor.c_occ, cb],
+            (factor.c_occ, cb),
         ),
         None => add_density(dag, worker, n, nocc, c_next, guess, factor.c_occ),
     }
@@ -372,7 +378,7 @@ pub fn add_scf(
     // open shell's made PySCF's.
     let (eps, c) = add_solve_fock(dag, worker, n, lwork, f, x);
     let published = match spin_fock {
-        Some((fs, [.., identity])) => add_publish_open(
+        Some((fs, [.., identity], _)) => add_publish_open(
             dag,
             worker,
             n,
@@ -495,8 +501,10 @@ struct GuessFactorRows {
     factor: RowId<Device, f64>,
     c_occ: RowId<Device, f64>,
     rest: Option<RowId<Device, f64>>,
-    /// An open shell's beta factor and the rest of C̃'s columns.
-    beta: Option<(RowId<Device, f64>, RowId<Device, f64>)>,
+    /// An open shell's beta factor, none with no beta electron.
+    cb: Option<RowId<Device, f64>>,
+    /// An open shell's rest of C̃'s columns beside its beta factor.
+    beta_rest: Option<RowId<Device, f64>>,
 }
 
 impl GpuTask for GuessFactor {
@@ -518,12 +526,13 @@ impl GpuTask for GuessFactor {
             factor: device.scratch("guess factor", n * n),
             c_occ: device.output(occ, n * self.nocc),
             rest: (self.nocc < n).then(|| device.output(rest, n * (n - self.nocc))),
-            beta: self.n_beta.map(|nb| {
-                (
-                    device.output("C b", n * nb),
-                    device.output("C b rest", n * (n - nb)),
-                )
-            }),
+            cb: self
+                .n_beta
+                .filter(|&nb| nb > 0)
+                .map(|nb| device.output("C b", n * nb)),
+            beta_rest: self
+                .n_beta
+                .map(|nb| device.output("C b rest", n * (n - nb))),
         }
     }
 
@@ -576,9 +585,11 @@ impl GpuTask for GuessFactor {
                 copy::d2d(&mut device.take_mut(rest), &head, worker)?;
             }
         }
-        if let (Some(nb), Some((cb, rest))) = (self.n_beta, rows.beta) {
+        if let (Some(nb), Some(rest)) = (self.n_beta, rows.beta_rest) {
             let (head, tail) = split_at_mut(&mut factor, self.n * (self.n - nb));
-            copy::d2d(&mut device.take_mut(cb), &tail, worker)?;
+            if let Some(cb) = rows.cb {
+                copy::d2d(&mut device.take_mut(cb), &tail, worker)?;
+            }
             copy::d2d(&mut device.take_mut(rest), &head, worker)?;
         }
         Ok(())
@@ -588,9 +599,10 @@ impl GpuTask for GuessFactor {
 /// GPU, in the body: `K of D = K + K rest`, then `K rest = 0`, so the
 /// rest of the guess's factor enters the first iteration's K alone. The
 /// output row is `name`: `"K of D"`, or an open shell's `"Ka of D"` and
-/// `"Kb of D"`.
+/// `"Kb of D"`. With no K, an open shell's beta with no beta electron,
+/// `K of D` is `K rest`: the guess's Db is D/2, every later one 0.
 struct GuessExchange {
-    k: RowId<Device, f64>,
+    k: Option<RowId<Device, f64>>,
     rest: RowId<Device, f64>,
     n: usize,
     name: &'static str,
@@ -600,7 +612,9 @@ impl GpuTask for GuessExchange {
     type Rows = RowId<Device, f64>;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
-        device.read(self.k);
+        if let Some(k) = self.k {
+            device.read(k);
+        }
         device.write(self.rest);
         device.output(self.name, self.n * self.n)
     }
@@ -617,24 +631,26 @@ impl GpuTask for GuessExchange {
         worker: &DeviceStream,
     ) -> Status {
         let n = self.n as i32;
-        let k = device.get(self.k);
         let (mut rest, mut total) = (device.take_mut(self.rest), device.take_mut(*total));
-        // The zero follows the sum on the stream.
-        geam(
-            worker.blas(),
-            OP_N,
-            OP_N,
-            n,
-            n,
-            1.0,
-            &k,
-            n,
-            1.0,
-            &rest,
-            n,
-            &mut total,
-            n,
-        )?;
+        // The zero follows the sum, or the copy, on the stream.
+        match self.k {
+            Some(k) => geam(
+                worker.blas(),
+                OP_N,
+                OP_N,
+                n,
+                n,
+                1.0,
+                &device.get(k),
+                n,
+                1.0,
+                &rest,
+                n,
+                &mut total,
+                n,
+            )?,
+            None => copy::d2d(&mut total, &rest, worker)?,
+        }
         memset::zero(&mut rest, worker)
     }
 }
