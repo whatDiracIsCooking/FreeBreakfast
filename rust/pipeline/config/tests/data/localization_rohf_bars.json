@@ -1,0 +1,49 @@
+{
+ "description": "Per localization_rohf.json case and exponent: L summed over the spaces (the reference's), and the first-order bars of tests/open_localization.rs per unit of the SCF residual (sens_l on L, sens_q on any population) and conv_q, a population's reach from the localization stopping short of the maximum",
+ "provenance": {
+  "pyscf": "2.14.0",
+  "numpy": "2.5.4",
+  "threads": 1,
+  "command": "uv run --frozen --group tools python rust/pipeline/config/tests/data/open_localization_reference.py"
+ },
+ "cases": [
+  {
+   "name": "ch2_ccpvdz",
+   "exponents": [
+    {
+     "exponent": 2,
+     "functional": 3.932567936269295,
+     "sens_l": 0.23492142509569597,
+     "sens_q": 0.40887331516767994,
+     "conv_q": 4.4235570223985576e-05
+    },
+    {
+     "exponent": 4,
+     "functional": 3.088693064785239,
+     "sens_l": 0.44315487241516693,
+     "sens_q": 0.45566466103438,
+     "conv_q": 2.267879475838074e-05
+    }
+   ]
+  },
+  {
+   "name": "h2o_cation_ccpvdz",
+   "exponents": [
+    {
+     "exponent": 2,
+     "functional": 4.067816247937497,
+     "sens_l": 0.08867378155704775,
+     "sens_q": 0.13142331131779683,
+     "conv_q": 2.011934411363893e-05
+    },
+    {
+     "exponent": 4,
+     "functional": 3.3536810881399903,
+     "sens_l": 0.2011350869680646,
+     "sens_q": 0.132156952250317,
+     "conv_q": 9.960531185609747e-06
+    }
+   ]
+  }
+ ]
+}

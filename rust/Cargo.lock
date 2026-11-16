@@ -643,12 +643,15 @@ dependencies = [
 name = "fb-pipeline-config"
 version = "0.1.0"
 dependencies = [
+ "fb-atom",
  "fb-basis",
  "fb-core-arena",
+ "fb-core-constants",
  "fb-core-error-handling",
  "fb-core-log",
  "fb-core-planner",
  "fb-core-thread-pool",
+ "fb-core-types",
  "fb-core-wwr",
  "fb-integrals-mmd",
  "fb-integrals-one-electron-core-hamiltonian",
@@ -671,6 +674,7 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+ "wwr-sys",
 ]
 
 [[package]]

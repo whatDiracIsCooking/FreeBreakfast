@@ -709,21 +709,6 @@ fn a_multiplicity_of_the_wrong_parity_is_refused() {
     );
 }
 
-/// The localization of an open shell, water's triplet: `Unsupported`,
-/// naming `[localization]` and the multiplicity, at planning, as the C++
-/// refuses a closed-shell-only step over one.
-#[test]
-fn an_open_shell_localization_is_refused() {
-    refused(
-        "refused_open_localization",
-        "calculation = \"localization\"\n[molecule]\nxyz = \"water.xyz\"\nmultiplicity = 3\n\
-         [basis_set]\nbasis = \"sto-3g\"\n[eri]\nmode = \"density_fitting\"\n\
-         aux_basis = \"cc-pvdz-jkfit\"\n",
-        ErrorKind::Unsupported,
-        &["[localization]", "multiplicity is 3"],
-    );
-}
-
 /// The overlap of water in STO-3G, `memory` its `[memory]` table.
 fn capped(memory: &str) -> String {
     format!(
