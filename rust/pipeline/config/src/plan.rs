@@ -2,7 +2,7 @@
 
 use fb_core_arena::{Device, Heap, Pinned, RowId};
 use fb_core_error_handling::{Error, ErrorKind, Result};
-use fb_core_planner::{Dag, Planned};
+use fb_core_planner::{Dag, Plan};
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_integrals_one_electron_overlap::add_overlap;
@@ -72,10 +72,7 @@ use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write}
 /// [`ScfStep::check`]: fb_pipeline_scf::ScfStep::check
 /// [`LocalizationStep::check`]: fb_localization_pipek_mezey::LocalizationStep::check
 /// [`add_pm_localize`]: fb_localization_pipek_mezey::add_pm_localize
-pub fn plan(
-    config: &Config,
-    lwork: impl FnOnce(usize) -> Result<usize>,
-) -> Result<Planned<'static>> {
+pub fn plan(config: &Config, lwork: impl FnOnce(usize) -> Result<usize>) -> Result<Plan<'static>> {
     let step = &config.molecule;
     let molecule = fb_io_xyz::read_xyz(&step.xyz, step.charge, step.multiplicity)
         .map_err(|e| keyed(e, "[molecule] xyz"))?;

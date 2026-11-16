@@ -3,7 +3,7 @@
 
 use fb_core_arena::{admit, admit_host};
 use fb_core_error_handling::{Error, Result, Status};
-use fb_core_planner::Planned;
+use fb_core_planner::Plan;
 
 use crate::MemoryCaps;
 
@@ -70,7 +70,7 @@ pub const KERNEL_STACK_BYTES: usize = 16_912;
 ///
 /// [`plan`]: crate::plan
 pub fn admit_plan(
-    planned: &Planned<'_>,
+    planned: &Plan<'_>,
     memory: &MemoryCaps,
     device_memory: impl Fn(usize) -> Result<(usize, usize)>,
     stack_growth: impl Fn(usize) -> Result<usize>,

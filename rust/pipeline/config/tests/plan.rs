@@ -18,7 +18,7 @@ use std::cell::Cell;
 
 use fb_core_arena::{Bufs, Heap, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
-use fb_core_planner::{CpuTask, Dag, Planned};
+use fb_core_planner::{CpuTask, Dag, Plan};
 use fb_localization_pipek_mezey::{LocalizationMode, LocalizationStep, PmExponent};
 use fb_pipeline_config::{Calculation, DEVICE_RESERVE, MemoryCaps, admit_plan, plan, read_config};
 use fb_pipeline_guess::{GuessKind, GuessStep};
@@ -668,7 +668,7 @@ fn memory_refusals() {
 }
 
 /// A plan of one worker's two worker rows, `device` and `pinned` bytes.
-fn rows(device: usize, pinned: usize) -> Planned<'static> {
+fn rows(device: usize, pinned: usize) -> Plan<'static> {
     let mut dag = Dag::new();
     let _ = dag.device_worker_row::<u8>(0, "device row", device);
     let _ = dag.host_worker_row::<u8>(0, "pinned row", pinned);
@@ -881,7 +881,7 @@ impl CpuTask for HeapRow {
 }
 
 /// [`rows`] with a heap row of `heap` bytes beside them.
-fn rows_and_heap(device: usize, pinned: usize, heap: usize) -> Planned<'static> {
+fn rows_and_heap(device: usize, pinned: usize, heap: usize) -> Plan<'static> {
     let mut dag = Dag::new();
     let _ = dag.device_worker_row::<u8>(0, "device row", device);
     let _ = dag.host_worker_row::<u8>(0, "pinned row", pinned);

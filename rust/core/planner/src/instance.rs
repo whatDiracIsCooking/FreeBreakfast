@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use super::dag::{Planned, Work};
+use super::dag::{Plan, Work};
 use contracts::debug_requires;
 use fb_core_arena::{Block, CopyOnly, Device, Heap, Kind, Pinned, RowId, StagingKind};
 #[cfg(feature = "device")]
@@ -45,10 +45,10 @@ pub struct Instance<'a, H: StagingKind = Pinned, S = DeviceStream> {
 /// A worker's device block and host block.
 type WorkerBlocks<H> = (Arc<Block<Device>>, Arc<Block<H>>);
 
-impl<'a, H: StagingKind, S: 'a> Planned<'a, H, S> {
+impl<'a, H: StagingKind, S: 'a> Plan<'a, H, S> {
     /// Allocate each worker's blocks, worker `w`'s on device `devices[w]`,
     /// and the plan's heap block, from the global allocator, and build the executor's plan: a node per task in rank order, after
-    /// its [`predecessors`](Planned::predecessors), and for each loop its
+    /// its [`predecessors`](Plan::predecessors), and for each loop its
     /// decision, closing it over its body ([`TaskGraph::add_loop`]), or for a
     /// counted loop its close after its body's last ([`TaskGraph::add_counted`]).
     /// Each node hands its task views for the iteration it runs in, so a

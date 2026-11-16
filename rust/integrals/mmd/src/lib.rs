@@ -56,7 +56,7 @@
 //! | `mmd_order`, each class sorted into descending ζ, and `form_classes`' carve of `res`'s device workspace for it, two keys and two permutations | nothing: the records stay in enumeration order, each shell pair's one run (above), and a class's task holds no scratch |
 //! | each class forked from the one before, so the sorts share the carve | each class on its own lane, with no scratch to share, so nothing chains them |
 //! | `three_center` copying the sorted records' offsets back and regrouping them by shell pair | [`record_tables`], formed again at planning by a reader: each pair's record range is its prefix, its offsets its shells' |
-//! | `primitive_pair_classes_footprint` | the plan's tables ([`Planned`](fb_core_planner::Planned)): the footprint is the layout |
+//! | `primitive_pair_classes_footprint` | the plan's tables ([`Plan`](fb_core_planner::Plan)): the footprint is the layout |
 //! | `mixed_primitive_pair_classes(res, rows, cols)`, `mixed_sweep` | [`add_mixed_records`]`(dag, worker, rows, cols)`: the same tasks over both bases' table, returning [`MixedClassRows`], which no one-basis launcher takes |
 //! | `mixed_primitive_pair_classes_footprint` | the plan's tables, as for one basis |
 //!

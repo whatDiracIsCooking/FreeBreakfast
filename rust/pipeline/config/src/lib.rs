@@ -84,7 +84,7 @@
 //!
 //! | C++ (`free_breakfast`) | Here |
 //! |---|---|
-//! | `read_config(config, input_dir, output_dir)`, a `Calculation` of steps | [`read_config`], a [`Config`], and [`plan`], its tasks as one [`Planned`] |
+//! | `read_config(config, input_dir, output_dir)`, a `Calculation` of steps | [`read_config`], a [`Config`], and [`plan`], its tasks as one [`Plan`] |
 //! | toml++'s table walk, `[step] has no option 'key'` | serde, `deny_unknown_fields`: `<file>:<line>: unknown field ...` |
 //! | `MoleculeStep::xyz`, `BasisSetStep::basis` | [`MoleculeStep::xyz`], [`BasisSetStep::basis`] |
 //! | `[molecule] charge`, `multiplicity`, `MoleculeStep`'s, default 0 and 1 | [`MoleculeStep::charge`], [`MoleculeStep::multiplicity`], the same defaults; a count of the wrong parity refused at planning by [`fb_pipeline_scf::occupied_orbitals`] |
@@ -126,7 +126,7 @@
 //! [`EriStep::mode`]: fb_pipeline_eri::EriStep::mode
 //! [`EriStep::aux_basis`]: fb_pipeline_eri::EriStep::aux_basis
 //! [`EriMode::DensityFitting`]: fb_pipeline_eri::EriMode::DensityFitting
-//! [`Planned`]: fb_core_planner::Planned
+//! [`Plan`]: fb_core_planner::Plan
 //! [`LocalizationStep`]: fb_localization_pipek_mezey::LocalizationStep
 //! [`add_pm_localize`]: fb_localization_pipek_mezey::add_pm_localize
 

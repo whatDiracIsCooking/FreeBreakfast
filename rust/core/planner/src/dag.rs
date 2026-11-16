@@ -432,7 +432,7 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
     /// every handoff into it; a loop's decision also runs after every task
     /// of its body. Pure: no device. The rows a loop carries are held to
     /// the tables' contracts ([`TableBuilder::build`]).
-    pub fn plan(mut self) -> Planned<'a, H, S> {
+    pub fn plan(mut self) -> Plan<'a, H, S> {
         for w in &mut self.workers {
             // Lane 0 has its handles whatever its tasks say; a lane above
             // it, only if a task on it uses them.
@@ -507,7 +507,7 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
             debug_assert!(u < v, "a dependency {u} -> {v} against rank");
             deps[v].insert(u);
         }
-        Planned {
+        Plan {
             tables,
             heap,
             lanes,
@@ -537,7 +537,7 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
 
 /// A planned DAG: each worker's tables laid out and each task's
 /// dependencies derived, with nothing allocated. Admission reads the tables
-/// ([`admit`](fb_core_arena::admit)); [`Planned::instantiate`] makes
+/// ([`admit`](fb_core_arena::admit)); [`Plan::instantiate`] makes
 /// the blocks.
 ///
 /// Its text ([`fmt::Display`]) is the plan's golden: each task's worker,
@@ -547,7 +547,7 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
 /// worker's, then the heap's. A GPU
 /// task's lane reads `stream` on a worker of one lane and `stream<l>` on a
 /// worker of several; any other task's, `cpu`.
-pub struct Planned<'a, H: StagingKind = Pinned, S = DeviceStream> {
+pub struct Plan<'a, H: StagingKind = Pinned, S = DeviceStream> {
     pub(super) tables: Vec<(Table<Device>, Table<H>)>,
     /// The plan's heap table, one for every worker.
     pub(super) heap: Table<Heap>,
@@ -567,7 +567,7 @@ pub struct Planned<'a, H: StagingKind = Pinned, S = DeviceStream> {
     pub(super) loops: Vec<Loop>,
 }
 
-impl<H: StagingKind, S> Planned<'_, H, S> {
+impl<H: StagingKind, S> Plan<'_, H, S> {
     /// The number of tasks.
     pub fn len(&self) -> usize {
         self.nodes.len()
@@ -615,7 +615,7 @@ impl<H: StagingKind, S> Planned<'_, H, S> {
     }
 }
 
-impl<H: StagingKind, S> fmt::Display for Planned<'_, H, S> {
+impl<H: StagingKind, S> fmt::Display for Plan<'_, H, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,

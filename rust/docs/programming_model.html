@@ -236,6 +236,12 @@ edge lifetime under that schedule, that fits each worker's budget.</li>
 mechanism that moves it.</li>
 <li><strong>Error propagation</strong>: a failed node fails its successors and nothing else.</li>
 </ul>
+<p>In the crates the orchestrator has two halves: the planner,
+<code>fb_core_planner</code>, which lays a <code>Dag</code> out and places it as a <code>Plan</code>
+(<code>Dag::plan</code>), and the executor, <code>fb_core_thread_pool</code>, which runs the
+<code>TaskGraph</code> that plan's <code>Instance</code> builds. &quot;The planner&quot; names
+<code>fb_core_planner</code> alone: the config-driven assembly in <code>fb_pipeline_config</code>,
+which reads a config and calls the builders, is not the planner.</p>
 <h3 id="a-builder-adds-tasks">A builder adds tasks</h3>
 <p>A computation is not one task, and the code that wires its tasks together
 is a builder: a public function that takes the DAG and adds nodes to it

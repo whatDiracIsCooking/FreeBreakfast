@@ -9,7 +9,7 @@
 
 use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
-use fb_core_planner::{Dag, GpuTask, Planned};
+use fb_core_planner::{Dag, GpuTask, Plan};
 use fb_core_thread_pool::DeviceStream;
 use fb_integrals_eri_density_fitting_jk::{add_df_coulomb, add_df_exchange};
 use fb_test_support::golden;
@@ -54,7 +54,7 @@ fn inputs(dag: &mut Dag<'_>, name: &'static str, len: usize) -> [RowId<Device, f
 /// `planned`'s text, each line's trailing whitespace stripped (an empty
 /// handoffs line ends in a space, which the trailing-whitespace hook strips
 /// from the committed file), compared with the golden `file`.
-fn plan_golden(planned: &Planned<'_>, file: &str) {
+fn plan_golden(planned: &Plan<'_>, file: &str) {
     let text: String = planned
         .to_string()
         .lines()

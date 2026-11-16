@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use fb_core_arena::{Bufs, Heap, Layout, Pinned, RowId, memcpy_p2h};
 use fb_core_error_handling::{Result, Status};
-use fb_core_planner::{CpuTask, Dag, Planned};
+use fb_core_planner::{CpuTask, Dag, Plan};
 use fb_core_thread_pool::Record;
 
 use fb_integrals_mmd::add_records;
@@ -20,7 +20,7 @@ use super::tasks::add_overlap;
 /// [`Run::planned`] is the plan, its arena sizes among it, with no device;
 /// [`Run::run`] lays the arena out on a device and runs it on one stream.
 pub struct Run {
-    planned: Planned<'static>,
+    planned: Plan<'static>,
     n_ao: usize,
     s: Arc<Mutex<Vec<f64>>>,
 }
@@ -66,7 +66,7 @@ impl Run {
     }
 
     /// The plan: its tasks, and each worker's device and pinned tables.
-    pub fn planned(&self) -> &Planned<'static> {
+    pub fn planned(&self) -> &Plan<'static> {
         &self.planned
     }
 
