@@ -30,9 +30,12 @@
 //! [`Calculation::Localization`]: that RHF and its writes, then the
 //! Pipek-Mezey localization of its occupied orbitals
 //! ([`fb_localization_pipek_mezey::add_pm_localize`]) over its S and C,
-//! the decision loop after the SCF's, then the write nodes of
-//! `c_local.npy` and of `localization.json`, a CPU write of the
-//! localization's heap row `[L before, L after, sweeps]`.
+//! each occupied space among itself (an open shell's `n_beta` doubly
+//! occupied, then its `n_alpha - n_beta` singly occupied), each a decision
+//! loop after the SCF's, and each space sorted by `<i|F|i>` as the C++
+//! step sorts it, then the write nodes of `c_local.npy` and of
+//! `localization.json`, a CPU write of the localization's heap row
+//! `[L before, L after, sweeps]`, summed over the spaces.
 //!
 //! **Tables by calculation.** A step's table is its step crate's type,
 //! used from there (no umbrella re-exports them): [`GuessStep`],
@@ -49,8 +52,9 @@
 //! neutral singlet. The SCF reads them: an ion's SAD guess is rescaled to
 //! its electron count, and a multiplicity above 1 is ROHF, both in
 //! [`fb_pipeline_scf::add_scf`]. The overlap and the guess calculations
-//! read neither. The localization is a closed shell's alone, and refuses a
-//! multiplicity above 1 as `Unsupported`.
+//! read neither. The localization reads the SCF's occupations: an open
+//! shell's two spaces are localized each among itself, since ROHF's energy
+//! is invariant only under rotations within each.
 //!
 //! **Products are `.npy`.** A matrix is written as a float64 `.npy`,
 //! `n × n` in Fortran order ([`fb_io_npy::write_npy`]): the C++ tree's
@@ -94,13 +98,14 @@
 //! | `[scf]`, `ScfStep` and its keys | [`Config::scf`], [`fb_pipeline_scf::ScfStep`] itself, its range checked by [`read_config`] |
 //! | the guess rescaled by `N / Σ Z` for an ion | ported in [`fb_pipeline_scf::add_scf`] |
 //! | the SCF of an open shell, ROHF | [`Calculation::Rhf`] at a multiplicity above 1; `scf.json` carries `n_alpha` and `n_beta` |
-//! | the localization of an open shell, each occupied space among itself | not ported: refused `Unsupported` |
+//! | the localization of an open shell, each occupied space among itself: `pm_localize` over C's first `n_doubly = n_beta` columns, then the next `n_occ - n_doubly`, U block-diagonal, `info` summed | `add_pm_localize` over each space, the singly occupied columns copied out first by `singly occupied`, an empty space skipped; `localization order` sums the infos; U is not a product here, so no zero blocks are written |
+//! | `sort_localized_orbitals`: `<i\|F\|i>` the diagonal of `Uᵀ diag(ε_occ) U` by `gmmwich`, `merge_sort` per space (stable), `gather_columns` of C and U | `localization order` (CPU): `Σ_k U_ki² ε_k` from each space's U and ε, downloaded, a stable sort per space, written as a permutation matrix; `localization sort` (stream) applies it to the spaces' `C_local` by one gemm, a pure permutation; closed shell and open alike |
 //! | the RHF calculation, `ScfStep::run` over the steps before it | [`Calculation::Rhf`], [`plan`] composing the steps' tasks; `scf.json`, `c.npy`, `d.npy` its products |
 //! | `ScfStep::molden`, `scf.molden` | not ported |
 //! | the localization calculation, `[scf]` then `[localization]`, `LocalizationStep::run` | [`Calculation::Localization`], `calculation = "localization"`: the RHF's tasks and products, then [`add_pm_localize`]; `c_local.npy` and `localization.json` (L before and after, the sweeps) its own products |
 //! | `[localization]`'s `mode`, `max_sweeps`, `functional_tolerance`, `rotation_gain_threshold`, `exponent` | [`Config::localization`], [`LocalizationStep`] itself, its values checked by [`read_config`] |
 //! | `[localization] mode = "ibo"`, `livvo` | not ported: `"ibo"` refused `Unsupported`, `livvo` an unknown key |
-//! | `LocalizationStep::molden`, `localization.molden`, its orbitals sorted by `<i\|F\|i>` | not ported: `c_local.npy` holds the orbitals in the order the sweeps leave them |
+//! | `LocalizationStep::molden`, `localization.molden` | not ported |
 //! | the density the C++ pipeline names `d.npy` | [`Calculation::Guess`], which always writes `d.npy` |
 //! | `write_overlap_npy`, after a stream sync inside the step | [`add_write_npy`]: a download node and a write node that feeds nothing |
 //! | `[memory] max_device_mem_per_gpu`, `max_pinned_mem_per_gpu`, `read_byte_size`, each off when unset | [`MemoryCaps`], the same keys and size strings, each defaulted at its floor |
@@ -128,6 +133,7 @@
 #![forbid(unsafe_code)]
 
 mod admit;
+mod localize;
 mod plan;
 mod read;
 mod schema;

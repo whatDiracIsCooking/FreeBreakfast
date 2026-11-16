@@ -6,7 +6,7 @@ use fb_core_planner::{Dag, Planned};
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_integrals_one_electron_overlap::add_overlap;
-use fb_localization_pipek_mezey::{PmOptions, add_pm_localize};
+use fb_localization_pipek_mezey::PmOptions;
 use fb_molecule::Molecule;
 use fb_molecule_nuclei::add_nuclei;
 use fb_pipeline_eri::add_df_eri;
@@ -14,6 +14,7 @@ use fb_pipeline_guess::{add_guess_upload, add_loaded_guess, add_sad_guess};
 use fb_pipeline_scf::{add_scf, occupied_orbitals};
 use fb_recipes_orthogonalize::{ORTHOGONALIZE_EIGENVALUE_FLOOR, add_orthogonalize};
 
+use crate::localize::add_localization;
 use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write};
 
 /// Plan the run `config` asks for, on GPU worker 0: the geometry read, the
@@ -40,10 +41,13 @@ use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write}
 /// `d.npy`, and `download epsilon` (stream: ε into a pinned row) and
 /// `write scf.json` (CPU: ε beside the last build's energy, residual and
 /// count). For [`Calculation::Localization`]: all of that, then
-/// [`add_pm_localize`] of the first `n_occ` columns of C over S, with
-/// [`Config::localization`]'s options, [`add_write_npy`] of `C_local` to
-/// `c_local.npy`, `n × n_occ`, and `write localization.json` (CPU: the
-/// localization's heap row `[L before, L after, sweeps]`).
+/// [`add_pm_localize`] over S of each occupied space of C, the `n_beta`
+/// doubly occupied columns and the `n_alpha - n_beta` singly occupied,
+/// with [`Config::localization`]'s options, each space sorted by `<i|F|i>`
+/// (the C++ step's; `localize.rs`'s `add_localization` has the tasks),
+/// [`add_write_npy`] of `C_local` to `c_local.npy`, `n × n_alpha`, and
+/// `write localization.json` (CPU: the localization's heap row
+/// `[L before, L after, sweeps]`, summed over the spaces).
 ///
 /// # Errors
 /// The readers' refusals, the message led by the key that named the file
@@ -58,8 +62,7 @@ use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write}
 /// `[eri]`, an electron count of the wrong parity for the multiplicity
 /// ([`occupied_orbitals`]) and an option out of range
 /// ([`ScfStep::check`]), each `InvalidConfig`; for
-/// [`Calculation::Localization`], [`LocalizationStep::check`]'s refusals,
-/// and a multiplicity above 1, `Unsupported`;
+/// [`Calculation::Localization`], [`LocalizationStep::check`]'s refusals;
 /// `lwork`'s error;
 /// and the kernel libraries' load checks ([`add_records`], [`add_df_eri`],
 /// [`add_scf`], [`add_pm_localize`]). The guess's data is read when the
@@ -68,6 +71,7 @@ use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write}
 /// [`GuessStep::from`]: fb_pipeline_guess::GuessStep::from
 /// [`ScfStep::check`]: fb_pipeline_scf::ScfStep::check
 /// [`LocalizationStep::check`]: fb_localization_pipek_mezey::LocalizationStep::check
+/// [`add_pm_localize`]: fb_localization_pipek_mezey::add_pm_localize
 pub fn plan(
     config: &Config,
     lwork: impl FnOnce(usize) -> Result<usize>,
@@ -97,13 +101,6 @@ pub fn plan(
             // Refused before lwork can touch a device, as the RHF's options.
             if let Some(step) = &localization {
                 step.check()?;
-                if molecule.multiplicity() != 1 {
-                    return Err(Error::unsupported(format!(
-                        "[localization] is implemented for a closed shell only, and \
-                         [molecule] multiplicity is {}",
-                        molecule.multiplicity()
-                    )));
-                }
             }
             let rhf = plan_rhf(&mut dag, config, &molecule, &basis, lwork)?;
             add_write_npy(&mut dag, 0, rhf.c, [n, n], config.output.join("c.npy"));
@@ -124,10 +121,15 @@ pub fn plan(
                     rotation_gain_threshold: step.rotation_gain_threshold,
                     exponent: step.exponent,
                 };
-                // A closed shell, refused otherwise above.
                 let n_occ = rhf.occupied[0];
-                let (info, [c_local, _]) =
-                    add_pm_localize(&mut dag, 0, &options, &basis, n_occ, rhf.s, rhf.c)?;
+                let (info, c_local) = add_localization(
+                    &mut dag,
+                    0,
+                    &options,
+                    &basis,
+                    rhf.occupied,
+                    [rhf.s, rhf.c, rhf.eps],
+                )?;
                 add_write_npy(
                     &mut dag,
                     0,
