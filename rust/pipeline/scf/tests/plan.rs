@@ -276,9 +276,10 @@ fn the_occupations_follow_the_multiplicity() {
 /// cc-pVDZ-JKFIT: the run above with the guess rescaled to nine electrons,
 /// the guess's alpha and beta factors and their rests' K before the loop,
 /// with the spin densities and the identity; the body's two K, the spin
-/// Fock matrices, the Roothaan matrix and the open density; and the open
-/// orbitals made PySCF's after it. The plan text, the arena's size among
-/// it, is the committed golden.
+/// Fock matrices, the Roothaan matrix, the built densities kept and the
+/// open density; and after it the open orbitals canonicalized, PySCF's own
+/// Roothaan matrix and its orbitals, and the order test that publishes
+/// one. The plan text, the arena's size among it, is the committed golden.
 #[test]
 fn rohf_plan_golden() {
     let run = Run::new(

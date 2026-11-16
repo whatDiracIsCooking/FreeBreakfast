@@ -182,15 +182,20 @@ impl ScfStep {
 /// `Fb = H + J - Kb/2`, `E = tr(D H + Da Fa + Db Fb)/2 + E_nuc`) and
 /// **`roothaan fock`** (the Roothaan effective F, its open block
 /// `(Fa + 3 Fb)/4`, not PySCF's `(Fa + Fb)/2`; the C++ tree's issue #476),
-/// with `residual` and `energy and norm` on `(F, D)`; DIIS and the solve
+/// with `residual` and `energy and norm` on `(F, D)`, and **`built
+/// densities`**, Da and Db kept past the loop; DIIS and the solve
 /// unchanged; and in place of `density`, **`open density`**, which writes
 /// the factors, `Da = Ca Caᵀ`, `Db = Cb Cbᵀ` and `D = Da + Db`. After the
-/// loop, F's canonical orbitals with the open ones, columns
-/// `[n_beta, n_alpha)`, rotated among themselves to diagonalize
-/// `Fc = (Fa + Fb)/2` there: **`open block`**, the eigensolver on it, and
-/// **`publish open`**, so every published energy is PySCF's ROHF
-/// `mo_energy` by occupation class, the open ones in their columns, and D
-/// is `Da + Db`. A closed shell adds none of it.
+/// loop, the C++ `publish_open`: F's canonical orbitals with the open ones,
+/// columns `[n_beta, n_alpha)`, rotated among themselves to diagonalize
+/// `Fc = (Fa + Fb)/2` there (**`open block`**, the eigensolver on it,
+/// **`canonical open`**), whose energies are PySCF's ROHF `mo_energy` by
+/// occupation class; and the canonical orbitals of PySCF's own Roothaan
+/// matrix at the last build's densities (**`pyscf roothaan fock`** and the
+/// Roothaan step on it). When the first set's energies ascend (**`open
+/// order`**, on the CPU) the second is published, otherwise the first, its
+/// open energies in their columns, by **`publish open`**, with D their
+/// `Da + Db`. A closed shell adds none of it.
 ///
 /// # Errors
 /// At planning, before anything is added: `InvalidConfig` for an option
@@ -326,7 +331,7 @@ pub fn add_scf(
                 [guess, da, db],
                 [s, x, identity],
             );
-            (f, Some((fs, [da, db, cb])), e, scalars)
+            (f, Some((fs, [da, db, cb, identity])), e, scalars)
         }
         _ => {
             let (f, e, scalars) = add_fock(dag, worker, n, e_nuc, h, j, k, guess, s, x);
@@ -336,7 +341,7 @@ pub fn add_scf(
     let (f_star, singular) = diis.add_push(dag, f, e);
     let (_, c_next) = add_solve_fock(dag, worker, n, lwork, f_star, x);
     match spin_fock {
-        Some((_, [da, db, cb])) => add_open_density(
+        Some((_, [da, db, cb, _])) => add_open_density(
             dag,
             worker,
             n,
@@ -364,10 +369,20 @@ pub fn add_scf(
     );
 
     // After the loop: the converged F's own orbitals and their density, an
-    // open shell's open orbitals made PySCF's.
+    // open shell's made PySCF's.
     let (eps, c) = add_solve_fock(dag, worker, n, lwork, f, x);
     let published = match spin_fock {
-        Some((fs, _)) => add_publish_open(dag, worker, n, lwork, [n_alpha, n_beta], fs, eps, c),
+        Some((fs, [.., identity])) => add_publish_open(
+            dag,
+            worker,
+            n,
+            lwork,
+            [n_alpha, n_beta],
+            fs,
+            [s, x, identity],
+            eps,
+            c,
+        ),
         None => [eps, c, add_published_density(dag, worker, n, nocc, c)],
     };
     Ok((previous, published))
