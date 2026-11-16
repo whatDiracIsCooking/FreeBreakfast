@@ -1,20 +1,22 @@
 //! The open shell's nodes (ROHF, `n_alpha > n_beta`), what it changes in
 //! the C++ loop's steps 1, 2 and 6: the spin densities, the spin Fock
 //! matrices and their energy, the Roothaan effective Fock matrix, the
-//! densities from the occupied orbitals, and the published orbitals with
-//! the open ones made PySCF's.
+//! densities from the occupied orbitals, and the published orbitals,
+//! PySCF's.
 
-use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p};
+use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
-use fb_core_wwr::blas::{geam, gemm, gemv};
+use fb_core_wwr::blas::{dgmm, geam, gemm, gemv};
 use fb_core_wwr::copy;
 use fb_core_wwr::device_slice::{DeviceSlice, DeviceSliceMut, split_at_mut};
 use fb_recipes_diagonalize::add_diagonalize;
 use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N as OP_N, WWR_BLAS_OP_T as OP_T};
+use wwr_sys::wwr_blas_side_mode::WWR_BLAS_SIDE_RIGHT as RIGHT;
 
 use super::iteration::add_residual;
+use super::tasks::add_solve_fock;
 
 /// The C++ `kOpenBlockBetaWeight`: the open-open block of the Roothaan
 /// matrix the loop iterates on is `Fo = (1 - w) Fa + w Fb` at this `w`,
@@ -30,8 +32,8 @@ use super::iteration::add_residual;
 /// issue #476); `w = 1` inverts the open-virtual gap instead (NO,
 /// CH₂/cc-pVTZ). Over twenty open shells in PySCF, 0.7 and 0.8 reach every
 /// minimum; 3/4 is the middle. The minimum, the energy and the residual do
-/// not read the diagonal blocks, and the published orbitals are made
-/// PySCF's ([`add_publish_open`]).
+/// not read the diagonal blocks, and the published orbitals are PySCF's
+/// ([`add_publish_open`]).
 pub(crate) const OPEN_BLOCK_BETA_WEIGHT: f64 = 0.75;
 
 /// Add, before the loop, **`spin densities`** (stream): `Da = Db = D/2`
@@ -54,8 +56,9 @@ pub(crate) fn add_spin_densities(
 
 /// Add an open shell's Fock build from J and the two exchange matrices, its
 /// energy, its Roothaan matrix and its residual, and return
-/// `(F, [Fa, Fb], e, scalars)`, the rows [`add_fock`](crate::add_fock)
-/// returns with the spin Fock matrices beside them:
+/// `(F, [Fa, Fb, Da, Db], e, scalars)`, the rows
+/// [`add_fock`](crate::add_fock) returns with the spin Fock matrices and
+/// the spin densities they were built from beside them:
 ///
 /// ```text
 /// Fa = H + J - Ka/2        Fb = H + J - Kb/2
@@ -81,6 +84,11 @@ pub(crate) fn add_spin_densities(
 ///   symmetric bit for bit, which the residual's one product needs: the C++
 ///   `roothaan_fock`, PySCF's `get_roothaan_fock` but for the open-open
 ///   block. Made from the densities, so the first build needs no C.
+/// - **`built densities`** (stream): `da` and `db` copied into the output
+///   rows `"Da built"` and `"Db built"`, a d2d each, since the loop's last
+///   user overwrites the carried rows with the next iteration's. After the
+///   loop they are the densities the last F was built from, which PySCF's
+///   own Roothaan matrix is made from ([`add_publish_open`]).
 /// - `residual` and `energy and norm`, as [`add_fock`](crate::add_fock)
 ///   adds them, on `(F, D)`.
 #[allow(
@@ -101,7 +109,7 @@ pub(crate) fn add_open_fock(
     [s, x, identity]: [RowId<Device, f64>; 3],
 ) -> (
     RowId<Device, f64>,
-    [RowId<Device, f64>; 2],
+    [RowId<Device, f64>; 4],
     RowId<Device, f64>,
     RowId<Pinned, f64>,
 ) {
@@ -130,10 +138,13 @@ pub(crate) fn add_open_fock(
             s,
             identity,
             n,
+            w: OPEN_BLOCK_BETA_WEIGHT,
+            name: "F",
         },
     );
+    let [da_built, db_built] = dag.add_gpu("built densities", worker, BuiltDensities { da, db, n });
     let (e, scalars) = add_residual(dag, worker, n, e_nuc, f, fock.e_elec, [d, s, x]);
-    (f, [fock.fa, fock.fb], e, scalars)
+    (f, [fock.fa, fock.fb, da_built, db_built], e, scalars)
 }
 
 /// Add **`open density`** (stream) to the loop's body: C's first `n_alpha`
@@ -169,23 +180,49 @@ pub(crate) fn add_open_density(
 }
 
 /// Add, after the loop, the open shell's published orbitals and return
-/// `[ε, C, D]`, output rows of `n`, `n²` and `n²` doubles: C the canonical
-/// orbitals `c` of the converged Roothaan matrix as built, with its open
-/// ones, columns `[n_beta, n_alpha)`, rotated among themselves to
-/// diagonalize `Fc = (Fa + Fb)/2` there, and ε `eps` with those columns'
-/// energies Fc's eigenvalues: PySCF's ROHF `mo_energy`, every one, by
-/// occupation class, since the two matrices differ in the open block
-/// alone. `D = Ca Caᵀ + Cb Cbᵀ` from `c`, which the rotation leaves as it
-/// is. The C++ `canonicalize_open`. The tasks added are:
+/// `[ε, C, D]`, output rows of `n`, `n²` and `n²` doubles, every energy
+/// PySCF's ROHF `mo_energy`: the C++ `publish_open`, its two candidates
+/// computed and one kept on the device, since a plan has no branch.
+///
+/// The first candidate is the canonical orbitals `c` of the converged
+/// Roothaan matrix as built, with its open ones, columns
+/// `[n_beta, n_alpha)`, rotated among themselves to diagonalize
+/// `Fc = (Fa + Fb)/2` there, and ε `eps` with those columns' energies Fc's
+/// eigenvalues: PySCF's, every one, by occupation class, since the two
+/// matrices differ in the open block alone; its D is `Ca Caᵀ + Cb Cbᵀ`
+/// from `c`, which the rotation leaves as it is (the C++
+/// `canonicalize_open`). The second is the canonical orbitals of PySCF's
+/// own Roothaan matrix, `w = 1/2`, made from the densities `da` and `db`
+/// the last F was built from: its last Roothaan step, as the loop took it
+/// before the C++ tree's issue #476, closer than the iterated matrix's
+/// wherever Fc is a fair curvature. If the first candidate's energies
+/// ascend, PySCF's matrix orders the classes as aufbau does and the second
+/// is published; if not, aufbau on it would move a localized hole, and the
+/// first stands, its open energies in their columns. The tasks added are:
 ///
 /// - **`open block`** (stream): the open columns copied into the output
 ///   `"C open"` (n × m, `m = n_alpha - n_beta`), Fc, and `C_oᵀ Fc C_o`
 ///   into the output `"open block"` (m × m).
 /// - [`add_diagonalize`] on the block, `"open U"` and `"open w"`, at the
 ///   work `lwork` asked at `n`, which syevd at `m <= n` takes as enough.
-/// - **`publish open`** (stream): C copied into `"C"` with its open columns
-///   replaced by `C_o U`, ε into `"epsilon"` with theirs by `w`, and D by
-///   two gemms over `c`'s leading columns into `"D"`.
+/// - **`canonical open`** (stream): C copied into `"C canonical"` with its
+///   open columns replaced by `C_o U`, ε into `"epsilon canonical"` with
+///   theirs by `w`, and D by two gemms over `c`'s leading columns into
+///   `"D canonical"`.
+/// - **`pyscf roothaan fock`** (stream): the Roothaan matrix as the loop's
+///   `roothaan fock` makes it, the same calls, at `w = 1/2` into
+///   `"F PySCF"`; then [`add_solve_fock`] on it.
+/// - **`download epsilon canonical host`**, the planner's copy node, and
+///   **`open order`** (CPU): whether the first candidate's energies ascend,
+///   as the C++ `std::ranges::is_sorted`, logged at `debug`, written to the
+///   pinned row `"publish weights"` as `n` copies of `1 - p` then `n` of
+///   `p`, `p` 1 to publish the second candidate and 0 the first.
+/// - **`publish open`** (stream): the weights copied to the device; the
+///   second candidate's D by two gemms over its leading columns; then each
+///   of ε, C and D as `first · (1 - p) + second · p` by two dgmms and a
+///   geam, into `"epsilon"`, `"C"` and `"D"`. With `p` 0 or 1 that is the
+///   one candidate bit for bit: a product by 1 is exact, one by 0 is a
+///   zero, and a sum with a zero is exact.
 #[allow(
     clippy::too_many_arguments,
     reason = "the converged rows, each its own"
@@ -196,7 +233,8 @@ pub(crate) fn add_publish_open(
     n: usize,
     lwork: usize,
     [n_alpha, n_beta]: [usize; 2],
-    [fa, fb]: [RowId<Device, f64>; 2],
+    [fa, fb, da, db]: [RowId<Device, f64>; 4],
+    [s, x, identity]: [RowId<Device, f64>; 3],
     eps: RowId<Device, f64>,
     c: RowId<Device, f64>,
 ) -> [RowId<Device, f64>; 3] {
@@ -214,10 +252,10 @@ pub(crate) fn add_publish_open(
         },
     );
     let (u, w) = add_diagonalize(dag, worker, "open", m, lwork, block.block);
-    let out = dag.add_gpu(
-        "publish open",
+    let first = dag.add_gpu(
+        "canonical open",
         worker,
-        PublishOpen {
+        CanonicalOpen {
             c,
             eps,
             c_open: block.c_open,
@@ -228,7 +266,110 @@ pub(crate) fn add_publish_open(
             n_beta,
         },
     );
+    let RoothaanRows { f: pyscf_fock, .. } = dag.add_gpu(
+        "pyscf roothaan fock",
+        worker,
+        RoothaanFock {
+            fa,
+            fb,
+            da,
+            db,
+            s,
+            identity,
+            n,
+            w: 0.5,
+            name: "F PySCF",
+        },
+    );
+    let (eps_second, c_second) = add_solve_fock(dag, worker, n, lwork, pyscf_fock, x);
+    let eps_host = dag.download(worker, first.eps, "epsilon canonical host", n);
+    let weights = dag.add_cpu("open order", worker, OpenOrder { eps: eps_host, n });
+    let PublishOpenRows { out, .. } = dag.add_gpu(
+        "publish open",
+        worker,
+        PublishOpen {
+            first: [first.eps, first.c, first.d],
+            second: [eps_second, c_second],
+            weights,
+            n,
+            n_alpha,
+            n_beta,
+        },
+    );
     [out.eps, out.c, out.d]
+}
+
+/// GPU: the densities a Fock build was made from, kept past the loop's
+/// overwrite of the carried rows.
+struct BuiltDensities {
+    da: RowId<Device, f64>,
+    db: RowId<Device, f64>,
+    n: usize,
+}
+
+impl GpuTask for BuiltDensities {
+    type Rows = [RowId<Device, f64>; 2];
+
+    fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
+        device.read(self.da);
+        device.read(self.db);
+        let n2 = self.n * self.n;
+        [device.output("Da built", n2), device.output("Db built", n2)]
+    }
+
+    fn dims(&self) -> Vec<(&'static str, usize)> {
+        vec![("n", self.n)]
+    }
+
+    fn run(
+        &self,
+        &[da_built, db_built]: &Self::Rows,
+        device: &Bufs<'_, Device>,
+        _: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
+    ) -> Status {
+        // The second copy follows the first on the stream.
+        copy::d2d(&mut device.take_mut(da_built), &device.get(self.da), worker)?;
+        copy::d2d(&mut device.take_mut(db_built), &device.get(self.db), worker)
+    }
+}
+
+/// CPU: whether the first candidate's energies ascend, as the selection's
+/// weights.
+struct OpenOrder {
+    eps: RowId<Pinned, f64>,
+    n: usize,
+}
+
+impl CpuTask for OpenOrder {
+    type Rows = RowId<Pinned, f64>;
+
+    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) -> Self::Rows {
+        host.read(self.eps);
+        host.output("publish weights", 2 * self.n)
+    }
+
+    fn dims(&self) -> Vec<(&'static str, usize)> {
+        vec![("n", self.n)]
+    }
+
+    fn run(&self, row: &Self::Rows, host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
+        // The C++ std::ranges::is_sorted: no energy below the one before.
+        let ascend = host.get(self.eps).windows(2).all(|e| e[0] <= e[1]);
+        if ascend {
+            log::debug!("scf: the canonical energies ascend; PySCF's Roothaan orbitals published");
+        } else {
+            log::debug!(
+                "scf: the canonical energies do not ascend; the iterated matrix's orbitals \
+                 published"
+            );
+        }
+        let p = f64::from(u8::from(ascend));
+        let (first, second) = host.take_mut(*row).split_at_mut(self.n);
+        first.fill(1.0 - p);
+        second.fill(p);
+        Ok(())
+    }
 }
 
 /// GPU: `Da = D/2`, `Db = Da`.
@@ -391,7 +532,9 @@ impl GpuTask for OpenFock {
     }
 }
 
-/// GPU: the Roothaan effective Fock matrix of Fa and Fb.
+/// GPU: the Roothaan effective Fock matrix of Fa and Fb, its open block
+/// `(1 - w) Fa + w Fb`, into the output row `name`: the loop's at
+/// [`OPEN_BLOCK_BETA_WEIGHT`], PySCF's own at `w = 1/2`.
 struct RoothaanFock {
     fa: RowId<Device, f64>,
     fb: RowId<Device, f64>,
@@ -400,6 +543,8 @@ struct RoothaanFock {
     s: RowId<Device, f64>,
     identity: RowId<Device, f64>,
     n: usize,
+    w: f64,
+    name: &'static str,
 }
 
 /// The Roothaan task's rows: F, and its seven `n²` scratch matrices.
@@ -431,7 +576,7 @@ impl GpuTask for RoothaanFock {
             pv: device.scratch("Pv", n2),
             a: device.scratch("A", n2),
             work: device.scratch("roothaan work", n2),
-            f: device.output("F", n2),
+            f: device.output(self.name, n2),
         }
     }
 
@@ -471,7 +616,7 @@ impl GpuTask for RoothaanFock {
             rows.f,
         ]
         .map(|r| device.take_mut(r));
-        let w = OPEN_BLOCK_BETA_WEIGHT;
+        let w = self.w;
         // Each call follows the one before on the handle's stream, so a
         // matrix written is read by the calls after it.
         geam(blas, OP_N, OP_N, n, n, 0.5, &fa, n, 0.5, &fb, n, &mut fc, n)?;
@@ -682,7 +827,7 @@ impl GpuTask for OpenBlock {
 
 /// GPU: C and ε with the open columns rotated by U and their energies
 /// replaced by w, and `D = Ca Caᵀ + Cb Cbᵀ`.
-struct PublishOpen {
+struct CanonicalOpen {
     c: RowId<Device, f64>,
     eps: RowId<Device, f64>,
     c_open: RowId<Device, f64>,
@@ -693,7 +838,7 @@ struct PublishOpen {
     n_beta: usize,
 }
 
-/// The published rows.
+/// A candidate's rows, or the published ones.
 #[derive(Clone, Copy)]
 struct PublishedRows {
     eps: RowId<Device, f64>,
@@ -701,7 +846,7 @@ struct PublishedRows {
     d: RowId<Device, f64>,
 }
 
-impl GpuTask for PublishOpen {
+impl GpuTask for CanonicalOpen {
     type Rows = PublishedRows;
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> PublishedRows {
@@ -710,9 +855,9 @@ impl GpuTask for PublishOpen {
         }
         let n = self.n;
         PublishedRows {
-            eps: device.output("epsilon", n),
-            c: device.output("C", n * n),
-            d: device.output("D", n * n),
+            eps: device.output("epsilon canonical", n),
+            c: device.output("C canonical", n * n),
+            d: device.output("D canonical", n * n),
         }
     }
 
@@ -774,4 +919,165 @@ impl GpuTask for PublishOpen {
         }
         Ok(())
     }
+}
+
+/// GPU: one of two candidates `[ε, C, D]` published by the weights, the
+/// second's D made from its C first.
+struct PublishOpen {
+    first: [RowId<Device, f64>; 3],
+    second: [RowId<Device, f64>; 2],
+    weights: RowId<Pinned, f64>,
+    n: usize,
+    n_alpha: usize,
+    n_beta: usize,
+}
+
+/// The selection's rows: the published ones, and the scratch weights, the
+/// second candidate's D and the two weighted terms.
+#[derive(Clone, Copy)]
+struct PublishOpenRows {
+    out: PublishedRows,
+    weights: RowId<Device, f64>,
+    d_second: RowId<Device, f64>,
+    terms: [RowId<Device, f64>; 2],
+}
+
+impl GpuTask for PublishOpen {
+    type Rows = PublishOpenRows;
+
+    fn layout(
+        &self,
+        device: &mut Layout<'_, Device>,
+        host: &mut Layout<'_, Pinned>,
+    ) -> PublishOpenRows {
+        for row in self.first.into_iter().chain(self.second) {
+            device.read(row);
+        }
+        host.read(self.weights);
+        let n = self.n;
+        PublishOpenRows {
+            weights: device.scratch("publish weights", 2 * n),
+            d_second: device.scratch("D PySCF", n * n),
+            terms: [
+                device.scratch("first term", n * n),
+                device.scratch("second term", n * n),
+            ],
+            out: PublishedRows {
+                eps: device.output("epsilon", n),
+                c: device.output("C", n * n),
+                d: device.output("D", n * n),
+            },
+        }
+    }
+
+    fn dims(&self) -> Vec<(&'static str, usize)> {
+        vec![
+            ("n", self.n),
+            ("n_alpha", self.n_alpha),
+            ("n_beta", self.n_beta),
+        ]
+    }
+
+    fn run(
+        &self,
+        rows: &PublishOpenRows,
+        device: &Bufs<'_, Device>,
+        host: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
+    ) -> Status {
+        let blas = worker.blas();
+        // add_scf checked that n² fits an i32, and n_beta < n_alpha <= n.
+        let n = self.n as i32;
+        let [eps_first, c_first, d_first] = self.first.map(|r| device.get(r));
+        let [eps_second, c_second] = self.second.map(|r| device.get(r));
+        let [
+            mut weights,
+            mut d_second,
+            term_a,
+            term_b,
+            mut eps,
+            mut c,
+            mut d,
+        ] = [
+            rows.weights,
+            rows.d_second,
+            rows.terms[0],
+            rows.terms[1],
+            rows.out.eps,
+            rows.out.c,
+            rows.out.d,
+        ]
+        .map(|r| device.take_mut(r));
+        // The weights as `guess factor` takes its floor: a stream node does
+        // not read a pinned row on the host, so they are copied on this
+        // stream and read there. Each call follows the one before on it.
+        memcpy_p2d(&mut weights, host, self.weights, worker)?;
+        for (cols, beta) in [(self.n_alpha as i32, 0.0), (self.n_beta as i32, 1.0)] {
+            gemm(
+                blas,
+                OP_N,
+                OP_T,
+                n,
+                n,
+                cols,
+                1.0,
+                &c_second,
+                n,
+                &c_second,
+                n,
+                beta,
+                &mut d_second,
+                n,
+            )?;
+        }
+        let (keep, take) = split_at_mut(&mut weights, self.n);
+        let mut terms = (term_a, term_b);
+        // ε as an n × 1 matrix, each weight's first copy its one scale.
+        select(
+            worker,
+            1,
+            (&eps_first, &eps_second),
+            (&keep, &take),
+            &mut terms,
+            &mut eps,
+        )?;
+        select(
+            worker,
+            n,
+            (&c_first, &c_second),
+            (&keep, &take),
+            &mut terms,
+            &mut c,
+        )?;
+        select(
+            worker,
+            n,
+            (&d_first, &d_second),
+            (&keep, &take),
+            &mut terms,
+            &mut d,
+        )
+    }
+}
+
+/// `out = first · diag(keep) + second · diag(take)` for `n × cols` matrices
+/// of leading dimension `n`, `n` the weights' length, through two scratch
+/// terms: two dgmms and a geam on the worker's handle.
+fn select<W: DeviceSlice<f64>>(
+    worker: &DeviceStream,
+    cols: i32,
+    (first, second): (&impl DeviceSlice<f64>, &impl DeviceSlice<f64>),
+    (keep, take): (&W, &W),
+    (term_a, term_b): &mut (impl DeviceSliceMut<f64>, impl DeviceSliceMut<f64>),
+    out: &mut impl DeviceSliceMut<f64>,
+) -> Status {
+    let blas = worker.blas();
+    // The caller's weights are n long, and n² fits an i32 (add_scf).
+    let n = keep.len() as i32;
+    // Each call follows the one before on the handle's stream.
+    dgmm(blas, RIGHT, n, cols, first, n, keep, 1, term_a, n)?;
+    dgmm(blas, RIGHT, n, cols, second, n, take, 1, term_b, n)?;
+    geam(
+        blas, OP_N, OP_N, n, cols, 1.0, &*term_a, n, 1.0, &*term_b, n, out, n,
+    )
 }
