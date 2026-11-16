@@ -27,7 +27,7 @@ pub enum Access {
 /// Who a row belongs to, which is what fixes its lifetime
 /// (`docs/memory.md`, "The table").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Owner {
+pub enum Owner {
     /// A node's scratch: its one user is the node.
     Task,
     /// A node's output: written by its producer, read by later nodes.
@@ -36,7 +36,9 @@ pub(super) enum Owner {
     Worker,
 }
 
-pub(super) struct RowInfo {
+/// A row of a [`Table`] as declared: its name, owner, size and users
+/// ([`Table::rows`]), read-only.
+pub struct RowInfo {
     pub(super) name: String,
     pub(super) owner: Owner,
     /// In elements.
@@ -49,6 +51,27 @@ pub(super) struct RowInfo {
 }
 
 impl RowInfo {
+    /// Its name, as its task declared it.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Who it belongs to.
+    pub fn owner(&self) -> Owner {
+        self.owner
+    }
+
+    /// Its size in bytes: one copy's, for a row of a counted loop's body.
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Its users, `(position, access)`, in the order declared: the
+    /// producer first, at the lowest position. Empty for a worker row.
+    pub fn users(&self) -> &[(usize, Access)] {
+        &self.users
+    }
+
     pub(super) fn life(&self) -> Life {
         match self.owner {
             Owner::Worker => Life::Plan,
@@ -647,6 +670,11 @@ impl<K: Kind> Table<K> {
         self.rows.len()
     }
 
+    /// The rows, in declaration order.
+    pub fn rows(&self) -> &[RowInfo] {
+        &self.rows
+    }
+
     /// `row`'s offset in the block, in bytes.
     ///
     /// # Panics
@@ -794,40 +822,55 @@ impl<K: Kind> Table<K> {
             .iter()
             .flat_map(|r| r.users.iter().map(|&(p, _)| p))
             .collect();
-        // What the block holds outside the regions, then each region.
-        let held = self
+        // The largest bytes, and on a tie the lowest position.
+        let position = positions
+            .into_iter()
+            .max_by_key(|&p| (self.live_at(p), Reverse(p)));
+        let bytes = match position {
+            Some(p) => self.live_at(p),
+            None => self.live(None).map(|(_, bytes)| bytes).sum(),
+        };
+        Peak {
+            position,
+            bytes,
+            rows: self.live(position).collect(),
+        }
+    }
+
+    /// The bytes the block holds live at `position`, as [`peak`](Table::peak)
+    /// counts them: every row outside a loop's body whose life holds
+    /// `position`, every worker row, and each outermost loop's region whole
+    /// at each of its positions.
+    pub fn live_at(&self, position: usize) -> usize {
+        self.live(Some(position)).map(|(_, bytes)| bytes).sum()
+    }
+
+    /// What the block holds live at `position`, by name and bytes: the rows
+    /// outside every loop's body in declaration order, then each outermost
+    /// loop's region, named `loop first-last`. At `None`, the worker rows
+    /// alone.
+    fn live(&self, position: Option<usize>) -> impl Iterator<Item = (&str, usize)> {
+        let rows = self
             .rows
             .iter()
             .zip(&self.lives)
             .zip(&self.body)
             .filter(|(_, b)| b.is_none())
-            .map(|((r, &life), _)| (r.name.as_str(), r.bytes, life))
-            .chain(self.regions.iter().filter(|g| g.parent.is_none()).map(|g| {
-                let life = Life::Span {
-                    first: *g.positions.start(),
-                    last: *g.positions.end(),
-                };
-                (g.name.as_str(), g.bytes, life)
-            }));
-        let live_at = move |pos: Option<usize>| {
-            held.clone().filter(move |&(_, _, life)| match (life, pos) {
+            .map(|((r, &life), _)| (r.name.as_str(), r.bytes, life));
+        let regions = self.regions.iter().filter(|g| g.parent.is_none()).map(|g| {
+            let life = Life::Span {
+                first: *g.positions.start(),
+                last: *g.positions.end(),
+            };
+            (g.name.as_str(), g.bytes, life)
+        });
+        rows.chain(regions)
+            .filter(move |&(_, _, life)| match (life, position) {
                 (Life::Plan, _) => true,
                 (Life::Span { first, last }, Some(p)) => first <= p && p <= last,
                 (Life::Span { .. }, None) => false,
             })
-        };
-        let bytes_at = |pos| live_at(pos).map(|(_, bytes, _)| bytes).sum::<usize>();
-        // The largest bytes, and on a tie the lowest position.
-        let position = positions
-            .into_iter()
-            .max_by_key(|&p| (bytes_at(Some(p)), Reverse(p)));
-        Peak {
-            position,
-            bytes: bytes_at(position),
-            rows: live_at(position)
-                .map(|(name, bytes, _)| (name, bytes))
-                .collect(),
-        }
+            .map(|(name, bytes, _)| (name, bytes))
     }
 }
 

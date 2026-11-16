@@ -172,13 +172,36 @@ fn memory_example() {
 /// The timing record `timing` read back, parsed as the timing record's
 /// type: every task of `config`'s plan timed, in rank order and then
 /// iteration; a loop's body node and decision once per iteration, 0 to its
-/// loop's count; every other node once; each of `named` among them. Returns
-/// the record. The plan is laid out at a stand-in syevd work: the tasks do
-/// not depend on it.
+/// loop's count; every other node once; each of `named` among them. Beside
+/// it, the plan the binary wrote: `plan.txt` naming the plan's task count,
+/// and `plan.dot` and `timing.dot` declaring every task, the second with
+/// the run's wall time and every task's time on it. Returns the record.
+/// The plan is laid out at a stand-in syevd work: the tasks do not depend
+/// on it.
 fn check_timing(config: &Path, timing: &Path, named: &[&str]) -> Record {
     let planned =
         fb_pipeline_config::plan(&fb_pipeline_config::read_config(config).unwrap(), |_| Ok(1))
             .unwrap();
+    let dir = timing.parent().unwrap();
+    let text = std::fs::read_to_string(dir.join("plan.txt")).unwrap();
+    assert!(
+        text.starts_with(&format!("plan: {} tasks", planned.len())),
+        "{text}"
+    );
+    let (plan_dot, timing_dot) = (
+        std::fs::read_to_string(dir.join("plan.dot")).unwrap(),
+        std::fs::read_to_string(dir.join("timing.dot")).unwrap(),
+    );
+    for pos in 0..planned.len() {
+        let head = format!("n{pos} [label=");
+        assert!(plan_dot.contains(&head), "plan.dot declares task {pos}");
+        let line = timing_dot
+            .lines()
+            .find(|l| l.contains(&head))
+            .unwrap_or_else(|| panic!("timing.dot declares task {pos}"));
+        assert!(line.contains("host "), "task {pos} is timed: {line}");
+    }
+    assert!(timing_dot.contains("run: wall "), "{timing_dot}");
     let text = std::fs::read_to_string(timing).unwrap();
     let record: Record = serde_json::from_str(&text).expect("timing.json parses");
     record.result.as_ref().unwrap();
@@ -555,7 +578,7 @@ fn localization_example() {
 
 /// A config the binary runs and the run fails: exit code `kind`'s, no
 /// panic, the log naming every one of `named`, and `timing.json` written
-/// with the error.
+/// with the error, `timing.dot` naming it in its label.
 fn failed(name: &str, config: &str, xyz: &str, kind: ErrorKind, named: &[&str]) {
     let cwd = workdir(name);
     std::fs::write(cwd.join("m.xyz"), xyz).unwrap();
@@ -579,6 +602,11 @@ fn failed(name: &str, config: &str, xyz: &str, kind: ErrorKind, named: &[&str]) 
     let text = std::fs::read_to_string(cwd.join("fbf_output/timing.json")).unwrap();
     let record: Record = serde_json::from_str(&text).expect("timing.json parses");
     assert_eq!(record.result.expect_err(name).kind, kind, "{name}");
+    let dot = std::fs::read_to_string(cwd.join("fbf_output/timing.dot")).unwrap();
+    assert!(
+        dot.contains(&format!("failed: {kind:?}: ")),
+        "{name}: {dot}"
+    );
 }
 
 /// A DF-RHF config of water in STO-3G over cc-pVDZ-JKFIT, `m.xyz` its
@@ -623,10 +651,39 @@ fn a_singular_metric_exits_numerical() {
     );
 }
 
-/// A config the binary refuses, written into a working directory of its
-/// own beside an XYZ file, run, and checked: exit code `kind`'s, no panic,
-/// and the log naming every one of `named`.
+/// A config the binary refuses before planning, written into a working
+/// directory of its own beside an XYZ file, run, and checked: exit code
+/// `kind`'s, no panic, the log naming every one of `named`, and no output
+/// directory made.
 fn refused(name: &str, config: &str, kind: ErrorKind, named: &[&str]) {
+    let cwd = refuse(name, config, kind, named);
+    assert!(
+        !cwd.join("fbf_output").exists(),
+        "{name}: refused before the output directory is made"
+    );
+}
+
+/// A config whose plan the binary's admission refuses, checked as
+/// [`refused`] but for the output directory: it holds the plan, `plan.txt`
+/// and `plan.dot`, written before admission so a refused plan can be read,
+/// and no `timing.json`, since nothing ran.
+fn refused_at_admission(name: &str, config: &str, kind: ErrorKind, named: &[&str]) {
+    let cwd = refuse(name, config, kind, named);
+    let dir = cwd.join("fbf_output");
+    let text = std::fs::read_to_string(dir.join("plan.txt")).expect("plan.txt is written");
+    assert!(text.starts_with("plan: "), "{name}: {text}");
+    let dot = std::fs::read_to_string(dir.join("plan.dot")).expect("plan.dot is written");
+    assert!(dot.starts_with("digraph plan {"), "{name}: {dot}");
+    assert!(
+        !dir.join("timing.json").exists() && !dir.join("timing.dot").exists(),
+        "{name}: refused before the run"
+    );
+}
+
+/// A refused config run in a working directory of its own beside an XYZ
+/// file: exit code `kind`'s, no panic, the log naming every one of
+/// `named`. Returns the working directory.
+fn refuse(name: &str, config: &str, kind: ErrorKind, named: &[&str]) -> PathBuf {
     let cwd = workdir(name);
     std::fs::copy(example("water.xyz"), cwd.join("water.xyz")).unwrap();
     let path = cwd.join("config.toml");
@@ -646,10 +703,7 @@ fn refused(name: &str, config: &str, kind: ErrorKind, named: &[&str]) {
     for n in named {
         assert!(stdout.contains(n), "{name}: names '{n}': {stdout}");
     }
-    assert!(
-        !cwd.join("fbf_output").exists(),
-        "{name}: refused before the output directory is made"
-    );
+    cwd
 }
 
 /// An unknown key: `InvalidConfig`, naming the key, the file and its line.
@@ -761,10 +815,10 @@ fn a_cap_under_its_floor_is_refused() {
 
 /// A pinned cap past the node's `MemAvailable`: the binary's admission
 /// refuses it, `InvalidConfig`, naming the key and `MemAvailable`, after
-/// planning and before the output directory is made or a block allocated.
+/// planning and writing the plan, and before a block is allocated.
 #[test]
 fn a_pinned_cap_past_the_node_is_refused() {
-    refused(
+    refused_at_admission(
         "refused_pinned_past_node",
         &capped("max_pinned_mem_per_gpu = \"8000TiB\""),
         ErrorKind::InvalidConfig,

@@ -1,0 +1,35 @@
+digraph plan {
+  label="plan: 9 tasks, GPU workers: 1\nblocks: gpu0 device 37.4 KiB\n5 orderings with no row, implied by other paths, not drawn";
+  labelloc=t;
+  fontname="monospace";
+  node [fontname="monospace", style=filled, fillcolor=white];
+  edge [fontname="monospace", fontsize=10];
+  n0 [label="0 overlap\ngpu0 stream\ndevice: out 4.50 KiB live 4.50 KiB", shape=box];
+  n1 [label="1 core\ngpu0 stream\ndevice: out 4.50 KiB live 9.00 KiB", shape=box];
+  n2 [label="2 orthogonalizer\ngpu0 stream\ndevice: out 4.50 KiB live 13.5 KiB", shape=box];
+  n3 [label="3 guess\ngpu0 stream\ndevice: out 4.50 KiB live 18.0 KiB", shape=box];
+  subgraph cluster_loop_4_8 {
+    label="loop 4-8: at most 50 iterations"; style=rounded; color=gray50;
+    n4 [label="4 fock\ngpu0 stream\ndevice: out 4.50 KiB scratch 4.50 KiB live 37.1 KiB (peak)", shape=box, penwidth=2];
+    n5 [label="5 residual\ngpu0 stream\ndevice: out 4.50 KiB live 37.1 KiB", shape=box];
+    n6 [label="6 diagonalize\ngpu0 stream\ndevice: out 4.50 KiB scratch 10.1 KiB live 37.1 KiB", shape=box];
+    n7 [label="7 density\ngpu0 stream\ndevice: live 37.1 KiB", shape=box];
+    n8 [label="8 converged\ncpu\ndevice: live 37.1 KiB", shape=diamond];
+  }
+  n0 -> n2 [label="S 4.50 KiB"];
+  n1 -> n3 [label="H 4.50 KiB"];
+  n2 -> n3 [label="X 4.50 KiB"];
+  n1 -> n4 [label="H 4.50 KiB"];
+  n3 -> n4 [label="D 4.50 KiB"];
+  n0 -> n5 [label="S 4.50 KiB"];
+  n2 -> n5 [label="X 4.50 KiB"];
+  n3 -> n5 [label="D 4.50 KiB"];
+  n4 -> n5 [label="F 4.50 KiB"];
+  n2 -> n6 [label="X 4.50 KiB"];
+  n4 -> n6 [label="F 4.50 KiB"];
+  n5 -> n6 [style=dashed, color=gray50];
+  n3 -> n7 [label="D 4.50 KiB"];
+  n6 -> n7 [label="C 4.50 KiB"];
+  n7 -> n8 [style=dashed, color=gray50];
+  n8 -> n4 [style=dotted, constraint=false, label="next iteration"];
+}

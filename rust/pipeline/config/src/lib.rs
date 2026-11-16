@@ -2,10 +2,13 @@
 //! config, read from TOML, and the plan it asks for. The binary is this
 //! crate's `src/main.rs`: `free-breakfast <config.toml>` reads the config
 //! ([`read_config`]), plans it ([`plan`], syevd's work asked of device 0
-//! when the calculation diagonalizes), admits every worker's tables against
-//! the `[memory]` caps ([`admit_plan`]), makes the output directory, runs
-//! the plan once on device 0, and writes `timing.json`, the run's
-//! [`Record`](fb_core_thread_pool::Record), beside the products. Its `main`
+//! when the calculation diagonalizes), makes the output directory and
+//! writes the plan into it, `plan.txt` its text and `plan.dot` its
+//! [`Graph`](fb_core_planner::Graph), admits every worker's tables against
+//! the `[memory]` caps ([`admit_plan`]), runs the plan once on device 0,
+//! and writes `timing.json`, the run's
+//! [`Record`](fb_core_thread_pool::Record), and `timing.dot`, the graph
+//! with the run's times on it, beside the products. Its `main`
 //! is the one place an error is logged, exiting with
 //! [`ErrorKind::exit_code`] (`docs/diagnostics.md`, "The one boundary").
 //!
@@ -114,7 +117,7 @@
 //! | nothing: host data too large to pin goes to pageable memory, outside every count | `[memory] max_host_mem` ([`MemoryCaps::max_host_mem`]): the plan's heap block, admitted against it, and with the pinned blocks against the host's available memory ([`fb_core_arena::admit_host`]) |
 //! | `-o <output_dir>`, default `fbf_output` | [`Config::output`], the same default |
 //! | `-i <input_dir>` | nothing: paths are relative to the config file |
-//! | `main`, `print_products` | `src/main.rs`: the error logged once, the exit code, `timing.json` |
+//! | `main`, `print_products` | `src/main.rs`: the error logged once, the exit code, `plan.txt`, `plan.dot`, `timing.json`, `timing.dot` |
 //!
 //! [`ErrorKind::exit_code`]: fb_core_error_handling::ErrorKind::exit_code
 //! [`GuessStep`]: fb_pipeline_guess::GuessStep

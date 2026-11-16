@@ -28,8 +28,9 @@ pub struct Config {
     /// `calculation`: what the run computes and writes. Required; no
     /// default.
     pub calculation: Calculation,
-    /// `output`: the directory the products and `timing.json` are written
-    /// into, made if missing. A path, relative to the working directory.
+    /// `output`: the directory the products, the plan (`plan.txt`,
+    /// `plan.dot`) and the run's times (`timing.json`, `timing.dot`) are
+    /// written into, made if missing. A path, relative to the working directory.
     /// Default `"fbf_output"`.
     #[serde(default = "default_output")]
     pub output: PathBuf,

@@ -546,7 +546,8 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
 /// then every non-empty table, a loop's region and body in it: each
 /// worker's, then the heap's. A GPU
 /// task's lane reads `stream` on a worker of one lane and `stream<l>` on a
-/// worker of several; any other task's, `cpu`.
+/// worker of several; any other task's, `cpu`. Its [`graph`](Plan::graph)
+/// is the same plan drawn, as Graphviz.
 pub struct Plan<'a, H: StagingKind = Pinned, S = DeviceStream> {
     pub(super) tables: Vec<(Table<Device>, Table<H>)>,
     /// The plan's heap table, one for every worker.

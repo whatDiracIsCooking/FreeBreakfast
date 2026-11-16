@@ -228,7 +228,9 @@ work proceeds while the write runs
 ([`programming_model.md`](programming_model.md), "CPU workers"). A dump
 switched on is a different plan, not a branch inside
 a task. The timing record beside the products is the orchestrator's
-([`diagnostics.md`](diagnostics.md), "The timing record").
+([`diagnostics.md`](diagnostics.md), "The timing record"), and the plan
+and its graph the binary's ([`diagnostics.md`](diagnostics.md), "The plan
+beside the record").
 
 **Recorded.** The write nodes and their edges in the DAG; the pinned buffer
 in the producer's layout.
