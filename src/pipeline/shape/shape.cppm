@@ -38,9 +38,10 @@ struct PlanShape {
 /// @brief Place @p calc's bases and fill its @ref FootprintDimensions, on
 ///        @p res's device, before @p calc runs.
 ///
-/// The molecule is the Molecule step's, or under an `[optimize]` the start
-/// its chain walks from (the atoms its loaded final.xyz must hold, which are
-/// all the dimensions read). The bases are placed as the BasisSet and Eri
+/// The geometry is the Xyz step's file, at the Molecule step's charge and
+/// multiplicity, or under an `[optimize]` the start its chain walks from (the
+/// atoms its loaded final.xyz must hold, which are all the dimensions read),
+/// parsed on the host: no Molecule is constructed. The bases are placed as the BasisSet and Eri
 /// steps place them, from the top-level steps or, failing those, an
 /// `[optimize]`'s or `[hessian]`'s chain, which the config copies from the
 /// same tables. The counts:
@@ -67,10 +68,10 @@ struct PlanShape {
 ///   nao and the electron count. Of several, the one of most orbitals, then
 ///   of nelecas nearest half filling.
 ///
-/// Nothing is run: the Molecule's nuclei and the tables are freed on return.
+/// Nothing is run: the tables are freed on return.
 ///
-/// @return The shape (empty dims for a plan with no molecule); the Molecule
-///         or BasisSet step's error, or the aux basis's as the Eri step
+/// @return The shape (empty dims for a plan with no molecule); the Xyz
+///         step's error, the basis's as the BasisSet step reports it, or the aux basis's as the Eri step
 ///         reports it; InvalidConfig for electrons that cannot be at the
 ///         molecule's multiplicity, or a malformed AVAS label or one naming no
 ///         MINAO AO; a CIS step's RIS basis's error (ris_basis); or the

@@ -17,12 +17,29 @@ import free_breakfast.pipeline.step;
 namespace free_breakfast {
 
 /// @brief Refuse a key of the `[step]` table not in @p keys: a misspelt option
-/// is an error, not a default.
+/// is an error, not a default. The `[memory]` table's, which names no step.
 [[nodiscard]] Status check_keys(const toml::table &table, std::string_view step,
                                 std::initializer_list<std::string_view> keys) {
   for (const auto &[key, value] : table) {
     if (std::ranges::find(keys, key.str()) == keys.end()) {
       return err_config("[{}] has no option '{}'", step, key.str());
+    }
+  }
+  return {};
+}
+
+/// @brief Refuse a key of step `S`'s table that no step of that table reads:
+/// the table's legal keys are the union of its steps' `kKeys` across the
+/// registry, and the error names the table.
+template <class S>
+[[nodiscard]] Status check_keys(const toml::table &table) {
+  constexpr std::string_view kTable = kStepTable<S>;
+  const auto known = [&]<class... Ss>(const Pipeline<Ss...> * /*registry*/, std::string_view key) {
+    return ((kStepTable<Ss> == kTable && std::ranges::contains(kStepKeys<Ss>, key)) || ...);
+  };
+  for (const auto &[key, value] : table) {
+    if (!known(static_cast<const Calculation *>(nullptr), key.str())) {
+      return err_config("[{}] has no option '{}'", kTable, key.str());
     }
   }
   return {};
@@ -322,22 +339,26 @@ template <class T>
   return read_key(table, step, "active", base_dir, out.active);
 }
 
-/// @brief Step `S` from its table. A filled-in step is read from an empty
-/// one, so a required option it lacks is reported as for a written table.
-/// Every output a step can write is written, into @p output_dir under the
-/// step's own name: a pipeline holds one of each step, so no two collide.
+/// @brief Step `S` from its table, `kStepTable<S>`. A filled-in step is read
+/// from its table if the config has one, and from an empty one if not, so a
+/// required option it lacks is reported as for a written table. Errors name
+/// the table. Every output a step can write is written, into @p output_dir
+/// under the step's own name, its `kName`: a pipeline holds one of each step,
+/// so no two collide.
 template <class S>
 [[nodiscard]] Result<S> read_step(const toml::table &table, const std::filesystem::path &base_dir,
                                   const std::filesystem::path &output_dir) {
-  constexpr std::string_view kStep = S::kName;
+  constexpr std::string_view kStep = kStepTable<S>;
   S step;
-  if constexpr (std::same_as<S, MoleculeStep>) {
-    FBF_TRY(check_keys(table, kStep, {"xyz", "charge", "multiplicity"}));
+  if constexpr (std::same_as<S, XyzStep>) {
+    FBF_TRY(check_keys<S>(table));
     FBF_TRY(read_required_key(table, kStep, "xyz", base_dir, step.xyz));
+  } else if constexpr (std::same_as<S, MoleculeStep>) {
+    FBF_TRY(check_keys<S>(table));
     FBF_TRY(read_key(table, kStep, "charge", base_dir, step.charge));
     FBF_TRY(read_key(table, kStep, "multiplicity", base_dir, step.multiplicity));
   } else if constexpr (std::same_as<S, BasisSetStep>) {
-    FBF_TRY(check_keys(table, kStep, {"basis"}));
+    FBF_TRY(check_keys<S>(table));
     FBF_TRY(read_required_key(table, kStep, "basis", base_dir, step.basis));
     // 'basis' is a compiled-in set's name or a path to a BSE JSON file, and
     // only a path means anything relative to the input directory. Joining a name
@@ -346,7 +367,7 @@ template <class S>
       step.basis = (base_dir / step.basis).string();
     }
   } else if constexpr (std::same_as<S, EriStep>) {
-    FBF_TRY(check_keys(table, kStep, {"mode", "aux_basis"}));
+    FBF_TRY(check_keys<S>(table));
     std::string mode = "integral_direct";
     FBF_TRY(read_key(table, kStep, "mode", base_dir, mode));
     if (mode == "density_fitting") {
@@ -371,17 +392,17 @@ template <class S>
       }
     }
   } else if constexpr (std::same_as<S, SphericalTransformStep> || std::same_as<S, OverlapStep>) {
-    FBF_TRY(check_keys(table, kStep, {"write_npy"}));
+    FBF_TRY(check_keys<S>(table));
     bool write_npy = false;
     FBF_TRY(read_key(table, kStep, "write_npy", base_dir, write_npy));
     if (write_npy) {
-      step.npy = output_dir / std::format("{}.npy", kStep);
+      step.npy = output_dir / std::format("{}.npy", S::kName);
     }
   } else if constexpr (std::same_as<S, OrthogonalizerStep>) {
-    FBF_TRY(check_keys(table, kStep, {"eigenvalue_floor"}));
+    FBF_TRY(check_keys<S>(table));
     FBF_TRY(read_key(table, kStep, "eigenvalue_floor", base_dir, step.eigenvalue_floor));
   } else if constexpr (std::same_as<S, GuessStep>) {
-    FBF_TRY(check_keys(table, kStep, {"type"}));
+    FBF_TRY(check_keys<S>(table));
     std::string type = "sad";
     FBF_TRY(read_key(table, kStep, "type", base_dir, type));
     if (type != "sad") {
@@ -389,19 +410,15 @@ template <class S>
     }
     step.type = GuessType::Sad;
   } else if constexpr (std::same_as<S, ScfStep>) {
-    FBF_TRY(check_keys(table, kStep,
-                       {"max_iterations", "energy_tolerance", "commutator_tolerance",
-                        "diis_history", "fock_rebuild_interval"}));
+    FBF_TRY(check_keys<S>(table));
     FBF_TRY(read_key(table, kStep, "max_iterations", base_dir, step.max_iterations));
     FBF_TRY(read_key(table, kStep, "energy_tolerance", base_dir, step.energy_tolerance));
     FBF_TRY(read_key(table, kStep, "commutator_tolerance", base_dir, step.commutator_tolerance));
     FBF_TRY(read_key(table, kStep, "diis_history", base_dir, step.diis_history));
     FBF_TRY(read_key(table, kStep, "fock_rebuild_interval", base_dir, step.fock_rebuild_interval));
-    step.molden = output_dir / std::format("{}.molden", kStep);
+    step.molden = output_dir / std::format("{}.molden", S::kName);
   } else if constexpr (std::same_as<S, LocalizationStep>) {
-    FBF_TRY(check_keys(table, kStep,
-                       {"mode", "max_sweeps", "functional_tolerance", "rotation_gain_threshold",
-                        "exponent", "livvo"}));
+    FBF_TRY(check_keys<S>(table));
     std::string mode = "pipek_mezey";
     FBF_TRY(read_key(table, kStep, "mode", base_dir, mode));
     if (mode != "pipek_mezey" && mode != "ibo") {
@@ -425,22 +442,17 @@ template <class S>
     }
     options.exponent = static_cast<localization::PmExponent>(exponent);
     FBF_TRY(read_key(table, kStep, "livvo", base_dir, step.livvo));
-    step.molden = output_dir / std::format("{}.molden", kStep);
+    step.molden = output_dir / std::format("{}.molden", S::kName);
     if (step.livvo) {
-      step.livvo_molden = output_dir / std::format("{}_livvo.molden", kStep);
+      step.livvo_molden = output_dir / std::format("{}_livvo.molden", S::kName);
     }
   } else if constexpr (std::same_as<S, CasciStep>) {
-    FBF_TRY(check_keys(table, kStep,
-                       {"ncas", "nelecas", "nroots", "active", "avas", "avas_threshold",
-                        "avas_max_ncas", "orbitals"}));
+    FBF_TRY(check_keys<S>(table));
     FBF_TRY(read_active_space(table, kStep, base_dir, step));
     FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
-    step.molden = output_dir / std::format("{}.molden", kStep);
+    step.molden = output_dir / std::format("{}.molden", S::kName);
   } else if constexpr (std::same_as<S, CasscfStep>) {
-    FBF_TRY(check_keys(table, kStep,
-                       {"ncas", "nelecas", "nroots", "active", "avas", "avas_threshold",
-                        "avas_max_ncas", "weights", "conv_tol", "conv_tol_grad", "max_cycle",
-                        "orbitals", "ci", "write_npy"}));
+    FBF_TRY(check_keys<S>(table));
     FBF_TRY(read_active_space(table, kStep, base_dir, step));
     FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
     FBF_TRY(read_key(table, kStep, "weights", base_dir, step.weights));
@@ -448,12 +460,12 @@ template <class S>
     FBF_TRY(read_key(table, kStep, "conv_tol_grad", base_dir, step.conv_tol_grad));
     FBF_TRY(read_key(table, kStep, "max_cycle", base_dir, step.max_cycle));
     FBF_TRY(read_key(table, kStep, "ci", base_dir, step.ci));
-    step.molden = output_dir / std::format("{}.molden", kStep);
+    step.molden = output_dir / std::format("{}.molden", S::kName);
     bool write_npy = false;
     FBF_TRY(read_key(table, kStep, "write_npy", base_dir, write_npy));
     if (write_npy) {
-      step.orbitals_npy = output_dir / std::format("{}_orbitals.npy", kStep);
-      step.ci_npy = output_dir / std::format("{}_ci.npy", kStep);
+      step.orbitals_npy = output_dir / std::format("{}_orbitals.npy", S::kName);
+      step.ci_npy = output_dir / std::format("{}_ci.npy", S::kName);
     }
     // Unlike the active space's ranges these need nothing of the molecule, so
     // they are refused here rather than when mcscf::solve runs.
@@ -480,13 +492,10 @@ template <class S>
   } else if constexpr (std::same_as<S, FciStep>) {
     // Whether the space fits is the device's to say, so FciStep::run checks
     // it when the step runs.
-    FBF_TRY(check_keys(table, kStep, {"nroots"}));
+    FBF_TRY(check_keys<S>(table));
     FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
   } else if constexpr (std::same_as<S, CisStep>) {
-    FBF_TRY(check_keys(table, kStep,
-                       {"n_states", "spin", "method", "theta_j", "theta_k", "residual_tolerance",
-                        "max_iterations", "max_subspace", "cluster_gap", "ris", "ris_theta",
-                        "ris_shells", "ris_exchange", "ris_k_max_inner_iters", "ris_k_inner_tol"}));
+    FBF_TRY(check_keys<S>(table));
     cis::Options &options = step.options;
     FBF_TRY(read_key(table, kStep, "n_states", base_dir, options.n_states));
     std::string spin = "singlet";
@@ -594,23 +603,23 @@ template <class S>
   } else if constexpr (std::same_as<S, GradientStep>) {
     // No options: whether the ERIs and the SCF are ones it takes is
     // GradientStep::run's to say, once they exist.
-    FBF_TRY(check_keys(table, kStep, {}));
-    step.json_path = output_dir / std::format("{}.json", kStep);
+    FBF_TRY(check_keys<S>(table));
+    step.json_path = output_dir / std::format("{}.json", S::kName);
   } else if constexpr (std::same_as<S, CasscfGradientStep>) {
     // Whether the root is one of the CASSCF's, and the ERIs ones it takes,
     // is CasscfGradientStep::run's to say, once they exist; the ERI mode is
     // refused here too, by check_density_fitted_only.
-    FBF_TRY(check_keys(table, kStep, {"root"}));
+    FBF_TRY(check_keys<S>(table));
     FBF_TRY(read_key(table, kStep, "root", base_dir, step.root));
     if (step.root < 0) {
       return err_config("[{}] root is {}, below 0", kStep, step.root);
     }
-    step.json_path = output_dir / std::format("{}.json", kStep);
+    step.json_path = output_dir / std::format("{}.json", S::kName);
   } else if constexpr (std::same_as<S, Nevpt2Step>) {
     // The CASSCF's root count QD needs is another table's, refused once they
     // are planned, by check_nevpt2; Nevpt2Step::run refuses it again.
     // So does whether frozen_core fits the CASSCF's core.
-    FBF_TRY(check_keys(table, kStep, {"quasi_degenerate", "frozen_core"}));
+    FBF_TRY(check_keys<S>(table));
     FBF_TRY(read_key(table, kStep, "quasi_degenerate", base_dir, step.quasi_degenerate));
     FBF_TRY(read_frozen_core(table, kStep, step.frozen_core));
   } else if constexpr (std::same_as<S, Nevpt2GradientStep>) {
@@ -618,8 +627,7 @@ template <class S>
     // tables', refused once they are planned, by check_nevpt2_gradient and
     // check_density_fitted_only; Nevpt2GradientStep::run refuses them again.
     // So is whether a QD state is one of H_eff's, by check_nevpt2_gradient.
-    FBF_TRY(
-        check_keys(table, kStep, {"root", "variant", "quasi_degenerate", "state", "frozen_core"}));
+    FBF_TRY(check_keys<S>(table));
     // [nevpt2]'s key, read the same way; whether it fits the CASSCF's core
     // is Nevpt2GradientStep::run's to say.
     FBF_TRY(read_frozen_core(table, kStep, step.frozen_core));
@@ -647,12 +655,12 @@ template <class S>
       return err_config("[{}] has no variant '{}' (known: 'sc', 'pc')", kStep, variant);
     }
     step.variant = variant == "pc" ? Nevpt2Variant::Pc : Nevpt2Variant::Sc;
-    step.json_path = output_dir / std::format("{}.json", kStep);
+    step.json_path = output_dir / std::format("{}.json", S::kName);
   } else if constexpr (std::same_as<S, NacStep>) {
     // Whether the CASSCF has the pairs' roots, and the ERI mode, are other
     // tables', refused once they are planned, by check_nac and
     // check_density_fitted_only; NacStep::run refuses them again.
-    FBF_TRY(check_keys(table, kStep, {"pairs", "mult_ediff", "use_etfs"}));
+    FBF_TRY(check_keys<S>(table));
     FBF_TRY(read_key(table, kStep, "pairs", base_dir, step.pairs));
     if (table.contains("pairs") && step.pairs.empty()) {
       return err_config("[{}] pairs is empty: leave it out for every pair", kStep);
@@ -664,7 +672,7 @@ template <class S>
     }
     FBF_TRY(read_key(table, kStep, "mult_ediff", base_dir, step.options.mult_ediff));
     FBF_TRY(read_key(table, kStep, "use_etfs", base_dir, step.options.use_etfs));
-    step.json_path = output_dir / std::format("{}.json", kStep);
+    step.json_path = output_dir / std::format("{}.json", S::kName);
   } else if constexpr (std::same_as<S, Nevpt2NacStep>) {
     // [nac]'s keys, and [nevpt2_gradient]'s variant. Whether H_eff has the
     // pairs' states (one per CASSCF root), the molecule's spin and the ERI
@@ -679,7 +687,7 @@ template <class S>
                         "[nevpt2_gradient] take it",
                         kStep);
     }
-    FBF_TRY(check_keys(table, kStep, {"pairs", "variant", "mult_ediff", "use_etfs"}));
+    FBF_TRY(check_keys<S>(table));
     FBF_TRY(read_key(table, kStep, "pairs", base_dir, step.pairs));
     if (table.contains("pairs") && step.pairs.empty()) {
       return err_config("[{}] pairs is empty: leave it out for every pair", kStep);
@@ -697,13 +705,11 @@ template <class S>
     step.variant = variant == "pc" ? Nevpt2Variant::Pc : Nevpt2Variant::Sc;
     FBF_TRY(read_key(table, kStep, "mult_ediff", base_dir, step.options.mult_ediff));
     FBF_TRY(read_key(table, kStep, "use_etfs", base_dir, step.options.use_etfs));
-    step.json_path = output_dir / std::format("{}.json", kStep);
+    step.json_path = output_dir / std::format("{}.json", S::kName);
   } else if constexpr (std::same_as<S, OptimizeStep>) {
     // The chain it reruns is the other tables', copied in by parse_config,
     // which can see them; a table here holds only the optimizer's own keys.
-    FBF_TRY(check_keys(table, kStep,
-                       {"max_force", "rms_force", "max_displacement", "rms_displacement",
-                        "max_steps", "meci", "max_gap", "constraints"}));
+    FBF_TRY(check_keys<S>(table));
     geometry::Options &options = step.options;
     FBF_TRY(read_key(table, kStep, "max_force", base_dir, options.max_force));
     FBF_TRY(read_key(table, kStep, "rms_force", base_dir, options.rms_force));
@@ -744,14 +750,13 @@ template <class S>
                         "crossing: leave one of them out",
                         kStep);
     }
-    step.trajectory = output_dir / std::format("{}.xyz", kStep);
+    step.trajectory = output_dir / std::format("{}.xyz", S::kName);
     step.final_xyz = output_dir / "final.xyz";
-    step.history = output_dir / std::format("{}.json", kStep);
+    step.history = output_dir / std::format("{}.json", S::kName);
   } else if constexpr (std::same_as<S, HessianStep>) {
     // As [optimize]'s, the chain it runs is copied in by parse_config, and
     // whether its [eri] is one the method takes is plan_hessian's to say.
-    FBF_TRY(check_keys(table, kStep,
-                       {"method", "displacement", "ladder", "pairs", "coordinates", "pc_floor"}));
+    FBF_TRY(check_keys<S>(table));
     std::string method = "analytic";
     FBF_TRY(read_key(table, kStep, "method", base_dir, method));
     if (method != "analytic" && method != "numerical") {
@@ -805,14 +810,11 @@ template <class S>
                         "metric's largest eigenvalue, 0 the round-off cut",
                         kStep);
     }
-    step.json_path = output_dir / std::format("{}.json", kStep);
+    step.json_path = output_dir / std::format("{}.json", S::kName);
   } else if constexpr (std::same_as<S, IrcStep>) {
     // As [optimize]'s, the chain it reruns is copied in by plan_irc, and the
     // Hessian it starts from is [hessian]'s, computed or loaded.
-    FBF_TRY(check_keys(table, kStep,
-                       {"step_size", "max_points", "max_force", "sphere_gradient",
-                        "sphere_displacement", "max_sphere_iterations", "direction",
-                        "allow_multiple_imaginary"}));
+    FBF_TRY(check_keys<S>(table));
     geometry::IrcOptions &options = step.options;
     FBF_TRY(read_key(table, kStep, "step_size", base_dir, options.step_size));
     FBF_TRY(read_key(table, kStep, "max_points", base_dir, options.max_points));
@@ -847,19 +849,21 @@ template <class S>
                                                : IrcDirection::Both;
     FBF_TRY(read_key(table, kStep, "allow_multiple_imaginary", base_dir,
                      step.allow_multiple_imaginary));
-    step.forward_trajectory = output_dir / std::format("{}_forward.xyz", kStep);
-    step.backward_trajectory = output_dir / std::format("{}_backward.xyz", kStep);
-    step.history = output_dir / std::format("{}.json", kStep);
+    step.forward_trajectory = output_dir / std::format("{}_forward.xyz", S::kName);
+    step.backward_trajectory = output_dir / std::format("{}_backward.xyz", S::kName);
+    step.history = output_dir / std::format("{}.json", S::kName);
   } else {
     // A step with options needs its own branch above, or every key in its
     // table would be refused.
     static_assert(std::is_empty_v<S>, "read_step has no branch for this step's options");
-    FBF_TRY(check_keys(table, kStep, {}));
+    FBF_TRY(check_keys<S>(table));
   }
   return step;
 }
 
-/// @brief The step whose `kName` is @p name, read from @p node.
+/// @brief The head of the table @p name -- the step whose `kName` is the
+/// table's name -- read from @p node. A written table requests its head only;
+/// the table's other steps are planned by fill-in, as every producer is.
 [[nodiscard]] Result<Calculation::Step> read_named_step(std::string_view name,
                                                         const toml::node &node,
                                                         const std::filesystem::path &base_dir,
@@ -876,10 +880,8 @@ template <class S>
                                  FBF_TRY(read_step<S>(*table, base_dir, output_dir))};
       }
       // 'from' loads the product instead, and the step's options configure a
-      // run that never happens, so none may stand beside it. The molecule is
-      // loaded only from the geometry [optimize] writes, which parse_config
-      // plans itself.
-      if constexpr (LoadableStep<S> && !std::same_as<S, MoleculeStep>) {
+      // run that never happens, so none may stand beside it.
+      if constexpr (LoadableStep<S>) {
         for (const auto &[key, value] : *table) {
           if (key.str() != "from") {
             return err_config("[{}] loads 'from' a file, so takes no option '{}'", name, key.str());
@@ -892,10 +894,11 @@ template <class S>
         return err_config("[{}] cannot be loaded 'from' a file", name);
       }
     };
-    // The Load<S> alternatives have no kName: only the steps are named.
+    // The Load<S> alternatives have no kName: only the steps are named, and
+    // a table's name matches only its head.
     const auto match = [&]<class X>() {
       if constexpr (requires { X::kName; }) {
-        if (name == X::kName) {
+        if (kStepTable<X> == X::kName && name == X::kName) {
           out = read.template operator()<X>();
         }
       }
@@ -910,17 +913,18 @@ template <class S>
 }
 
 /// @brief Chain step `S` of the step named @p rerun_by, which reruns it at
-/// every geometry: read from its own table in @p doc as the pipeline reads
-/// it, or from an empty one if the config has none. A table loading its
-/// product 'from' a file is refused.
+/// every geometry: read from its table in @p doc as the pipeline reads it, or
+/// from an empty one if the config has none. A table loading its product
+/// 'from' a file is refused.
 template <class S>
 [[nodiscard]] Status read_chain_step(const toml::table &doc, std::string_view rerun_by,
                                      const std::filesystem::path &input_dir,
                                      const std::filesystem::path &output_dir, S &out) {
-  const toml::table *table = doc[S::kName].as_table();
+  constexpr std::string_view kTable = kStepTable<S>;
+  const toml::table *table = doc[kTable].as_table();
   if (table != nullptr && table->contains("from")) {
     return err_config("[{}] reruns [{}] at every geometry, so it cannot be loaded 'from' a file",
-                      rerun_by, S::kName);
+                      rerun_by, kTable);
   }
   out = FBF_TRY(read_step<S>(table != nullptr ? *table : toml::table{}, input_dir, output_dir));
   return {};
@@ -1047,9 +1051,9 @@ template <class S>
 }
 
 /// @brief With an `[optimize]` among @p steps: copy into it the chain it
-/// reruns, each step by read_chain_step, and plan the molecule as loaded
-/// from the final.xyz it writes, so every step reading the molecule runs at
-/// the optimum. With a `[casscf_gradient]`
+/// reruns, each step by read_chain_step, the start's XyzStep beside its
+/// MoleculeStep, and plan the geometry as loaded from the final.xyz it
+/// writes, so every step reading the molecule runs at the optimum. With a `[casscf_gradient]`
 /// or a `[nevpt2_gradient]` in @p doc the chain ends in `[casscf]` and it,
 /// both copied in too; two of those and `[gradient]` are refused, since the
 /// optimized energy is one of theirs. With `meci` the chain ends in
@@ -1070,6 +1074,7 @@ template <class S>
   const auto chain = [&]<class S>(S &out) {
     return read_chain_step(doc, OptimizeStep::kName, input_dir, output_dir, out);
   };
+  FBF_TRY(chain(step.xyz));
   FBF_TRY(chain(step.molecule));
   FBF_TRY(chain(step.basis_set));
   FBF_TRY(chain(step.eri));
@@ -1116,14 +1121,10 @@ template <class S>
   }
   // Read before the steps move, step among them.
   const bool qd_meci = step.meci && step.nevpt2_gradient;
-  Calculation::Step load{Load<MoleculeStep>{step.final_xyz}};
-  const auto molecule = std::ranges::find_if(
-      steps, [](const Calculation::Step &s) { return std::holds_alternative<MoleculeStep>(s); });
-  if (molecule != steps.end()) {
-    *molecule = std::move(load);
-  } else {
-    steps.push_back(std::move(load));
-  }
+  // The geometry under the molecule is the optimum's; the MoleculeStep
+  // itself is [molecule]'s, at its charge and multiplicity, which the
+  // chain's are too.
+  steps.emplace_back(Load<XyzStep>{step.final_xyz});
   if (qd_meci) {
     std::erase_if(steps, [](const Calculation::Step &s) {
       return std::holds_alternative<Nevpt2GradientStep>(s);
@@ -1256,15 +1257,14 @@ template <class S>
 /// single-state CASSCF does not have; with `quasi_degenerate`, over a
 /// `[casscf]` of fewer than two roots, or a `state` past them: here, before
 /// the SCF and the CASSCF it would follow have run. Across tables, as
-/// check_scf_against_eri; under an `[optimize]` the molecule is its chain's,
-/// the one the start is read from.
+/// check_scf_against_eri. Under an `[optimize]` the molecule is still
+/// `[molecule]`'s, and its chain's copy of it is the same table's.
 [[nodiscard]] Status check_nevpt2_gradient(const Calculation &calc) {
   const auto &step = calc.step<Nevpt2GradientStep>();
   if (!step) {
     return {};
   }
   constexpr std::string_view kStep = Nevpt2GradientStep::kName;
-  const auto &optimize = calc.step<OptimizeStep>();
   // The CASSCF is filled in when not written, and is never loaded.
   const auto &casscf = calc.step<CasscfStep>();
   if (step->quasi_degenerate) {
@@ -1288,13 +1288,10 @@ template <class S>
                         step->root, CasscfStep::kName);
     }
   }
-  const auto &molecule = calc.step<MoleculeStep>();
-  const MoleculeStep *const start =
-      molecule ? &*molecule : (optimize ? &optimize->molecule : nullptr);
-  if (start != nullptr && start->multiplicity != 1) {
+  if (const auto &molecule = calc.step<MoleculeStep>(); molecule && molecule->multiplicity != 1) {
     return err_unsupported("[{}] is implemented for a closed-shell singlet only, and [{}] "
                            "multiplicity is {}",
-                           kStep, MoleculeStep::kName, start->multiplicity);
+                           kStep, MoleculeStep::kName, molecule->multiplicity);
   }
   return {};
 }
@@ -1382,8 +1379,8 @@ template <class S>
   // basis read from disk, a CAS start's .npy files, and each product loaded
   // 'from' a file.
   std::vector<std::filesystem::path> inputs;
-  if (const auto &molecule = calc.step<MoleculeStep>()) {
-    inputs.push_back(molecule->xyz);
+  if (const auto &xyz = calc.step<XyzStep>()) {
+    inputs.push_back(xyz->xyz);
   }
   if (const auto &basis = calc.step<BasisSetStep>(); basis && !is_builtin_basis(basis->basis)) {
     inputs.emplace_back(basis->basis);
@@ -1403,7 +1400,7 @@ template <class S>
       }
     }
   }
-  // A loaded molecule is [optimize]'s final.xyz, an output of this run, read
+  // A loaded geometry is [optimize]'s final.xyz, an output of this run, read
   // after it is written; the start it optimizes from is an input. An [irc]'s
   // chain reads its basis and aux basis from the same tables.
   const auto chain_inputs = [&](const OptimizeStep &chain) {
@@ -1415,7 +1412,7 @@ template <class S>
     }
   };
   if (const auto &optimize = calc.step<OptimizeStep>()) {
-    inputs.push_back(optimize->molecule.xyz);
+    inputs.push_back(optimize->xyz.xyz);
     chain_inputs(*optimize);
   }
   if (const auto &irc = calc.step<IrcStep>()) {
@@ -1423,7 +1420,7 @@ template <class S>
   }
   [&]<class... Ss>(const Pipeline<Ss...> &) {
     const auto add_from = [&]<class S>() {
-      if constexpr (LoadableStep<S> && !std::same_as<S, MoleculeStep>) {
+      if constexpr (LoadableStep<S> && !std::same_as<S, XyzStep>) {
         if (const auto &from = calc.from<S>()) {
           inputs.push_back(*from);
         }
@@ -1544,9 +1541,13 @@ template <class S>
   FBF_TRY(plan_optimize(steps, doc, input_dir, output_dir));
   FBF_TRY(plan_hessian(steps, doc, input_dir, output_dir));
   FBF_TRY(plan_irc(steps, doc, input_dir, output_dir));
+  // A filled-in step is read from its table: a written one's, when it is not
+  // the head the table requested, or an empty one.
   const toml::table empty;
-  Calculation calc{FBF_TRY(Calculation::create(
-      std::move(steps), [&]<class S>() { return read_step<S>(empty, input_dir, output_dir); }))};
+  Calculation calc{FBF_TRY(Calculation::create(std::move(steps), [&]<class S>() {
+    const toml::table *table = doc[kStepTable<S>].as_table();
+    return read_step<S>(table != nullptr ? *table : empty, input_dir, output_dir);
+  }))};
   if (const toml::node *memory = doc.get("memory")) {
     FBF_TRY(read_memory(*memory, calc));
   }

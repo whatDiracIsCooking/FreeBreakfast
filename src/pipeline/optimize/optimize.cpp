@@ -35,7 +35,7 @@ import free_breakfast.response.zvector; // rotating_pairs
 namespace free_breakfast {
 
 // The chain's root at one geometry: the molecule from atoms in memory, where
-// MoleculeStep reads a file. Not MoleculeStep itself, whose load reads this
+// MoleculeStep reads XyzStep's. Not those two, whose XyzStep's load reads this
 // step's product: a registry holding it must hold OptimizeStep too.
 struct TrialGeometryStep {
   static constexpr std::string_view kName = "molecule";
@@ -1061,8 +1061,7 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
   // CASSCF.
   FBF_TRY(check_chain(*this, kName));
   DeviceResources &res = node.device(0);
-  const Molecule start =
-      FBF_TRY(read_xyz(res, molecule.xyz, molecule.charge, molecule.multiplicity));
+  const Molecule start(res, FBF_TRY(read_xyz(xyz.xyz)), molecule.charge, molecule.multiplicity);
   FBF_TRY(check_constraint_atoms(start.atoms().size()));
 
   if (!meci) {

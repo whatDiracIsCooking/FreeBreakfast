@@ -109,6 +109,7 @@ struct Plan {
   fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   std::optional<fb::Calculation> calc;
   std::optional<fb::PlanShape> shape;
+  std::optional<fb::GeometryOutput> geometry;
   std::optional<fb::MoleculeOutput> molecule;
   std::optional<fb::BasisSetOutput> basis;
   std::optional<fb::SphericalTransformOutput> transform;
@@ -141,10 +142,18 @@ struct Plan {
 
   [[nodiscard]] const fb::FootprintDimensions &dims() const { return shape->dims; }
 
+  // The geometry, on the host, and the molecule over it, on inputs.
+  void read_molecule() {
+    geometry.emplace(planned<fb::XyzStep>(*calc).run(fb::View<>{}).value());
+    molecule.emplace(planned<fb::MoleculeStep>(*calc)
+                         .run(fb::View<fb::GeometryOutput>{*geometry}, inputs)
+                         .value());
+  }
+
   // The chain up to (and not including) the Scf, on inputs, in the planner's
   // order.
   void run_chain() {
-    molecule.emplace(planned<fb::MoleculeStep>(*calc).run(fb::View<>{}, inputs).value());
+    read_molecule();
     basis.emplace(
         planned<fb::BasisSetStep>(*calc).run(fb::View<fb::MoleculeOutput>{*molecule}).value());
     transform.emplace(planned<fb::SphericalTransformStep>(*calc)
@@ -276,10 +285,15 @@ TEST(StepFootprint, SetupSteps) {
   plan.run_chain();
   const fb::FootprintDimensions &dims = plan.dims();
 
+  // The geometry: host-shaped.
+  const auto xyz = planned<fb::XyzStep>(*plan.calc);
+  EXPECT_EQ(xyz.footprint(dims), fb::MemoryFootprint{});
+  expect_step_footprint(xyz.footprint(dims), 0,
+                        [&](fb::DeviceResources &) { expect_ran(xyz.run(fb::View<>{})); });
   // Z and the positions.
   const auto molecule = planned<fb::MoleculeStep>(*plan.calc);
   expect_step_footprint(molecule.footprint(dims), 2, [&](fb::DeviceResources &res) {
-    expect_ran(molecule.run(fb::View<>{}, res));
+    expect_ran(molecule.run(fb::View<fb::GeometryOutput>{*plan.geometry}, res));
   });
   // Host-shaped.
   const auto basis = planned<fb::BasisSetStep>(*plan.calc);
@@ -2155,8 +2169,7 @@ void expect_analytic_hessian_footprint(const std::string_view basis, const std::
                                        const std::string_view tables = "[hessian]\n") {
   Plan plan(
       System{.xyz = xyz, .basis = basis, .mode = fb::EriMode::DensityFitting, .tables = tables});
-  plan.molecule.emplace(
-      planned<fb::MoleculeStep>(*plan.calc).run(fb::View<>{}, plan.inputs).value());
+  plan.read_molecule();
   const auto hessian = planned<fb::HessianStep>(*plan.calc);
   ASSERT_EQ(hessian.method, fb::HessianMethod::Analytic);
   const fb::MemoryFootprint fp = hessian.footprint(plan.dims());
@@ -3025,8 +3038,7 @@ void expect_nevpt2_hessian_step_footprint(const std::string_view xyz, const std:
                                           const std::string_view reason) {
   Plan plan(
       System{.xyz = xyz, .basis = basis, .mode = fb::EriMode::DensityFitting, .tables = tables});
-  plan.molecule.emplace(
-      planned<fb::MoleculeStep>(*plan.calc).run(fb::View<>{}, plan.inputs).value());
+  plan.read_molecule();
   const auto hessian = planned<fb::HessianStep>(*plan.calc);
   ASSERT_EQ(hessian.method, fb::HessianMethod::Analytic);
   ASSERT_TRUE(hessian.nevpt2_gradient.has_value());
@@ -3201,8 +3213,7 @@ void expect_seminumerical_hessian_footprint(const std::string_view tables, const
   const std::string xyz = skew_formaldehyde_xyz();
   Plan plan(
       System{.xyz = xyz, .basis = "sto-3g", .mode = fb::EriMode::DensityFitting, .tables = tables});
-  plan.molecule.emplace(
-      planned<fb::MoleculeStep>(*plan.calc).run(fb::View<>{}, plan.inputs).value());
+  plan.read_molecule();
   const auto hessian = planned<fb::HessianStep>(*plan.calc);
   ASSERT_EQ(hessian.method, fb::HessianMethod::Numerical);
   ASSERT_FALSE(hessian.ladder);

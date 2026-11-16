@@ -84,7 +84,9 @@ TEST(PipelineCalculation, MatchesTheStepsCalledByHand) {
 
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
-  auto molecule = fb::MoleculeStep{.xyz = dir / "water.xyz"}.run(fb::View<>{}, res);
+  auto molecule = fb::MoleculeStep{}.run(
+      fb::View<fb::GeometryOutput>{fb::XyzStep{.xyz = dir / "water.xyz"}.run(fb::View<>{}).value()},
+      res);
   ASSERT_TRUE(molecule.has_value()) << molecule.error().message;
   auto basis = fb::BasisSetStep{.basis = (dir / "basis.json").string()}.run(
       fb::View<fb::MoleculeOutput>{*molecule});

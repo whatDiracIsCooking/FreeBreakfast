@@ -1,5 +1,5 @@
-# molecule and core::resources are PUBLIC: the reader's signatures name
-# Molecule and DeviceResources.
+# atom is PUBLIC: the reader's signatures name Atom. Host-only: no device
+# library is linked.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.io.xyz
@@ -12,8 +12,7 @@ free_breakfast_add_cxx_module_library(
   LINK_PUBLIC
   free_breakfast::core::types
   free_breakfast::core::error_handling
-  free_breakfast::core::resources
-  free_breakfast::molecule
+  free_breakfast::atom
   LINK_PRIVATE
   free_breakfast::core::constants
   free_breakfast::io::base

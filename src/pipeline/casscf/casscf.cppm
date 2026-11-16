@@ -100,6 +100,12 @@ struct CasscfOutput {
 struct CasscfStep : ActiveSpaceSelection {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "casscf";
+  /// @brief The keys of its table it reads, each an option the front end
+  /// reads into it.
+  static constexpr std::array<std::string_view, 14> kKeys{
+      "ncas",           "nelecas",       "nroots",  "active",   "avas",
+      "avas_threshold", "avas_max_ncas", "weights", "conv_tol", "conv_tol_grad",
+      "max_cycle",      "orbitals",      "ci",      "write_npy"};
 
   /// @brief The roots averaged, of the molecule's spin, at least 1.
   int32_t nroots = 1;

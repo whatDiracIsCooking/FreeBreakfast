@@ -30,6 +30,9 @@ struct BasisSetOutput {
 struct BasisSetStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "basis_set";
+  /// @brief The keys of its table it reads, each an option the front end
+  /// reads into it.
+  static constexpr std::array<std::string_view, 1> kKeys{"basis"};
 
   /// @brief The basis: either a compiled-in set's name (`sto-3g`) or the path
   /// to a BSE JSON file. @ref resolve_basis decides which, preferring the

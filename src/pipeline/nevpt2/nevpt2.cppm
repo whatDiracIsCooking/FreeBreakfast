@@ -84,6 +84,9 @@ struct Nevpt2Output {
 struct Nevpt2Step {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "nevpt2";
+  /// @brief The keys of its table it reads, each an option the front end
+  /// reads into it.
+  static constexpr std::array<std::string_view, 2> kKeys{"quasi_degenerate", "frozen_core"};
 
   /// @brief Also SC- and PC-QD-NEVPT2 of the roots together: their effective
   /// Hamiltonians over the state-averaged orbitals, and its eigenvalues and

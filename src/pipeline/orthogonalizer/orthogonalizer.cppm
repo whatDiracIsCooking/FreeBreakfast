@@ -33,6 +33,9 @@ struct OrthogonalizerOutput {
 struct OrthogonalizerStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "orthogonalizer";
+  /// @brief The keys of its table it reads, each an option the front end
+  /// reads into it.
+  static constexpr std::array<std::string_view, 1> kKeys{"eigenvalue_floor"};
 
   /// @brief An overlap eigenvalue at or below this drops its mode
   /// (contributes 0 to X). Should be non-negative.

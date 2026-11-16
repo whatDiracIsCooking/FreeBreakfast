@@ -40,7 +40,9 @@ static fb_status fail(std::string message) noexcept {
 static fb::Result<fb::OverlapOutput> build_overlap(fb::DeviceResources &res,
                                                    const std::filesystem::path &xyz,
                                                    const std::string &basis) {
-  const fb::MoleculeOutput molecule = FBF_TRY(fb::MoleculeStep{.xyz = xyz}.run(fb::View<>{}, res));
+  const fb::GeometryOutput geometry = FBF_TRY(fb::XyzStep{.xyz = xyz}.run(fb::View<>{}));
+  const fb::MoleculeOutput molecule =
+      FBF_TRY(fb::MoleculeStep{}.run(fb::View<fb::GeometryOutput>{geometry}, res));
   const fb::BasisSetOutput basis_set =
       FBF_TRY(fb::BasisSetStep{.basis = basis}.run(fb::View<fb::MoleculeOutput>{molecule}));
   const fb::View<fb::BasisSetOutput> on_basis{basis_set};

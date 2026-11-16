@@ -36,7 +36,7 @@ import free_breakfast.response.zvector; // rotating_pairs
 namespace free_breakfast {
 
 // The chain's root at one geometry: the molecule from atoms in memory, where
-// MoleculeStep reads a file.
+// MoleculeStep reads XyzStep's.
 struct DisplacedMoleculeStep {
   static constexpr std::string_view kName = "molecule";
 

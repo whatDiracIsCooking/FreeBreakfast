@@ -2,16 +2,17 @@
 # The src/io tests that need no device, as their own host executable
 # ---------------------------------------------------------------------------
 # The TUs whose subject is src/io and whose every case runs without a GPU: the
-# file, JSON, TOML and .npy readers and writers, the BSE basis reader and the
-# compiled-in basis and SAD tables, and the Molden writer. A change under
-# src/io/ rebuilds and runs this binary without waiting on any method layer.
+# file, JSON, TOML and .npy readers and writers, the XYZ reader, the BSE basis
+# reader and the compiled-in basis and SAD tables, and the Molden writer. A
+# change under src/io/ rebuilds and runs this binary without waiting on any
+# method layer.
 #
 #   * free_breakfast_io_tests_host -- the *_host.cpp TUs; need no device.
 #
 # There is no GPU half. The io cases that need a device are the ones that build
-# a Molecule, whose nuclei live on it -- the XYZ reader and the basis's
-# placement over a molecule -- and those stay in test/gtest
-# (io_xyz_gpu.cpp, io_basis_gpu.cpp) beside the rest of the GPU suite. The BSE
+# a Molecule, whose nuclei live on it -- the basis's placement over a
+# molecule -- and those stay in test/gtest (io_basis_gpu.cpp) beside the rest
+# of the GPU suite. The BSE
 # fixture both halves read, io_basis_json.h, is in test/support.
 #
 # The module setup and the ctest registration are the same as test/gtest's,
@@ -30,6 +31,7 @@ add_executable(
   json_host.cpp
   toml_host.cpp
   npy_host.cpp
+  xyz_host.cpp
   basis_host.cpp
   sad_host.cpp
   molden_host.cpp

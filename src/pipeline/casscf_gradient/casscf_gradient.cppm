@@ -33,6 +33,9 @@ struct CasscfGradientOutput {
 struct CasscfGradientStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "casscf_gradient";
+  /// @brief The keys of its table it reads, each an option the front end
+  /// reads into it.
+  static constexpr std::array<std::string_view, 1> kKeys{"root"};
 
   /// @brief The root whose energy is differentiated, in
   /// @ref CasscfOutput::energies' order.

@@ -57,6 +57,10 @@ struct Nevpt2GradientOutput {
 struct Nevpt2GradientStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "nevpt2_gradient";
+  /// @brief The keys of its table it reads, each an option the front end
+  /// reads into it.
+  static constexpr std::array<std::string_view, 5> kKeys{"root", "variant", "quasi_degenerate",
+                                                         "state", "frozen_core"};
 
   /// @brief The root whose energy is differentiated, in
   /// @ref CasscfOutput::energies' order: 0, since the CASSCF must have one.

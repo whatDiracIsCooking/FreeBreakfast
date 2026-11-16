@@ -641,7 +641,10 @@ TEST(PipelineCasscfHessian, AnUnconvergedCasscfIsRefused) {
   step.json_path.clear();
   fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   fb::DeviceResources &res = node.device(0);
-  auto molecule = fb::MoleculeStep{.xyz = dir / "molecule.xyz"}.run(fb::View<>{}, res);
+  auto molecule = fb::MoleculeStep{}.run(
+      fb::View<fb::GeometryOutput>{
+          fb::XyzStep{.xyz = dir / "molecule.xyz"}.run(fb::View<>{}).value()},
+      res);
   ASSERT_TRUE(molecule.has_value()) << molecule.error().message;
   const auto result = step.run(fb::View<fb::MoleculeOutput>{*molecule}, node);
   ASSERT_FALSE(result.has_value());

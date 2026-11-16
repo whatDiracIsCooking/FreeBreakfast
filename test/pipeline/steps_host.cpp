@@ -16,14 +16,28 @@ namespace fb = free_breakfast;
 
 // --- The setup chain --------------------------------------------------------
 
+// [molecule] is a table of two steps: XyzStep reads its 'xyz' on the host,
+// and MoleculeStep, its head, its charge and multiplicity onto the device.
+static_assert(fb::PipelineStep<fb::XyzStep>);
+static_assert(fb::kRunShape<fb::XyzStep> == fb::RunShape::Host);
+static_assert(std::same_as<fb::StepInput<fb::XyzStep>, fb::View<>>);
+static_assert(std::same_as<fb::StepOutput<fb::XyzStep>, fb::GeometryOutput>);
+static_assert(fb::kStepTable<fb::XyzStep> == "molecule");
+static_assert(std::ranges::equal(fb::kStepKeys<fb::XyzStep>,
+                                 std::array<std::string_view, 1>{"xyz"}));
+// Loaded, after an [optimize], from the final.xyz it wrote, on the host.
+static_assert(fb::LoadableStep<fb::XyzStep>);
+static_assert(fb::kLoadShape<fb::XyzStep> == fb::RunShape::Host);
+static_assert(std::same_as<fb::LoadInput<fb::XyzStep>, fb::View<fb::OptimizeOutput>>);
+
 static_assert(fb::PipelineStep<fb::MoleculeStep>);
 static_assert(fb::kRunShape<fb::MoleculeStep> == fb::RunShape::Device);
-static_assert(std::same_as<fb::StepInput<fb::MoleculeStep>, fb::View<>>);
+static_assert(std::same_as<fb::StepInput<fb::MoleculeStep>, fb::View<fb::GeometryOutput>>);
 static_assert(std::same_as<fb::StepOutput<fb::MoleculeStep>, fb::MoleculeOutput>);
-// Loaded, after an [optimize], from the final.xyz it wrote.
-static_assert(fb::LoadableStep<fb::MoleculeStep>);
-static_assert(fb::kLoadShape<fb::MoleculeStep> == fb::RunShape::Device);
-static_assert(std::same_as<fb::LoadInput<fb::MoleculeStep>, fb::View<fb::OptimizeOutput>>);
+static_assert(fb::kStepTable<fb::MoleculeStep> == fb::MoleculeStep::kName);
+static_assert(std::ranges::equal(fb::kStepKeys<fb::MoleculeStep>,
+                                 std::array<std::string_view, 2>{"charge", "multiplicity"}));
+static_assert(!fb::LoadableStep<fb::MoleculeStep>);
 
 static_assert(fb::PipelineStep<fb::BasisSetStep>);
 static_assert(fb::kRunShape<fb::BasisSetStep> == fb::RunShape::Host);

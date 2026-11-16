@@ -16,6 +16,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::types
   free_breakfast::core::error_handling
   free_breakfast::pipeline::pipeline
+  free_breakfast::pipeline::xyz
   free_breakfast::pipeline::molecule
   free_breakfast::pipeline::basis_set
   free_breakfast::pipeline::spherical_transform

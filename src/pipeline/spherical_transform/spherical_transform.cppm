@@ -34,6 +34,9 @@ struct SphericalTransformOutput {
 struct SphericalTransformStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "spherical_transform";
+  /// @brief The keys of its table it reads, each an option the front end
+  /// reads into it.
+  static constexpr std::array<std::string_view, 1> kKeys{"write_npy"};
 
   /// @brief Where U is written as a float64 .npy file, @c nao_cart x
   /// @c nao_sphe in Fortran order, if not empty. Written from the host build

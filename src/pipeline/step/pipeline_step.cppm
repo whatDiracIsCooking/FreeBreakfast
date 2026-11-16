@@ -95,11 +95,28 @@ concept FootprintMember = requires {
                             MemoryFootprint (S::*)(const FootprintDimensions &) const noexcept>;
 };
 
-// kName is the step's TOML table name, so it must be a non-empty constant: the
-// pipeline checks names unique across its steps at compile time.
+// kName is the step's identity -- its output files, its log lines, the
+// registry -- so it must be a non-empty constant: the pipeline checks names
+// unique across its steps at compile time.
 template <class S>
 concept StepName = requires { typename std::bool_constant<std::string_view{S::kName}.empty()>; } &&
                    !std::string_view{S::kName}.empty();
+
+// kTable, the TOML table a step's options are read from, is optional, and
+// when declared is a non-empty constant as kName is.
+template <class S>
+concept StepTableName = !requires { S::kTable; } || (requires {
+  typename std::bool_constant<std::string_view{S::kTable}.empty()>;
+} && !std::string_view{S::kTable}.empty());
+
+// kKeys, the keys of that table a step reads, is optional, and when declared
+// is a constant array of string_views.
+template <class S>
+concept StepKeys = !requires {
+  S::kKeys;
+} || (std::convertible_to<decltype((S::kKeys)), std::span<const std::string_view>> && requires {
+  typename std::bool_constant<std::span<const std::string_view>{S::kKeys}.empty()>;
+});
 
 } // namespace free_breakfast
 
@@ -114,7 +131,8 @@ template <class S>
 using StepOutput = typename ResultValue<typename RunSignatureOf<S>::ReturnType>::type;
 
 /// @brief A pipeline step: a non-empty `kName`, one `const` `run`, whose
-///        signature declares everything else, and its footprint.
+///        signature declares everything else, and its footprint; and,
+///        optionally, the table and keys a front end reads its options from.
 ///
 /// ```cpp
 /// struct OrthogonalizerStep {
@@ -140,6 +158,14 @@ using StepOutput = typename ResultValue<typename RunSignatureOf<S>::ReturnType>:
 ///   (pipeline/footprint's README). Every step has one, test-only ones
 ///   included; a step that allocates nothing returns `{}`.
 ///
+/// - `kTable`, if declared, is a non-empty constant: the TOML table the
+///   step's options are read from, which several steps may share. Without
+///   one it is `kName` (@ref kStepTable).
+/// - `kKeys`, if declared, is a constant array of `std::string_view`: the keys
+///   of that table the step reads. Without one it reads none (@ref
+///   kStepKeys). Two steps of one table may not declare the same key, which
+///   the pipeline checks across its registry at compile time.
+///
 /// Options are the step's own data members. Contracts the types cannot check
 /// are in README.md: a device `run` only enqueues on `res.stream()`, a host
 /// `run` never touches the device, and a subflow holding references into the
@@ -151,11 +177,33 @@ concept PipelineStep =
       typename StepOutput<S>;
     } && kIsView<StepInput<S>> && Product<StepOutput<S>> &&
     !kViewContains<StepOutput<S>, StepInput<S>> && RunSignatureOf<S>::kShape.has_value() &&
-    StepName<S> && FootprintMember<S>;
+    StepName<S> && StepTableName<S> && StepKeys<S> && FootprintMember<S>;
 
 /// @brief The `RunShape` of step `S`'s `run`.
 template <PipelineStep S>
 constexpr RunShape kRunShape = *RunSignatureOf<S>::kShape;
+
+/// @brief The table step `S`'s options are read from: its `kTable`, or its
+/// `kName` when it declares none. The step whose `kName` is a table's name is
+/// that table's head.
+template <PipelineStep S>
+constexpr std::string_view kStepTable = [] {
+  if constexpr (requires { S::kTable; }) {
+    return std::string_view{S::kTable};
+  } else {
+    return std::string_view{S::kName};
+  }
+}();
+
+/// @brief The keys of @ref kStepTable step `S` reads: its `kKeys`, or none.
+template <PipelineStep S>
+constexpr std::span<const std::string_view> kStepKeys = [] {
+  if constexpr (requires { S::kKeys; }) {
+    return std::span<const std::string_view>{S::kKeys};
+  } else {
+    return std::span<const std::string_view>{};
+  }
+}();
 
 /// @brief The `View` step `S`'s `load` reads: its second parameter.
 template <class S>

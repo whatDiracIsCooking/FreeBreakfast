@@ -2,11 +2,16 @@
 /// @brief The TOML front end: a config file read into the pipeline it asks
 ///        for, and the registry of every step a config may name.
 ///
-/// One table per step, named by the step's `kName`; its keys are the step's
-/// options, spelled as its members. A table is a request: the steps producing
-/// what it reads are filled in, each read from an empty table, so only a step
-/// with a required option must be written out. A lone `from` key loads the
-/// step's product from that file instead, for a step with a `load`.
+/// A table is a concept rather than a step: each step reads its options from
+/// one table, its `kStepTable` (its `kName` unless it declares a `kTable`),
+/// and several steps may share one. A table's keys are the union of its
+/// steps' `kKeys`, each a member of exactly one step. A written table requests
+/// its head, the step whose `kName` is the table's name; the steps producing
+/// what that reads are filled in, each read from its own table, or from an
+/// empty one if the config has none, so only a table with a required option
+/// must be written out. `[molecule]` is MoleculeStep's (charge, multiplicity)
+/// and XyzStep's (xyz). A lone `from` key loads the head's product from that
+/// file instead, for a head with a `load`.
 /// Re-exports the steps and the pipeline it returns.
 
 export module free_breakfast.pipeline.config;
@@ -15,6 +20,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 export import free_breakfast.pipeline.pipeline;
+export import free_breakfast.pipeline.xyz;
 export import free_breakfast.pipeline.molecule;
 export import free_breakfast.pipeline.basis_set;
 export import free_breakfast.pipeline.spherical_transform;
@@ -49,11 +55,11 @@ export namespace free_breakfast {
 /// `create` returns the bare one, with no caps. The caps are only read and
 /// stored here: pipeline.shape's preflight holds the plan to them.
 struct Calculation
-    : Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep, PrimitivePairClassesStep,
-               EriStep, OverlapStep, OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
-               LocalizationStep, CasciStep, CasscfStep, FciStep, Nevpt2Step, CisStep, GradientStep,
-               CasscfGradientStep, Nevpt2GradientStep, NacStep, Nevpt2NacStep, OptimizeStep,
-               HessianStep, IrcStep> {
+    : Pipeline<XyzStep, MoleculeStep, BasisSetStep, SphericalTransformStep,
+               PrimitivePairClassesStep, EriStep, OverlapStep, OrthogonalizerStep,
+               CoreHamiltonianStep, GuessStep, ScfStep, LocalizationStep, CasciStep, CasscfStep,
+               FciStep, Nevpt2Step, CisStep, GradientStep, CasscfGradientStep, Nevpt2GradientStep,
+               NacStep, Nevpt2NacStep, OptimizeStep, HessianStep, IrcStep> {
   /// @brief `[memory] max_device_mem_per_gpu`: one device's share of its
   /// memory, in bytes, the context and the libraries' reserve included; 0
   /// for no cap.

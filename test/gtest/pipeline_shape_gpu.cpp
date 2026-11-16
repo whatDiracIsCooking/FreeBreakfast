@@ -1,8 +1,8 @@
 // plan_shape over parsed configs: water in cc-pVDZ, its dimensions held to the
 // values counted by hand beside each case, exactly, and mmd's record counts to
 // the classes primitive_pair_classes builds. Nothing is computed on the device
-// but those classes, but the Molecule owns its nuclei there and syevd's size
-// is the solver handle's to say, so every case needs a GPU.
+// but those classes, and the shape builds no Molecule, but syevd's size is the
+// solver handle's to say, so every case needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -127,6 +127,27 @@ TEST(PipelineShape, WaterDensityFittedMatchesHandCount) {
 
 // mmd's classes, built on the device from the shape's own basis, hold the
 // record counts the shape gives, class for class.
+// The geometry is parsed on the host and the bases placed over its atoms, so
+// shaping a plan with no [optimize] constructs no Molecule: the DeviceResources
+// it is handed has no workspace to stage nuclei in (a Molecule's upload past
+// it aborts), and its pool holds nothing more at any point of the shape than
+// before it. Only syevd's size queries reach the device. The dimensions are
+// the molecule's all the same: water's 3 atoms, its 10 electrons a singlet.
+TEST(PipelineShape, ConstructsNoMolecule) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0, fb::MemoryFootprint{}};
+  res.device()->reset_pool_high_water();
+  const auto before = res.device()->pool_usage();
+  const fb::PlanShape shape = water_shape(res, "");
+  const auto after = res.device()->pool_usage();
+  EXPECT_EQ(after.used_high, before.used_current);
+  EXPECT_EQ(res.workspace_high_water(), fb::MemoryFootprint{});
+  EXPECT_EQ(shape.dims.natoms, std::size_t{3});
+  EXPECT_EQ(shape.dims.atoms.size(), 3U);
+  EXPECT_EQ(shape.dims.nocc, std::size_t{5});
+  EXPECT_EQ(shape.dims.nao, std::size_t{24});
+}
+
 TEST(PipelineShape, RecordCountsMatchThePrimitivePairClasses) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0, fb::test::kWorkspaces};

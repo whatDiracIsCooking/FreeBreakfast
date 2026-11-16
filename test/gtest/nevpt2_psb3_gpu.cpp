@@ -196,7 +196,8 @@ TEST(Nevpt2Psb3, PcQdActiveActiveGateAtTheTwist) {
   casscf.nroots = 3;
   casscf.conv_tol_grad = kConvTolGrad;
   auto calc = fb::Calculation::create(
-      {fb::MoleculeStep{.xyz = dir / "psb3.xyz", .charge = 1}, fb::BasisSetStep{.basis = "sto-3g"},
+      {fb::XyzStep{.xyz = dir / "psb3.xyz"}, fb::MoleculeStep{.charge = 1},
+       fb::BasisSetStep{.basis = "sto-3g"},
        fb::EriStep{.mode = fb::EriMode::DensityFitting, .aux_basis = "cc-pvdz-jkfit"},
        fb::ScfStep{.max_iterations = 400}, casscf,
        fb::Nevpt2GradientStep{.variant = fb::Nevpt2Variant::Pc,
