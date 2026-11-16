@@ -86,7 +86,7 @@ fn run_shape(shape: &Shape, n_cpu: usize, fail: &[usize]) -> (Observed, Status) 
     *obs.runs.lock().unwrap() = vec![Vec::new(); shape.placements.len()];
     let result = {
         let obs = &obs;
-        let mut plan = Plan::new();
+        let mut plan = TaskGraph::new();
         let ids: Vec<NodeId> = Vec::new();
         let ids = Mutex::new(ids);
         for (id, (&placement, preds)) in shape.placements.iter().zip(&shape.preds).enumerate() {
@@ -200,7 +200,7 @@ fn a_failure_skips_its_descendants_and_reports_the_lowest_rank() {
 
 #[test]
 fn an_error_names_its_task_and_worker_and_carries_the_others() {
-    let mut plan = Plan::new();
+    let mut plan = TaskGraph::new();
     plan.add("first", Placement::Cpu, &[], |_| Err(Error::io("disk")));
     plan.add("second", on(0, 0), &[], |_: Lane<'_, ()>| {
         Err(Error::numerical("nan"))
@@ -216,7 +216,7 @@ fn an_error_names_its_task_and_worker_and_carries_the_others() {
 #[test]
 fn a_node_runs_inside_its_task_record() {
     let seen = Mutex::new(Vec::new());
-    let mut plan = Plan::new();
+    let mut plan = TaskGraph::new();
     let a = plan.add("a", Placement::Cpu, &[], |_| {
         seen.lock().unwrap().push(log::current_task());
         Ok(())
@@ -236,7 +236,7 @@ fn a_node_runs_inside_its_task_record() {
 #[test]
 #[should_panic(expected = "node panicked")]
 fn a_panicking_node_fails_the_run_instead_of_hanging_it() {
-    let mut plan = Plan::new();
+    let mut plan = TaskGraph::new();
     let a = plan.add("a", Placement::Cpu, &[], |_: Lane<'_, ()>| {
         panic!("node panicked")
     });
@@ -249,7 +249,7 @@ fn a_panicking_node_fails_the_run_instead_of_hanging_it() {
 #[test]
 fn a_plan_the_workers_cannot_run_is_refused_before_anything_runs() {
     let ran = AtomicUsize::new(0);
-    let mut plan = Plan::new();
+    let mut plan = TaskGraph::new();
     plan.add("a", on(1, 0), &[], |_: Lane<'_, ()>| {
         ran.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -257,7 +257,7 @@ fn a_plan_the_workers_cannot_run_is_refused_before_anything_runs() {
     let error = run(&mut plan, &mut HostOnly::new(1), 1).result.unwrap_err();
     assert_eq!(error.kind, ErrorKind::InvalidConfig);
 
-    let mut plan = Plan::new();
+    let mut plan = TaskGraph::new();
     plan.add("a", Placement::Cpu, &[], |_: Lane<'_, ()>| {
         ran.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -269,7 +269,7 @@ fn a_plan_the_workers_cannot_run_is_refused_before_anything_runs() {
 
 #[test]
 fn an_empty_plan_runs() {
-    let mut plan: Plan<'_, ()> = Plan::new();
+    let mut plan: TaskGraph<'_, ()> = TaskGraph::new();
     run(&mut plan, &mut HostOnly::new(2), 1).result.unwrap();
 }
 
@@ -285,7 +285,7 @@ fn an_edge_between_lanes_is_no_sync_point() {
         threads.lock().unwrap().push(name);
         Ok(())
     };
-    let mut plan = Plan::new();
+    let mut plan = TaskGraph::new();
     let a = plan.add("a", on(0, 0), &[], thread);
     let b = plan.add("b", on(0, 1), &[a], thread);
     let c = plan.add("c", on(0, 0), &[a, b], thread);
@@ -320,7 +320,7 @@ fn an_edge_between_lanes_is_no_sync_point() {
 /// worker past its count.
 #[test]
 fn a_lane_the_backend_lacks_is_refused() {
-    let mut plan = Plan::new();
+    let mut plan = TaskGraph::new();
     plan.add("a", on(0, 3), &[], |_: Lane<'_, ()>| Ok(()));
     plan.add("b", on(2, 1), &[], |_| Ok(()));
     let error = run(&mut plan, &mut HostOnly::new(1), 1).result.unwrap_err();
@@ -332,9 +332,9 @@ fn a_lane_the_backend_lacks_is_refused() {
 #[cfg(debug_assertions)] // the contract is compiled out of release
 #[should_panic(expected = "every predecessor is in the plan")]
 fn a_predecessor_from_elsewhere_is_rejected() {
-    let mut other: Plan<'_, ()> = Plan::new();
+    let mut other: TaskGraph<'_, ()> = TaskGraph::new();
     let foreign = other.add("x", Placement::Cpu, &[], |_| Ok(()));
-    let mut plan: Plan<'_, ()> = Plan::new();
+    let mut plan: TaskGraph<'_, ()> = TaskGraph::new();
     plan.add("a", Placement::Cpu, &[foreign], |_| Ok(()));
 }
 
@@ -352,7 +352,7 @@ fn every_node_is_timed_by_its_worker() {
             Ok(())
         }
     }
-    let mut plan = Plan::new();
+    let mut plan = TaskGraph::new();
     let a = plan.add("a", Placement::Cpu, &[], sleep(5));
     let b = plan.add("b", on(0, 0), &[a], sleep(10));
     let c = plan.add("c", on(1, 0), &[a], sleep(15));
@@ -384,7 +384,7 @@ fn every_node_is_timed_by_its_worker() {
 #[test]
 fn a_failed_run_still_returns_its_times() {
     let ms = std::time::Duration::from_millis(5);
-    let mut plan = Plan::new();
+    let mut plan = TaskGraph::new();
     let a = plan.add("a", Placement::Cpu, &[], |_: Lane<'_, ()>| {
         std::thread::sleep(ms);
         Ok(())
@@ -412,7 +412,7 @@ fn a_failed_run_still_returns_its_times() {
 /// test was built in.
 #[test]
 fn a_record_reads_back_from_its_json() {
-    let mut plan = Plan::new();
+    let mut plan = TaskGraph::new();
     let a = plan.add("a", Placement::Cpu, &[], |_: Lane<'_, ()>| Ok(()));
     let b = plan.add("b", on(0, 0), &[a], |_| Ok(()));
     let c = plan.add("c", on(1, 0), &[a], |_| Ok(()));
@@ -482,7 +482,7 @@ fn a_record_reads_back_from_its_json() {
 /// context, and everything else equal; the origin is not in the file.
 #[test]
 fn a_failed_record_reads_back_without_its_origin() {
-    let mut plan = Plan::new();
+    let mut plan = TaskGraph::new();
     let a = plan.add("a", on(0, 0), &[], |_: Lane<'_, ()>| Ok(()));
     plan.add("b", Placement::Cpu, &[a], |_| Err(Error::numerical("nan")));
     let mut record = run(&mut plan, &mut HostOnly::new(1), 1);
@@ -523,8 +523,8 @@ fn fixed_point_plan<'a>(
     calls: &'a AtomicUsize,
     max_iterations: usize,
     fail_on: Option<usize>,
-) -> (Plan<'a, ()>, NodeId) {
-    let mut plan = Plan::new();
+) -> (TaskGraph<'a, ()>, NodeId) {
+    let mut plan = TaskGraph::new();
     let x0 = plan.add("x0", Placement::Cpu, &[], |_: Lane<'_, ()>| {
         *it.lock().unwrap() = Iterate::default();
         Ok(())
@@ -675,7 +675,7 @@ fn a_failed_body_node_ends_the_loop_and_the_run() {
 #[test]
 fn a_decision_runs_after_its_own_predecessors() {
     let before = AtomicUsize::new(0);
-    let mut plan: Plan<'_, ()> = Plan::new();
+    let mut plan: TaskGraph<'_, ()> = TaskGraph::new();
     let slow = plan.add("slow", Placement::Cpu, &[], |_| {
         std::thread::sleep(std::time::Duration::from_millis(20));
         before.fetch_add(1, Ordering::SeqCst);
@@ -700,7 +700,7 @@ fn a_decision_runs_after_its_own_predecessors() {
 #[cfg(debug_assertions)] // the contract is compiled out of release
 #[should_panic(expected = "no predecessor is in a closed loop's body")]
 fn a_node_after_a_loop_cannot_read_its_body() {
-    let mut plan: Plan<'_, ()> = Plan::new();
+    let mut plan: TaskGraph<'_, ()> = TaskGraph::new();
     let body = plan.add("body", Placement::Cpu, &[], |_| Ok(()));
     plan.add_loop("decide", body, &[], 2, |_| Ok(ControlFlow::Break(())));
     plan.add("after", Placement::Cpu, &[body], |_| Ok(()));
@@ -745,7 +745,7 @@ fn run_counted(rng: &mut Rng, n_cpu: usize) -> (Shape, usize, usize, usize, Tick
             let end = clock.fetch_add(1, Ordering::SeqCst);
             ticks.lock().unwrap()[node].push((trip, start, end));
         };
-        let mut plan = Plan::new();
+        let mut plan = TaskGraph::new();
         let before = plan.add("before", Placement::Cpu, &[], move |_: Lane<'_, ()>| {
             tick(0, 0);
             Ok(())
@@ -851,7 +851,7 @@ fn a_counted_loop_runs_each_trip_after_the_trip_depth_before() {
 /// per trip.
 #[test]
 fn a_counted_loop_adds_no_host_wait_for_its_gpu_nodes() {
-    let mut plan: Plan<'_, ()> = Plan::new();
+    let mut plan: TaskGraph<'_, ()> = TaskGraph::new();
     let stage = plan.add("stage", on(0, 1), &[], |_| Ok(()));
     let add = plan.add("add", on(0, 0), &[stage], |_| Ok(()));
     plan.add_counted(stage, 6, 2);
@@ -878,7 +878,7 @@ fn a_counted_loop_adds_no_host_wait_for_its_gpu_nodes() {
 /// node's trips that follow it, and the node after the loop.
 #[test]
 fn a_failed_trip_skips_the_later_trips_and_what_follows() {
-    let mut plan: Plan<'_, ()> = Plan::new();
+    let mut plan: TaskGraph<'_, ()> = TaskGraph::new();
     let stage = plan.add("stage", on(0, 1), &[], |lane| {
         let Lane::Stream { iteration, .. } = lane else {
             unreachable!()
@@ -966,7 +966,7 @@ fn a_counted_loop_in_a_decision_loop_replays_whole_each_iteration() {
             let trip_of = |lane: Lane<'_, ()>| match lane {
                 Lane::Cpu { iteration } | Lane::Stream { iteration, .. } => iteration,
             };
-            let mut plan = Plan::new();
+            let mut plan = TaskGraph::new();
             let before = plan.add("before", Placement::Cpu, &[], move |_: Lane<'_, ()>| {
                 tick(0, 0);
                 Ok(())
@@ -1089,7 +1089,7 @@ fn a_counted_loop_in_a_decision_loop_replays_whole_each_iteration() {
 #[test]
 fn a_counted_loop_in_a_decision_loop_adds_no_host_wait() {
     const OUTER: usize = 3;
-    let mut plan: Plan<'_, ()> = Plan::new();
+    let mut plan: TaskGraph<'_, ()> = TaskGraph::new();
     let zero = plan.add("zero", on(0, 0), &[], |_| Ok(()));
     let stage = plan.add("stage", on(0, 1), &[zero], |_| Ok(()));
     let add = plan.add("add", on(0, 0), &[stage], |_| Ok(()));
@@ -1193,7 +1193,7 @@ fn device_edges_wait_for_the_work_they_consume() {
     let seen_by_cpu = Mutex::new(vec![0u8; N]);
     let devices_seen = Mutex::new(Vec::new());
 
-    let mut plan: Plan<'_, DeviceStream> = Plan::new();
+    let mut plan: TaskGraph<'_, DeviceStream> = TaskGraph::new();
     let produce = plan.add("produce", on(0, 0), &[], |lane| {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!()
@@ -1315,7 +1315,7 @@ fn forked_work_precedes_the_lane_and_the_readers_after_the_node() {
     let streams = Mutex::new(Vec::new());
     let seen = Mutex::new(Vec::new());
 
-    let mut plan: Plan<'_, DeviceStream> = Plan::new();
+    let mut plan: TaskGraph<'_, DeviceStream> = TaskGraph::new();
     let fork = plan.add("fork", on(0, 0), &[], |lane| {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!()
@@ -1411,7 +1411,7 @@ fn a_failed_fork_item_still_joins_the_forks_made() {
     });
     let ran = Mutex::new(Vec::new());
 
-    let mut plan: Plan<'_, DeviceStream> = Plan::new();
+    let mut plan: TaskGraph<'_, DeviceStream> = TaskGraph::new();
     plan.add("fork", on(0, 0), &[], |lane| {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!()
@@ -1455,7 +1455,7 @@ fn a_failed_fork_item_still_joins_the_forks_made() {
 fn a_worker_with_no_forks_runs_the_items_on_the_lane() {
     use fb_core_wwr::handle::DeviceHandleStream;
 
-    let plan: Plan<'_, DeviceStream> = Plan::new();
+    let plan: TaskGraph<'_, DeviceStream> = TaskGraph::new();
     for forks in [&[][..], &[1]] {
         let device = Device::new(&[0], &plan, &[], forks);
         let stream = device.stream(LaneId { worker: 0, lane: 0 });
@@ -1482,7 +1482,7 @@ fn device_library_handles_are_the_workers_made_before_the_run() {
     use wwr_sys::{wwr_blas_status, wwr_solver_status, wwr_stream};
 
     let seen = Mutex::new(Vec::new());
-    let mut plan: Plan<'_, DeviceStream> = Plan::new();
+    let mut plan: TaskGraph<'_, DeviceStream> = TaskGraph::new();
     for s in 0..2 {
         plan.add(format!("blas{s}"), on(0, s), &[], |lane| {
             let Lane::Stream { lane, stream, .. } = lane else {
@@ -1530,7 +1530,7 @@ fn device_library_handles_are_the_workers_made_before_the_run() {
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn a_lane_with_no_library_user_has_no_handles() {
-    let mut plan: Plan<'_, DeviceStream> = Plan::new();
+    let mut plan: TaskGraph<'_, DeviceStream> = TaskGraph::new();
     for s in 0..4 {
         plan.add(format!("kernel{s}"), on(0, s), &[], |_| Ok(()));
     }
@@ -1582,7 +1582,7 @@ fn device_loop_reads_each_iterations_stream_scope() {
     let calls = AtomicUsize::new(0);
     let host_ran = AtomicUsize::new(0);
 
-    let mut plan: Plan<'_, DeviceStream> = Plan::new();
+    let mut plan: TaskGraph<'_, DeviceStream> = TaskGraph::new();
     let copies = plan.add("copies", on(0, 0), &[], |lane| {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!()
@@ -1742,7 +1742,7 @@ fn device_counted_loop_times_each_trip() {
     let a = DeviceBytes::upload(&vec![7u8; N], &setup);
     let b = DeviceBytes::new(N);
 
-    let mut plan: Plan<'_, DeviceStream> = Plan::new();
+    let mut plan: TaskGraph<'_, DeviceStream> = TaskGraph::new();
     let copies = plan.add("copies", on(0, 0), &[], |lane| {
         let Lane::Stream {
             stream, iteration, ..

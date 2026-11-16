@@ -2,9 +2,9 @@
 
 use std::time::Duration;
 
-use super::plan::{LaneId, NodeId};
+use super::task_graph::{LaneId, NodeId};
 #[cfg(feature = "device")]
-use super::plan::{Placement, Plan};
+use super::task_graph::{Placement, TaskGraph};
 #[cfg(feature = "device")]
 use contracts::debug_requires;
 #[cfg(feature = "device")]
@@ -389,7 +389,7 @@ pub struct Device {
 #[cfg(feature = "device")]
 impl Device {
     /// GPU worker `w` on device `devices[w]`, with as many lanes as `plan`
-    /// places nodes on ([`Plan::lanes`]), at least one, and an event pair
+    /// places nodes on ([`TaskGraph::lanes`]), at least one, and an event pair
     /// for every GPU node of `plan` and trip of the counted loop it is in.
     /// Lane `l` of worker `w` has library handles if `libraries[w][l]`, and
     /// none if it is false or missing, so a lane whose nodes call no
@@ -404,7 +404,7 @@ impl Device {
     #[track_caller]
     pub fn new(
         devices: &[i32],
-        plan: &Plan<'_, DeviceStream>,
+        plan: &TaskGraph<'_, DeviceStream>,
         libraries: &[Vec<bool>],
         forks: &[usize],
     ) -> Self {

@@ -253,7 +253,7 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
     /// `decision`, a CPU node added after them on GPU worker `worker`'s
     /// host table and the plan's heap table, says `Break`, at most `max_iterations` times
     /// (`docs/programming_model.md`, "Plan once, run many";
-    /// `fb_core_thread_pool::Plan::add_loop`, which runs it). Calls the
+    /// `fb_core_thread_pool::TaskGraph::add_loop`, which runs it). Calls the
     /// decision's layout, and returns its rows.
     ///
     /// The body's own rows, those every user of which is in the loop, are
@@ -332,7 +332,7 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
     /// one added are its body, run `trips` times in the same run with no
     /// decision and no host wait between iterations, up to `depth` of them
     /// in flight at once (`docs/programming_model.md`, "Plan once, run
-    /// many"; `fb_core_thread_pool::Plan::add_counted`, which runs it). A
+    /// many"; `fb_core_thread_pool::TaskGraph::add_counted`, which runs it). A
     /// body task reads its iteration's index from its views
     /// ([`Bufs::iteration`]), by which it picks its batch.
     ///
