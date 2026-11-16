@@ -21,9 +21,10 @@
 //! [`Calculation::Guess`]: the initial-guess density D of
 //! [`fb_pipeline_guess`], SAD or loaded as [`GuessStep`] says, then
 //! `write d.npy` on the CPU ([`add_write_host_npy`]): D is a host row, so
-//! it needs no download. [`Calculation::Rhf`]: the closed-shell DF-RHF of
-//! [`fb_pipeline_scf::add_scf`] over [`fb_pipeline_eri::add_df_eri`]'s
-//! fitted integrals, from that guess, then the write nodes of `c.npy` and
+//! it needs no download. [`Calculation::Rhf`]: the DF-RHF of
+//! [`fb_pipeline_scf::add_scf`], ROHF at a multiplicity above 1, over
+//! [`fb_pipeline_eri::add_df_eri`]'s fitted integrals, from that guess,
+//! then the write nodes of `c.npy` and
 //! `d.npy` and of `scf.json`, a stream download of ε and a CPU write of it
 //! beside the last build's energy, residual and iteration count.
 //! [`Calculation::Localization`]: that RHF and its writes, then the
@@ -43,10 +44,13 @@
 //! missing is refused. A calculation is one row; a table is one entry of
 //! the list of optional tables beside it.
 //!
-//! **Neutral molecules alone.** `[molecule]` has no charge or multiplicity
-//! key, so every molecule is the neutral singlet: the C++ guess's rescale
-//! by `N / Σ Z` for an ion has nothing to do here, and a key that admits
-//! an ion must port it or refuse a charge.
+//! **Charge and multiplicity.** `[molecule]`'s `charge` and
+//! `multiplicity` ([`MoleculeStep`]) are the C++ keys, defaulted to the
+//! neutral singlet. The SCF reads them: an ion's SAD guess is rescaled to
+//! its electron count, and a multiplicity above 1 is ROHF, both in
+//! [`fb_pipeline_scf::add_scf`]. The overlap and the guess calculations
+//! read neither. The localization is a closed shell's alone, and refuses a
+//! multiplicity above 1 as `Unsupported`.
 //!
 //! **Products are `.npy`.** A matrix is written as a float64 `.npy`,
 //! `n × n` in Fortran order ([`fb_io_npy::write_npy`]): the C++ tree's
@@ -79,6 +83,7 @@
 //! | `read_config(config, input_dir, output_dir)`, a `Calculation` of steps | [`read_config`], a [`Config`], and [`plan`], its tasks as one [`Planned`] |
 //! | toml++'s table walk, `[step] has no option 'key'` | serde, `deny_unknown_fields`: `<file>:<line>: unknown field ...` |
 //! | `MoleculeStep::xyz`, `BasisSetStep::basis` | [`MoleculeStep::xyz`], [`BasisSetStep::basis`] |
+//! | `[molecule] charge`, `multiplicity`, `MoleculeStep`'s, default 0 and 1 | [`MoleculeStep::charge`], [`MoleculeStep::multiplicity`], the same defaults; a count of the wrong parity refused at planning by [`fb_pipeline_scf::occupied_orbitals`] |
 //! | `[overlap] write_npy`, `OverlapStep::npy` | [`Calculation::Overlap`], which always writes `overlap.npy` |
 //! | `[guess] type`, `GuessStep::type`, `GuessType::Sad` | [`GuessStep::kind`], [`GuessKind::Sad`] |
 //! | `[guess] from`, `Load<GuessStep>`, `GuessStep::load` | [`GuessStep::from`], [`fb_pipeline_guess::add_loaded_guess`], its file's header checked at planning |
@@ -87,7 +92,9 @@
 //! | `[eri] aux_basis`, a fitting set's name or a path joined to the input directory, `<basis>-acCD-6-6` when empty | [`EriStep::aux_basis`], a compiled-in name alone and required, never joined, refused by [`read_config`] when not carried |
 //! | `[eri]` beside an SCF, the integral-direct default when absent | required beside [`Calculation::Rhf`], refused beside every other, by its row of tables |
 //! | `[scf]`, `ScfStep` and its keys | [`Config::scf`], [`fb_pipeline_scf::ScfStep`] itself, its range checked by [`read_config`] |
-//! | `[molecule] charge`, `multiplicity`; the guess rescaled by `N / Σ Z` | not ported: every molecule is the neutral singlet |
+//! | the guess rescaled by `N / Σ Z` for an ion | ported in [`fb_pipeline_scf::add_scf`] |
+//! | the SCF of an open shell, ROHF | [`Calculation::Rhf`] at a multiplicity above 1; `scf.json` carries `n_alpha` and `n_beta` |
+//! | the localization of an open shell, each occupied space among itself | not ported: refused `Unsupported` |
 //! | the RHF calculation, `ScfStep::run` over the steps before it | [`Calculation::Rhf`], [`plan`] composing the steps' tasks; `scf.json`, `c.npy`, `d.npy` its products |
 //! | `ScfStep::molden`, `scf.molden` | not ported |
 //! | the localization calculation, `[scf]` then `[localization]`, `LocalizationStep::run` | [`Calculation::Localization`], `calculation = "localization"`: the RHF's tasks and products, then [`add_pm_localize`]; `c_local.npy` and `localization.json` (L before and after, the sweeps) its own products |

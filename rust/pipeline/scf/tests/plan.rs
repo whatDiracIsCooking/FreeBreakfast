@@ -3,9 +3,10 @@
 //! fixture, `FB_BLESS=1` rewriting it (`docs/testing.md`, "Performance"),
 //! at a fixed syevd work of 1234 doubles, since the vendor's number needs a
 //! device: the nuclei, S and H over one staging of U, X and the step. And
-//! one SCF iteration's dense nodes as a loop body, with the refusal of an
-//! open shell. And the whole DF-RHF run's plan for water in cc-pVDZ over
-//! cc-pVDZ-JKFIT, with the refusals planning passes on. Planning touches no
+//! one SCF iteration's dense nodes as a loop body, with the occupations
+//! and their refusals. And the whole DF-RHF run's plan for water in
+//! cc-pVDZ over cc-pVDZ-JKFIT, and the DF-ROHF run's for its cation, with
+//! the refusals planning passes on. Planning touches no
 //! device, but the records' layout asks the kernel library for the sort's
 //! workspace, so the library must be built.
 
@@ -21,7 +22,8 @@ use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, ErrorKind, Result, Status};
 use fb_core_planner::{Dag, Decision, GpuTask};
 use fb_core_thread_pool::DeviceStream;
-use fb_pipeline_scf::{Run, ScfStep, add_density, add_fock};
+use fb_molecule::Molecule;
+use fb_pipeline_scf::{Run, ScfStep, add_density, add_fock, occupied_orbitals};
 use fb_test_support::golden;
 
 /// The work every plan here is laid out with.
@@ -58,15 +60,16 @@ fn text(planned: &impl std::fmt::Display) -> String {
         .collect()
 }
 
+/// Water at `charge` and `multiplicity`, from the overlap's XYZ file.
+fn water(charge: i32, multiplicity: i32) -> Molecule {
+    fb_io_xyz::read_xyz(&common::xyz("h2o.xyz"), charge, multiplicity).unwrap()
+}
+
 /// Water's DF-RHF planned by [`Run`] with `step`.
 fn scf_run(step: &ScfStep) -> Result<Run> {
-    Run::new(
-        &common::xyz("h2o.xyz"),
-        "cc-pvdz",
-        "cc-pvdz-jkfit",
-        step,
-        |_| Ok(LWORK),
-    )
+    Run::new(&water(0, 1), "cc-pvdz", "cc-pvdz-jkfit", step, |_| {
+        Ok(LWORK)
+    })
 }
 
 /// The whole DF-RHF run of water in cc-pVDZ over cc-pVDZ-JKFIT, at the
@@ -87,33 +90,21 @@ fn scf_plan_golden() {
     );
 }
 
-/// A file that is not there, a basis that is neither carried nor a file, a
-/// fitting set that is not carried, and `lwork`'s own error are each the
-/// run's error, before the loop is planned; `lwork` is asked at the number
-/// of spherical AOs.
+/// A basis that is neither carried nor a file, a fitting set that is not
+/// carried, and `lwork`'s own error are each the run's error, before the
+/// loop is planned; `lwork` is asked at the number of spherical AOs.
 #[test]
 fn a_refused_input_is_an_error() {
     let step = ScfStep::default();
-    let plan = |xyz: &str, basis: &str, aux: &str| {
-        Run::new(&common::xyz(xyz), basis, aux, &step, |_| Ok(LWORK))
-    };
-    assert!(plan("none.xyz", "cc-pvdz", "cc-pvdz-jkfit").is_err());
-    assert!(plan("h2o.xyz", "no-such-basis", "cc-pvdz-jkfit").is_err());
-    let err = plan("h2o.xyz", "cc-pvdz", "no-such-jkfit")
-        .err()
-        .expect("refused");
+    let plan = |basis: &str, aux: &str| Run::new(&water(0, 1), basis, aux, &step, |_| Ok(LWORK));
+    assert!(plan("no-such-basis", "cc-pvdz-jkfit").is_err());
+    let err = plan("cc-pvdz", "no-such-jkfit").err().expect("refused");
     assert_eq!(err.kind, ErrorKind::InvalidConfig);
     let mut asked = None;
-    let err = Run::new(
-        &common::xyz("h2o.xyz"),
-        "sto-3g",
-        "cc-pvdz-jkfit",
-        &step,
-        |n| {
-            asked = Some(n);
-            Err(Error::gpu("no device"))
-        },
-    )
+    let err = Run::new(&water(0, 1), "sto-3g", "cc-pvdz-jkfit", &step, |n| {
+        asked = Some(n);
+        Err(Error::gpu("no device"))
+    })
     .err()
     .expect("lwork's error is the run's");
     assert_eq!(err.kind, ErrorKind::GpuRuntime);
@@ -223,9 +214,8 @@ impl Decision for Reads {
 /// ones live across it, is the committed golden.
 #[test]
 fn iteration_plan_golden() {
-    let molecule = fb_io_xyz::read_xyz(&common::xyz("h2o.xyz"), 0, 1).unwrap();
-    let (n, nocc) = (24, fb_pipeline_scf::occupied_orbitals(&molecule).unwrap());
-    assert_eq!(nocc, 5);
+    let (n, (nocc, n_beta)) = (24, occupied_orbitals(&water(0, 1)).unwrap());
+    assert_eq!((nocc, n_beta), (5, 5));
     let mut dag = Dag::new();
     dag.blas_workspace(0);
     let [h, j, k, s, x, c, d] = ["H", "J", "K", "S", "X", "C", "D"]
@@ -255,18 +245,76 @@ fn iteration_plan_golden() {
     );
 }
 
-/// An odd electron count, or none, is refused at planning as
-/// `InvalidConfig`: water at charge +1 (9 electrons), -1 (11) and +10
-/// (none); neutral water's 10 electrons are 5 orbitals.
+/// The occupations of water: neutral 10 electrons, a singlet's `(5, 5)`,
+/// a triplet's `(6, 4)`; the cation's 9, a doublet's `(5, 4)`. An electron
+/// count of the wrong parity for the multiplicity, a multiplicity under 1
+/// or past the count plus one, or no electrons, is refused at planning as
+/// `InvalidConfig` naming both, as the C++ step refuses them.
 #[test]
-fn an_odd_electron_count_is_refused() {
-    let water = |charge| fb_io_xyz::read_xyz(&common::xyz("h2o.xyz"), charge, 1).unwrap();
-    assert_eq!(fb_pipeline_scf::occupied_orbitals(&water(0)).unwrap(), 5);
-    for charge in [1, -1, 10] {
-        let err =
-            fb_pipeline_scf::occupied_orbitals(&water(charge)).expect_err("not a closed shell");
-        assert_eq!(err.kind, ErrorKind::InvalidConfig, "charge {charge}");
+fn the_occupations_follow_the_multiplicity() {
+    for (charge, multiplicity, want) in [(0, 1, (5, 5)), (0, 3, (6, 4)), (1, 2, (5, 4))] {
+        let got = occupied_orbitals(&water(charge, multiplicity)).unwrap();
+        assert_eq!(got, want, "charge {charge}, multiplicity {multiplicity}");
     }
-    let err = fb_pipeline_scf::occupied_orbitals(&water(1)).unwrap_err();
-    assert!(err.message.contains("9 electrons"), "{}", err.message);
+    for (charge, multiplicity) in [(1, 1), (-1, 1), (0, 2), (0, 0), (0, 13), (10, 1)] {
+        let err = occupied_orbitals(&water(charge, multiplicity)).expect_err("refused");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidConfig,
+            "charge {charge}, multiplicity {multiplicity}"
+        );
+    }
+    let err = occupied_orbitals(&water(1, 1)).unwrap_err();
+    assert!(
+        err.message.contains("9 electrons") && err.message.contains("multiplicity 1"),
+        "{}",
+        err.message
+    );
+}
+
+/// The whole DF-ROHF run of the water cation, a doublet, in cc-pVDZ over
+/// cc-pVDZ-JKFIT: the run above with the guess rescaled to nine electrons,
+/// the guess's alpha and beta factors and their rests' K before the loop,
+/// with the spin densities and the identity; the body's two K, the spin
+/// Fock matrices, the Roothaan matrix and the open density; and the open
+/// orbitals made PySCF's after it. The plan text, the arena's size among
+/// it, is the committed golden.
+#[test]
+fn rohf_plan_golden() {
+    let run = Run::new(
+        &water(1, 2),
+        "cc-pvdz",
+        "cc-pvdz-jkfit",
+        &ScfStep::default(),
+        |_| Ok(LWORK),
+    )
+    .expect("the cation plans");
+    golden(
+        env!("CARGO_MANIFEST_DIR"),
+        "plan_rohf_h2o_cation_cc-pvdz_cc-pvdz-jkfit.txt",
+        &text(run.planned()),
+    );
+}
+
+/// What planning refuses of an open shell before anything is added: more
+/// alpha electrons than orbitals (water's nonet in STO-3G, 9 in 7 AOs),
+/// `InvalidConfig`; and no beta electron (water at charge +9, one electron
+/// in a doublet), `Unsupported`, since the beta exchange of no column is
+/// not ported.
+#[test]
+fn an_open_shell_planning_cannot_hold_is_refused() {
+    let step = ScfStep::default();
+    let err = Run::new(&water(0, 9), "sto-3g", "cc-pvdz-jkfit", &step, |_| {
+        Ok(LWORK)
+    })
+    .err()
+    .expect("nine alpha electrons in seven orbitals");
+    assert_eq!(err.kind, ErrorKind::InvalidConfig, "{}", err.message);
+    assert!(err.message.contains("do not fit 7"), "{}", err.message);
+    let err = Run::new(&water(9, 2), "sto-3g", "cc-pvdz-jkfit", &step, |_| {
+        Ok(LWORK)
+    })
+    .err()
+    .expect("no beta electron");
+    assert_eq!(err.kind, ErrorKind::Unsupported, "{}", err.message);
 }

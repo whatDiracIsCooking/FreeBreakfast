@@ -79,10 +79,11 @@ pub fn add_write_host_npy(
 /// Add the writing of an SCF's results to the JSON file `path` to `dag` on
 /// GPU worker `worker`: `scalars`, the heap row `[E, ‖e‖, builds]` of
 /// [`fb_pipeline_scf::add_scf`], and `eps`, its device row of the `n`
-/// orbital energies. Two nodes: `download epsilon` (the planner's copy
-/// node, [`Dag::download`]: ε copied into a pinned row `epsilon`) and
-/// `write scf.json` (CPU: the object `{"energy",
-/// "residual", "iterations", "epsilon"}`, each double at full precision).
+/// orbital energies, beside the occupations `occupied`, `[n_alpha,
+/// n_beta]`. Two nodes: `download epsilon` (the planner's copy node,
+/// [`Dag::download`]: ε copied into a pinned row `epsilon`) and
+/// `write scf.json` (CPU: the object `{"energy", "residual", "iterations",
+/// "n_alpha", "n_beta", "epsilon"}`, each double at full precision).
 /// The write feeds nothing, and the directory must exist when the plan
 /// runs.
 ///
@@ -94,6 +95,7 @@ pub(crate) fn add_write_scf_json(
     scalars: RowId<Heap, f64>,
     eps: RowId<Device, f64>,
     n: usize,
+    occupied: [usize; 2],
     path: PathBuf,
 ) {
     let epsilon = dag.download(worker, eps, "epsilon", n);
@@ -104,6 +106,7 @@ pub(crate) fn add_write_scf_json(
             scalars,
             epsilon,
             n,
+            occupied,
             path,
         },
     );
@@ -137,6 +140,7 @@ struct WriteScf {
     scalars: RowId<Heap, f64>,
     epsilon: RowId<Pinned, f64>,
     n: usize,
+    occupied: [usize; 2],
     path: PathBuf,
 }
 
@@ -161,6 +165,8 @@ impl CpuTask for WriteScf {
             "residual": residual,
             // A whole number the loop's decision wrote.
             "iterations": builds as usize,
+            "n_alpha": self.occupied[0],
+            "n_beta": self.occupied[1],
             "epsilon": host.get(self.epsilon),
         });
         std::fs::write(&self.path, format!("{text:#}\n"))

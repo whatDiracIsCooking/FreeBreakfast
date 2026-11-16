@@ -55,9 +55,11 @@ use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write}
 /// whose shape is not the basis's (`InvalidConfig`), checked from its
 /// header alone ([`add_loaded_guess`]); for [`Calculation::Rhf`] and
 /// [`Calculation::Localization`], no
-/// `[eri]`, an odd electron count ([`occupied_orbitals`]) and an option out
-/// of range ([`ScfStep::check`]), each `InvalidConfig`; for
-/// [`Calculation::Localization`], [`LocalizationStep::check`]'s refusals;
+/// `[eri]`, an electron count of the wrong parity for the multiplicity
+/// ([`occupied_orbitals`]) and an option out of range
+/// ([`ScfStep::check`]), each `InvalidConfig`; for
+/// [`Calculation::Localization`], [`LocalizationStep::check`]'s refusals,
+/// and a multiplicity above 1, `Unsupported`;
 /// `lwork`'s error;
 /// and the kernel libraries' load checks ([`add_records`], [`add_df_eri`],
 /// [`add_scf`], [`add_pm_localize`]). The guess's data is read when the
@@ -70,10 +72,9 @@ pub fn plan(
     config: &Config,
     lwork: impl FnOnce(usize) -> Result<usize>,
 ) -> Result<Planned<'static>> {
-    // Charge and multiplicity: [molecule] has no key for either, so every
-    // molecule is the neutral singlet.
-    let molecule =
-        fb_io_xyz::read_xyz(&config.molecule.xyz, 0, 1).map_err(|e| keyed(e, "[molecule] xyz"))?;
+    let step = &config.molecule;
+    let molecule = fb_io_xyz::read_xyz(&step.xyz, step.charge, step.multiplicity)
+        .map_err(|e| keyed(e, "[molecule] xyz"))?;
     let basis = fb_io_basis::resolve_basis(&config.basis_set.basis)
         .and_then(|stamp| stamp.primitive_normalized().place(&molecule))
         .map_err(|e| keyed(e, "[basis_set] basis"))?;
@@ -96,6 +97,13 @@ pub fn plan(
             // Refused before lwork can touch a device, as the RHF's options.
             if let Some(step) = &localization {
                 step.check()?;
+                if molecule.multiplicity() != 1 {
+                    return Err(Error::unsupported(format!(
+                        "[localization] is implemented for a closed shell only, and \
+                         [molecule] multiplicity is {}",
+                        molecule.multiplicity()
+                    )));
+                }
             }
             let rhf = plan_rhf(&mut dag, config, &molecule, &basis, lwork)?;
             add_write_npy(&mut dag, 0, rhf.c, [n, n], config.output.join("c.npy"));
@@ -106,6 +114,7 @@ pub fn plan(
                 rhf.scalars,
                 rhf.eps,
                 n,
+                rhf.occupied,
                 config.output.join("scf.json"),
             );
             if let Some(step) = localization {
@@ -115,8 +124,8 @@ pub fn plan(
                     rotation_gain_threshold: step.rotation_gain_threshold,
                     exponent: step.exponent,
                 };
-                // Planned after the RHF, which refused an open shell.
-                let n_occ = occupied_orbitals(&molecule)?;
+                // A closed shell, refused otherwise above.
+                let n_occ = rhf.occupied[0];
                 let (info, [c_local, _]) =
                     add_pm_localize(&mut dag, 0, &options, &basis, n_occ, rhf.s, rhf.c)?;
                 add_write_npy(
@@ -145,12 +154,14 @@ struct Rhf {
     s: RowId<Device, f64>,
     /// The orbitals C, `n²`, column `j` that of `ε_j`, ascending.
     c: RowId<Device, f64>,
-    /// `D = 2 C_occ C_occᵀ`, `n²`.
+    /// The spin-summed density, `D = 2 C_occ C_occᵀ` or `Da + Db`, `n²`.
     d: RowId<Device, f64>,
     /// ε, `n`.
     eps: RowId<Device, f64>,
     /// [`add_scf`]'s heap row `[E, ‖e‖, builds]`.
     scalars: RowId<Heap, f64>,
+    /// `[n_alpha, n_beta]` ([`occupied_orbitals`]).
+    occupied: [usize; 2],
 }
 
 /// Add the DF-RHF `config` asks for to `dag` on GPU worker 0, its writes
@@ -178,7 +189,7 @@ fn plan_rhf(
     // Refused here, before lwork can touch a device; add_scf checks both
     // again.
     step.check()?;
-    occupied_orbitals(molecule)?;
+    let (n_alpha, n_beta) = occupied_orbitals(molecule)?;
     dag.blas_workspace(0);
     let nuclei = add_nuclei(dag, 0, molecule);
     let mut u = None;
@@ -203,6 +214,7 @@ fn plan_rhf(
         d,
         eps,
         scalars,
+        occupied: [n_alpha, n_beta],
     })
 }
 

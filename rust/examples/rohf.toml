@@ -1,0 +1,17 @@
+# The DF-ROHF energy of the water cation, a doublet, in cc-pVDZ over
+# cc-pVDZ-JKFIT, from the SAD guess rescaled to its nine electrons. Writes
+# scf.json (n_alpha 5, n_beta 4), c.npy, d.npy (Da + Db) and timing.json.
+calculation = "rhf"    # the SCF step: ROHF at a multiplicity above 1
+output = "rohf"        # relative to the working directory; default "fbf_output"
+
+[molecule]
+xyz = "water_cation.xyz"   # Angstrom, relative to this file
+charge = 1             # default 0; the electron count is sum Z - charge
+multiplicity = 2       # default 1; 2S + 1, of the electron count's parity plus one
+
+[basis_set]
+basis = "cc-pvdz"
+
+[eri]                  # required: no default
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"

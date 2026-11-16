@@ -1,4 +1,4 @@
-//! The closed-shell DF-RHF loop: one iteration's tasks as a loop's body,
+//! The DF-RHF and DF-ROHF loop: one iteration's tasks as a loop's body,
 //! replayed until its decision finds the energy and the residual converged.
 
 use std::ops::ControlFlow;
@@ -24,6 +24,7 @@ use wwr_sys::wwr_blas_operation::WWR_BLAS_OP_N as OP_N;
 use wwr_sys::wwr_blas_side_mode::{WWR_BLAS_SIDE_LEFT as LEFT, WWR_BLAS_SIDE_RIGHT as RIGHT};
 
 use super::iteration::{add_density, add_fock, add_published_density, occupied_orbitals};
+use super::open::{add_open_density, add_open_fock, add_publish_open, add_spin_densities};
 use super::tasks::add_solve_fock;
 
 /// The C++ `kDensityFactorFloor`: an eigenvalue of the guess density at or
@@ -102,25 +103,31 @@ impl ScfStep {
     }
 }
 
-/// Add the closed-shell DF-RHF of `molecule` to `dag` on GPU worker
-/// `worker`, from the guess density `guess`, and return
-/// `(scalars, [ε, C, D])`: a pinned row of three doubles, `[E, ‖e‖_F,
-/// builds]` of the last Fock build (E in hartree, electronic plus nuclear
-/// repulsion; `builds` the loop's iterations, a whole number), and
-/// device output rows of the `n` orbital energies ascending, the orbitals
-/// (`n²` doubles, column-major, column `j` the orbital of `ε[j]`) and
-/// `D = 2 C_occ C_occᵀ` (`n²`), all of the converged Fock matrix as built.
+/// Add the DF-RHF of `molecule` to `dag` on GPU worker `worker`, or its
+/// DF-ROHF when its multiplicity is above 1 ([`occupied_orbitals`]), from
+/// the guess density `guess`, and return `(scalars, [ε, C, D])`: a heap
+/// row of three doubles, `[E, ‖e‖_F, builds]` of the last Fock build (E in
+/// hartree, electronic plus nuclear repulsion; `builds` the loop's
+/// iterations, a whole number), and device output rows of the `n` orbital
+/// energies ascending, the orbitals (`n²` doubles, column-major, column
+/// `j` the orbital of `ε[j]`) and `D = 2 C_occ C_occᵀ` (`n²`), all of the
+/// converged Fock matrix as built; an open shell's are below.
 ///
 /// `h`, `s` and `x` are earlier tasks' outputs of `n²` doubles: the core
 /// Hamiltonian, the overlap and `X = S^(-1/2)`. `guess` is the guess
 /// density, `n²` doubles, symmetric positive semidefinite (a SAD guess;
 /// `fb_pipeline_guess::add_guess_upload`'s row); the loop carries D in it,
-/// so it holds the last iteration's density after the run. `eri` is the
+/// so it holds the last iteration's density after the run, unless it is
+/// rescaled (below). `eri` is the
 /// density-fitted integrals of the same basis (`fb_pipeline_eri::add_df_eri`).
 /// `lwork` is [`syevd_lwork`](fb_recipes_diagonalize::syevd_lwork) at `n`.
 ///
-/// **Before the loop**, the guess enters as its factor, as the C++ first
-/// build does, since K is built from a factor of D, never from D: the
+/// **Before the loop**, when the molecule's electron count `N` is not
+/// `Σ Z` (an ion), **`guess rescale`** (stream): the guess scaled by
+/// `N / Σ Z` into the row `"D rescaled"`, which the loop carries in its
+/// place, since SAD places `Σ Z` electrons whatever the charge. The guess
+/// enters as its factor, as the C++ first build does, since K is built
+/// from a factor of D, never from D: the
 /// eigendecomposition `D = U diag(w) Uᵀ` ([`add_diagonalize`] on the rows
 /// `"guess U"`, `"guess w"`); **`download guess w host`**, the planner's
 /// copy node ([`Dag::download`]), `w` copied to the pinned row
@@ -162,10 +169,35 @@ impl ScfStep {
 /// F, then **`published density`** (stream), D from C's first `nocc`
 /// columns by one gemm.
 ///
+/// **An open shell** (`n_alpha > n_beta`) changes the C++ loop's steps 1,
+/// 2 and 6, as its README's open shell paragraph has them; `nocc` above is
+/// `n_alpha`. Before the loop, C̃'s last `n_alpha` columns are the carried
+/// alpha factor `"C a"` and the rest `"C a rest"`, its last `n_beta` the
+/// carried beta factor `"C b"` and the rest `"C b rest"`, each rest's K
+/// built once; **`spin densities`** (stream), `Da = Db = D/2` into the
+/// carried `"Da"` and `"Db"`; and **`identity`** (CPU) with its upload,
+/// `"I"`. In the body, a second `df exchange`, of `"C b"`, each K with its
+/// rest's added by a `guess exchange` (`"Ka of D"`, `"Kb of D"`); then in
+/// place of `fock`, **`open fock`** (`Fa = H + J - Ka/2`,
+/// `Fb = H + J - Kb/2`, `E = tr(D H + Da Fa + Db Fb)/2 + E_nuc`) and
+/// **`roothaan fock`** (the Roothaan effective F, its open block
+/// `(Fa + 3 Fb)/4`, not PySCF's `(Fa + Fb)/2`; the C++ tree's issue #476),
+/// with `residual` and `energy and norm` on `(F, D)`; DIIS and the solve
+/// unchanged; and in place of `density`, **`open density`**, which writes
+/// the factors, `Da = Ca Caᵀ`, `Db = Cb Cbᵀ` and `D = Da + Db`. After the
+/// loop, F's canonical orbitals with the open ones, columns
+/// `[n_beta, n_alpha)`, rotated among themselves to diagonalize
+/// `Fc = (Fa + Fb)/2` there: **`open block`**, the eigensolver on it, and
+/// **`publish open`**, so every published energy is PySCF's ROHF
+/// `mo_energy` by occupation class, the open ones in their columns, and D
+/// is `Da + Db`. A closed shell adds none of it.
+///
 /// # Errors
 /// At planning, before anything is added: `InvalidConfig` for an option
-/// out of range ([`ScfStep`]) or an electron count that is not a closed
-/// shell ([`occupied_orbitals`]). Then the kernel library's load check
+/// out of range ([`ScfStep`]), an electron count of the wrong parity for
+/// the multiplicity ([`occupied_orbitals`]) or more alpha electrons than
+/// the `n` orbitals; `Unsupported` for an open shell with no beta electron.
+/// Then the kernel library's load check
 /// ([`add_diis`], [`add_df_exchange`]), as `GpuRuntime`; `dag` may hold
 /// some of the tasks after it. At run time, the tasks' errors, and
 /// `MaxIterationsExceeded` when the loop has not converged in
@@ -196,12 +228,36 @@ pub fn add_scf(
     guess: RowId<Device, f64>,
 ) -> Result<(RowId<Heap, f64>, [RowId<Device, f64>; 3])> {
     step.check()?;
-    let nocc = occupied_orbitals(molecule)?;
+    let (n_alpha, n_beta) = occupied_orbitals(molecule)?;
+    let electrons = molecule.electron_count();
+    if n_alpha > n {
+        return Err(Error::config(format!(
+            "scf: {electrons} electrons at multiplicity {} do not fit {n} spatial orbitals",
+            molecule.multiplicity()
+        )));
+    }
+    let open = n_alpha != n_beta;
+    if n_beta == 0 {
+        return Err(Error::unsupported(format!(
+            "scf: {electrons} electron at multiplicity {} has no beta electron, which is not \
+             ported",
+            molecule.multiplicity()
+        )));
+    }
+    let nocc = n_alpha;
     let naux = eri.aux.nao_sphe() as usize;
     let e_nuc = nuclear_repulsion_energy(molecule);
 
-    // Before the loop: the guess's factor, the rest's K, DIIS's rings and
-    // the decision's last energy.
+    // Before the loop: the guess rescaled to the electron count, its factor,
+    // the rest's K, an open shell's spin densities, DIIS's rings and the
+    // decision's last energy.
+    let z = molecule.total_nuclear_charge();
+    let guess = if z != electrons && z > 0 {
+        let scale = f64::from(electrons) / f64::from(z);
+        dag.add_gpu("guess rescale", worker, GuessRescale { d: guess, scale, n })
+    } else {
+        guess
+    };
     let (u, w) = add_diagonalize(dag, worker, "guess", n, lwork, guess);
     let w_host = dag.download(worker, w, "guess w host", n);
     let floor = dag.add_cpu("guess check", worker, GuessCheck { w: w_host });
@@ -214,6 +270,7 @@ pub fn add_scf(
             floor,
             n,
             nocc,
+            n_beta: open.then_some(n_beta),
         },
     );
     let rest_k = match factor.rest {
@@ -228,6 +285,14 @@ pub fn add_scf(
         )?),
         None => None,
     };
+    let beta = match factor.beta {
+        Some((cb, rest)) => Some((
+            cb,
+            add_df_exchange(dag, worker, n, naux, n - n_beta, eri.b, rest)?,
+        )),
+        None => None,
+    };
+    let spin = open.then(|| add_spin_densities(dag, worker, n, guess));
     let diis = add_diis(dag, worker, "DIIS F", n * n, step.diis_history)?;
     let previous = dag.add_cpu("energy before", worker, EnergyBefore);
 
@@ -236,12 +301,52 @@ pub fn add_scf(
     let j = add_df_coulomb(dag, worker, n, naux, eri.b, guess);
     let mut k = add_df_exchange(dag, worker, n, naux, nocc, eri.b, factor.c_occ)?;
     if let Some(rest) = rest_k {
-        k = dag.add_gpu("guess exchange", worker, GuessExchange { k, rest, n });
+        let name = if open { "Ka of D" } else { "K of D" };
+        k = dag.add_gpu("guess exchange", worker, GuessExchange { k, rest, n, name });
     }
-    let (f, e, scalars) = add_fock(dag, worker, n, e_nuc, h, j, k, guess, s, x);
+    let (f, spin_fock, e, scalars) = match (beta, spin) {
+        (Some((cb, rest)), Some([da, db, identity])) => {
+            let kb = add_df_exchange(dag, worker, n, naux, n_beta, eri.b, cb)?;
+            let kb = dag.add_gpu(
+                "guess exchange",
+                worker,
+                GuessExchange {
+                    k: kb,
+                    rest,
+                    n,
+                    name: "Kb of D",
+                },
+            );
+            let (f, fs, e, scalars) = add_open_fock(
+                dag,
+                worker,
+                n,
+                e_nuc,
+                [h, j, k, kb],
+                [guess, da, db],
+                [s, x, identity],
+            );
+            (f, Some((fs, [da, db, cb])), e, scalars)
+        }
+        _ => {
+            let (f, e, scalars) = add_fock(dag, worker, n, e_nuc, h, j, k, guess, s, x);
+            (f, None, e, scalars)
+        }
+    };
     let (f_star, singular) = diis.add_push(dag, f, e);
     let (_, c_next) = add_solve_fock(dag, worker, n, lwork, f_star, x);
-    add_density(dag, worker, n, nocc, c_next, guess, factor.c_occ);
+    match spin_fock {
+        Some((_, [da, db, cb])) => add_open_density(
+            dag,
+            worker,
+            n,
+            [n_alpha, n_beta],
+            c_next,
+            [guess, da, db],
+            [factor.c_occ, cb],
+        ),
+        None => add_density(dag, worker, n, nocc, c_next, guess, factor.c_occ),
+    }
     // The decision writes the last build's E, ‖e‖ and count into `previous`.
     dag.add_loop(
         "converged",
@@ -258,10 +363,63 @@ pub fn add_scf(
         },
     );
 
-    // After the loop: the converged F's own orbitals and their density.
+    // After the loop: the converged F's own orbitals and their density, an
+    // open shell's open orbitals made PySCF's.
     let (eps, c) = add_solve_fock(dag, worker, n, lwork, f, x);
-    let d = add_published_density(dag, worker, n, nocc, c);
-    Ok((previous, [eps, c, d]))
+    let published = match spin_fock {
+        Some((fs, _)) => add_publish_open(dag, worker, n, lwork, [n_alpha, n_beta], fs, eps, c),
+        None => [eps, c, add_published_density(dag, worker, n, nocc, c)],
+    };
+    Ok((previous, published))
+}
+
+/// GPU, before the loop: the guess scaled by `N / Σ Z` into a row of its
+/// own, which the loop then carries: SAD places `Σ Z` electrons whatever
+/// the charge, and the SCF needs the molecule's own count.
+struct GuessRescale {
+    d: RowId<Device, f64>,
+    scale: f64,
+    n: usize,
+}
+
+impl GpuTask for GuessRescale {
+    type Rows = RowId<Device, f64>;
+
+    fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
+        device.read(self.d);
+        device.output("D rescaled", self.n * self.n)
+    }
+
+    fn dims(&self) -> Vec<(&'static str, usize)> {
+        vec![("n", self.n)]
+    }
+
+    fn run(
+        &self,
+        out: &Self::Rows,
+        device: &Bufs<'_, Device>,
+        _: &CopyOnly<'_, Pinned>,
+        worker: &DeviceStream,
+    ) -> Status {
+        // add_scf checked that n² fits an i32.
+        let n = self.n as i32;
+        let d = device.get(self.d);
+        geam(
+            worker.blas(),
+            OP_N,
+            OP_N,
+            n,
+            n,
+            self.scale,
+            &d,
+            n,
+            0.0,
+            &d,
+            n,
+            &mut device.take_mut(*out),
+            n,
+        )
+    }
 }
 
 /// CPU, before the loop: the guess's eigenvalues, ascending, read for the
@@ -302,13 +460,16 @@ impl CpuTask for GuessCheck {
 
 /// GPU: `C̃ = U diag((w/2)^(1/2))`, an eigenvalue at or under the floor a
 /// zero column, its last `nocc` columns into the carried factor and the
-/// rest into a row of their own.
+/// rest into a row of their own; for an open shell, `nocc` is `n_alpha`,
+/// and its last `n_beta` columns are the carried beta factor and the rest
+/// another row.
 struct GuessFactor {
     u: RowId<Device, f64>,
     w: RowId<Device, f64>,
     floor: RowId<Pinned, f64>,
     n: usize,
     nocc: usize,
+    n_beta: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -319,6 +480,8 @@ struct GuessFactorRows {
     factor: RowId<Device, f64>,
     c_occ: RowId<Device, f64>,
     rest: Option<RowId<Device, f64>>,
+    /// An open shell's beta factor and the rest of C̃'s columns.
+    beta: Option<(RowId<Device, f64>, RowId<Device, f64>)>,
 }
 
 impl GpuTask for GuessFactor {
@@ -329,18 +492,31 @@ impl GpuTask for GuessFactor {
         device.read(self.w);
         host.read(self.floor);
         let n = self.n;
+        let (occ, rest) = match self.n_beta {
+            Some(_) => ("C a", "C a rest"),
+            None => ("C occ", "C rest"),
+        };
         GuessFactorRows {
             half: device.scratch("w/2", n),
             root: device.scratch("(w/2)^(-1/2)", n),
             weights: device.scratch("(w/2)^(1/2)", n),
             factor: device.scratch("guess factor", n * n),
-            c_occ: device.output("C occ", n * self.nocc),
-            rest: (self.nocc < n).then(|| device.output("C rest", n * (n - self.nocc))),
+            c_occ: device.output(occ, n * self.nocc),
+            rest: (self.nocc < n).then(|| device.output(rest, n * (n - self.nocc))),
+            beta: self.n_beta.map(|nb| {
+                (
+                    device.output("C b", n * nb),
+                    device.output("C b rest", n * (n - nb)),
+                )
+            }),
         }
     }
 
     fn dims(&self) -> Vec<(&'static str, usize)> {
-        vec![("n", self.n), ("nocc", self.nocc)]
+        match self.n_beta {
+            Some(nb) => vec![("n", self.n), ("n_alpha", self.nocc), ("n_beta", nb)],
+            None => vec![("n", self.n), ("nocc", self.nocc)],
+        }
     }
 
     fn run(
@@ -378,9 +554,16 @@ impl GpuTask for GuessFactor {
         dgmm(blas, LEFT, n, 1, &half, n, &root, 1, &mut weights, n)?;
         dgmm(blas, RIGHT, n, n, &u, n, &weights, 1, &mut factor, n)?;
         // Ascending: the largest eigenvalues are the last nocc columns.
-        let (head, tail) = split_at_mut(&mut factor, self.n * (self.n - self.nocc));
-        copy::d2d(&mut c_occ, &tail, worker)?;
-        if let Some(rest) = rows.rest {
+        {
+            let (head, tail) = split_at_mut(&mut factor, self.n * (self.n - self.nocc));
+            copy::d2d(&mut c_occ, &tail, worker)?;
+            if let Some(rest) = rows.rest {
+                copy::d2d(&mut device.take_mut(rest), &head, worker)?;
+            }
+        }
+        if let (Some(nb), Some((cb, rest))) = (self.n_beta, rows.beta) {
+            let (head, tail) = split_at_mut(&mut factor, self.n * (self.n - nb));
+            copy::d2d(&mut device.take_mut(cb), &tail, worker)?;
             copy::d2d(&mut device.take_mut(rest), &head, worker)?;
         }
         Ok(())
@@ -388,11 +571,14 @@ impl GpuTask for GuessFactor {
 }
 
 /// GPU, in the body: `K of D = K + K rest`, then `K rest = 0`, so the
-/// rest of the guess's factor enters the first iteration's K alone.
+/// rest of the guess's factor enters the first iteration's K alone. The
+/// output row is `name`: `"K of D"`, or an open shell's `"Ka of D"` and
+/// `"Kb of D"`.
 struct GuessExchange {
     k: RowId<Device, f64>,
     rest: RowId<Device, f64>,
     n: usize,
+    name: &'static str,
 }
 
 impl GpuTask for GuessExchange {
@@ -401,7 +587,7 @@ impl GpuTask for GuessExchange {
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.k);
         device.write(self.rest);
-        device.output("K of D", self.n * self.n)
+        device.output(self.name, self.n * self.n)
     }
 
     fn dims(&self) -> Vec<(&'static str, usize)> {

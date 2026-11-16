@@ -383,6 +383,79 @@ fn rhf_example() {
     );
 }
 
+/// The example DF-ROHF through the binary, the water cation's doublet:
+/// exit 0, its `scf.json` energy within the DF-RHF's bar of PySCF's DF-ROHF
+/// energy and every orbital energy within `fb-pipeline-scf`'s 1e-6 hartree
+/// (its `tests/rohf.rs` has both bars' analysis), against its copy of the
+/// C++ tree's reference (`pipeline/scf/tests/data/df_rohf.json`, the case
+/// `h2o_cation_ccpvdz`, whose geometry `water_cation.xyz` carries in
+/// Angstrom); `n_alpha` 5 and `n_beta` 4; `c.npy` and `d.npy` square; and
+/// its `timing.json` the timing record, the open shell's nodes among it.
+/// Needs a GPU.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn rohf_example() {
+    let cwd = workdir("example_rohf");
+    let config = example("rohf.toml");
+    let out = free_breakfast(&cwd, &config);
+    assert_eq!(out.status.code(), Some(0), "the example exits 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("completed: 0 errors"), "{stdout}");
+
+    let dir = cwd.join("rohf");
+    let (energy, iterations) = scf_json(&dir);
+    let reference: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../scf/tests/data/df_rohf.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let case = reference["df_rohf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "h2o_cation_ccpvdz")
+        .expect("the water cation is in the reference");
+    let e_ref = case["energy"].as_f64().unwrap();
+    let miss = (energy - e_ref).abs();
+    println!("E = {energy:.12} against {e_ref:.12}, |dE| = {miss:e}, {iterations} iterations");
+    assert!(miss <= ENERGY_BAR, "|dE| = {miss:e} over {ENERGY_BAR:e}");
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("scf.json")).unwrap()).unwrap();
+    assert_eq!(
+        (json["n_alpha"].as_u64(), json["n_beta"].as_u64()),
+        (Some(5), Some(4)),
+        "the doublet's occupations"
+    );
+    let worst = json["epsilon"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(case["mo_energies"].as_array().unwrap())
+        .fold(0.0_f64, |m, (g, w)| {
+            m.max((g.as_f64().unwrap() - w.as_f64().unwrap()).abs())
+        });
+    println!("max |d epsilon| = {worst:e}");
+    assert!(worst <= 1e-6, "max |d epsilon| = {worst:e}");
+    for m in ["c.npy", "d.npy"] {
+        let a = fb_io_npy::read_npy(&dir.join(m)).unwrap();
+        assert_eq!(a.shape, [24, 24], "{m}: water's cc-pVDZ AOs");
+    }
+    check_timing(
+        &config,
+        &dir.join("timing.json"),
+        &[
+            "guess rescale",
+            "spin densities",
+            "roothaan fock",
+            "open density",
+            "publish open",
+            "write scf.json",
+        ],
+    );
+}
+
 /// The example localization through the binary: exit 0, its `scf.json`
 /// energy at the DF-RHF's bar, its `localization.json` L after within the
 /// bar of PySCF's maximum (the module's doc), L before under it and a
@@ -618,6 +691,36 @@ fn a_guess_file_of_the_wrong_shape_is_refused() {
         &config,
         ErrorKind::InvalidConfig,
         &["[guess] from", &wrong.display().to_string(), "is not 7 x 7"],
+    );
+}
+
+/// Water's DF-RHF at a charge and multiplicity of the wrong parity, +1 as
+/// a singlet: `InvalidConfig`, naming the count and the multiplicity, at
+/// planning.
+#[test]
+fn a_multiplicity_of_the_wrong_parity_is_refused() {
+    refused(
+        "refused_wrong_parity",
+        "calculation = \"rhf\"\n[molecule]\nxyz = \"water.xyz\"\ncharge = 1\n\
+         [basis_set]\nbasis = \"sto-3g\"\n[eri]\nmode = \"density_fitting\"\n\
+         aux_basis = \"cc-pvdz-jkfit\"\n",
+        ErrorKind::InvalidConfig,
+        &["9 electrons", "multiplicity 1"],
+    );
+}
+
+/// The localization of an open shell, water's triplet: `Unsupported`,
+/// naming `[localization]` and the multiplicity, at planning, as the C++
+/// refuses a closed-shell-only step over one.
+#[test]
+fn an_open_shell_localization_is_refused() {
+    refused(
+        "refused_open_localization",
+        "calculation = \"localization\"\n[molecule]\nxyz = \"water.xyz\"\nmultiplicity = 3\n\
+         [basis_set]\nbasis = \"sto-3g\"\n[eri]\nmode = \"density_fitting\"\n\
+         aux_basis = \"cc-pvdz-jkfit\"\n",
+        ErrorKind::Unsupported,
+        &["[localization]", "multiplicity is 3"],
     );
 }
 

@@ -84,16 +84,21 @@ pub enum Calculation {
     /// [`Config::guess`] says, written as `d.npy`, `nao_sphe × nao_sphe`.
     /// Computes on the CPU alone.
     Guess,
-    /// `"rhf"`: the closed-shell restricted Hartree-Fock energy over
-    /// density-fitted integrals ([`fb_pipeline_scf::add_scf`]), from the
-    /// guess [`Config::guess`] says, over [`Config::eri`]'s fitting set,
-    /// with [`Config::scf`]'s options. Writes `scf.json`, an object of the
-    /// converged `energy` (hartree, electronic plus nuclear repulsion), its
-    /// `residual` `‖Xᵀ (F D S - S D F) X‖_F`, the Fock builds as
-    /// `iterations` and the `epsilon` array of orbital energies ascending
-    /// (hartree); `c.npy`, the orbitals, column `j` that of `epsilon[j]`;
-    /// and `d.npy`, `D = 2 C_occ C_occᵀ`, which `[guess] from` reads back;
-    /// each matrix `nao_sphe × nao_sphe`. An odd electron count is refused.
+    /// `"rhf"`: the restricted Hartree-Fock energy over density-fitted
+    /// integrals ([`fb_pipeline_scf::add_scf`]), closed-shell at
+    /// multiplicity 1 and ROHF above it, as the C++ SCF step is one step
+    /// for both, from the guess [`Config::guess`] says, over
+    /// [`Config::eri`]'s fitting set, with [`Config::scf`]'s options.
+    /// Writes `scf.json`, an object of the converged `energy` (hartree,
+    /// electronic plus nuclear repulsion), its `residual`
+    /// `‖Xᵀ (F D S - S D F) X‖_F`, the Fock builds as `iterations`, the
+    /// occupations `n_alpha` and `n_beta`, and the `epsilon` array of
+    /// orbital energies (hartree), ascending (an open shell's by occupation
+    /// class); `c.npy`, the orbitals, column `j` that of `epsilon[j]`; and
+    /// `d.npy`, the spin-summed density, `D = 2 C_occ C_occᵀ` or `Da + Db`,
+    /// which `[guess] from` reads back; each matrix `nao_sphe × nao_sphe`.
+    /// An electron count of the wrong parity for the multiplicity is
+    /// refused.
     Rhf,
     /// `"localization"`: [`Calculation::Rhf`], writing its products, then
     /// the Pipek-Mezey localization of its occupied orbitals over Mulliken
@@ -104,6 +109,9 @@ pub enum Calculation {
     /// leave them; and `localization.json`, an object of the functional
     /// `L` of the canonical occupied orbitals as `functional_before`, of
     /// the localized ones as `functional_after`, and the `sweeps` it took.
+    /// A closed shell alone: a multiplicity above 1 is refused
+    /// `Unsupported`, since the C++ localization of an open shell, each
+    /// occupied space among itself, is not ported.
     Localization,
 }
 
@@ -163,7 +171,8 @@ impl Config {
     }
 }
 
-/// `[molecule]`: the geometry.
+/// `[molecule]`: the geometry, its net charge and its spin multiplicity,
+/// the C++ `MoleculeStep`'s keys.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MoleculeStep {
@@ -171,6 +180,22 @@ pub struct MoleculeStep {
     /// ([`fb_io_xyz::read_xyz`]). A path, relative to the config file's
     /// directory. Required; no default.
     pub xyz: PathBuf,
+    /// `charge`: the net charge, in units of the elementary charge,
+    /// positive for a cation, so the electron count is `Σ Z - charge`.
+    /// Default 0.
+    #[serde(default)]
+    pub charge: i32,
+    /// `multiplicity`: the spin multiplicity `2S + 1`, at least 1 and of
+    /// the electron count's parity plus one; above 1 the SCF is ROHF
+    /// ([`fb_pipeline_scf::add_scf`]), its count refused by
+    /// [`fb_pipeline_scf::occupied_orbitals`] otherwise. Default 1.
+    #[serde(default = "default_multiplicity")]
+    pub multiplicity: i32,
+}
+
+/// [`MoleculeStep::multiplicity`]'s default: a singlet.
+fn default_multiplicity() -> i32 {
+    1
 }
 
 /// `[basis_set]`: the orbital basis.

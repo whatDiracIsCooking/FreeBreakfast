@@ -29,10 +29,11 @@ use fb_test_support::golden;
 const LWORK: usize = 1234;
 
 /// The examples, by file name.
-const EXAMPLES: [&str; 5] = [
+const EXAMPLES: [&str; 6] = [
     "overlap.toml",
     "guess.toml",
     "rhf.toml",
+    "rohf.toml",
     "memory.toml",
     "localization.toml",
 ];
@@ -76,6 +77,14 @@ fn plan_golden_guess() {
 #[test]
 fn plan_golden_rhf() {
     plan_text("rhf.toml", Calculation::Rhf, "plan_rhf.txt");
+}
+
+/// The DF-ROHF example, the water cation's doublet: the DF-RHF's plan with
+/// the guess rescaled, the open shell's nodes before, in and after the
+/// loop, and the same write nodes.
+#[test]
+fn plan_golden_rohf() {
+    plan_text("rohf.toml", Calculation::Rhf, "plan_rohf.txt");
 }
 
 /// The localization example: the DF-RHF's plan and its writes, then the
