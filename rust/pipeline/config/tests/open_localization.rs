@@ -41,6 +41,8 @@
 //! at most 24 terms); each space ascending in `<i|F|i> = Σ_k (C_occᵀ S
 //! C_local)_ki² ε_k`, as the C++ step sorts it; L before under L after.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -332,19 +334,10 @@ fn localizes_like_pyscf(name: &str, exponent: i64) {
     );
 
     // Each space ascends in <i|F|i> = Σ_k (C_occᵀ S C_local)_ki² ε_k.
-    let energy = |i: usize| -> f64 {
-        (0..n_alpha)
-            .map(|k| {
-                let u: f64 = (0..n).map(|mu| c[k * n + mu] * sc(i, mu)).sum();
-                u * u * eps[k]
-            })
-            .sum()
-    };
-    let energies: Vec<f64> = (0..n_alpha).map(energy).collect();
+    let energies = common::fock_expectations(&c, &s, &c_local, &eps);
     for range in [0..n_beta, n_beta..n_alpha] {
-        let space = &energies[range];
         assert!(
-            space.windows(2).all(|e| e[0] <= e[1] + 1e-12),
+            common::ascending(&energies[range]),
             "{name} p{exponent}: <i|F|i> {energies:?} does not ascend in each space"
         );
     }
