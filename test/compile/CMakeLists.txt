@@ -22,9 +22,13 @@
 #     the footprint member PipelineStep requires (src/pipeline/step).
 #   * resources_compile.cpp -- DeviceResources' workspaces, sized at
 #     construction and only borrowed (src/core/resources).
+#   * pipeline_compile.cpp -- tables as concepts: a step's kTable and kKeys
+#     (src/pipeline/step), and the registry's refusal of a key two steps of
+#     one table declare (src/pipeline/pipeline).
 add_library(
   free_breakfast_compile_checks OBJECT
   recipes_compile.cpp footprint_compile.cpp resources_compile.cpp
+  pipeline_compile.cpp
 )
 
 set_target_properties(
@@ -38,4 +42,5 @@ target_link_libraries(
           free_breakfast::recipes
           free_breakfast::pipeline::footprint
           free_breakfast::pipeline::step
+          free_breakfast::pipeline::pipeline
 )

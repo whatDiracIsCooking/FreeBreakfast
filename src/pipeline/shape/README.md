@@ -22,11 +22,12 @@ whole registry.
 
 ## What it reads
 
-- **The molecule** from the Molecule step. When an `[optimize]` loads it,
+- **The geometry** from the Xyz step's file, at the Molecule step's charge
+  and multiplicity (both `[molecule]`'s). When an `[optimize]` loads it,
   `plan_shape` reads the chain's start instead: the loaded `final.xyz` does
-  not exist before the run, and must hold the same atoms. `read_xyz` uploads
-  the nuclei, so a `DeviceResources` is needed even before syevd's query.
-  The nuclei are freed on return.
+  not exist before the run, and must hold the same atoms. `read_xyz` parses
+  on the host, and the bases are placed over the atoms, so no `Molecule` is
+  constructed and nothing of the device is touched before syevd's query.
 - **The bases**, placed as the BasisSet and Eri steps place them, primitives
   normalized. They come from the top-level steps, or else from the copy an
   `[optimize]`'s or `[hessian]`'s chain holds (the config reads those from

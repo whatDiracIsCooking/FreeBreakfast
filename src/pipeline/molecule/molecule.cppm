@@ -1,18 +1,12 @@
 /// @file
-/// @brief The `Molecule` step: read an XYZ geometry into a `MoleculeOutput`,
-///        the pipeline's root product.
+/// @brief The `Molecule` step: the `GeometryOutput`'s atoms, with a charge
+///        and a multiplicity, into a `MoleculeOutput` on the device.
 ///
-/// A thin wrapper over io.xyz's read_xyz. A root step, so it reads nothing
-/// (`View<>`) and its options are its inputs: the file, and the charge and
-/// multiplicity XYZ does not carry. Device-shaped because a Molecule uploads
-/// its nuclei at construction. See README.md for the one device contract it
-/// does not keep.
-///
-/// It also declares `OptimizeOutput`, the product of pipeline.optimize's
-/// `OptimizeStep`, because the step's `load` reads it: after an `[optimize]`,
-/// the molecule is the geometry that step wrote. pipeline.optimize imports
-/// every step it reruns, each of which imports this module, so the product
-/// cannot be declared there.
+/// The head of the `[molecule]` table, whose `xyz` key is XyzStep's: the file
+/// is read on the host by that step, and this one only builds the Molecule,
+/// adding the charge and multiplicity XYZ does not carry. Device-shaped
+/// because a Molecule uploads its nuclei at construction. See README.md for
+/// the one device contract it does not keep.
 
 export module free_breakfast.pipeline.molecule;
 
@@ -20,12 +14,10 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
-import free_breakfast.io.xyz;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.footprint;
 export import free_breakfast.molecule;
-
-#include "diagnostics.h"
+export import free_breakfast.pipeline.xyz;
 
 export namespace free_breakfast {
 
@@ -34,59 +26,29 @@ struct MoleculeOutput {
   Molecule molecule;
 };
 
-/// @brief A geometry optimization's result: the product of `OptimizeStep`
-/// (pipeline.optimize), declared here for MoleculeStep::load.
-struct OptimizeOutput {
-  /// @brief The optimized geometry, on the device the step ran on.
-  Molecule molecule;
-  /// @brief The energy there (hartree): the SCF's at the last accepted
-  /// evaluation, under a CASSCF chain its CASSCF root's, under a NEVPT2
-  /// chain its NEVPT2 (or QD state's) energy, and under `meci` the mean
-  /// (E_I + E_J) / 2 of the two crossing roots.
-  double energy;
-};
-
-/// @brief Reads @ref xyz into a @ref Molecule on @p res's device.
+/// @brief Builds a @ref Molecule of the GeometryOutput's atoms on @p res's
+/// device.
 struct MoleculeStep {
-  /// @brief The step's TOML table name.
+  /// @brief The step's name, and the TOML table it heads.
   static constexpr std::string_view kName = "molecule";
+  /// @brief The keys of the table it reads; `xyz` is XyzStep's.
+  static constexpr std::array<std::string_view, 2> kKeys{"charge", "multiplicity"};
 
-  /// @brief The XYZ geometry file (Angstrom). Resolved by the front end, so
-  /// a relative path here is relative to the working directory.
-  std::filesystem::path xyz{};
   /// @brief Net molecular charge (XYZ carries none).
   int32_t charge{0};
   /// @brief Spin multiplicity 2S+1 (XYZ carries none).
   int32_t multiplicity{1};
 
-  /// @brief Read @ref xyz. A missing or malformed file is ErrorKind::IO.
-  [[nodiscard]] Result<MoleculeOutput> run(View<> /*in*/, DeviceResources &res) const {
-    return MoleculeOutput{FBF_TRY(read_xyz(res, xyz, charge, multiplicity))};
+  /// @brief The Molecule of the geometry's atoms, at @ref charge and
+  /// @ref multiplicity.
+  [[nodiscard]] Result<MoleculeOutput> run(View<GeometryOutput> in, DeviceResources &res) const {
+    return MoleculeOutput{Molecule(res, in.get<GeometryOutput>().atoms, charge, multiplicity)};
   }
 
   /// @brief The Molecule's nuclei, Z and the positions, persistent; their
-  /// staging, the pinned workspace (@ref molecule_footprint). The same on the
-  /// load path, which reads its own Molecule.
+  /// staging, the pinned workspace (@ref molecule_footprint).
   [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const {
     return molecule_footprint(dims.natoms);
-  }
-
-  /// @brief The geometry an `[optimize]` wrote to @p from (its final.xyz), in
-  /// place of @ref run, so every step reading the molecule runs at the
-  /// optimum. The charge and multiplicity are the optimized molecule's, which
-  /// XYZ does not carry; the file must hold its atoms, element by element, or
-  /// it is ErrorKind::InvalidConfig. A missing or malformed file is
-  /// ErrorKind::IO.
-  [[nodiscard]] static Result<MoleculeOutput> load(const std::filesystem::path &from,
-                                                   View<OptimizeOutput> in, DeviceResources &res) {
-    const Molecule &optimized = in.get<OptimizeOutput>().molecule;
-    Molecule molecule = FBF_TRY(read_xyz(res, from, optimized.charge(), optimized.multiplicity()));
-    if (!std::ranges::equal(molecule.atoms(), optimized.atoms(),
-                            [](const Atom &a, const Atom &b) { return a.element == b.element; })) {
-      return err_config("[{}] {} does not hold the {} atoms [optimize] optimized", kName,
-                        from.string(), optimized.natoms());
-    }
-    return MoleculeOutput{std::move(molecule)};
   }
 };
 

@@ -36,6 +36,9 @@ struct NacOutput {
 struct NacStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "nac";
+  /// @brief The keys of its table it reads, each an option the front end
+  /// reads into it.
+  static constexpr std::array<std::string_view, 3> kKeys{"pairs", "mult_ediff", "use_etfs"};
 
   /// @brief The (bra, ket) pairs, roots in @ref CasscfOutput::energies'
   /// order, each coupling <bra|d ket/dR>. Empty: every pair I < J, ordered by

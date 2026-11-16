@@ -35,6 +35,11 @@ export namespace free_breakfast {
 struct ScfStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "scf";
+  /// @brief The keys of its table it reads, each an option the front end
+  /// reads into it.
+  static constexpr std::array<std::string_view, 5> kKeys{"max_iterations", "energy_tolerance",
+                                                         "commutator_tolerance", "diis_history",
+                                                         "fock_rebuild_interval"};
 
   /// @brief The most Fock builds before giving up. At least 1.
   int32_t max_iterations = 100;

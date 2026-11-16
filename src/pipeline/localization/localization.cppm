@@ -84,6 +84,10 @@ struct LocalizationOutput {
 struct LocalizationStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "localization";
+  /// @brief The keys of its table it reads, each an option the front end
+  /// reads into it.
+  static constexpr std::array<std::string_view, 6> kKeys{
+      "mode", "max_sweeps", "functional_tolerance", "rotation_gain_threshold", "exponent", "livvo"};
 
   /// @brief The method.
   LocalizationMode mode = LocalizationMode::PipekMezey;

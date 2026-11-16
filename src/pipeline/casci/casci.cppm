@@ -59,6 +59,10 @@ struct CasciOutput {
 struct CasciStep : ActiveSpaceSelection {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "casci";
+  /// @brief The keys of its table it reads, each an option the front end
+  /// reads into it.
+  static constexpr std::array<std::string_view, 8> kKeys{
+      "ncas", "nelecas", "nroots", "active", "avas", "avas_threshold", "avas_max_ncas", "orbitals"};
 
   /// @brief The roots wanted, at least 1.
   int32_t nroots = 1;

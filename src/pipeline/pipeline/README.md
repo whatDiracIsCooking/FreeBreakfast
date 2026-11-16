@@ -37,7 +37,8 @@ public:
 
 ## The registry, checked at compile time
 
-`Steps` must have unique `kName`s, exactly one producer per product, and a
+`Steps` must have unique `kName`s, no key declared by two steps of one table
+(`kStepTable`, `kStepKeys`: `step/README.md`), exactly one producer per product, and a
 producer for every type any step's `View` reads, its `run`'s or its `load`'s. A list that breaks one does
 not form a `Pipeline` type. So a type → producer lookup is a constant, and
 each step's edges are known before any config is read.

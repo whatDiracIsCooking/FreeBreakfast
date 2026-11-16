@@ -650,7 +650,7 @@ TEST(PipelineOptimize, AConstraintOnAMissingAtomIsRefusedBeforeItRuns) {
   ASSERT_TRUE(
       fb::write_file(dir / "w.xyz", "3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n").has_value());
   fb::OptimizeStep step;
-  step.molecule.xyz = dir / "w.xyz";
+  step.xyz.xyz = dir / "w.xyz";
   step.history = dir / "optimize.json";
   step.options.constraints = {{.atoms = {0, 3}, .distance = 1.8}};
   fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};

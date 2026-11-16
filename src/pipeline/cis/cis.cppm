@@ -62,6 +62,16 @@ struct CisOutput {
 struct CisStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "cis";
+  /// @brief The keys of its table it reads, each an option the front end
+  /// reads into it.
+  static constexpr std::array<std::string_view, 15> kKeys{"n_states",       "spin",
+                                                          "method",         "theta_j",
+                                                          "theta_k",        "residual_tolerance",
+                                                          "max_iterations", "max_subspace",
+                                                          "cluster_gap",    "ris",
+                                                          "ris_theta",      "ris_shells",
+                                                          "ris_exchange",   "ris_k_max_inner_iters",
+                                                          "ris_k_inner_tol"};
 
   /// @brief The roots (`n_states`, at least 1), their spin, and the
   /// `davidson_solve` options, at cis::Options' own defaults.

@@ -13,9 +13,9 @@
 /// qd_pc_intersection) per geometry.
 ///
 /// Node-shaped, because each evaluation runs a Pipeline of its own. Its
-/// product, `OptimizeOutput`, is declared in pipeline.molecule, whose
-/// `MoleculeStep::load` reads it: a config with `[optimize]` loads the
-/// molecule from the final.xyz this step writes, so every step that reads the
+/// product, `OptimizeOutput`, is declared in pipeline.xyz, whose
+/// `XyzStep::load` reads it: a config with `[optimize]` loads the geometry
+/// from the final.xyz this step writes, so every step that reads the
 /// molecule runs at the optimum. See README.md.
 ///
 /// Also the `Irc` step: the intrinsic reaction coordinate from a transition
@@ -44,11 +44,16 @@ export import free_breakfast.pipeline.hessian;
 
 export namespace free_breakfast {
 
-/// @brief Optimizes the geometry of @ref molecule over the energy and
+/// @brief Optimizes the geometry @ref xyz reads, as @ref molecule, over the energy and
 /// gradient of the chain the other members configure, on @p node's device 0.
 struct OptimizeStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "optimize";
+  /// @brief The keys of its table it reads, each an option the front end
+  /// reads into it.
+  static constexpr std::array<std::string_view, 8> kKeys{
+      "max_force", "rms_force", "max_displacement", "rms_displacement",
+      "max_steps", "meci",      "max_gap",          "constraints"};
 
   /// @brief The convergence thresholds (hartree / bohr, bohr) and the step
   /// cap, and the trust radius and starting Hessian, @c geometry::optimize's;
@@ -57,11 +62,13 @@ struct OptimizeStep {
   geometry::Options options{};
 
   /// @brief The chain rerun at every geometry, configured as the config's own
-  /// tables configure it (pipeline/config copies them in). @ref molecule's xyz
-  /// is the starting geometry. The steps with no options -- the spherical
+  /// tables configure it (pipeline/config copies them in). @ref xyz's file is
+  /// the starting geometry, and @ref molecule its charge and multiplicity,
+  /// both `[molecule]`'s. The steps with no options -- the spherical
   /// transform, the pair classes, the overlap, the core Hamiltonian and the
   /// gradient -- are run at their defaults, and no output path is kept: no
   /// step of the chain writes a file.
+  XyzStep xyz{};
   MoleculeStep molecule{};
   BasisSetStep basis_set{};
   EriStep eri{};
@@ -252,6 +259,13 @@ struct IrcOutput {
 struct IrcStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "irc";
+  /// @brief The keys of its table it reads, each an option the front end
+  /// reads into it.
+  static constexpr std::array<std::string_view, 8> kKeys{
+      "step_size",           "max_points",
+      "max_force",           "sphere_gradient",
+      "sphere_displacement", "max_sphere_iterations",
+      "direction",           "allow_multiple_imaginary"};
 
   /// @brief GS2's step (amu^1/2 bohr), point cap per side, minimum force,
   /// hypersphere thresholds and evaluation cap: @c geometry::irc's.

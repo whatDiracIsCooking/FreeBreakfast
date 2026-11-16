@@ -24,7 +24,8 @@ DF-CASSCF one, and a state-averaged DF-CASSCF root's; the single-state SC-
 and PC-NEVPT2 ones; and one SC- or PC-QD-NEVPT2 state's over a DF-SA-CASSCF,
 with the pair's sum and the seam's 2x2 at a crossing) and
 `pipeline` (the calculation pipeline: the step
-contract, the setup steps, the ERI step (integral-direct or density-fitted,
+contract, with tables as concepts (a step's `kTable` and `kKeys`), the setup
+steps (`[molecule]` the XYZ read on the host and the Molecule over it), the ERI step (integral-direct or density-fitted,
 built once for every reader), the RHF SCF, the localization step, the active-space, CASCI, FCI and CASSCF steps, the NEVPT2 step (SC and PC per root, and
 SC- and PC-QD-NEVPT2 with `quasi_degenerate`), the DF-RHF gradient step, the DF-SA-CASSCF nonadiabatic-coupling step, the geometry-optimization step, the Hessian step (analytic DF-RHF,
 DF-CASSCF, state-specific or one root of a state average, single-state SC- or

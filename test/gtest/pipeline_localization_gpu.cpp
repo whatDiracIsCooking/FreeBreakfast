@@ -809,7 +809,7 @@ TEST(PipelineLocalization, ALivvoMoldenWithoutLivvoIsInvalidConfig) {
   ASSERT_TRUE(fb::write_file(dir / "water.xyz", "3\nwater\nO 0 0 0.1173\nH 0 0.7572 -0.4692\n"
                                                 "H 0 -0.7572 -0.4692\n")
                   .has_value());
-  auto calc = fb::Calculation::create({fb::MoleculeStep{.xyz = dir / "water.xyz"},
+  auto calc = fb::Calculation::create({fb::XyzStep{.xyz = dir / "water.xyz"}, fb::MoleculeStep{},
                                        fb::BasisSetStep{.basis = "sto-3g"},
                                        fb::LocalizationStep{.livvo_molden = dir / "livvo.molden"}},
                                       []<class S>() -> fb::Result<S> { return S{}; });

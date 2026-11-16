@@ -47,6 +47,10 @@ struct Nevpt2NacOutput {
 struct Nevpt2NacStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "nevpt2_nac";
+  /// @brief The keys of its table it reads, each an option the front end
+  /// reads into it.
+  static constexpr std::array<std::string_view, 4> kKeys{"pairs", "variant", "mult_ediff",
+                                                         "use_etfs"};
 
   /// @brief The (bra, ket) pairs of QD states, indices into H_eff's
   /// eigenvalues, ascending, each coupling <bra|d ket/dR>. Empty: every

@@ -253,11 +253,11 @@ struct GeometryStep {
 
   [[nodiscard]] fb::Result<fb::MoleculeOutput> run(fb::View<> /*in*/,
                                                    fb::DeviceResources &res) const {
-    auto molecule = fb::read_xyz(res, xyz, 0, 1);
-    if (!molecule) {
-      return std::unexpected(molecule.error());
+    auto atoms = fb::read_xyz(xyz);
+    if (!atoms) {
+      return std::unexpected(atoms.error());
     }
-    return fb::MoleculeOutput{std::move(*molecule)};
+    return fb::MoleculeOutput{fb::Molecule(res, std::move(*atoms), 0, 1)};
   }
 };
 

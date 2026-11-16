@@ -110,14 +110,34 @@ constexpr bool kUniqueStepNames = [] {
   return true;
 }();
 
-// A registry a Pipeline can plan over: steps with unique names, one producer
-// per product, and a producer for everything any step's run or load reads. A
-// pipeline built from it may still leave a producer out, which create reports.
+// No key declared by two steps of one table: a key is an option of exactly
+// one step.
 template <class... Steps>
-concept StepRegistry = (PipelineStep<Steps> && ...) && kUniqueStepNames<Steps...> &&
-                       ((kProducerCount<StepOutput<Steps>, Steps...> == 1) && ...) &&
-                       (InputProducers<StepInput<Steps>, Steps...>::kAllProduced && ...) &&
-                       (kLoadInputsProduced<Steps, Steps...> && ...);
+constexpr bool kTableKeysDisjoint = [] {
+  const std::array<std::string_view, sizeof...(Steps)> tables{kStepTable<Steps>...};
+  const std::array<std::span<const std::string_view>, sizeof...(Steps)> keys{kStepKeys<Steps>...};
+  for (size_t i = 0; i < tables.size(); ++i) {
+    for (size_t j = i + 1; j < tables.size(); ++j) {
+      if (tables[i] == tables[j] && std::ranges::any_of(keys[i], [&](std::string_view key) {
+            return std::ranges::contains(keys[j], key);
+          })) {
+        return false;
+      }
+    }
+  }
+  return true;
+}();
+
+// A registry a Pipeline can plan over: steps with unique names, no key
+// declared by two steps of one table, one producer per product, and a
+// producer for everything any step's run or load reads. A pipeline built from
+// it may still leave a producer out, which create reports.
+template <class... Steps>
+concept StepRegistry =
+    (PipelineStep<Steps> && ...) && kUniqueStepNames<Steps...> && kTableKeysDisjoint<Steps...> &&
+    ((kProducerCount<StepOutput<Steps>, Steps...> == 1) && ...) &&
+    (InputProducers<StepInput<Steps>, Steps...>::kAllProduced && ...) &&
+    (kLoadInputsProduced<Steps, Steps...> && ...);
 
 // The shapes whose run takes a DeviceResources: they need a device, and the
 // pipeline waits on it after them.
@@ -138,13 +158,14 @@ export namespace free_breakfast {
 /// by @ref create, run once by @ref run, and holding what each step produced.
 ///
 /// ```cpp
-/// using Calc = Pipeline<MoleculeStep, BasisSetStep, OverlapStep, ...>;
-/// Calc calc = FBF_TRY(Calc::create({MoleculeStep{.xyz = "w.xyz"}, ...}));
+/// using Calc = Pipeline<XyzStep, MoleculeStep, BasisSetStep, OverlapStep, ...>;
+/// Calc calc = FBF_TRY(Calc::create({XyzStep{.xyz = "w.xyz"}, MoleculeStep{}, ...}));
 /// FBF_TRY(calc.run(node));
 /// if (const Result<OverlapOutput> &s = calc.get<OverlapOutput>()) { ... s->s ... }
 /// ```
 ///
-/// The registry is checked at compile time: unique `kName`s, one producer per
+/// The registry is checked at compile time: unique `kName`s, no key declared
+/// by two steps of one table (`kStepTable`, `kStepKeys`), one producer per
 /// product, and a producer in `Steps` for every type any step reads. Which of
 /// them a pipeline holds is decided at run time (from a config file), so a
 /// missing producer, a step given twice and a cycle are @ref create's errors.

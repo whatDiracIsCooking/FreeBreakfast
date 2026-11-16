@@ -85,6 +85,10 @@ struct HessianOutput {
 struct HessianStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "hessian";
+  /// @brief The keys of its table it reads, each an option the front end
+  /// reads into it.
+  static constexpr std::array<std::string_view, 6> kKeys{"method", "displacement", "ladder",
+                                                         "pairs",  "coordinates",  "pc_floor"};
 
   /// @brief How the Hessian is computed.
   HessianMethod method{HessianMethod::Analytic};

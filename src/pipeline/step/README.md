@@ -28,6 +28,7 @@ Templates only, so there is no implementation unit.
 ```cpp
 struct OrthogonalizerStep {
   static constexpr std::string_view kName = "orthogonalizer";
+  static constexpr std::array<std::string_view, 1> kKeys{"eigenvalue_floor"};
 
   double eigenvalue_floor = kOrthogonalizeEigenvalueFloor<double>;  // an option
 
@@ -37,7 +38,9 @@ struct OrthogonalizerStep {
 
 | Part | Requirement | Why |
 |---|---|---|
-| `kName` | a non-empty constant convertible to `std::string_view` | the TOML table name; the pipeline checks names unique across its steps at compile time, so it must be a constant |
+| `kName` | a non-empty constant convertible to `std::string_view` | the step's identity -- its output files, its log lines, the registry -- and by default its TOML table's name; the pipeline checks names unique across its steps at compile time, so it must be a constant |
+| `kTable` | optional; a non-empty constant convertible to `std::string_view`: `kStepTable<S>`, else `kName` | the TOML table the step's options are read from, which several steps may share (`config/README.md`, "Tables"). The step whose `kName` is a table's name is its head |
+| `kKeys` | optional; a constant array of `std::string_view`: `kStepKeys<S>`, else none | the keys of that table the step reads. Two steps of one table declaring the same key is a registry `Pipeline` refuses at compile time, so a key is an option of exactly one step |
 | `run`'s first parameter | a `View<Ts...>`, by value or reference: `StepInput<S>` | the graph's edges |
 | `run`'s return type | `Result<T>`, `T` a product not among the `Ts`: `StepOutput<S>` is `T` | one result slot per step, so an error belongs to exactly one product; a step reading its own output is a cycle the compiler can already see |
 | `run`'s other parameters | exactly one of the five `RunShape` lists: `kRunShape<S>` | where the step runs (below) |
@@ -52,8 +55,7 @@ through `StepInput`, `StepOutput` and `kRunShape`, which take apart the type of
 `run`.
 
 **Options are the step's own data members**, defaulted. A root step takes
-`View<>`, and its options are its inputs: `MoleculeStep`'s XYZ path, charge and
-multiplicity.
+`View<>`, and its options are its inputs: `XyzStep`'s XYZ path.
 
 **No central store.** A step never holds a writable store. Its one write is
 the product `run` returns, which the pipeline stores in the step's own slot.

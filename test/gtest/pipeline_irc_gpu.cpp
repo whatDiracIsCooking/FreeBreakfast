@@ -484,9 +484,9 @@ TEST(PipelineIrc, RefusesAStartThatIsNotOneSaddle) {
   FBF_FAMILY_REPRESENTATIVE();
   const fb::test::ScratchDir dir("pipeline_irc_refusals");
   fb::DeviceResources res{0, fb::test::kWorkspaces};
-  auto molecule = fb::parse_xyz(res, "3\nhcn\nC 0 0 0\nN 1.2 0 0\nH 0.5 1.1 0\n", 0, 1);
-  ASSERT_TRUE(molecule.has_value()) << molecule.error().message;
-  const fb::MoleculeOutput ts{std::move(*molecule)};
+  auto atoms = fb::parse_xyz("3\nhcn\nC 0 0 0\nN 1.2 0 0\nH 0.5 1.1 0\n");
+  ASSERT_TRUE(atoms.has_value()) << atoms.error().message;
+  const fb::MoleculeOutput ts{fb::Molecule(res, std::move(*atoms), 0, 1)};
   const auto with = [](std::vector<double> frequencies) {
     fb::HessianOutput h;
     h.hessian.assign(81, 0.0);

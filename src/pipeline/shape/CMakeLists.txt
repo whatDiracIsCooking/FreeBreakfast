@@ -3,7 +3,7 @@
 # the [memory] caps. pipeline::config and pipeline::footprint are PUBLIC and
 # re-exported: plan_shape reads a Calculation and returns the dimensions.
 # core::resources is in their signatures. The rest -- the aux and MINAO
-# readers, the Molecule's footprint (the reader's workspaces), the solvers'
+# readers, the atoms' nuclear charges (molecule), the solvers'
 # size queries (syevd's, skew_eig's, getrf's), the
 # steps' View, the pool's buffers for
 # the pre-warm, the log and response::zvector's rotating_pairs (the CASSCF's

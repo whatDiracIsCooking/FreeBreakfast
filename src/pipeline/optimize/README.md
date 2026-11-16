@@ -61,7 +61,8 @@ struct OptimizeStep {
   geometry::Options options{};  // thresholds, max_steps, trust radius, ...
 
   // The chain, copied in from the config's own tables by pipeline/config.
-  MoleculeStep molecule{};      // its xyz is the start
+  XyzStep xyz{};                // its xyz is the start
+  MoleculeStep molecule{};      // its charge and multiplicity
   BasisSetStep basis_set{};
   EriStep eri{};
   OrthogonalizerStep orthogonalizer{};
@@ -650,20 +651,21 @@ planner learns only that a nested `run` co-runs its flow.
 
 A product has one producer, and every step reads `MoleculeOutput`, so the
 steps after an `[optimize]` cannot read its product in place of the
-molecule's. Instead the config **loads the molecule from the final.xyz this
-step writes**: `MoleculeStep::load` reads `View<OptimizeOutput>`, which puts
-it after the optimization, and takes the charge and multiplicity the file does
-not carry from the optimized molecule. Every step reading the molecule --
-`[localization]`, the outer `[scf]`, a second `[gradient]` -- then runs at the
-optimum, through the planner's one existing way of making a product with
-other edges. That is why `OptimizeOutput` is declared in `pipeline.molecule`:
-the load names it, and this module imports every step that imports
-`pipeline.molecule`.
+molecule's. Instead the config **loads the geometry from the final.xyz this
+step writes**: `XyzStep::load` reads `View<OptimizeOutput>`, which puts it
+after the optimization, and the outer `MoleculeStep` builds the `Molecule`
+over it at `[molecule]`'s charge and multiplicity, the chain's own. Every step
+reading the molecule -- `[localization]`, the outer `[scf]`, a second
+`[gradient]` -- then runs at the optimum, through the planner's one existing
+way of making a product with other edges. That is why `OptimizeOutput` is
+declared in `pipeline.xyz`: the load names it, and this module imports every
+step that imports `pipeline.xyz`.
 
-The chain's own root is not `MoleculeStep` but a private step of this module
-building the `Molecule` from the trial atoms in memory. A registry holding
-`MoleculeStep` must hold a producer of what its `load` reads, so `MoleculeStep`
-in the chain would drag `OptimizeStep` into its own chain.
+The chain's own root is not `XyzStep` and `MoleculeStep` but a private step
+of this module building the `Molecule` from the trial atoms in memory. A
+registry holding `XyzStep` must hold a producer of what its `load` reads, so
+`XyzStep` in the chain would drag `OptimizeStep` into its own chain. The
+start is read on the host by the copied `XyzStep`'s file, through `read_xyz`.
 
 The outer `[scf]` (and every table the chain also reads) then runs once more
 at the optimum, one SCF more than the optimization: its products, the
@@ -746,9 +748,9 @@ copied in and no gradient table; `check_meci`'s refusals are made there.
 
 ## Tests
 
-- The step's contract and `MoleculeStep`'s load, by `static_assert`, in
+- The step's contract and `XyzStep`'s load, by `static_assert`, in
   `test/pipeline/steps_host.cpp`; `[optimize]`'s parsing, the chain copied in,
-  the molecule loaded from `final.xyz` and the refusals in
+  the geometry loaded from `final.xyz` and the refusals in
   `test/pipeline/config_host.cpp`; there too `constraints` read in bohr,
   each malformed one refused naming the key, and
   `examples/constrained_optimize.toml` parsed.

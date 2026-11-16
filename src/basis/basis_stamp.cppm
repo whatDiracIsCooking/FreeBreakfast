@@ -107,15 +107,15 @@ private:
 /// one stamp, @c place it at each geometry.
 ///
 /// @param basis_stamp The geometry-free definition.
-/// @param molecule    The atoms (positions in bohr) to stamp onto.
+/// @param atoms       The atoms (positions in bohr) to stamp onto.
 /// @returns The centered basis, or ErrorKind::InvalidConfig if any atom's element
 ///   is absent from the stamp -- a basis that cannot cover the molecule is a
 ///   configuration error, not a silently smaller basis.
-[[nodiscard]] Result<BasisSet> place(const BasisStamp &basis_stamp, const Molecule &molecule) {
+[[nodiscard]] Result<BasisSet> place(const BasisStamp &basis_stamp, std::span<const Atom> atoms) {
   std::vector<Shell> shells;
   std::vector<uint32_t> atom_shell_offsets{0};
-  atom_shell_offsets.reserve(molecule.atoms().size() + 1);
-  for (const Atom &atom : molecule.atoms()) {
+  atom_shell_offsets.reserve(atoms.size() + 1);
+  for (const Atom &atom : atoms) {
     const int32_t z = nuclear_charge(atom);
     const std::vector<ShellStamp> *element = basis_stamp.shells_for(z);
     if (element == nullptr) {
@@ -128,6 +128,12 @@ private:
     atom_shell_offsets.push_back(static_cast<uint32_t>(shells.size()));
   }
   return BasisSet{std::move(shells), std::move(atom_shell_offsets), basis_stamp.name()};
+}
+
+/// @brief @ref place over @p molecule's atoms: they are host data, so this
+/// reads nothing of its nuclei on the device.
+[[nodiscard]] Result<BasisSet> place(const BasisStamp &basis_stamp, const Molecule &molecule) {
+  return place(basis_stamp, std::span<const Atom>{molecule.atoms()});
 }
 
 } // namespace free_breakfast

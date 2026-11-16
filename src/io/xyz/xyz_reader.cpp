@@ -7,16 +7,14 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.constants;
-import free_breakfast.core.resources;
-import free_breakfast.molecule;
+import free_breakfast.atom;
 import free_breakfast.io.base;
 
 #include "diagnostics.h"
 
 namespace free_breakfast {
 
-[[nodiscard]] Result<Molecule> parse_xyz(DeviceResources &res, std::string_view xyz_text,
-                                         int32_t charge, int32_t multiplicity) {
+[[nodiscard]] Result<std::vector<Atom>> parse_xyz(std::string_view xyz_text) {
   // Split into non-empty lines; a trailing newline or blank lines at the end
   // of the file are tolerated rather than counted as atoms.
   std::vector<std::string_view> lines;
@@ -39,7 +37,7 @@ namespace free_breakfast {
     return err_io("XYZ input is too short: expected a count line and a comment line");
   }
 
-  // Line 1: the declared atom count. A Molecule needs at least one atom.
+  // Line 1: the declared atom count. A geometry has at least one atom.
   int32_t declared_count = 0;
   {
     std::string first(lines[0]);
@@ -73,7 +71,7 @@ namespace free_breakfast {
     if (element == Element::Sentinel) {
       return err_io("XYZ atom line {} has unknown element '{}'", i + 1, symbol);
     }
-    // XYZ coordinates are in Angstrom; Molecule stores bohr. Convert here.
+    // XYZ coordinates are in Angstrom; an Atom holds bohr. Convert here.
     atoms.push_back(Atom{{x * free_breakfast::kBohrPerAngstrom<double>,
                           y * free_breakfast::kBohrPerAngstrom<double>,
                           z * free_breakfast::kBohrPerAngstrom<double>},
@@ -84,13 +82,12 @@ namespace free_breakfast {
     return err_io("XYZ declares {} atoms but {} were found", declared_count, atoms.size());
   }
 
-  return Molecule{res, std::move(atoms), charge, multiplicity};
+  return atoms;
 }
 
-[[nodiscard]] Result<Molecule> read_xyz(DeviceResources &res, const std::filesystem::path &path,
-                                        int32_t charge, int32_t multiplicity) {
+[[nodiscard]] Result<std::vector<Atom>> read_xyz(const std::filesystem::path &path) {
   auto text = FBF_TRY(read_file(path));
-  return parse_xyz(res, text, charge, multiplicity);
+  return parse_xyz(text);
 }
 
 } // namespace free_breakfast

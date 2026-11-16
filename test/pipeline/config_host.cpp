@@ -39,6 +39,16 @@ constexpr std::string_view kInputs =
 // is created: parse_config never touches the disk.
 const std::filesystem::path kOut = "/out";
 
+// The names of @p calc's planned steps, in plan order: their footprints' at
+// empty dimensions, so only for a plan whose steps' footprints read none.
+std::vector<std::string_view> plan_order(const fb::Calculation &calc) {
+  std::vector<std::string_view> names;
+  for (const fb::StepFootprint &step : calc.footprints(fb::FootprintDimensions{})) {
+    names.push_back(step.name);
+  }
+  return names;
+}
+
 std::string with_inputs(std::string_view tables) {
   return std::string(kInputs).append(tables);
 }
@@ -53,8 +63,10 @@ void expect_config_error(std::string_view toml, std::string_view needle) {
 TEST(PipelineConfig, EveryOptionIsRead) {
   auto calc = fb::parse_config(kWater, "/inputs", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  // [molecule] is two steps' table: the file is XyzStep's, the rest
+  // MoleculeStep's.
+  EXPECT_EQ(calc->step<fb::XyzStep>()->xyz, std::filesystem::path("/inputs/water.xyz"));
   const fb::MoleculeStep &molecule = *calc->step<fb::MoleculeStep>();
-  EXPECT_EQ(molecule.xyz, std::filesystem::path("/inputs/water.xyz"));
   EXPECT_EQ(molecule.charge, -1);
   EXPECT_EQ(molecule.multiplicity, 2);
   // An absolute path is kept as written.
@@ -237,7 +249,7 @@ TEST(PipelineConfig, AbsentOptionsKeepTheStepDefaults) {
   EXPECT_EQ(calc->step<fb::OrthogonalizerStep>()->eigenvalue_floor,
             fb::OrthogonalizerStep{}.eigenvalue_floor);
   // No base directory: relative to the working directory.
-  EXPECT_EQ(calc->step<fb::MoleculeStep>()->xyz, std::filesystem::path("w.xyz"));
+  EXPECT_EQ(calc->step<fb::XyzStep>()->xyz, std::filesystem::path("w.xyz"));
 }
 
 TEST(PipelineConfig, IntegerReadsAsDouble) {
@@ -375,8 +387,54 @@ TEST(PipelineConfig, AMisspeltScfOptionIsInvalidConfig) {
 TEST(PipelineConfig, OnlyWhatWasAskedForIsPlanned) {
   auto calc = fb::parse_config("[molecule]\nxyz = \"w.xyz\"\n", "", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  // [molecule] requests its head, MoleculeStep; XyzStep, the table's other
+  // step, is filled in from the same table, and planned ahead of it.
   EXPECT_TRUE(calc->step<fb::MoleculeStep>().has_value());
+  ASSERT_TRUE(calc->step<fb::XyzStep>().has_value());
+  EXPECT_EQ(calc->step<fb::XyzStep>()->xyz, std::filesystem::path("w.xyz"));
+  EXPECT_EQ(plan_order(*calc), (std::vector<std::string_view>{"xyz", "molecule"}));
   EXPECT_FALSE(calc->step<fb::BasisSetStep>().has_value());
+}
+
+// Every config under examples/ parses and plans XyzStep beside the
+// MoleculeStep: run from [molecule]'s 'xyz', or under an [optimize] loaded
+// from final.xyz. MoleculeStep reads its GeometryOutput (steps_host.cpp), so
+// the planner orders it ahead either way; the order itself is checked by
+// footprint names only where the dimensions can be empty, above.
+TEST(PipelineConfig, EveryExampleConfigPlansTheXyzStepBesideTheMolecule) {
+  const std::filesystem::path examples{FBF_EXAMPLES_DIR};
+  std::size_t configs = 0;
+  for (const auto &entry : std::filesystem::directory_iterator(examples)) {
+    if (entry.path().extension() != ".toml") {
+      continue;
+    }
+    ++configs;
+    // read_config makes the output directory.
+    const fb::test::ScratchDir out("pipeline-config-examples");
+    auto calc = fb::read_config(entry.path(), examples, out.path());
+    ASSERT_TRUE(calc.has_value()) << entry.path() << ": " << calc.error().message;
+    EXPECT_TRUE(calc->step<fb::MoleculeStep>().has_value()) << entry.path();
+    if (calc->step<fb::OptimizeStep>()) {
+      EXPECT_FALSE(calc->step<fb::XyzStep>().has_value()) << entry.path();
+      EXPECT_EQ(calc->from<fb::XyzStep>(), out / "final.xyz") << entry.path();
+    } else {
+      ASSERT_TRUE(calc->step<fb::XyzStep>().has_value()) << entry.path();
+      EXPECT_EQ(calc->step<fb::XyzStep>()->xyz.parent_path(), examples) << entry.path();
+    }
+  }
+  EXPECT_GT(configs, 0U);
+}
+
+// [molecule]'s keys are the union of its two steps': a key neither reads is
+// refused naming the table, and so is the table's other step's name as a
+// table of its own.
+TEST(PipelineConfig, TheMoleculeTableTakesItsStepsKeysOnly) {
+  expect_config_error("[molecule]\nxyz = \"w.xyz\"\nbasis = \"sto-3g\"\n",
+                      "[molecule] has no option 'basis'");
+  expect_config_error("[molecule]\nxyz = \"w.xyz\"\n[xyz]\nxyz = \"w.xyz\"\n",
+                      "unknown step [xyz]");
+  expect_config_error("[molecule]\nxyz = \"w.xyz\"\nfrom = \"w.xyz\"\n",
+                      "[molecule] cannot be loaded 'from' a file");
 }
 
 TEST(PipelineConfig, AFilledInStepMissingARequiredOptionIsInvalidConfig) {
@@ -386,7 +444,9 @@ TEST(PipelineConfig, AFilledInStepMissingARequiredOptionIsInvalidConfig) {
 }
 
 TEST(PipelineConfig, MissingRequiredOptionIsInvalidConfig) {
-  expect_config_error("[molecule]\ncharge = 0\n[basis_set]\nbasis = \"b.json\"\n", "'xyz'");
+  expect_config_error("[molecule]\ncharge = 0\n[basis_set]\nbasis = \"b.json\"\n",
+                      "[molecule] needs 'xyz'");
+  expect_config_error("[molecule]\n", "[molecule] needs 'xyz'");
 }
 
 TEST(PipelineConfig, AConfigNamingNoStepIsInvalidConfig) {
@@ -852,14 +912,17 @@ TEST(PipelineConfig, TheOptimizeStepCopiesItsChainAndLoadsTheMolecule) {
   EXPECT_EQ(optimize.final_xyz, kOut / "final.xyz");
   EXPECT_EQ(optimize.history, kOut / "optimize.json");
   // The chain, read from the tables; a step with no table at its defaults.
-  EXPECT_EQ(optimize.molecule.xyz, std::filesystem::path("/in/w.xyz"));
+  EXPECT_EQ(optimize.xyz.xyz, std::filesystem::path("/in/w.xyz"));
   EXPECT_EQ(optimize.basis_set.basis, "/in/b.json");
   EXPECT_EQ(optimize.eri.mode, fb::EriMode::DensityFitting);
   EXPECT_EQ(optimize.scf.energy_tolerance, 1e-12);
   EXPECT_EQ(optimize.orthogonalizer.eigenvalue_floor, fb::OrthogonalizerStep{}.eigenvalue_floor);
-  // Every other step reads the molecule [optimize] wrote.
-  EXPECT_FALSE(calc->step<fb::MoleculeStep>().has_value());
-  EXPECT_EQ(calc->from<fb::MoleculeStep>(), kOut / "final.xyz");
+  // Every other step reads the molecule [optimize] wrote: the geometry is
+  // loaded, and the Molecule built over it at [molecule]'s charge and
+  // multiplicity.
+  EXPECT_FALSE(calc->step<fb::XyzStep>().has_value());
+  EXPECT_EQ(calc->from<fb::XyzStep>(), kOut / "final.xyz");
+  EXPECT_TRUE(calc->step<fb::MoleculeStep>().has_value());
   EXPECT_TRUE(calc->step<fb::LocalizationStep>().has_value());
 
   // With the defaults, and no [molecule] needed beside it in the list.
@@ -867,7 +930,7 @@ TEST(PipelineConfig, TheOptimizeStepCopiesItsChainAndLoadsTheMolecule) {
   ASSERT_TRUE(defaults.has_value()) << defaults.error().message;
   EXPECT_EQ(defaults->step<fb::OptimizeStep>()->options.max_force,
             fb::geometry::Options{}.max_force);
-  EXPECT_EQ(defaults->from<fb::MoleculeStep>(), kOut / "final.xyz");
+  EXPECT_EQ(defaults->from<fb::XyzStep>(), kOut / "final.xyz");
 }
 
 TEST(PipelineConfig, AMalformedOptimizeTableIsInvalidConfig) {
@@ -964,7 +1027,7 @@ TEST(PipelineConfig, TheOptimizeStepCopiesACasscfChain) {
   // The outer steps run once more at the optimum, the molecule loaded from
   // final.xyz.
   EXPECT_TRUE(calc->step<fb::CasscfGradientStep>().has_value());
-  EXPECT_EQ(calc->from<fb::MoleculeStep>(), kOut / "final.xyz");
+  EXPECT_EQ(calc->from<fb::XyzStep>(), kOut / "final.xyz");
 
   auto rhf =
       fb::parse_config(with_inputs("[casscf]\nncas = 4\nnelecas = 4\n[optimize]\n"), "", kOut);
@@ -1022,7 +1085,7 @@ TEST(PipelineConfig, TheOptimizeStepCopiesANevpt2Chain) {
   EXPECT_EQ(optimize.nevpt2_gradient->variant, fb::Nevpt2Variant::Sc);
   // The outer steps run once more at the optimum.
   EXPECT_TRUE(calc->step<fb::Nevpt2GradientStep>().has_value());
-  EXPECT_EQ(calc->from<fb::MoleculeStep>(), kOut / "final.xyz");
+  EXPECT_EQ(calc->from<fb::XyzStep>(), kOut / "final.xyz");
   // PC is copied into the chain as SC is.
   const auto pc = fb::parse_config(
       with_inputs("[eri]\nmode = \"density_fitting\"\n[casscf]\nncas = 4\nnelecas = 4\n"
@@ -1081,7 +1144,7 @@ TEST(PipelineConfig, TheOptimizeStepCopiesAnMeciChain) {
   EXPECT_EQ(optimize.casscf.conv_tol_grad, 1e-9);
   EXPECT_FALSE(optimize.casscf_gradient.has_value());
   EXPECT_FALSE(optimize.nevpt2_gradient.has_value());
-  EXPECT_EQ(calc->from<fb::MoleculeStep>(), kOut / "final.xyz");
+  EXPECT_EQ(calc->from<fb::XyzStep>(), kOut / "final.xyz");
   EXPECT_TRUE(calc->step<fb::CasscfStep>().has_value());
 
   // Equal weights on the pair, whatever the third root's.
@@ -1176,7 +1239,7 @@ TEST(PipelineConfig, TheOptimizeStepCopiesAQdMeciChain) {
     EXPECT_EQ(optimize.casscf.conv_tol_grad, 1e-10);
     EXPECT_FALSE(calc->step<fb::Nevpt2GradientStep>().has_value());
     EXPECT_TRUE(calc->step<fb::CasscfStep>().has_value());
-    EXPECT_EQ(calc->from<fb::MoleculeStep>(), kOut / "final.xyz");
+    EXPECT_EQ(calc->from<fb::XyzStep>(), kOut / "final.xyz");
   }
   auto weighted = fb::parse_config(
       with_inputs(std::format("{}weights = [0.5, 0.3, 0.2]\n[nevpt2_gradient]\n"
@@ -1708,7 +1771,7 @@ TEST(PipelineConfig, ReadResolvesAgainstTheInputDirectoryAndMakesTheOutputOne) {
   // Not the config file's directory: the run's.
   auto calc = fb::read_config(dir / "config/run.toml", dir / "in", dir / "out/a");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  EXPECT_EQ(calc->step<fb::MoleculeStep>()->xyz, dir / "in/water.xyz");
+  EXPECT_EQ(calc->step<fb::XyzStep>()->xyz, dir / "in/water.xyz");
   EXPECT_EQ(calc->step<fb::ScfStep>()->molden, dir / "out/a/scf.molden");
   EXPECT_TRUE(std::filesystem::is_directory(dir / "out/a"));
 }

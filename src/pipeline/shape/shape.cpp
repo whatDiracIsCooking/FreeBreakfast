@@ -1,6 +1,7 @@
 /// @file
-/// @brief plan_shape: the molecule read, the bases placed, and the counts
-/// taken from them; and preflight, the plan held to the [memory] caps.
+/// @brief plan_shape: the geometry read on the host, the bases placed, and
+/// the counts taken from them; and preflight, the plan held to the [memory]
+/// caps.
 
 module free_breakfast.pipeline.shape;
 
@@ -12,7 +13,7 @@ import free_breakfast.core.wwr; // Buffers, ScopedDeviceIndex, PoolUsage
 import free_breakfast.core.log;
 import free_breakfast.core.primitives; // math::idivup
 import free_breakfast.io.basis;
-import free_breakfast.molecule;            // molecule_footprint
+import free_breakfast.molecule;            // nuclear_charge
 import free_breakfast.recipes.diagonalize; // syevd_lwork
 import free_breakfast.recipes.expm;        // skew_eig_lwork
 import free_breakfast.recipes.lu;          // getrf_lwork
@@ -23,39 +24,36 @@ import free_breakfast.pipeline.step;       // View
 
 namespace free_breakfast {
 
-// The atoms the XYZ file at @p path says it holds, its first line; 0 when it
-// cannot be read or that line is not a count, which the Molecule step then
-// refuses as the file's error before it stages anything.
-[[nodiscard]] size_t xyz_atom_count(const std::filesystem::path &path) {
-  std::ifstream file(path);
-  size_t count = 0;
-  if (!(file >> count)) {
-    return 0;
-  }
-  return count;
-}
+// The start of the plan's geometry: its own Xyz and Molecule steps', or, when
+// an [optimize] loads the geometry, the start its chain reads, at the same
+// [molecule]'s charge and multiplicity; the final.xyz it loads does not exist
+// before the run, and must hold the same atoms. Read on the host: no Molecule
+// is built, so the shape needs nothing of the device for it.
+struct ShapeGeometry {
+  std::vector<Atom> atoms;
+  int32_t charge{0};
+  int32_t multiplicity{1};
+};
 
-// The geometry the plan's molecule is read from: the Molecule step's, or, when
-// an [optimize] loads it, the start the optimization's chain reads. The loaded
-// final.xyz does not exist before the run, and must hold the same atoms.
-//
-// Read on a DeviceResources of its own on @p res's device, whose workspaces are
-// the Molecule's footprint at the file's atom count: pre-flight shapes the
-// plan before it knows what the node's workspaces will be, and the Molecule
-// stages its upload in the pinned workspace.
-[[nodiscard]] Result<std::optional<MoleculeOutput>> shape_molecule(const Calculation &calc,
-                                                                   DeviceResources &res) {
-  const MoleculeStep *step = nullptr;
+[[nodiscard]] Result<std::optional<ShapeGeometry>> shape_geometry(const Calculation &calc) {
+  const XyzStep *xyz = nullptr;
+  const MoleculeStep *molecule = nullptr;
+  if (const std::optional<XyzStep> &own = calc.step<XyzStep>()) {
+    xyz = &*own;
+  }
   if (const std::optional<MoleculeStep> &own = calc.step<MoleculeStep>()) {
-    step = &*own;
-  } else if (const std::optional<OptimizeStep> &optimize = calc.step<OptimizeStep>()) {
-    step = &optimize->molecule;
+    molecule = &*own;
   }
-  if (step == nullptr) {
-    return std::optional<MoleculeOutput>{};
+  if (const std::optional<OptimizeStep> &optimize = calc.step<OptimizeStep>()) {
+    xyz = xyz != nullptr ? xyz : &optimize->xyz;
+    molecule = molecule != nullptr ? molecule : &optimize->molecule;
   }
-  DeviceResources reader{res.dev_idx(), molecule_footprint(xyz_atom_count(step->xyz))};
-  return std::optional{FBF_TRY(step->run(View<>{}, reader))};
+  if (xyz == nullptr || molecule == nullptr) {
+    return std::optional<ShapeGeometry>{};
+  }
+  return std::optional{ShapeGeometry{.atoms = FBF_TRY(xyz->run(View<>{})).atoms,
+                                     .charge = molecule->charge,
+                                     .multiplicity = molecule->multiplicity}};
 }
 
 // The step of type S the plan configures: its own, else the copy an
@@ -83,20 +81,20 @@ template <class S>
 // The aux basis an [eri] places: its aux_basis, or empty, the Eri step's
 // default.
 [[nodiscard]] Result<BasisSet> shape_aux_basis(const EriStep &eri, const BasisSet &basis,
-                                               const Molecule &molecule) {
+                                               std::span<const Atom> atoms) {
   const std::string spec =
       eri.aux_basis.empty() ? FBF_TRY(default_aux_basis(basis)) : eri.aux_basis;
   const BasisStamp stamp = FBF_TRY(resolve_aux_basis(spec));
-  return FBF_TRY(place(stamp.primitive_normalized(), molecule));
+  return FBF_TRY(place(stamp.primitive_normalized(), atoms));
 }
 
-// How many of MINAO's spherical AOs over @p molecule the AVAS @p labels name,
+// How many of MINAO's spherical AOs over @p atoms the AVAS @p labels name,
 // by the active-space selection's own rule.
-[[nodiscard]] Result<size_t> avas_labelled_ao_count(const Molecule &molecule,
+[[nodiscard]] Result<size_t> avas_labelled_ao_count(std::span<const Atom> atoms,
                                                     std::span<const std::string> labels) {
   const BasisStamp stamp = FBF_TRY(resolve_basis("minao"));
-  const BasisSet minao = FBF_TRY(place(stamp, molecule));
-  const std::vector<bool> chosen = FBF_TRY(avas_minao_aos(molecule.atoms(), minao, labels));
+  const BasisSet minao = FBF_TRY(place(stamp, atoms));
+  const std::vector<bool> chosen = FBF_TRY(avas_minao_aos(atoms, minao, labels));
   return static_cast<size_t>(std::ranges::count(chosen, true));
 }
 
@@ -127,13 +125,13 @@ template <class S>
 // orbitals and @p n_electrons: see plan_shape. {0, 0} for none (a default
 // selection, as an unread chain copy holds).
 [[nodiscard]] Result<std::pair<size_t, size_t>>
-largest_active_space(const ActiveSpaceSelection &selection, const Molecule &molecule, size_t nao,
+largest_active_space(const ActiveSpaceSelection &selection, std::span<const Atom> atoms, size_t nao,
                      size_t n_electrons) {
   if (selection.avas.empty()) {
     return std::pair{static_cast<size_t>(std::max(selection.ncas, 0)),
                      static_cast<size_t>(std::max(selection.nelecas, 0))};
   }
-  size_t ncas = 2 * FBF_TRY(avas_labelled_ao_count(molecule, selection.avas));
+  size_t ncas = 2 * FBF_TRY(avas_labelled_ao_count(atoms, selection.avas));
   if (selection.avas_max_ncas > 0) {
     ncas = std::min(ncas, static_cast<size_t>(selection.avas_max_ncas));
   }
@@ -143,22 +141,25 @@ largest_active_space(const ActiveSpaceSelection &selection, const Molecule &mole
 
 Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
   PlanShape shape;
-  const std::optional<MoleculeOutput> read = FBF_TRY(shape_molecule(calc, res));
-  if (!read) {
+  const std::optional<ShapeGeometry> geometry = FBF_TRY(shape_geometry(calc));
+  if (!geometry) {
     return shape;
   }
-  const Molecule &molecule = read->molecule;
+  const std::vector<Atom> &atoms = geometry->atoms;
   FootprintDimensions &dims = shape.dims;
-  dims.natoms = molecule.natoms();
-  dims.atoms = molecule.atoms();
+  dims.natoms = atoms.size();
+  dims.atoms = atoms;
 
   // n_alpha - n_beta = 2S = multiplicity - 1, and N has its parity: the Scf's
-  // split.
-  const int32_t electrons = molecule.electron_count();
-  const int32_t n_open = molecule.multiplicity() - 1;
+  // split. N is Molecule::electron_count's, (Sum Z_A) - charge.
+  int32_t electrons = -geometry->charge;
+  for (const Atom &atom : atoms) {
+    electrons += nuclear_charge(atom);
+  }
+  const int32_t n_open = geometry->multiplicity - 1;
   if (n_open < 0 || electrons < n_open || (electrons - n_open) % 2 != 0) {
     return err_config("plan shape: {} electrons cannot be at multiplicity {}", electrons,
-                      molecule.multiplicity());
+                      geometry->multiplicity);
   }
   const auto n_electrons = static_cast<size_t>(electrons);
   dims.n_alpha = static_cast<size_t>((electrons + n_open) / 2);
@@ -170,15 +171,16 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
   if (basis_step == nullptr) {
     return shape;
   }
-  shape.basis =
-      std::make_unique<const BasisSet>(FBF_TRY(basis_step->run(View<MoleculeOutput>{*read})).basis);
+  // BasisSetStep::run's, over the atoms rather than a Molecule.
+  shape.basis = std::make_unique<const BasisSet>(
+      FBF_TRY(place(FBF_TRY(resolve_basis(basis_step->basis)).primitive_normalized(), atoms)));
   const BasisSet &basis = *shape.basis;
   dims.basis = shape.basis.get();
   dims.nao = basis.nao_sphe();
 
   if (const EriStep *eri = shape_step(calc, &OptimizeStep::eri, &HessianStep::eri);
       eri != nullptr && eri->mode == EriMode::DensityFitting) {
-    shape.aux = std::make_unique<const BasisSet>(FBF_TRY(shape_aux_basis(*eri, basis, molecule)));
+    shape.aux = std::make_unique<const BasisSet>(FBF_TRY(shape_aux_basis(*eri, basis, atoms)));
     dims.aux = shape.aux.get();
     dims.naux = shape.aux->nao_sphe();
   }
@@ -266,7 +268,7 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
       })) {
     const BasisStamp stamp = FBF_TRY(resolve_basis("minao"));
     shape.minao =
-        std::make_unique<const BasisSet>(FBF_TRY(place(stamp.primitive_normalized(), molecule)));
+        std::make_unique<const BasisSet>(FBF_TRY(place(stamp.primitive_normalized(), atoms)));
     dims.minao = shape.minao.get();
     // AVAS diagonalizes the labelled MINAO AOs' overlap; the IAOs
     // orthonormalize at MINAO's order, and the LIVVOs diagonalize there.
@@ -292,7 +294,7 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
 
   std::vector<std::pair<size_t, size_t>> spaces;
   for (const ActiveSpaceSelection *selection : selections) {
-    spaces.push_back(FBF_TRY(largest_active_space(*selection, molecule, dims.nao, n_electrons)));
+    spaces.push_back(FBF_TRY(largest_active_space(*selection, atoms, dims.nao, n_electrons)));
   }
   if (calc.step<FciStep>()) {
     spaces.emplace_back(dims.nao, n_electrons);

@@ -11,7 +11,7 @@ names them all. It is the one library that imports every step, so only it and
 `main` pay that build fan-in.
 
 ```cpp
-struct Calculation : Pipeline<MoleculeStep, BasisSetStep, /* ... every step ... */ HessianStep> {
+struct Calculation : Pipeline<XyzStep, MoleculeStep, BasisSetStep, /* ... every step ... */ IrcStep> {
   size_t max_device_mem_per_gpu = 0;   // [memory]; 0: no cap
   size_t max_pinned_mem_per_gpu = 0;   // [memory]; 0: no cap
 };
@@ -30,13 +30,37 @@ pipeline, so everything taking one takes it; the inherited
 built by hand.
 
 A new step joins the registry here: its type in `Calculation`, and, if it has
-options, a branch in `read_step` reading them. A step with options and no
-branch fails a `static_assert`, rather than having every key refused.
+options, its `kKeys` and a branch in `read_step` reading them. A step with
+options and no branch fails a `static_assert`, rather than having every key
+refused.
+
+## Tables
+
+A table is a concept rather than a step. Each step reads its options from
+one table, `kStepTable<S>`: its `kTable`, or its `kName` when it declares none
+(`step/README.md`). Several steps may share a table; a step never reads from
+two, so a key is still an option of exactly one step.
+
+- **A table's legal keys are the union of its steps' `kKeys`**, across the
+  registry. A key none of them declares is refused naming the table:
+  `[molecule] has no option 'basis'`. Two steps of one table declaring the
+  same key is a compile-time error (`Pipeline`'s registry check).
+- **The head rule.** A table's head is the step whose `kName` is the table's
+  name. A written table requests its head only; the table's other steps are
+  planned by fill-in, like every producer, each read from its own table. So
+  "nothing is pruned" still holds, and a table named after a step that heads
+  none -- `[xyz]` -- is an unknown step.
+- **Errors name the table and the key**, whichever step reads it:
+  `[molecule] needs 'xyz'`.
+
+`[molecule]` is the shared table today. Its head, `MoleculeStep`, reads
+`charge` and `multiplicity` and builds the `Molecule` on the device; `XyzStep`
+(`kName` `"xyz"`, `kTable` `"molecule"`) reads `xyz` and the file, on the
+host, ahead of it. A written `[molecule]` plans both.
 
 ## The config file
 
-One table per step, named by the step's `kName`. Its keys are the step's
-options, spelled as the step's members:
+A table per head, its keys its steps' options, spelled as their members:
 
 ```toml
 [molecule]
@@ -394,8 +418,8 @@ max_steps = 100           # evaluations after the first
 `[optimize]` is a geometry optimization (`optimize/README.md`). Each
 threshold must be positive, and `max_steps` at least 0. It reruns the chain
 from the molecule to the gradient at every geometry, and that chain is **the
-config's own tables**: `parse_config` copies `[molecule]` (its `xyz` the
-start), `[basis_set]`, `[eri]`, `[orthogonalizer]`, `[guess]` and `[scf]`
+config's own tables**: `parse_config` copies `[molecule]` (its `XyzStep`, whose
+`xyz` is the start, and its `MoleculeStep`), `[basis_set]`, `[eri]`, `[orthogonalizer]`, `[guess]` and `[scf]`
 into the step, each read as the pipeline reads it, from an empty table if the
 config has none. **With a `[casscf_gradient]` in the config the chain ends in
 the CASSCF instead** (`optimize/README.md` "The CASSCF chain"), and
@@ -408,12 +432,13 @@ are refused, and under an integral-direct `[eri]` either CASSCF chain is its
 gradient's `Unsupported`, as above, as are `[nevpt2_gradient]`'s other
 refusals (a state average without `quasi_degenerate`, the start's
 multiplicity). One loading `from` a file is refused: the chain is rerun at every
-geometry. **Then `[molecule]` is planned loaded from the `final.xyz`
-the step writes** (`MoleculeStep::load`, ordered after the optimization by
-the `OptimizeOutput` it reads), so every other step in the config -- the
-outer `[scf]`, a `[localization]` -- runs at the optimum. That is the only
-way the molecule is ever loaded: `[molecule] from` is refused like a step
-with no `load`.
+geometry. **Then the geometry is planned loaded from the `final.xyz` the
+step writes** (`XyzStep::load`, ordered after the optimization by the
+`OptimizeOutput` it reads), and `MoleculeStep` builds the `Molecule` over it
+at `[molecule]`'s charge and multiplicity, so every other step in the config
+-- the outer `[scf]`, a `[localization]` -- runs at the optimum. That is the
+only way the geometry is ever loaded: `[molecule] from` is refused, its head
+having no `load`.
 
 **With `meci = [I, J]` it finds the minimum-energy conical intersection of
 roots I and J of the `[casscf]`** (`optimize/README.md` "The MECI"): the
@@ -519,11 +544,13 @@ That the `[hessian]` has exactly one imaginary frequency (or any, with
 `allow_multiple_imaginary`) is the step's to check, once it has run.
 
 **A table is a request, and the steps producing what it reads are filled
-in.** The file above plans all twelve steps: `[orthogonalizer]` reads the
-overlap, which reads the spherical transform and the pair classes. Each
-filled-in step is **read from an empty table**, so its defaults apply and a
-required option it lacks is the same error a written table would give:
-`[overlap]` alone is refused with `[molecule] needs 'xyz'`. So only a step
+in.** The file above plans all thirteen steps: `[orthogonalizer]` reads the
+overlap, which reads the spherical transform and the pair classes, and the
+molecule its geometry. Each filled-in step is **read from its table**, a
+written one when it is not the head the table requested and an **empty one**
+otherwise, so its defaults apply and a required option it lacks is the same
+error a written table would give: `[overlap]` alone is refused with
+`[molecule] needs 'xyz'`. So only a step
 with a required option ever has to be written out for its own sake, and there
 is no second list of which options are required. Nothing is pruned: every
 planned step is upstream of a request.
@@ -558,7 +585,7 @@ relative to the working directory. The steps document that their paths
 
 **Outputs are named by the run, not the config.** Every output a planned step
 can write is written, into the output directory (`free-breakfast -o <dir>`,
-default `fbf_output`) under the step's `kName`. A pipeline holds one of each
+default `fbf_output`) under the step's `kName`, not its table's. A pipeline holds one of each
 step, so no two collide:
 
 | Step | File |
@@ -756,7 +783,8 @@ capped config.
 `test/pipeline/config_host.cpp`, host-only: every option read, the step
 defaults kept, path resolution against the input directory, the output
 names, the inputs kept apart from the outputs, which steps are filled in and
-which are not, `from`, the `[memory]` caps in both forms and every unit, and
+which are not, `[molecule]` as two steps' table (its keys, its head, and every
+`examples/` config planning the Xyz step), `from`, the `[memory]` caps in both forms and every unit, and
 each refusal above; `[irc]`'s in `test/pipeline/irc_host.cpp`. Nothing is run.
 `test/gtest/pipeline_calculation_gpu.cpp` runs a config end to end, through
 the API. `test/examples/` runs `examples/rhf.toml` and `examples/hessian.toml`
@@ -768,5 +796,5 @@ the files written, and `hessian.json`'s keys.
 | File | Role |
 |------|------|
 | `config.cppm` | Module interface: `Calculation` and its caps, `parse_config`, `read_config` |
-| `config.cpp` | The document walk, each step's `read_step`, `read_active_space`, and the `[memory]` table's `read_memory` |
+| `config.cpp` | The document walk, a table's `check_keys`, each step's `read_step`, `read_active_space`, and the `[memory]` table's `read_memory` |
 | `CMakeLists.txt` | The module library |

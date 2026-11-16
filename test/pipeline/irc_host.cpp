@@ -85,7 +85,8 @@ TEST(PipelineIrc, TheStepReadsItsKeysAndCopiesItsChain) {
   EXPECT_FALSE(irc.chain.meci.has_value());
   // The start: the molecule run from its file, the Hessian loaded.
   ASSERT_TRUE(calc->step<fb::MoleculeStep>().has_value());
-  EXPECT_EQ(calc->step<fb::MoleculeStep>()->xyz, std::filesystem::path("/in/ts.xyz"));
+  ASSERT_TRUE(calc->step<fb::XyzStep>().has_value());
+  EXPECT_EQ(calc->step<fb::XyzStep>()->xyz, std::filesystem::path("/in/ts.xyz"));
   EXPECT_FALSE(calc->step<fb::HessianStep>().has_value());
   EXPECT_EQ(calc->from<fb::HessianStep>(), std::filesystem::path("/in/ts_hessian.json"));
 

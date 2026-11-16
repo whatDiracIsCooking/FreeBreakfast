@@ -3,7 +3,8 @@
 # ---------------------------------------------------------------------------
 # The TUs whose subject is src/pipeline and that run anywhere: the step
 # contract and the planner over made-up steps, the contract of every real
-# step, the TOML front end, the Guess step's load, the Hessian, Nac and
+# step, the Xyz step's run (a host step), the TOML front end, the Guess
+# step's load, the Hessian, Nac and
 # Nevpt2Nac steps' contracts and configs, and the Optimize step's QD state
 # following and the files its walk keeps over a stub evaluation, the Irc
 # step's contract and config, the
@@ -14,8 +15,9 @@
 #
 #   * free_breakfast_pipeline_tests_host -- the *_host.cpp TUs.
 #
-# There is no GPU half: running a real step needs a Molecule, which owns its
-# nuclei on the device, so those cases stay in test/gtest's
+# There is no GPU half: running a real step past the Xyz step needs a
+# Molecule, which owns its nuclei on the device, so those cases stay in
+# test/gtest's
 # free_breakfast_tests_gpu, beside the method layers they drive.
 #
 # The module setup and the ctest registration are the same as test/gtest's,
@@ -32,6 +34,7 @@ add_executable(
   step_host.cpp
   pipeline_host.cpp
   steps_host.cpp
+  xyz_host.cpp
   config_host.cpp
   guess_host.cpp
   hessian_host.cpp

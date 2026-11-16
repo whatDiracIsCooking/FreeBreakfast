@@ -90,8 +90,9 @@ TEST(PipelineHessian, TheStepReadsItsKeysAndCopiesItsChain) {
   EXPECT_EQ(hessian.guess.type, fb::GuessType::Sad);
   // The molecule it reads is the config's, run from its file.
   ASSERT_TRUE(calc->step<fb::MoleculeStep>().has_value());
-  EXPECT_EQ(calc->step<fb::MoleculeStep>()->xyz, std::filesystem::path("/in/w.xyz"));
-  EXPECT_FALSE(calc->from<fb::MoleculeStep>().has_value());
+  ASSERT_TRUE(calc->step<fb::XyzStep>().has_value());
+  EXPECT_EQ(calc->step<fb::XyzStep>()->xyz, std::filesystem::path("/in/w.xyz"));
+  EXPECT_FALSE(calc->from<fb::XyzStep>().has_value());
 
   // The default step, and the chain's steps at their defaults with no tables.
   auto defaults = fb::parse_config(with_inputs("[hessian]\nmethod = \"numerical\"\n"), "", kOut);
@@ -157,7 +158,7 @@ TEST(PipelineHessian, TheAnalyticMethodRefusesIntegralDirectEris) {
   }
 }
 
-// Beside an [optimize], the molecule the Hessian reads is the one loaded
+// Beside an [optimize], the molecule the Hessian reads is built over the geometry loaded
 // from final.xyz, which reads OptimizeOutput: the Hessian is ordered after
 // the optimization and runs at the optimum. Both steps hold the same chain.
 TEST(PipelineHessian, BesideAnOptimizeItReadsTheOptimum) {
@@ -166,9 +167,9 @@ TEST(PipelineHessian, BesideAnOptimizeItReadsTheOptimum) {
                   "[optimize]\n[hessian]\n"),
       "/in", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  EXPECT_FALSE(calc->step<fb::MoleculeStep>().has_value());
-  EXPECT_EQ(calc->from<fb::MoleculeStep>(), kOut / "final.xyz");
-  static_assert(std::same_as<fb::LoadInput<fb::MoleculeStep>, fb::View<fb::OptimizeOutput>>);
+  EXPECT_FALSE(calc->step<fb::XyzStep>().has_value());
+  EXPECT_EQ(calc->from<fb::XyzStep>(), kOut / "final.xyz");
+  static_assert(std::same_as<fb::LoadInput<fb::XyzStep>, fb::View<fb::OptimizeOutput>>);
   const fb::HessianStep &hessian = *calc->step<fb::HessianStep>();
   const fb::OptimizeStep &optimize = *calc->step<fb::OptimizeStep>();
   EXPECT_EQ(hessian.basis_set.basis, optimize.basis_set.basis);
@@ -234,7 +235,7 @@ TEST(PipelineHessian, BesideACasscfGradientTheAnalyticMethodIsTheRootsHessian) {
   auto optimized =
       fb::parse_config(with_inputs(std::format("{}[optimize]\n[hessian]\n", kCasscf)), "/in", kOut);
   ASSERT_TRUE(optimized.has_value()) << optimized.error().message;
-  EXPECT_EQ(optimized->from<fb::MoleculeStep>(), kOut / "final.xyz");
+  EXPECT_EQ(optimized->from<fb::XyzStep>(), kOut / "final.xyz");
   const fb::HessianStep &hessian = *optimized->step<fb::HessianStep>();
   const fb::OptimizeStep &optimize = *optimized->step<fb::OptimizeStep>();
   EXPECT_EQ(hessian.method, fb::HessianMethod::Analytic);
@@ -580,7 +581,7 @@ TEST(PipelineHessian, TheNevpt2HessianExampleParses) {
   EXPECT_EQ(hessian.casscf.active, (std::vector<std::int32_t>{6, 7, 8, 9}));
   EXPECT_EQ(hessian.eri.mode, fb::EriMode::DensityFitting);
   EXPECT_EQ(hessian.json_path, out / "hessian.json");
-  EXPECT_EQ(calc->step<fb::MoleculeStep>()->xyz, examples / "h2co_skew.xyz");
+  EXPECT_EQ(calc->step<fb::XyzStep>()->xyz, examples / "h2co_skew.xyz");
 }
 
 // examples/qd_nevpt2_hessian.toml, as the binary reads it: the analytic
@@ -600,7 +601,7 @@ TEST(PipelineHessian, TheQdNevpt2HessianExampleParses) {
   EXPECT_EQ(hessian.casscf.nroots, 2);
   EXPECT_EQ(hessian.eri.mode, fb::EriMode::DensityFitting);
   EXPECT_EQ(hessian.json_path, out / "hessian.json");
-  EXPECT_EQ(calc->step<fb::MoleculeStep>()->xyz, examples / "h2co_skew.xyz");
+  EXPECT_EQ(calc->step<fb::XyzStep>()->xyz, examples / "h2co_skew.xyz");
 }
 
 // check_displaced_casscf over a non-orthonormal AO basis, S = diag(1, 4, 1,
