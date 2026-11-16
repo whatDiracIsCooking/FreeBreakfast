@@ -66,7 +66,7 @@
 //! | D from the occupied columns, `gemm<N, T>(…, n_alpha, kTwo, c, c, kZero, d)` | [`add_density`]'s `density`: C's first `nocc` columns copied into the carried factor by a geam, then the same gemm from it into the carried D |
 //! | `ScfStep::run`'s `n_open = multiplicity - 1`, `n_alpha`, `n_beta`, a count of the wrong parity `InvalidConfig` | [`occupied_orbitals`], the same refusals |
 //! | more alpha electrons than orbitals, `InvalidConfig` | [`add_scf`]'s, the same |
-//! | ROHF with `n_beta = 0` (one electron, the H atom): `df_exchange` of no columns | not ported: refused `Unsupported` by [`add_scf`], since a K of no column is not a task here |
+//! | ROHF with `n_beta = 0` (one electron, the H atom): `df_exchange` of no columns, `K(Db) = 0` | no beta factor and no beta `df exchange` in the body: its `guess exchange` copies the beta rest's K, the guess's `Db = D/2`, into the first build's Kb and zeroes it after, and `open density` zeroes Db; the beta products of no column are skipped |
 //! | `OpenShellState`'s Da, Db, Fa, Fb, `identity`, allocated for an open shell alone | rows of the open shell's plan alone: `spin densities`' Da and Db, carried; `identity`'s pinned I and its upload; `open fock`'s Fa and Fb |
 //! | the guess split `Da = Db = D/2` (a geam and a copy) | `spin densities`, the same calls |
 //! | `DfFockBuilder::build` for an open shell: `Fa = H + J - K(C, n_alpha)/2`, `Fb` the same from a second `df_exchange` over `n_beta` columns; the first build's `Fb` from the guess's one K | `open fock` from the body's two `df exchange`s over the carried factors `C a` and `C b`; the first build's K of each from the guess's factor, its last `n_alpha` and `n_beta` columns carried and each rest's K added once by its `guess exchange` |

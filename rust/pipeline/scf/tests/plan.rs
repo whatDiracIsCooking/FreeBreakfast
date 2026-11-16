@@ -299,9 +299,7 @@ fn rohf_plan_golden() {
 
 /// What planning refuses of an open shell before anything is added: more
 /// alpha electrons than orbitals (water's nonet in STO-3G, 9 in 7 AOs),
-/// `InvalidConfig`; and no beta electron (water at charge +9, one electron
-/// in a doublet), `Unsupported`, since the beta exchange of no column is
-/// not ported.
+/// `InvalidConfig`.
 #[test]
 fn an_open_shell_planning_cannot_hold_is_refused() {
     let step = ScfStep::default();
@@ -312,10 +310,25 @@ fn an_open_shell_planning_cannot_hold_is_refused() {
     .expect("nine alpha electrons in seven orbitals");
     assert_eq!(err.kind, ErrorKind::InvalidConfig, "{}", err.message);
     assert!(err.message.contains("do not fit 7"), "{}", err.message);
-    let err = Run::new(&water(9, 2), "sto-3g", "cc-pvdz-jkfit", &step, |_| {
-        Ok(LWORK)
-    })
-    .err()
-    .expect("no beta electron");
-    assert_eq!(err.kind, ErrorKind::Unsupported, "{}", err.message);
+}
+
+/// An open shell with no beta electron (water at charge +9, one electron
+/// in a doublet) plans with no beta factor: three `df exchange` tasks, the
+/// two rests' before the loop and the alpha factor's in the body, where
+/// one beta electron or more has a fourth, the beta factor's in the body.
+#[test]
+fn no_beta_electron_plans_without_a_beta_exchange() {
+    let step = ScfStep::default();
+    let exchanges = |charge: i32| {
+        let run = Run::new(&water(charge, 2), "sto-3g", "cc-pvdz-jkfit", &step, |_| {
+            Ok(LWORK)
+        })
+        .expect("the doublet plans");
+        text(run.planned())
+            .lines()
+            .filter(|line| line.contains(" df exchange:"))
+            .count()
+    };
+    assert_eq!(exchanges(9), 3, "one electron");
+    assert_eq!(exchanges(1), 4, "nine electrons");
 }

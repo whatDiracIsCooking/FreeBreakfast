@@ -9,8 +9,8 @@ use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::{dgmm, geam, gemm, gemv};
-use fb_core_wwr::copy;
 use fb_core_wwr::device_slice::{DeviceSlice, DeviceSliceMut, split_at_mut};
+use fb_core_wwr::{copy, memset};
 use fb_recipes_diagonalize::add_diagonalize;
 use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N as OP_N, WWR_BLAS_OP_T as OP_T};
 use wwr_sys::wwr_blas_side_mode::WWR_BLAS_SIDE_RIGHT as RIGHT;
@@ -152,7 +152,7 @@ pub(crate) fn add_open_fock(
 /// geam each), `Da = Ca Caᵀ` and `Db = Cb Cbᵀ` (a gemm each) and
 /// `D = Da + Db` (a geam), each row the loop carries written as its last
 /// user in the body, as [`add_density`](crate::add_density) writes a closed
-/// shell's.
+/// shell's. With no beta electron there is no `cb`, and Db is zeroed.
 pub(crate) fn add_open_density(
     dag: &mut Dag<'_>,
     worker: usize,
@@ -160,7 +160,7 @@ pub(crate) fn add_open_density(
     [n_alpha, n_beta]: [usize; 2],
     c: RowId<Device, f64>,
     [d, da, db]: [RowId<Device, f64>; 3],
-    [ca, cb]: [RowId<Device, f64>; 2],
+    (ca, cb): (RowId<Device, f64>, Option<RowId<Device, f64>>),
 ) {
     dag.add_gpu(
         "open density",
@@ -700,7 +700,7 @@ struct OpenDensity {
     da: RowId<Device, f64>,
     db: RowId<Device, f64>,
     ca: RowId<Device, f64>,
-    cb: RowId<Device, f64>,
+    cb: Option<RowId<Device, f64>>,
     n: usize,
     n_alpha: usize,
     n_beta: usize,
@@ -711,7 +711,10 @@ impl GpuTask for OpenDensity {
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) {
         device.read(self.c);
-        for row in [self.ca, self.cb, self.da, self.db, self.d] {
+        for row in [self.ca, self.da, self.db, self.d]
+            .into_iter()
+            .chain(self.cb)
+        {
             device.write(row);
         }
     }
@@ -735,21 +738,39 @@ impl GpuTask for OpenDensity {
         // add_scf checked that n² fits an i32, and n_beta < n_alpha <= n.
         let n = self.n as i32;
         let c = device.get(self.c);
-        let [mut ca, mut cb, mut da, mut db, mut d] =
-            [self.ca, self.cb, self.da, self.db, self.d].map(|r| device.take_mut(r));
+        let [mut ca, mut da, mut db, mut d] =
+            [self.ca, self.da, self.db, self.d].map(|r| device.take_mut(r));
         // Each call follows the one before on the handle's stream.
-        for (cols, factor, density) in [
-            (self.n_alpha as i32, &mut ca, &mut da),
-            (self.n_beta as i32, &mut cb, &mut db),
-        ] {
-            geam(blas, OP_N, OP_N, n, cols, 1.0, &c, n, 0.0, &c, n, factor, n)?;
-            let factor = &*factor;
-            gemm(
-                blas, OP_N, OP_T, n, n, cols, 1.0, factor, n, factor, n, 0.0, density, n,
-            )?;
+        factor_density(worker, n, self.n_alpha as i32, &c, &mut ca, &mut da)?;
+        match self.cb {
+            Some(cb) => {
+                let mut cb = device.take_mut(cb);
+                factor_density(worker, n, self.n_beta as i32, &c, &mut cb, &mut db)?;
+            }
+            // No beta electron: Db = 0.
+            None => memset::zero(&mut db, worker)?,
         }
         geam(blas, OP_N, OP_N, n, n, 1.0, &da, n, 1.0, &db, n, &mut d, n)
     }
+}
+
+/// C's first `cols` columns into `factor` by a geam, and
+/// `density = factor factorᵀ` by a gemm, on the worker's handle.
+fn factor_density(
+    worker: &DeviceStream,
+    n: i32,
+    cols: i32,
+    c: &impl DeviceSlice<f64>,
+    factor: &mut impl DeviceSliceMut<f64>,
+    density: &mut impl DeviceSliceMut<f64>,
+) -> Status {
+    let blas = worker.blas();
+    // The gemm follows the geam on the handle's stream.
+    geam(blas, OP_N, OP_N, n, cols, 1.0, c, n, 0.0, c, n, factor, n)?;
+    let factor = &*factor;
+    gemm(
+        blas, OP_N, OP_T, n, n, cols, 1.0, factor, n, factor, n, 0.0, density, n,
+    )
 }
 
 /// GPU: the open columns of C, and `C_oᵀ Fc C_o`.
@@ -912,7 +933,11 @@ impl GpuTask for CanonicalOpen {
             let (mut energies, _) = split_at_mut(&mut tail, width);
             copy::d2d(&mut energies, &w, worker)?;
         }
-        for (cols, beta) in [(self.n_alpha as i32, 0.0), (self.n_beta as i32, 1.0)] {
+        // No beta electron, no beta product.
+        for (cols, beta) in [(self.n_alpha as i32, 0.0), (self.n_beta as i32, 1.0)]
+            .into_iter()
+            .filter(|&(cols, _)| cols > 0)
+        {
             gemm(
                 blas, OP_N, OP_T, n, n, cols, 1.0, &c, n, &c, n, beta, &mut d, n,
             )?;
@@ -1012,7 +1037,11 @@ impl GpuTask for PublishOpen {
         // not read a pinned row on the host, so they are copied on this
         // stream and read there. Each call follows the one before on it.
         memcpy_p2d(&mut weights, host, self.weights, worker)?;
-        for (cols, beta) in [(self.n_alpha as i32, 0.0), (self.n_beta as i32, 1.0)] {
+        // No beta electron, no beta product.
+        for (cols, beta) in [(self.n_alpha as i32, 0.0), (self.n_beta as i32, 1.0)]
+            .into_iter()
+            .filter(|&(cols, _)| cols > 0)
+        {
             gemm(
                 blas,
                 OP_N,

@@ -6,7 +6,12 @@
 //! `tools/emit/df_reference.py` at `conv_tol = 1e-12`,
 //! `conv_tol_grad = 1e-9`, each solution internally stable). Its orbital energies are the eigenvalues of PySCF's default
 //! Roothaan matrix, which the published ones are by construction
-//! ([`fb_pipeline_scf::add_scf`]).
+//! ([`fb_pipeline_scf::add_scf`]). The one-electron cases, which the C++
+//! reference does not carry, are `tests/data/df_rohf_orbitals.json`'s own,
+//! written by `rohf_reference.py` the same way, with the same keys, by
+//! PySCF's ROHF class itself: its `scf.ROHF` hands one electron to `HF1e`,
+//! whose energy is the same but whose orbital energies are the core
+//! Hamiltonian's, not the Roothaan matrix's.
 //!
 //! **The bars, by analysis, one run.** The energy: `|E - E_ref| <= 1e-9`
 //! hartree, the closed shell's (`tests/scf.rs`). The ROHF energy is
@@ -72,18 +77,28 @@ const DENSITY_BAR: f64 = 1e-12;
 /// least this.
 const BLOCK_SPACING: f64 = 1e-3;
 
-/// The reference's case `name`.
+/// The reference's case `name`: `df_rohf.json`'s, or else one of
+/// `df_rohf_orbitals.json`'s own.
 fn case(name: &str) -> serde_json::Value {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/df_rohf.json");
-    let text = std::fs::read_to_string(&path).unwrap();
-    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
-    json["df_rohf"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["name"] == name)
-        .unwrap_or_else(|| panic!("{name} is in the reference"))
-        .clone()
+    [
+        ("df_rohf.json", "df_rohf"),
+        ("df_rohf_orbitals.json", "df_rohf_orbitals"),
+    ]
+    .into_iter()
+    .find_map(|(file, key)| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data")
+            .join(file);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        json[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name && c.get("mo_energies").is_some())
+            .cloned()
+    })
+    .unwrap_or_else(|| panic!("{name} is in the reference"))
 }
 
 /// The case's molecule: its atoms at their coordinates, in bohr, with its
@@ -316,4 +331,25 @@ fn water_cation_converges_to_pyscf() {
 fn ch2_triplet_cc_pvtz_converges_to_pyscf() {
     let out = converges_to_pyscf("ch2_ccpvtz");
     orbitals_match_pyscf("ch2_ccpvtz", &out);
+}
+
+/// The H atom, a doublet, in cc-pVDZ over cc-pVDZ-JKFIT: one electron, so
+/// no beta electron, no beta factor and `Db = 0` after the first build
+/// (`n_alpha = 1`, `n_beta = 0`); and its orbitals against PySCF's. Needs a
+/// GPU.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn hydrogen_atom_converges_to_pyscf() {
+    let out = converges_to_pyscf("h_ccpvdz");
+    orbitals_match_pyscf("h_ccpvdz", &out);
+}
+
+/// H₂⁺, a doublet, in cc-pVDZ over cc-pVDZ-JKFIT at 2.0 bohr: no beta
+/// electron, and charged, so the SAD guess's two electrons are rescaled to
+/// one; and its orbitals against PySCF's. Needs a GPU.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn hydrogen_molecule_cation_converges_to_pyscf() {
+    let out = converges_to_pyscf("h2_cation_ccpvdz");
+    orbitals_match_pyscf("h2_cation_ccpvdz", &out);
 }
