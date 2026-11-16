@@ -13,7 +13,7 @@
 
 #![forbid(unsafe_code)]
 
-use fb_doc_check::{code_only, is_ident};
+use fb_doc_check::{code_only, is_ident, workspace_members};
 use std::path::{Path, PathBuf};
 
 /// The document holding the list, relative to the workspace root.
@@ -160,27 +160,11 @@ fn manifest(member: &Path) -> (String, Vec<PathBuf>) {
     (name, roots)
 }
 
-/// The workspace's members, read from the `members` list of its
-/// `Cargo.toml`, so a new crate is checked without being named here.
-fn members(root: &Path) -> Vec<PathBuf> {
-    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
-    let list = manifest
-        .split_once("members = [")
-        .and_then(|(_, rest)| rest.split_once(']'))
-        .expect("the workspace manifest's members list")
-        .0;
-    list.split(',')
-        .map(|m| m.trim().trim_matches('"'))
-        .filter(|m| !m.is_empty())
-        .map(|m| root.join(m))
-        .collect()
-}
-
 #[test]
 fn unsafe_is_only_in_the_crates_the_doc_lists() {
     let root = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
     let root = root.canonicalize().unwrap_or(root);
-    let crates: Vec<Crate> = members(&root)
+    let crates: Vec<Crate> = workspace_members()
         .iter()
         .map(|m| {
             let (name, roots) = manifest(m);

@@ -21,6 +21,8 @@
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
+use fb_doc_check::workspace_members;
+
 /// Which shape a name was cited in; the real tree must use all three, so a
 /// scanner that matched nothing fails rather than passes.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -322,7 +324,7 @@ fn workspace_sources(root: &Path) -> Vec<(PathBuf, String)> {
     let agent = root.join("../.claude/agents/rust-rebuild.md");
     assert!(agent.is_file(), "the agent definition is gone: {agent:?}");
     paths.push(agent);
-    for member in members(root) {
+    for member in workspace_members() {
         for top in ["build.rs", "src", "tests"] {
             walk(&member.join(top), &mut paths);
         }
@@ -334,28 +336,6 @@ fn workspace_sources(root: &Path) -> Vec<(PathBuf, String)> {
             (p, text)
         })
         .collect()
-}
-
-/// The workspace's members, read from the `members` list of its
-/// `Cargo.toml`, so a new crate is scanned without being named here.
-fn members(root: &Path) -> Vec<PathBuf> {
-    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
-    let list = manifest
-        .split_once("members = [")
-        .and_then(|(_, rest)| rest.split_once(']'))
-        .expect("the workspace manifest's members list")
-        .0;
-    let members: Vec<PathBuf> = list
-        .split(',')
-        .map(|m| m.trim().trim_matches('"'))
-        .filter(|m| !m.is_empty())
-        .map(|m| root.join(m))
-        .collect();
-    assert!(
-        members.iter().all(|m| m.join("Cargo.toml").is_file()),
-        "a workspace member without a manifest: {members:?}"
-    );
-    members
 }
 
 #[test]

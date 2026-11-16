@@ -19,6 +19,8 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use fb_doc_check::workspace_members;
+
 /// The register, relative to the workspace root.
 const REGISTER: &str = "docs/rules.md";
 /// The header of a register table, cells trimmed.
@@ -271,9 +273,8 @@ fn defines_type(text: &str, name: &str) -> bool {
     })
 }
 
-/// Every `.rs` under the workspace's members' `src/` and `tests/`, read
-/// from the `members` list of its `Cargo.toml`.
-fn workspace_rust(root: &Path) -> Vec<String> {
+/// Every `.rs` under the workspace's members' `src/` and `tests/`.
+fn workspace_rust() -> Vec<String> {
     fn walk(p: &Path, out: &mut Vec<String>) {
         if p.is_dir() {
             for e in std::fs::read_dir(p).unwrap() {
@@ -283,18 +284,10 @@ fn workspace_rust(root: &Path) -> Vec<String> {
             out.push(std::fs::read_to_string(p).unwrap());
         }
     }
-    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
-    let list = manifest
-        .split_once("members = [")
-        .and_then(|(_, rest)| rest.split_once(']'))
-        .expect("the workspace manifest's members list")
-        .0;
     let mut out = Vec::new();
-    for m in list.split(',').map(|m| m.trim().trim_matches('"')) {
-        if !m.is_empty() {
-            for top in ["src", "tests"] {
-                walk(&root.join(m).join(top), &mut out);
-            }
+    for m in workspace_members() {
+        for top in ["src", "tests"] {
+            walk(&m.join(top), &mut out);
         }
     }
     out
@@ -307,7 +300,7 @@ fn every_check_the_register_names_exists() {
     let repo = root.join("..");
     let text = std::fs::read_to_string(root.join(REGISTER)).unwrap();
     let read_root = |p: &str| std::fs::read_to_string(root.join(p)).unwrap_or_default();
-    let sources = workspace_rust(&root);
+    let sources = workspace_rust();
     let docs = std::fs::read_dir(root.join("docs"))
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())

@@ -1,4 +1,4 @@
-//! Four rules of the design docs that a scan of the Rust sources holds,
+//! Five rules of the design docs that a scan of the Rust sources holds,
 //! each failing with the file and line of what breaks it:
 //!
 //! - **Nothing between the detection site and `main` logs an error**
@@ -20,13 +20,25 @@
 //!   whose `run` names its heap view and does nothing but a
 //!   `copy_from_slice` between rows, are in [`COPY_TASKS`]: the planner's
 //!   own three, and the two host halves of its heap copies.
+//! - **"The planner" names `fb_core_planner` alone**
+//!   (`docs/programming_model.md`, "The orchestrator derives"): no item
+//!   outside [`PLANNER`] has a name containing `planner`, in any case: a
+//!   crate (a manifest's `name`), a source file, a module, a type, a trait,
+//!   a function, a const, a static, a type alias or a macro. A test
+//!   function is exempt: its name is a sentence, which may say "planner"
+//!   as prose does, and nothing calls it; so are the [`CHECKS`], this scan
+//!   among them.
 //!
 //! Every member's `.rs` is read, and the two at `rust/`'s top that the
-//! `build.rs` files include. Tier 3: it reads files and nothing else.
+//! `build.rs` files include; the planner rule reads every member's
+//! `Cargo.toml` too. Tier 3: it reads files and nothing else.
 
 #![forbid(unsafe_code)]
 
-use fb_doc_check::{code_only, is_ident, rust_root, without_comments, workspace_sources};
+use fb_doc_check::{
+    Attr, attributes, code_only, is_ident, rust_root, without_comments, word_at, workspace_members,
+    workspace_sources,
+};
 
 /// The places a line is logged at error or critical, as `(file, how many,
 /// why)`. A file not listed may log none, and a listed one exactly its
@@ -137,6 +149,25 @@ const COPY_TASKS: &[(&str, usize, &str)] = &[(
     "the planner's copy nodes themselves, `Dag::upload`, `Dag::download` and `Dag::download_rows`, \
      and the host halves of `Dag::upload_heap` and `Dag::download_heap`",
 )];
+
+/// The one crate whose items may be named for the planner, as a path from
+/// `rust/`.
+const PLANNER: &str = "core/planner/";
+
+/// The keywords that name the item after them (`static mut` and
+/// `macro_rules!` are read through).
+const ITEM_KEYWORDS: &[&str] = &[
+    "mod",
+    "struct",
+    "enum",
+    "union",
+    "trait",
+    "type",
+    "fn",
+    "const",
+    "static",
+    "macro_rules",
+];
 
 /// The checks that name what they forbid: this file, and
 /// `fb-device-check`'s scan of the C headers for a launch shape.
@@ -530,6 +561,224 @@ fn copy_task_failures(files: &[(String, String)]) -> Vec<String> {
         &hits,
         COPY_TASKS,
     )
+}
+
+/// Whether `name` says "planner", in any case.
+fn says_planner(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("planner")
+}
+
+/// Whether the item whose keyword is at `at` in `code` carries `#[test]`:
+/// back from it, past its qualifiers and its other attributes.
+fn is_test_item(code: &str, attrs: &[Attr], at: usize) -> bool {
+    let mut end = at;
+    loop {
+        let before = code[..end].trim_end();
+        if let Some(a) = attrs.iter().find(|a| a.end == before.len()) {
+            if a.name == "test" {
+                return true;
+            }
+            end = a.start;
+        } else if let Some(q) = ["pub", "async", "unsafe", "const", "extern", ")"]
+            .iter()
+            .find(|q| before.ends_with(*q))
+        {
+            // `pub(crate)`: back over the parenthesis to the `pub`.
+            end = if *q == ")" {
+                match before.rfind("pub") {
+                    Some(p) => p,
+                    None => return false,
+                }
+            } else {
+                before.len() - q.len()
+            };
+        } else {
+            return false;
+        }
+    }
+}
+
+/// Each item `code` (from [`code_only`]) names for the planner, with its
+/// line and name, test functions left out.
+fn planner_items(code: &str) -> Vec<(usize, String)> {
+    let attrs = attributes(code);
+    let mut found = Vec::new();
+    for (at, word) in idents(code) {
+        if !ITEM_KEYWORDS.contains(&word) || (word == "fn" && is_test_item(code, &attrs, at)) {
+            continue;
+        }
+        // The name follows the keyword after whitespace, through a
+        // `static mut`, a `macro_rules!` and a raw identifier's `r#`; so
+        // `fn(` and `const _` name nothing.
+        let mut from = at + word.len();
+        if word == "macro_rules" {
+            match next_char(code, from) {
+                Some((bang, b'!')) => from = bang + 1,
+                _ => continue,
+            }
+        }
+        let Some((mut start, _)) = next_char(code, from) else {
+            continue;
+        };
+        if start == from && word != "macro_rules" {
+            continue;
+        }
+        if word == "static" && word_at(code.as_bytes(), start) == "mut" {
+            start = next_char(code, start + 3).map_or(start, |(i, _)| i);
+        }
+        if code[start..].starts_with("r#") {
+            start += 2;
+        }
+        let name = word_at(code.as_bytes(), start);
+        if says_planner(name) {
+            found.push((line_of(code, start), name.to_owned()));
+        }
+    }
+    found
+}
+
+/// Each package or target `name` in `manifest` (a `Cargo.toml`'s text),
+/// with its line.
+fn manifest_names(manifest: &str) -> Vec<(usize, String)> {
+    manifest
+        .lines()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            let (key, value) = l.split_once('=')?;
+            (key.trim() == "name").then(|| (i + 1, value.trim().trim_matches('"').to_owned()))
+        })
+        .collect()
+}
+
+/// Every name for the planner outside [`PLANNER`] and [`CHECKS`], over
+/// `files` (path from `rust/` and text, sources and manifests alike), as
+/// one line each.
+fn planner_name_failures(files: &[(String, String)]) -> Vec<String> {
+    let mut failures = Vec::new();
+    for (path, text) in files
+        .iter()
+        .filter(|(p, _)| !p.starts_with(PLANNER) && !CHECKS.contains(&p.as_str()))
+    {
+        let names = if path.ends_with("Cargo.toml") {
+            manifest_names(text)
+        } else {
+            let stem = path.rsplit('/').next().unwrap_or(path);
+            let mut names = planner_items(&code_only(text));
+            if says_planner(stem) {
+                names.insert(0, (1, stem.to_owned()));
+            }
+            names
+        };
+        for (line, name) in names.into_iter().filter(|(_, n)| says_planner(n)) {
+            failures.push(format!(
+                "{path}:{line}: `{name}` names the planner outside {PLANNER}: \
+                 \"the planner\" is `fb_core_planner` alone \
+                 (docs/programming_model.md, \"The orchestrator derives\")"
+            ));
+        }
+    }
+    failures
+}
+
+/// Every member's manifest, as its path from `rust/` and its text.
+fn manifests() -> Vec<(String, String)> {
+    let root = rust_root();
+    workspace_members()
+        .into_iter()
+        .map(|m| {
+            let path = m.join("Cargo.toml");
+            let name = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            (name, std::fs::read_to_string(&path).unwrap())
+        })
+        .collect()
+}
+
+#[test]
+fn only_fb_core_planner_is_named_planner() {
+    let mut files = sources();
+    files.extend(manifests());
+    assert!(
+        files.iter().any(|(p, _)| p == "core/planner/Cargo.toml"),
+        "no manifests read"
+    );
+    let failures = planner_name_failures(&files);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The scan sees each kind of item named for the planner, in any case, a
+/// source file's name and a manifest's package and target names; and
+/// passes a test function, a use of `fb_core_planner`, a local, prose in a
+/// comment or a string, and every name under [`PLANNER`].
+#[test]
+fn the_planner_scan_sees_each_item() {
+    let src = "\
+        pub mod planner;\n\
+        pub(crate) struct Planner;\n\
+        enum PlannerKind {}\n\
+        trait ThePlanner {}\n\
+        type PlannerOut = u8;\n\
+        pub const fn plan_with_planner() {}\n\
+        static mut PLANNER_COUNT: u8 = 0;\n\
+        macro_rules! planner { () => {} }\n\
+        use fb_core_planner::Dag;\n\
+        let planner = fb_core_planner::Plan::new();\n\
+        // the planner's copy node\n\
+        let s = \"fn planner\";\n\
+        #[test]\n\
+        fn a_whole_copy_is_a_planner_copy_node() {}\n\
+        #[test]\n\
+        #[ignore = \"tier 4: needs a GPU\"]\n\
+        pub(crate) async fn the_planner_on_a_card() {}\n\
+        fn r#planner_raw() {}\n";
+    let got: Vec<(usize, String)> = planner_items(&code_only(src));
+    let want: Vec<(usize, String)> = [
+        (1, "planner"),
+        (2, "Planner"),
+        (3, "PlannerKind"),
+        (4, "ThePlanner"),
+        (5, "PlannerOut"),
+        (6, "plan_with_planner"),
+        (7, "PLANNER_COUNT"),
+        (8, "planner"),
+        (18, "planner_raw"),
+    ]
+    .into_iter()
+    .map(|(l, w)| (l, w.to_owned()))
+    .collect();
+    assert_eq!(got, want);
+
+    let files = vec![
+        (
+            "pipeline/config/src/planner_glue.rs".to_owned(),
+            "fn f() {}".to_owned(),
+        ),
+        (
+            "pipeline/config/Cargo.toml".to_owned(),
+            "[package]\nname = \"fb-pipeline-planner\"\n\n[[test]]\nname = \"config\"\n".to_owned(),
+        ),
+        (
+            "core/planner/Cargo.toml".to_owned(),
+            "[package]\nname = \"fb-core-planner\"\n".to_owned(),
+        ),
+        (
+            "core/planner/src/lib.rs".to_owned(),
+            "pub struct Planner;".to_owned(),
+        ),
+    ];
+    let failures = planner_name_failures(&files);
+    assert_eq!(failures.len(), 2, "{failures:#?}");
+    assert!(
+        failures[0].starts_with("pipeline/config/src/planner_glue.rs:1: `planner_glue.rs`"),
+        "{failures:#?}"
+    );
+    assert!(
+        failures[1].starts_with("pipeline/config/Cargo.toml:2: `fb-pipeline-planner`"),
+        "{failures:#?}"
+    );
 }
 
 #[test]
