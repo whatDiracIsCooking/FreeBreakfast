@@ -14,7 +14,7 @@ use std::ops::ControlFlow;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use fb_core_thread_pool::{HostOnly, LaneId, Placement, Plan, run};
+use fb_core_thread_pool::{HostOnly, LaneId, Placement, TaskGraph, run};
 
 fn threads() -> usize {
     let status = std::fs::read_to_string("/proc/self/status").expect("/proc/self/status");
@@ -62,7 +62,7 @@ fn main() {
     // worker, not per lane.
     for (n_cpu, n_gpu, n_lanes) in [(1, 0, 1), (3, 2, 3), (8, 4, 2)] {
         let seen = Mutex::new(Vec::new());
-        let mut plan = Plan::new();
+        let mut plan = TaskGraph::new();
         let mut last = Vec::new();
         for worker in 0..n_gpu {
             for lane in 0..n_lanes {
@@ -131,7 +131,7 @@ fn replayed_on_the_runs_threads() {
     let first = Mutex::new(0);
     let body_seen = Mutex::new(Vec::new());
     let last = Mutex::new(0);
-    let mut plan = Plan::new();
+    let mut plan = TaskGraph::new();
     let gpu = plan.add("gpu", Placement::Stream(0.into()), &[], |_| {
         let mut first = first.lock().unwrap();
         if *first == 0 {
@@ -181,7 +181,7 @@ fn counted_on_the_runs_threads() {
     let (n_cpu, n_gpu) = (2, 1);
     let expected = 1 + n_cpu + n_gpu;
     let seen = Mutex::new(Vec::new());
-    let mut plan = Plan::new();
+    let mut plan = TaskGraph::new();
     let lane = |lane| Placement::Stream(LaneId { worker: 0, lane });
     let stage = plan.add("stage", lane(1), &[], |_| {
         seen.lock().unwrap().push(all_workers(expected));

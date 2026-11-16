@@ -5,15 +5,15 @@
 //! thread. This is the executor half of the orchestrator; choosing the order
 //! and the placement is the planner's, and arrives here already done.
 //!
-//! - [`Plan`]: the nodes, each with its predecessors, its [`Placement`] (the
+//! - [`TaskGraph`]: the nodes, each with its predecessors, its [`Placement`] (the
 //!   CPU pool or one lane of a GPU worker, a [`LaneId`]) and the callable
 //!   that runs it. Nodes are
 //!   added in topological order, so a node's [`NodeId`] is its rank and a
-//!   plan cannot have a cycle; and its loops, each a run of nodes, its
+//!   graph cannot have a cycle; and its loops, each a run of nodes, its
 //!   body, replayed on the same workers: until a CPU decision node after
-//!   it stops it, at most a bound fixed at planning ([`Plan::add_loop`]),
+//!   it stops it, at most a bound fixed at planning ([`TaskGraph::add_loop`]),
 //!   or a trip count fixed at planning with up to a depth of iterations in
-//!   flight and no decision ([`Plan::add_counted`]).
+//!   flight and no decision ([`TaskGraph::add_counted`]).
 //! - [`Backend`]: the device side of a run: the GPU workers' lanes, the
 //!   events at the edges that leave one, and the syncs. [`HostOnly`] has no
 //!   device and is what the device-free tests run on; `Device` (the
@@ -53,17 +53,17 @@
 //!
 //! # One run at a time
 //!
-//! [`run`] takes the plan and the backend by `&mut`, so the borrow checker
+//! [`run`] takes the graph and the backend by `&mut`, so the borrow checker
 //! holds what the run model needs: neither is in two runs at once. A
-//! `Device` backend's events are its plan's nodes', recorded and waited on
+//! `Device` backend's events are its graph's nodes', recorded and waited on
 //! within one run, and its streams and library handles are each one lane's;
-//! and a plan's nodes reach what their closures captured, which
+//! and a graph's nodes reach what their closures captured, which
 //! for a planner instance is its blocks, whose rows' borrow flags are
 //! released when a node returns while its device work may still be in
 //! flight. Two runs sharing either would race on both. The two kinds of
 //! concurrency the model has keep working: within one run the workers share
-//! the plan and the backend by reference (which is why [`Backend`] is
-//! `Sync`), and independent (plan, backend) pairs run on threads of their
+//! the graph and the backend by reference (which is why [`Backend`] is
+//! `Sync`), and independent (graph, backend) pairs run on threads of their
 //! own. Several GPUs are one run: a `Device` spans its GPU workers'
 //! devices.
 //!
@@ -101,7 +101,7 @@
 //! decision that would start iteration `max_iterations` fails the run
 //! with [`MaxIterationsExceeded`](fb_core_error_handling::ErrorKind::MaxIterationsExceeded).
 //!
-//! A counted loop ([`Plan::add_counted`]) has no decision: its body runs a
+//! A counted loop ([`TaskGraph::add_counted`]) has no decision: its body runs a
 //! trip count fixed at planning, each trip a run of instances of the body's
 //! nodes with edges of its own, the body's within the trip, each node's
 //! from itself in the trip before, and the ring, from the trip `depth`
@@ -166,7 +166,7 @@
 //! decision reads each trip's before the replay, and the node has an entry
 //! per iteration and trip, the iteration as [`TaskTime::outer`].
 //!
-//! The record also carries each node's dimensions ([`Plan::set_dims`]) and
+//! The record also carries each node's dimensions ([`TaskGraph::set_dims`]) and
 //! the profile that built the executor; the plan's arena sizes
 //! ([`ArenaSize`]) are the planner's to add.
 //!
@@ -191,10 +191,10 @@
 //!
 //! ```
 //! use std::sync::atomic::{AtomicU32, Ordering};
-//! use fb_core_thread_pool::{HostOnly, Placement, Plan, run};
+//! use fb_core_thread_pool::{HostOnly, Placement, TaskGraph, run};
 //!
 //! let total = AtomicU32::new(0);
-//! let mut plan = Plan::new();
+//! let mut plan = TaskGraph::new();
 //! let a = plan.add("a", Placement::Cpu, &[], |_| {
 //!     total.fetch_add(1, Ordering::Relaxed);
 //!     Ok(())
@@ -213,13 +213,13 @@
 //! ```
 
 mod backend;
-mod plan;
 mod run;
+mod task_graph;
 #[cfg(test)]
 mod tests;
 
 #[cfg(feature = "device")]
 pub use backend::Device;
 pub use backend::{Backend, DeviceStream, HostOnly};
-pub use plan::{Lane, LaneId, NodeId, Placement, Plan};
 pub use run::{ArenaSize, Record, SyncPoint, TaskTime, default_n_cpu, run};
+pub use task_graph::{Lane, LaneId, NodeId, Placement, TaskGraph};

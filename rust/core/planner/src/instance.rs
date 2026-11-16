@@ -11,11 +11,11 @@ use fb_core_error_handling::check_or_abort;
 #[cfg(feature = "device")]
 use fb_core_thread_pool::LaneId;
 use fb_core_thread_pool::{
-    self as thread_pool, ArenaSize, Backend, DeviceStream, Lane, NodeId, Plan, Record,
+    self as thread_pool, ArenaSize, Backend, DeviceStream, Lane, NodeId, Record, TaskGraph,
 };
 
 /// A planned DAG made real: each worker's two blocks and the plan's heap
-/// block, allocated once, and the [`thread_pool::Plan`] whose nodes hand
+/// block, allocated once, and the [`thread_pool::TaskGraph`] whose nodes hand
 /// each task its rows of them.
 /// Run any number of times, one run at a time ([`Instance::run`] borrows
 /// it exclusively); a run allocates nothing.
@@ -24,7 +24,7 @@ use fb_core_thread_pool::{
 /// makes (the `device` feature): one event per GPU node of this plan, and
 /// each worker's declared BLAS workspace handed to its handle.
 pub struct Instance<'a, H: StagingKind = Pinned, S = DeviceStream> {
-    plan: Plan<'a, S>,
+    plan: TaskGraph<'a, S>,
     /// Per worker, its device and host blocks, each shared with the nodes
     /// that partition it and, for the device one, with a backend's handle
     /// that holds its BLAS workspace row.
@@ -49,8 +49,8 @@ impl<'a, H: StagingKind, S: 'a> Planned<'a, H, S> {
     /// Allocate each worker's blocks, worker `w`'s on device `devices[w]`,
     /// and the plan's heap block, from the global allocator, and build the executor's plan: a node per task in rank order, after
     /// its [`predecessors`](Planned::predecessors), and for each loop its
-    /// decision, closing it over its body ([`Plan::add_loop`]), or for a
-    /// counted loop its close after its body's last ([`Plan::add_counted`]).
+    /// decision, closing it over its body ([`TaskGraph::add_loop`]), or for a
+    /// counted loop its close after its body's last ([`TaskGraph::add_counted`]).
     /// Each node hands its task views for the iteration it runs in, so a
     /// counted loop's iteration reaches its own copy of the body's rows. A table of
     /// zero bytes allocates nothing, so a DAG with no device rows touches
@@ -73,7 +73,7 @@ impl<'a, H: StagingKind, S: 'a> Planned<'a, H, S> {
         }
         // The heap needs no device: its index is never made current.
         let heap = Arc::new(Block::new(0, self.heap));
-        let mut plan = Plan::new();
+        let mut plan = TaskGraph::new();
         let mut ids: Vec<NodeId> = Vec::with_capacity(self.nodes.len());
         let loops = self.loops;
         for (pos, (node, deps)) in self.nodes.into_iter().zip(self.deps).enumerate() {

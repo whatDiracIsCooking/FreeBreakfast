@@ -26,16 +26,16 @@ pub enum Placement {
 /// never waits on the device; two nodes on one lane are ordered by the
 /// stream, and an edge between two lanes is an event one records and the
 /// other waits on, on the device. A worker given as a bare index is its
-/// lane 0, so a plan of one lane per worker names none.
+/// lane 0, so a graph of one lane per worker names none.
 ///
 /// Its text, `gpu<worker>.<lane>`, is the worker a node on it is logged
 /// and timed under (`[name@gpu0.1]`).
 ///
 /// ```
-/// use fb_core_thread_pool::{HostOnly, LaneId, Placement, Plan, run};
+/// use fb_core_thread_pool::{HostOnly, LaneId, Placement, TaskGraph, run};
 ///
 /// let lane = |lane| Placement::Stream(LaneId { worker: 0, lane });
-/// let mut plan = Plan::new();
+/// let mut plan = TaskGraph::new();
 /// let a = plan.add("a", lane(0), &[], |_| Ok(()));
 /// plan.add("b", lane(1), &[a], |_| Ok(()));
 /// assert_eq!(plan.lanes(), [2]);
@@ -66,7 +66,7 @@ impl fmt::Display for LaneId {
     }
 }
 
-/// A node in a [`Plan`], and its rank: nodes are numbered in the order they
+/// A node in a [`TaskGraph`], and its rank: nodes are numbered in the order they
 /// were added, which is a topological order. In `timing.json` it is the
 /// rank, a bare integer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -82,7 +82,7 @@ impl NodeId {
 
 /// What a node is handed when it runs: where, and in which iteration of
 /// the innermost loop it is in, from 0, or 0 outside every loop. A counted
-/// loop's body node picks its batch by it ([`Plan::add_counted`]), inside
+/// loop's body node picks its batch by it ([`TaskGraph::add_counted`]), inside
 /// a decision loop too: there it is the trip, and the decision loop's
 /// iteration is the record's ([`TaskTime::outer`](super::TaskTime::outer)).
 pub enum Lane<'r, S> {
@@ -111,7 +111,7 @@ type DecideFn<'a> = Box<dyn Fn(usize) -> Result<ControlFlow<()>> + Sync + 'a>;
 /// What a node runs: a task, or a loop's decision.
 pub(super) enum Work<'a, S> {
     Task(NodeFn<'a, S>),
-    /// The decision of loop `.0` in [`Plan::loops`].
+    /// The decision of loop `.0` in [`TaskGraph::loops`].
     Decide(usize, DecideFn<'a>),
 }
 
@@ -125,7 +125,7 @@ pub(super) struct Node<'a, S> {
     pub(super) work: Work<'a, S>,
 }
 
-/// A loop of a [`Plan`]: its body's ranks, how it ends, and the decision
+/// A loop of a [`TaskGraph`]: its body's ranks, how it ends, and the decision
 /// loop whose body holds it, if any.
 pub(super) struct Loop {
     pub(super) body: Range<usize>,
@@ -136,12 +136,12 @@ pub(super) struct Loop {
 /// How a loop ends: at a decision, or after a trip count.
 #[derive(Clone, Copy)]
 pub(super) enum LoopKind {
-    /// [`Plan::add_loop`]'s: its decision's rank and its bound.
+    /// [`TaskGraph::add_loop`]'s: its decision's rank and its bound.
     Decide {
         decision: usize,
         max_iterations: usize,
     },
-    /// [`Plan::add_counted`]'s: its trip count and its depth.
+    /// [`TaskGraph::add_counted`]'s: its trip count and its depth.
     Counted { trips: usize, depth: usize },
 }
 
@@ -165,26 +165,26 @@ impl Loop {
 
 /// A DAG of nodes, each placed, over the stream type `S` its GPU nodes
 /// enqueue on (`()` under [`HostOnly`](super::HostOnly)), and the loops
-/// that replay a run of them ([`Plan::add_loop`]).
+/// that replay a run of them ([`TaskGraph::add_loop`]).
 ///
-/// A node's callable may borrow anything that outlives the plan (`'a`), and
+/// A node's callable may borrow anything that outlives the graph (`'a`), and
 /// must be `Sync`, because the run calls it from one of its workers.
-pub struct Plan<'a, S> {
+pub struct TaskGraph<'a, S> {
     pub(super) nodes: Vec<Node<'a, S>>,
     pub(super) succs: Vec<Vec<usize>>,
     pub(super) loops: Vec<Loop>,
 }
 
-impl<S> Default for Plan<'_, S> {
+impl<S> Default for TaskGraph<'_, S> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<'a, S> Plan<'a, S> {
+impl<'a, S> TaskGraph<'a, S> {
     /// An empty plan.
     pub fn new() -> Self {
-        Plan {
+        TaskGraph {
             nodes: Vec::new(),
             succs: Vec::new(),
             loops: Vec::new(),
@@ -192,7 +192,7 @@ impl<'a, S> Plan<'a, S> {
     }
 
     /// Add a node after its predecessors `deps`, which must already be in
-    /// the plan; that is what makes the plan acyclic and the ids a
+    /// the graph; that is what makes the graph acyclic and the ids a
     /// topological order. A node after a decision loop reads what the
     /// loop's body wrote through the loop's decision, never from a body
     /// node, which runs once per iteration. A node after a counted loop
@@ -250,7 +250,7 @@ impl<'a, S> Plan<'a, S> {
     /// readies the nodes after the loop. A body node's predecessors before
     /// the body are satisfied once, by their single run.
     ///
-    /// The body may hold counted loops ([`Plan::add_counted`]), closed
+    /// The body may hold counted loops ([`TaskGraph::add_counted`]), closed
     /// before this one: each is replayed whole every iteration, its trips
     /// overlapped as anywhere, and the decision reads each trip's stream
     /// scopes before the replay.
@@ -265,12 +265,12 @@ impl<'a, S> Plan<'a, S> {
     /// ```
     /// use std::ops::ControlFlow;
     /// use std::sync::Mutex;
-    /// use fb_core_thread_pool::{HostOnly, Placement, Plan, run};
+    /// use fb_core_thread_pool::{HostOnly, Placement, TaskGraph, run};
     ///
     /// // x <- x / 2 + 1 from 0 until it moves 1e-12 or less: the k-th step
     /// // moves 2^(1-k), so the 41st is the first to stop, 2^-40 from 2.
     /// let x = Mutex::new((0.0_f64, f64::INFINITY));
-    /// let mut plan = Plan::new();
+    /// let mut plan = TaskGraph::new();
     /// let step = plan.add("step", Placement::Cpu, &[], |_| {
     ///     let mut x = x.lock().unwrap();
     ///     let next = x.0 / 2.0 + 1.0;
@@ -364,17 +364,17 @@ impl<'a, S> Plan<'a, S> {
     /// skips its descendants, every later iteration among them.
     ///
     /// A counted loop may lie in a decision loop's body, closed before the
-    /// decision ([`Plan::add_loop`]); it holds no loop itself.
+    /// decision ([`TaskGraph::add_loop`]); it holds no loop itself.
     ///
     /// ```
     /// use std::sync::Mutex;
-    /// use fb_core_thread_pool::{HostOnly, Lane, LaneId, Placement, Plan, run};
+    /// use fb_core_thread_pool::{HostOnly, Lane, LaneId, Placement, TaskGraph, run};
     ///
     /// // A batch per iteration: lane 1 stages it, lane 0 adds it in.
     /// let staged = Mutex::new([0; 2]);
     /// let sum = Mutex::new(0);
     /// let lane = |lane| Placement::Stream(LaneId { worker: 0, lane });
-    /// let mut plan = Plan::new();
+    /// let mut plan = TaskGraph::new();
     /// let stage = plan.add("stage", lane(1), &[], |at| {
     ///     let Lane::Stream { iteration, .. } = at else { unreachable!() };
     ///     staged.lock().unwrap()[iteration % 2] = iteration + 1;
@@ -426,7 +426,7 @@ impl<'a, S> Plan<'a, S> {
         self.nodes.len()
     }
 
-    /// Whether the plan has no nodes.
+    /// Whether the graph has no nodes.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
@@ -450,7 +450,7 @@ impl<'a, S> Plan<'a, S> {
         }
     }
 
-    /// The lanes the plan uses, per GPU worker: for each worker up to the
+    /// The lanes the graph uses, per GPU worker: for each worker up to the
     /// highest placed on, one past the highest lane placed on it, 0 for a
     /// worker with no node of its own.
     pub fn lanes(&self) -> Vec<usize> {

@@ -49,7 +49,7 @@
 //!   plan's golden.
 //! - [`Instance`] ([`Planned::instantiate`]): the blocks, each worker's two
 //!   and the plan's heap block, and a
-//!   [`thread_pool::Plan`] whose node for each task partitions the blocks
+//!   [`thread_pool::TaskGraph`] whose node for each task partitions the blocks
 //!   for it and calls its `run`. Run any number of times, one at a time:
 //!   [`Instance::run`] takes the instance and the backend by `&mut`
 //!   (`fb_core_thread_pool`, "One run at a time"). Each run returns the
@@ -63,7 +63,7 @@
 //! [`LaneId`]: fb_core_thread_pool::LaneId
 //! [`Table::reads`]: fb_core_arena::Table::reads
 //! [`Table::handoffs`]: fb_core_arena::Table::handoffs
-//! [`thread_pool::Plan`]: fb_core_thread_pool::Plan
+//! [`thread_pool::TaskGraph`]: fb_core_thread_pool::TaskGraph
 //!
 //! # What a plan promises
 //!

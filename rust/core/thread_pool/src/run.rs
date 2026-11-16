@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::backend::Backend;
-use super::plan::{Lane, LaneId, LoopKind, NodeId, Placement, Plan, Work};
+use super::task_graph::{Lane, LaneId, LoopKind, NodeId, Placement, TaskGraph, Work};
 use fb_core_error_handling::{Error, Status};
 use fb_core_log::TaskScope;
 use log::debug;
@@ -37,7 +37,7 @@ pub struct TaskTime {
     /// `gpu<w>.<l>` ([`LaneId`](super::LaneId)), as its log lines and
     /// errors name it.
     pub worker: String,
-    /// Its dimensions by name, as [`Plan::set_dims`] gave them; empty when
+    /// Its dimensions by name, as [`TaskGraph::set_dims`] gave them; empty when
     /// none were.
     pub dims: BTreeMap<String, usize>,
     /// For a loop's body node or decision, the iteration of its innermost
@@ -157,7 +157,7 @@ pub struct Record {
     /// device, and has none either.
     pub syncs: Vec<SyncPoint>,
     /// Each decision loop that began, by its decision node
-    /// ([`Plan::add_loop`]): the number of iterations its body began. A
+    /// ([`TaskGraph::add_loop`]): the number of iterations its body began. A
     /// counted loop's count is its plan's, and is not here. For a loop that stopped, its
     /// decision's last index plus one; for one that failed, the iteration
     /// it failed in plus one. In `timing.json`, the keys are the ranks as
@@ -289,8 +289,8 @@ mod status {
     }
 }
 
-/// Run every node of `plan` on `n_cpu` CPU workers and `backend`'s GPU
-/// workers, and join them all before returning; see
+/// Run every node of the task graph `plan` on `n_cpu` CPU workers and
+/// `backend`'s GPU workers, and join them all before returning; see
 /// [`thread_pool`](super) for what that promises. Every node is timed
 /// whatever the outcome, so a failed run still returns the times of the
 /// nodes that ran.
@@ -298,23 +298,27 @@ mod status {
 /// # Errors
 /// In [`Record::result`]:
 /// [`InvalidConfig`](fb_core_error_handling::ErrorKind::InvalidConfig)
-/// before anything runs, if the plan places a node on a lane `backend`
+/// before anything runs, if the graph places a node on a lane `backend`
 /// lacks, or has CPU nodes and `n_cpu` is zero. Otherwise the
 /// failure lowest in rank, with `name@worker` and any other failures
 /// (`also: ...`) on its context: a node's own error, or
 /// [`MaxIterationsExceeded`](fb_core_error_handling::ErrorKind::MaxIterationsExceeded)
 /// from a loop's decision that would pass its bound.
 ///
-/// Both are borrowed exclusively, so a plan and a backend are each in at
-/// most one run at a time: a backend's events are its plan's and its
-/// streams and handles are its lanes', and a plan's nodes reach
+/// Both are borrowed exclusively, so a graph and a backend are each in at
+/// most one run at a time: a backend's events are its graph's and its
+/// streams and handles are its lanes', and a graph's nodes reach
 /// whatever its closures captured, an instance's blocks among them
 /// ([`thread_pool`](super), "One run at a time"). Inside the run the
 /// workers share both by reference.
 ///
 /// # Panics
 /// If a node panics, after every worker has stopped; see "Failure".
-pub fn run<B: Backend>(plan: &mut Plan<'_, B::Stream>, backend: &mut B, n_cpu: usize) -> Record {
+pub fn run<B: Backend>(
+    plan: &mut TaskGraph<'_, B::Stream>,
+    backend: &mut B,
+    n_cpu: usize,
+) -> Record {
     let (plan, backend) = (&*plan, &*backend);
     let n_gpu = backend.n_workers();
     if let Some(lane) = plan.nodes.iter().find_map(|n| match n.placement {
@@ -496,7 +500,7 @@ struct Graph {
 }
 
 impl Graph {
-    fn new<S>(plan: &Plan<'_, S>) -> Self {
+    fn new<S>(plan: &TaskGraph<'_, S>) -> Self {
         let n = plan.len();
         let counted = |p: usize| match plan.nodes[p].in_loop.map(|l| &plan.loops[l]) {
             Some(l) => match l.kind {
@@ -642,7 +646,7 @@ struct Scoped {
 }
 
 impl Shared {
-    fn new<S>(plan: &Plan<'_, S>, graph: &Graph, n_gpu: usize) -> Self {
+    fn new<S>(plan: &TaskGraph<'_, S>, graph: &Graph, n_gpu: usize) -> Self {
         let n = graph.len();
         let mut state = State {
             waiting: graph.preds.iter().map(Vec::len).collect(),
@@ -692,7 +696,7 @@ impl Shared {
 
     /// The next instance for `queue`, waiting for one; `None` when the run
     /// is over.
-    fn next<S>(&self, (plan, graph): (&Plan<'_, S>, &Graph), queue: Queue) -> Option<Job> {
+    fn next<S>(&self, (plan, graph): (&TaskGraph<'_, S>, &Graph), queue: Queue) -> Option<Job> {
         let mut state = self.lock();
         loop {
             if state.aborted || state.remaining == 0 {
@@ -735,7 +739,7 @@ impl Shared {
     /// `job` finished as [`Ran`] says: record its entry and sync points,
     /// and replay its loop's body, ready its successors or skip its
     /// descendants.
-    fn finish<S>(&self, (plan, graph): (&Plan<'_, S>, &Graph), job: Job, ran: Ran) {
+    fn finish<S>(&self, (plan, graph): (&TaskGraph<'_, S>, &Graph), job: Job, ran: Ran) {
         let Ran {
             result,
             time,
@@ -874,7 +878,7 @@ impl Drop for AbortOnUnwind<'_> {
 }
 
 /// What a worker reads the run through: the plan and its instances.
-type Run<'r, 'a, S> = (&'r Plan<'a, S>, &'r Graph);
+type Run<'r, 'a, S> = (&'r TaskGraph<'a, S>, &'r Graph);
 
 fn cpu_worker<B: Backend>(run: Run<'_, '_, B::Stream>, backend: &B, shared: &Shared, name: &str) {
     let _abort = AbortOnUnwind(shared);

@@ -33,7 +33,7 @@
 //! removed, and the process exits with its kind's pinned code
 //! ([`ErrorKind::exit_code`]).
 //!
-//! The SCFs run as CPU nodes of one `fb_core_thread_pool::Plan`, one per
+//! The SCFs run as CPU nodes of one `fb_core_thread_pool::TaskGraph`, one per
 //! element, on as many workers as the process may use
 //! ([`default_n_cpu`]`(0)`, which follows the CPU affinity: `taskset`
 //! bounds it).
@@ -43,7 +43,7 @@
 //! | `main`, `run` | `main`, `run`; the error printed as `error: <message>`, the exit code [`ErrorKind::exit_code`]'s |
 //! | `Job` | `Job`, its density and time in a `OnceLock` its node sets |
 //! | `jobs_for(spec)` | `jobs_for(spec)`, which returns the set's canonical name beside its jobs |
-//! | `compute(jobs)`, a taskflow task per element | `compute(jobs)`, a CPU node per element of a `Plan` run on `HostOnly` |
+//! | `compute(jobs)`, a taskflow task per element | `compute(jobs)`, a CPU node per element of a `TaskGraph` run on `HostOnly` |
 //! | `every_set(basis_dir)`, each file's stem | `every_set(basis_dir)`, each document's BSE `name` field: a stem is not always a name `resolve_basis` folds to (`6-31gstar.json` is `6-31G*`) |
 
 #![forbid(unsafe_code)]
@@ -56,7 +56,7 @@ use std::time::Instant;
 use fb_atom::{Atom, Element};
 use fb_basis::{BasisSet, Shell};
 use fb_core_error_handling::{Error, ErrorKind, Result, Status};
-use fb_core_thread_pool::{self as thread_pool, HostOnly, Placement, Plan, default_n_cpu};
+use fb_core_thread_pool::{self as thread_pool, HostOnly, Placement, TaskGraph, default_n_cpu};
 use fb_core_types::Double3;
 use fb_io_basis::resolve_basis;
 use fb_io_npy::write_npy;
@@ -111,7 +111,7 @@ fn jobs_for(spec: &str) -> Result<(String, Vec<Job>)> {
 /// the heaviest of them take minutes. Each node keeps its SCF's result in
 /// its job and returns `Ok`, so one failure stops nothing else.
 fn compute(jobs: &[Job]) -> Status {
-    let mut plan: Plan<'_, ()> = Plan::new();
+    let mut plan: TaskGraph<'_, ()> = TaskGraph::new();
     for job in jobs {
         let name = format!("atomic scf {} Z={}", job.basis, job.atom[0].element.z());
         plan.add(name, Placement::Cpu, &[], move |_| {

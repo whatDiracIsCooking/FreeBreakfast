@@ -417,7 +417,7 @@ reaching a minimum) whose output is read on the host.
 
 **The executor replays the body in the run it is in.** In
 `fb_core_thread_pool`, a loop is its body, the nodes added after a given
-one, and a decision node `Plan::add_loop` adds after the body's sinks and
+one, and a decision node `TaskGraph::add_loop` adds after the body's sinks and
 any node before the body it is given, so after every body node. The decision is a CPU node, so a worker has waited
 on the host for the body's sinks before it runs, and every GPU body node's
 work precedes theirs on the device, so it waits on no other: the body's
@@ -446,7 +446,7 @@ the decision loop, whose next iteration waits on a host answer, a loop
 over the batches of a streamed tensor knows how many iterations it has at
 planning, and a host decision per batch would sync the host once a batch
 and keep a batch's upload from overlapping the GEMMs of the one before.
-`Plan::add_counted` and `Dag::add_counted` close the body over a trip
+`TaskGraph::add_counted` and `Dag::add_counted` close the body over a trip
 count `N` and a depth `R`, both fixed at planning beside the dimensions:
 
 - **Ordering.** Iteration `k` waits on iteration `k - R` alone: each body

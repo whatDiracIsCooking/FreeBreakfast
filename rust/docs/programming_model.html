@@ -640,7 +640,7 @@ between runs. The decision is a node (convergence, a step accepted, the walk
 reaching a minimum) whose output is read on the host.</p>
 <p><strong>The executor replays the body in the run it is in.</strong> In
 <code>fb_core_thread_pool</code>, a loop is its body, the nodes added after a given
-one, and a decision node <code>Plan::add_loop</code> adds after the body's sinks and
+one, and a decision node <code>TaskGraph::add_loop</code> adds after the body's sinks and
 any node before the body it is given, so after every body node. The decision is a CPU node, so a worker has waited
 on the host for the body's sinks before it runs, and every GPU body node's
 work precedes theirs on the device, so it waits on no other: the body's
@@ -667,7 +667,7 @@ the decision loop, whose next iteration waits on a host answer, a loop
 over the batches of a streamed tensor knows how many iterations it has at
 planning, and a host decision per batch would sync the host once a batch
 and keep a batch's upload from overlapping the GEMMs of the one before.
-<code>Plan::add_counted</code> and <code>Dag::add_counted</code> close the body over a trip
+<code>TaskGraph::add_counted</code> and <code>Dag::add_counted</code> close the body over a trip
 count <code>N</code> and a depth <code>R</code>, both fixed at planning beside the dimensions:</p>
 <ul>
 <li><strong>Ordering.</strong> Iteration <code>k</code> waits on iteration <code>k - R</code> alone: each body
