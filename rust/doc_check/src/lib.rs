@@ -30,8 +30,9 @@
 //! test that trips a contract is debug-only exactly when the contract is; and `tests/code_rules.rs`,
 //! which checks that only the boundary logs an error, that no Rust source
 //! names a warp width or a launch shape, that an `Allocation` error is
-//! made only at admission, and that a copy between kinds that is a node's
-//! whole work is a planner copy node; and `tests/doc_lists.rs`, which holds the docs'
+//! made only at admission, that a copy between kinds that is a node's
+//! whole work is a planner copy node, and that no item outside
+//! `fb_core_planner` is named for the planner; and `tests/doc_lists.rs`, which holds the docs'
 //! lists of what the tree holds to the tree: the kernel libraries' ABI
 //! versions and functions in `docs/gpu_layer.md`, the slow cases in
 //! `docs/testing.md`, and which members link the library in `README.md`.
@@ -262,16 +263,16 @@ pub fn rust_root() -> PathBuf {
     root.canonicalize().unwrap_or(root)
 }
 
-/// Every `.rs` of every workspace member (the `members` of
-/// `rust/Cargo.toml`), `target/` excluded, as its path from the root and its
-/// text, in path order.
+/// The workspace's members (the `members` of `rust/Cargo.toml`), each a
+/// directory under [`rust_root`], in the manifest's order, so a new crate
+/// is checked without being named in a check.
 ///
 /// # Panics
 ///
-/// If the manifest or a source cannot be read, or the manifest has no
-/// `members` list.
+/// If the manifest cannot be read, has no `members` list, or names a
+/// member with no `Cargo.toml`.
 #[must_use]
-pub fn workspace_sources() -> Vec<(String, String)> {
+pub fn workspace_members() -> Vec<PathBuf> {
     let root = rust_root();
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
     let list = manifest
@@ -279,11 +280,32 @@ pub fn workspace_sources() -> Vec<(String, String)> {
         .and_then(|(_, rest)| rest.split_once(']'))
         .expect("the workspace manifest's members list")
         .0;
+    let members: Vec<PathBuf> = list
+        .split(',')
+        .map(|m| m.trim().trim_matches('"'))
+        .filter(|m| !m.is_empty())
+        .map(|m| root.join(m))
+        .collect();
+    assert!(
+        members.iter().all(|m| m.join("Cargo.toml").is_file()),
+        "a workspace member without a manifest: {members:?}"
+    );
+    members
+}
+
+/// Every `.rs` of every workspace member ([`workspace_members`]),
+/// `target/` excluded, as its path from the root and its text, in path
+/// order.
+///
+/// # Panics
+///
+/// If a source cannot be read, or as [`workspace_members`] does.
+#[must_use]
+pub fn workspace_sources() -> Vec<(String, String)> {
+    let root = rust_root();
     let mut files = BTreeSet::new();
-    for m in list.split(',').map(|m| m.trim().trim_matches('"')) {
-        if !m.is_empty() {
-            rust_files(&root.join(m), &mut files);
-        }
+    for m in workspace_members() {
+        rust_files(&m, &mut files);
     }
     files
         .into_iter()
