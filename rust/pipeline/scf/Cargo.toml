@@ -1,6 +1,6 @@
 [package]
 name = "fb-pipeline-scf"
-description = "pipeline/scf: the closed-shell DF-RHF loop, one iteration's tasks replayed to convergence, from the Roothaan step, the density, the Fock matrix, the energy and the DIIS residual; and the whole run from an XYZ file"
+description = "pipeline/scf: the DF-RHF and DF-ROHF loop, one iteration's tasks replayed to convergence, from the Roothaan step, the density, the Fock matrix (an open shell's Roothaan effective one), the energy and the DIIS residual; and the whole run of a molecule"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -21,7 +21,6 @@ fb-integrals-mmd.workspace = true
 fb-integrals-one-electron-core-hamiltonian.workspace = true
 fb-integrals-one-electron-overlap.workspace = true
 fb-io-basis.workspace = true
-fb-io-xyz.workspace = true
 fb-molecule.workspace = true
 fb-molecule-nuclei.workspace = true
 fb-pipeline-eri.workspace = true
@@ -36,5 +35,9 @@ serde.workspace = true
 wwr-sys = { workspace = true, features = ["blas"] }
 
 [dev-dependencies]
+fb-atom.workspace = true
+fb-core-types.workspace = true
 fb-io-npy.workspace = true
+fb-io-xyz.workspace = true
 fb-test-support.workspace = true
+serde_json.workspace = true

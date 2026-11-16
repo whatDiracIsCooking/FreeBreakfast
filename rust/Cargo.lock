@@ -724,11 +724,13 @@ name = "fb-pipeline-scf"
 version = "0.1.0"
 dependencies = [
  "contracts",
+ "fb-atom",
  "fb-core-arena",
  "fb-core-error-handling",
  "fb-core-log",
  "fb-core-planner",
  "fb-core-thread-pool",
+ "fb-core-types",
  "fb-core-wwr",
  "fb-integrals-eri-density-fitting-jk",
  "fb-integrals-mmd",
@@ -748,6 +750,7 @@ dependencies = [
  "fb-test-support",
  "log",
  "serde",
+ "serde_json",
  "wwr-sys",
 ]
 

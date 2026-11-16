@@ -58,6 +58,7 @@ use fb_core_wwr::solver::SolverHandle;
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_integrals_one_electron_overlap::add_overlap;
+use fb_molecule::Molecule;
 use fb_molecule_nuclei::add_nuclei;
 use fb_pipeline_eri::add_df_eri;
 use fb_pipeline_guess::{add_guess_upload, add_loaded_guess};
@@ -182,7 +183,19 @@ fn water() -> PathBuf {
 /// The run of `xyz` in cc-pVDZ over cc-pVDZ-JKFIT with `step`, syevd's
 /// work asked of a solver handle on device 0, run once there.
 fn run(xyz: &Path, step: &ScfStep) -> (fb_core_thread_pool::Record, Option<ScfOutput>) {
-    let run = Run::new(xyz, "cc-pvdz", "cc-pvdz-jkfit", step, |n| {
+    let molecule = fb_io_xyz::read_xyz(xyz, 0, 1).unwrap();
+    run_molecule(&molecule, "cc-pvdz", "cc-pvdz-jkfit", step)
+}
+
+/// The run of `molecule` in `basis` over `aux_basis` with `step`, syevd's
+/// work asked of a solver handle on device 0, run once there.
+fn run_molecule(
+    molecule: &Molecule,
+    basis: &str,
+    aux_basis: &str,
+    step: &ScfStep,
+) -> (fb_core_thread_pool::Record, Option<ScfOutput>) {
+    let run = Run::new(molecule, basis, aux_basis, step, |n| {
         syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n)
     })
     .expect("the case plans");

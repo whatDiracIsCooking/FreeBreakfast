@@ -1,18 +1,20 @@
 //! `src/pipeline/scf` (module `free_breakfast.pipeline.scf`), its
-//! closed-shell density-fitted path: restricted Hartree-Fock iterated to
-//! self-consistency with Pulay DIIS on the Fock matrix, as tasks of a
+//! density-fitted path, closed or open shell: restricted Hartree-Fock (RHF,
+//! or ROHF at a multiplicity above 1) iterated to self-consistency with
+//! Pulay DIIS on the Fock matrix, as tasks of a
 //! [`Dag`](fb_core_planner::Dag) whose loop replays one iteration's
 //! sub-DAG until its decision says converged. The C++
 //! `src/pipeline/scf`'s `scf_loop` and `DfFockBuilder` are the reference
-//! design, and its README "The step" the algorithm at length.
+//! design, and its README "The step" the algorithm at length, its "open
+//! shell" paragraph the ROHF.
 //!
 //! [`add_scf`] is the step: the guess's factor before the loop, the body
 //! (J and K over the fitted B, F, E and the residual, DIIS, the Roothaan
 //! step, the density), the decision, and the converged F's orbitals after
-//! it; its doc has each task. [`ScfStep`] holds the C++ step's options the
-//! loop reads. [`Run`] is the whole run for the tests: an XYZ file, a basis
-//! and a fitting set planned once, from the SAD guess, returning an
-//! [`ScfOutput`] and the timing record.
+//! it; its doc has each task, and what an open shell changes. [`ScfStep`]
+//! holds the C++ step's options the loop reads. [`Run`] is the whole run
+//! for the tests: a molecule, a basis and a fitting set planned once, from
+//! the SAD guess, returning an [`ScfOutput`] and the timing record.
 //!
 //! The Roothaan step at a fixed operator, `F C = S C ε` solved through the
 //! orthogonalizer `X = S^(-1/2)`, as tasks of a [`Dag`](fb_core_planner::Dag):
@@ -41,8 +43,9 @@
 //! over rows, shaped to sit in a loop body
 //! ([`Dag::add_loop`](fb_core_planner::Dag::add_loop)):
 //!
-//! - [`occupied_orbitals`]: `nocc`, half the molecule's electron count, at
-//!   planning; an odd count is refused (no open shell is ported).
+//! - [`occupied_orbitals`]: `(n_alpha, n_beta)`, the molecule's electron
+//!   count split by its multiplicity, at planning; a closed shell's `nocc`
+//!   is either. A count of the wrong parity is refused.
 //! - [`add_density`]: **`density`**, `D = 2 C_occ C_occᵀ` from C's first
 //!   `nocc` columns, writing the loop's carried D and occupied factor.
 //! - [`add_fock`]: **`fock`**, `F = H + J - K/2` and
@@ -61,17 +64,27 @@
 //! | `st.eps`, `st.c`, the loop's buffers | ε and C, output rows |
 //! | `syevd_lwork`, sized into the workspace by the footprint | `lwork` handed in, [`syevd_lwork`](fb_recipes_diagonalize::syevd_lwork) asked of the device before planning |
 //! | D from the occupied columns, `gemm<N, T>(…, n_alpha, kTwo, c, c, kZero, d)` | [`add_density`]'s `density`: C's first `nocc` columns copied into the carried factor by a geam, then the same gemm from it into the carried D |
-//! | Da, Db, ROHF's `roothaan_fock`, `canonicalize_open`, `publish_open` | not ported: an odd electron count is refused by [`occupied_orbitals`] |
+//! | `ScfStep::run`'s `n_open = multiplicity - 1`, `n_alpha`, `n_beta`, a count of the wrong parity `InvalidConfig` | [`occupied_orbitals`], the same refusals |
+//! | more alpha electrons than orbitals, `InvalidConfig` | [`add_scf`]'s, the same |
+//! | ROHF with `n_beta = 0` (one electron, the H atom): `df_exchange` of no columns | not ported: refused `Unsupported` by [`add_scf`], since a K of no column is not a task here |
+//! | `OpenShellState`'s Da, Db, Fa, Fb, `identity`, allocated for an open shell alone | rows of the open shell's plan alone: `spin densities`' Da and Db, carried; `identity`'s pinned I and its upload; `open fock`'s Fa and Fb |
+//! | the guess split `Da = Db = D/2` (a geam and a copy) | `spin densities`, the same calls |
+//! | `DfFockBuilder::build` for an open shell: `Fa = H + J - K(C, n_alpha)/2`, `Fb` the same from a second `df_exchange` over `n_beta` columns; the first build's `Fb` from the guess's one K | `open fock` from the body's two `df exchange`s over the carried factors `C a` and `C b`; the first build's K of each from the guess's factor, its last `n_alpha` and `n_beta` columns carried and each rest's K added once by its `guess exchange` |
+//! | `electronic_energy`'s three dots, `tr((Da + Db) H + Da Fa + Db Fb)/2` | `open fock`'s three gemvs into one device scalar, down to a pinned row |
+//! | `roothaan_fock(…, kOpenBlockBetaWeight, st.f)`, its six products in the workspace | `roothaan fock`, the same calls in the same order, its seven `n²` scratch rows |
+//! | `kOpenBlockBetaWeight = 0.75` | `OPEN_BLOCK_BETA_WEIGHT`, the same |
+//! | `solve_fock`'s open densities: `Da`, `Db` by a gemm each from C, `D = Da + Db` | `open density`: the factors copied from C's first columns by a geam each, the same gemms from them, the same geam |
+//! | `publish_open`: `solve_fock` on F as built, `canonicalize_open` (Fc's open block diagonalized, the open columns rotated), and when the energies ascend, a second `solve_fock` on PySCF's own Roothaan matrix (`w = 1/2`), its orbitals published | the first two ported, after the loop: `open block`, the eigensolver on it, `publish open`. The second solve is **not ported**: the published orbitals are always F's with their open ones canonicalized, every energy PySCF's either way; the C++ second step changes the orbitals by its last Roothaan step alone, at the residual's order |
 //! | `DfFockBuilder::build`'s `F = H; F += J; F -= K/2` (copy and two axpys) | [`add_fock`]'s `fock`: `H + J`, then `- K/2`, by two geams, the same sums in the same order |
 //! | `electronic_energy`, two `dot`s into host scalars, each a stream sync | `fock`'s two gemvs (`vec(D)` as an n² × 1 matrix) into one device scalar, copied down to a pinned row; E_nuc added by `energy and norm` |
 //! | `commutator`: `F D`, `(F D) S`, `geam(N, T)`, `gemmwich`, `nrm2` into a host scalar | `residual`: the same gemms and geam, `Xᵀ (M - Mᵀ) X` by two gemms, `‖e‖²` by a gemv down to a pinned row, its root taken by `energy and norm` |
 //! | `ScfStep::run`, `scf_loop` with a `DfFockBuilder` | [`add_scf`], the loop a planned sub-DAG and its decision a CPU node |
 //! | `ScfStep`'s `max_iterations`, `energy_tolerance`, `commutator_tolerance`, `diis_history`, an option out of range `InvalidConfig` | [`ScfStep`], checked at planning |
 //! | `fock_rebuild_interval`, `tau_j`, incremental builds, `DirectFockBuilder` | not ported: every DF build is full, and the direct ERIs are not ported |
-//! | ROHF, `roothaan_fock`, `publish_open`, `molden` | not ported: an odd electron count is refused |
+//! | `molden`, the converged orbitals written | not ported |
 //! | `guess_exchange`: `syevd(D)`, `C̃ = V (Λ/2)^(1/2)` over the eigenvalues above 1e-12 of the largest, `df_exchange` over `n_alpha` columns at a time, summed | `syevd` on the guess, `download guess w host` and `guess check` (the floor, 1e-12 of the largest eigenvalue, read on the CPU), `guess factor` (that floor applied on the device by `fb_recipes_sys::inverse_sqrt`), the largest `nocc` columns the carried factor, the other `n - nocc` one K before the loop that `guess exchange` adds to the first iteration's and then zeroes |
 //! | a loaded guess that is not PSD: its negative part left out, with a warning | left out, and the same warning from `guess check`, a CPU node reading the eigenvalues `download guess w host` copies to a pinned row |
-//! | the guess rescaled by `N / Σ Z` for an ion | not ported: it moves only the first iterate, and [`Run`] plans a neutral molecule |
+//! | the guess rescaled by `N / Σ Z` for an ion, a `scal` on the uploaded D | `guess rescale`, a geam into a row of its own that the loop then carries, added only when `N` and `Σ Z` differ, as the C++ scales only then |
 //! | `previous = 0.0`, the loop's local | the heap row `last build`, which the decision carries, with the last build's `‖e‖` and the iteration count beside E (`docs/memory.md`, "Nested plans") |
 //! | `ScfStep`'s keys read from the config's `[scf]` table | [`ScfStep`] itself, deserialized by `fb-pipeline-config` |
 //! | converged: `full && iteration > 1 && \|dE\| < energy_tolerance && norm < commutator_tolerance` | the decision's test, from its second iteration (index 1) on |
@@ -84,6 +97,7 @@
 #![forbid(unsafe_code)]
 
 mod iteration;
+mod open;
 mod run;
 mod scf;
 mod tasks;

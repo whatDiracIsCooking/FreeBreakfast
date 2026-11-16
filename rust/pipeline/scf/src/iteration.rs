@@ -1,6 +1,6 @@
 //! One closed-shell SCF iteration's dense nodes on a stream: the density
 //! from the orbitals, and the Fock matrix, the energy and the DIIS residual
-//! from J and K.
+//! from J and K. The occupations, closed or open shell.
 
 use contracts::requires;
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p};
@@ -12,23 +12,34 @@ use fb_core_wwr::blas::{geam, gemm, gemv};
 use fb_molecule::Molecule;
 use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N as OP_N, WWR_BLAS_OP_T as OP_T};
 
-/// The number of doubly occupied orbitals of `molecule` as a closed shell:
-/// half its electron count ([`Molecule::electron_count`]), which a plan
-/// fixes before anything is added, so C's occupied factor is sized by it.
+/// The occupations `(n_alpha, n_beta)` of `molecule` as one restricted
+/// determinant: its electron count ([`Molecule::electron_count`]) split so
+/// that `n_alpha - n_beta = multiplicity - 1`, C's `n_beta` lowest orbitals
+/// doubly occupied and the next `n_alpha - n_beta` singly. A closed shell,
+/// multiplicity 1, has `n_alpha = n_beta`, half the count. A plan fixes
+/// them before anything is added, so the occupied factors are sized by
+/// them.
 ///
 /// # Errors
-/// An `InvalidConfig` error naming the count, if it is odd (no open shell
-/// is ported) or not positive (no electrons, or a charge past `Σ Z`).
-pub fn occupied_orbitals(molecule: &Molecule) -> Result<usize> {
+/// An `InvalidConfig` error naming the count and the multiplicity, as the
+/// C++ step's: a count of the wrong parity for the multiplicity, a
+/// multiplicity below 1 or past the count plus one, or a count that is not
+/// positive (no electrons, or a charge past `Σ Z`).
+pub fn occupied_orbitals(molecule: &Molecule) -> Result<(usize, usize)> {
     let electrons = molecule.electron_count();
-    if electrons <= 0 || electrons % 2 != 0 {
+    let open = molecule.multiplicity() - 1;
+    if electrons <= 0 || open < 0 || electrons < open || (electrons - open) % 2 != 0 {
         return Err(Error::config(format!(
-            "scf: {electrons} electrons (charge {}): a closed shell needs a positive even count",
-            molecule.charge()
+            "scf: {electrons} electrons (charge {}) cannot be at multiplicity {}",
+            molecule.charge(),
+            molecule.multiplicity()
         )));
     }
-    // Positive, so the cast is exact.
-    Ok(electrons as usize / 2)
+    // Both non-negative, so the casts are exact.
+    Ok((
+        ((electrons + open) / 2) as usize,
+        ((electrons - open) / 2) as usize,
+    ))
 }
 
 /// Add the density of the orbitals `c` to `dag` on GPU worker `worker`, as
@@ -39,7 +50,7 @@ pub fn occupied_orbitals(molecule: &Molecule) -> Result<usize> {
 /// `c` is an earlier task's output of `n²` doubles, column-major, column
 /// `j` the orbital of the `j`-th orbital energy in ascending order
 /// ([`add_solve_fock`](crate::add_solve_fock)'s C), left as it was; `nocc`
-/// is [`occupied_orbitals`]'s. `d` (`n²` doubles) and `c_occ` (`n · nocc`,
+/// is a closed shell's `n_alpha = n_beta` ([`occupied_orbitals`]). `d` (`n²` doubles) and `c_occ` (`n · nocc`,
 /// column-major, n × nocc) are rows the loop around the task carries, each
 /// produced before it (the guess's D and its factor): the task writes both
 /// as their last user in the loop's body
@@ -144,27 +155,36 @@ pub fn add_fock(
     x: RowId<Device, f64>,
 ) -> (RowId<Device, f64>, RowId<Device, f64>, RowId<Pinned, f64>) {
     let fock = dag.add_gpu("fock", worker, Fock { h, j, k, d, n });
-    let residual = dag.add_gpu(
-        "residual",
-        worker,
-        Residual {
-            f: fock.f,
-            d,
-            s,
-            x,
-            n,
-        },
-    );
+    let (e, scalars) = add_residual(dag, worker, n, e_nuc, fock.f, fock.e_elec, [d, s, x]);
+    (fock.f, e, scalars)
+}
+
+/// Add **`residual`** (stream) and **`energy and norm`** (CPU), as
+/// [`add_fock`] has them, for the Fock matrix `f` of the density `d` and
+/// the pinned electronic energy `e_elec` (one double, hartree), and return
+/// `(e, scalars)`: the residual `e = Xᵀ (F D S - S D F) X` and the pinned
+/// `[E, ‖e‖_F]`. An open shell's iteration adds them after its Roothaan
+/// matrix, on `(F, Da + Db)`, as the C++ loop runs them.
+pub(crate) fn add_residual(
+    dag: &mut Dag<'_>,
+    worker: usize,
+    n: usize,
+    e_nuc: f64,
+    f: RowId<Device, f64>,
+    e_elec: RowId<Pinned, f64>,
+    [d, s, x]: [RowId<Device, f64>; 3],
+) -> (RowId<Device, f64>, RowId<Pinned, f64>) {
+    let residual = dag.add_gpu("residual", worker, Residual { f, d, s, x, n });
     let scalars = dag.add_cpu(
         "energy and norm",
         worker,
         Scalars {
-            e_elec: fock.e_elec,
+            e_elec,
             norm2: residual.norm2,
             e_nuc,
         },
     );
-    (fock.f, residual.e, scalars)
+    (residual.e, scalars)
 }
 
 /// GPU: `C_occ = C[:, :nocc]`, then `D = 2 C_occ C_occᵀ`.
