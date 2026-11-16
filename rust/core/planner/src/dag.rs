@@ -71,7 +71,7 @@ pub(super) enum Work<'a, H: StagingKind, S> {
 }
 
 /// A node as declared: its name, its worker, its dimensions, and its work.
-pub(super) struct Declared<'a, H: StagingKind, S> {
+pub(super) struct Node<'a, H: StagingKind, S> {
     pub(super) name: String,
     pub(super) dims: Vec<(&'static str, usize)>,
     /// The worker whose tables hold its rows, and for a GPU task the lane
@@ -80,7 +80,7 @@ pub(super) struct Declared<'a, H: StagingKind, S> {
     pub(super) work: Work<'a, H, S>,
 }
 
-impl<H: StagingKind, S> Declared<'_, H, S> {
+impl<H: StagingKind, S> Node<'_, H, S> {
     /// Where it runs, which its work's sort decides.
     pub(super) fn placement(&self) -> Placement {
         match self.work {
@@ -129,7 +129,7 @@ struct Worker<H> {
 pub struct Dag<'a, H: StagingKind = Pinned, S = DeviceStream> {
     workers: Vec<Worker<H>>,
     heap: TableBuilder<Heap>,
-    nodes: Vec<Declared<'a, H, S>>,
+    nodes: Vec<Node<'a, H, S>>,
     /// Each loop, in plan order.
     loops: Vec<Loop>,
 }
@@ -208,7 +208,7 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
         w.forks = w.forks.max(task.forks());
         let rows = task.layout(&mut w.device.node(pos), &mut w.host.node(pos));
         let kept = rows.clone();
-        self.nodes.push(Declared {
+        self.nodes.push(Node {
             name: name.into(),
             dims: task.dims(),
             at,
@@ -239,7 +239,7 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
             &mut self.heap.node(pos),
         );
         let kept = rows.clone();
-        self.nodes.push(Declared {
+        self.nodes.push(Node {
             name: name.into(),
             dims: task.dims(),
             at: worker.into(),
@@ -308,7 +308,7 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
             &mut self.heap.node(pos),
         );
         let kept = rows.clone();
-        self.nodes.push(Declared {
+        self.nodes.push(Node {
             name: name.into(),
             dims: Vec::new(),
             at: worker.into(),
@@ -562,7 +562,7 @@ pub struct Plan<'a, H: StagingKind = Pinned, S = DeviceStream> {
     /// Per worker, its BLAS workspace rows, each with its lane: one per
     /// lane with library handles, if declared.
     pub(super) blas_workspaces: Vec<Vec<(usize, RowId<Device, u8>)>>,
-    pub(super) nodes: Vec<Declared<'a, H, S>>,
+    pub(super) nodes: Vec<Node<'a, H, S>>,
     pub(super) deps: Vec<Vec<usize>>,
     pub(super) loops: Vec<Loop>,
 }
