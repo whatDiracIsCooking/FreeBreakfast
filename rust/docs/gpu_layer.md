@@ -126,13 +126,14 @@ reaches (`FB_RECIPES_ABI_VERSION` is 6, bumped as the inverse square root,
 the symmetrization, the Cholesky diagonal tile and the DIIS solve joined the
 merge sort, then as the inverse square root took its floor's factor from the
 device;
-`FB_INTEGRALS_ABI_VERSION` is 7, bumped as the kinetic and
+`FB_INTEGRALS_ABI_VERSION` is 8, bumped as the kinetic and
 nuclear-attraction wrappers with `fb_nuclei_view`, then density fitting's
 metric and three-center launchers, joined the overlap, then as the records'
 order left (`fb_mmd_order` and its query removed, `fb_mmd_records` taking
 no permutation), then as `fb_three_center_class` took a class view for its
 bra records instead of a packed buffer, then as the conventional ERI's
-launchers joined, then as the dense conventional ERI's;
+launchers joined, then as the dense conventional ERI's, then as density
+fitting's pack and gather over the packed shell-pair map;
 `FB_LOCALIZATION_ABI_VERSION` is 1, the Pipek-Mezey launchers; `fb-doc-check`'s
 `doc_lists.rs` holds these numbers to the headers). The bump is held:
 `devtools/rust-bindings.py` records in each module's bindings, beside the
@@ -630,12 +631,14 @@ primitive-pair records, the overlap, the kinetic energy, the nuclear
 attraction, density fitting's metric, three-center integrals and their
 symmetrization, and the conventional ERI's packed tensor, its exchange
 gather and the packing around its GEMVs, and the dense conventional ERI's
-row blocks and their products: `fb_mmd_*`,
+row blocks and their products, and density fitting's pack and gather over
+the packed shell-pair map: `fb_mmd_*`,
 `fb_ordered_pair_bound`, `fb_overlap_class`, `fb_kinetic_class`,
 `fb_potential_en_class`, `fb_metric_class`, `fb_three_center_class`,
 `fb_three_center_symmetrize`, `fb_conventional_eri_class`,
 `fb_conventional_exchange`, `fb_conventional_pack`,
-`fb_conventional_unpack`, `fb_dense_eri_class` and `fb_dense_row_dot`) and
+`fb_conventional_unpack`, `fb_dense_eri_class`, `fb_dense_row_dot`,
+`fb_packed_pack` and `fb_packed_gather`) and
 `libfb_localization_kernels.so` (Pipek-Mezey's populations, pair angles,
 rotations, functional and identity: `fb_pm_*`) today, each beside
 its two ABI entries; `fb-doc-check`'s `doc_lists.rs` fails a function a
