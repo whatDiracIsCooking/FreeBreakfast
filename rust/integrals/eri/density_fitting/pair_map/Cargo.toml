@@ -1,0 +1,20 @@
+[package]
+name = "fb-integrals-eri-density-fitting-pair-map"
+description = "integrals/eri/density_fitting/pair_map: the packed shell-pair map, the columns of a packed B, built at planning"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+contracts.workspace = true
+fb-integrals-sys.workspace = true
+
+[dev-dependencies]
+fb-basis.workspace = true
+fb-core-types.workspace = true
+fb-integrals-mmd.workspace = true
+fb-test-support.workspace = true
+proptest.workspace = true
