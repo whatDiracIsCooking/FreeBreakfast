@@ -2,7 +2,8 @@
 //! table among it with the arena's size, is a committed golden,
 //! `FB_BLESS=1` rewriting it (`docs/testing.md`, "Performance"); admission
 //! of its device table; and the refusals planning makes of a basis, and of
-//! records handed in with other tables.
+//! records handed in with other tables. The packed build's plan over two
+//! batches is a golden of its own.
 //! Planning touches no device, but the load check reads the kernel library,
 //! so it must be built.
 
@@ -11,7 +12,9 @@ mod common;
 use fb_basis::{BasisSet, Shell};
 use fb_core_error_handling::ErrorKind;
 use fb_core_planner::Dag;
-use fb_integrals_eri_density_fitting_three_center::add_three_center;
+use fb_integrals_eri_density_fitting_pair_map::PairMap;
+use fb_integrals_eri_density_fitting_three_center::{add_packed_three_center, add_three_center};
+use fb_integrals_mmd::record_tables;
 use fb_integrals_sys::{AuxTable, add_three_center_tasks};
 use fb_recipes_matrix_ao::add_harmonics;
 use fb_test_support::golden;
@@ -31,6 +34,49 @@ fn plan_golden() {
     golden(
         env!("CARGO_MANIFEST_DIR"),
         "plan_h2o_cc-pvdz_cc-pvdz-jkfit.txt",
+        &text,
+    );
+}
+
+/// Water's packed build over two batches of its kept pairs, the second
+/// starting mid-class, planned after the records: per batch, `packed
+/// three-center tables`, `packed three-center` and `spherical transform`,
+/// with one `harmonics` and `upload U` per basis for both; each batch's
+/// output `naux` × its spherical columns. The plan text is the committed
+/// golden `plan_h2o_packed_two_batches.txt`.
+#[test]
+fn packed_plan_golden() {
+    let (basis, aux) = common::water();
+    let mut dag = Dag::new();
+    let classes = fb_integrals_mmd::add_records(&mut dag, 0, &basis).unwrap();
+    let map = PairMap::new(&record_tables(&basis), None, 0.0);
+    let (n, naux) = (map.pairs().len(), aux.nao_sphe() as usize);
+    let split = n / 2;
+    let (mut u, mut u_aux) = (None, None);
+    let mut outs = Vec::new();
+    for pairs in [0..split, split..n] {
+        let blocks = map.sphe().blocks();
+        let columns = blocks[pairs.end - 1].end() - blocks[pairs.start].column;
+        let out = add_packed_three_center(
+            &mut dag, 0, &basis, &classes, &aux, &map, pairs, &mut u, &mut u_aux,
+        )
+        .unwrap();
+        outs.push((out, columns));
+    }
+    let planned = dag.plan();
+    for (out, columns) in outs {
+        assert_eq!(planned.device_table(0).len(out), naux * columns);
+    }
+    // The table's text ends an empty handoffs line in a space, which the
+    // trailing-whitespace hook strips from the committed file.
+    let text: String = planned
+        .to_string()
+        .lines()
+        .map(|l| format!("{}\n", l.trim_end()))
+        .collect();
+    golden(
+        env!("CARGO_MANIFEST_DIR"),
+        "plan_h2o_packed_two_batches.txt",
         &text,
     );
 }
@@ -60,8 +106,9 @@ fn admission_refuses_a_budget_short_of_the_two_tensors() {
 }
 
 /// An orbital shell past f and an aux shell past i are refused at planning
-/// as `Unsupported`, naming the shell, before anything is added: the
-/// launcher would refuse their classes only at run time.
+/// as `Unsupported`, naming the shell, before anything is added, by the
+/// square and the packed build alike: the launcher would refuse their
+/// classes only at run time.
 #[test]
 fn a_shell_past_the_kernels_is_unsupported_at_planning() {
     let shell = |l| Shell::zipped(l, &[1.0], &[1.0], Default::default());
@@ -82,6 +129,14 @@ fn a_shell_past_the_kernels_is_unsupported_at_planning() {
         let classes = fb_integrals_mmd::add_records(&mut dag, 0, &basis).unwrap();
         let err = add_three_center(&mut dag, 0, &basis, &classes, &aux, &mut None, &mut None)
             .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Unsupported, "{err}");
+        assert!(err.message.contains(named), "{err}");
+        let map = PairMap::new(&record_tables(&basis), None, 0.0);
+        let all = 0..map.pairs().len();
+        let err = add_packed_three_center(
+            &mut dag, 0, &basis, &classes, &aux, &map, all, &mut None, &mut None,
+        )
+        .unwrap_err();
         assert_eq!(err.kind, ErrorKind::Unsupported, "{err}");
         assert!(err.message.contains(named), "{err}");
         let mut records = Dag::new();
