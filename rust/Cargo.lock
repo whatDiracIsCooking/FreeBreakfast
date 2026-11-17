@@ -441,6 +441,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "fb-integrals-eri-density-fitting-transform"
+version = "0.1.0"
+dependencies = [
+ "contracts",
+ "fb-basis",
+ "fb-core-arena",
+ "fb-core-error-handling",
+ "fb-core-planner",
+ "fb-core-thread-pool",
+ "fb-core-types",
+ "fb-core-wwr",
+ "fb-integrals-eri-density-fitting-pair-map",
+ "fb-integrals-mmd",
+ "fb-recipes-matrix-ao",
+ "fb-test-support",
+ "wwr-sys",
+]
+
+[[package]]
 name = "fb-integrals-mmd"
 version = "0.1.0"
 dependencies = [
