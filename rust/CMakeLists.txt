@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 4.2)
 
 # What the crates here link, built without the C++ tree: WarpWraps' C ABI
-# libraries libwwr_capi_runtime_api.so, libwwr_capi_blas.so and
-# libwwr_capi_solver.so, and the per-module kernel shared objects,
-# libfb_recipes_kernels.so, libfb_integrals_kernels.so and
+# libraries libwwr_capi_runtime_api.so, libwwr_capi_blas.so,
+# libwwr_capi_solver.so and libwwr_capi_ccl.so, and the per-module kernel
+# shared objects, libfb_recipes_kernels.so, libfb_integrals_kernels.so and
 # libfb_localization_kernels.so so far ("The kernel shared objects" below). The
 # root CMakeLists.txt does not add this directory, and this one adds nothing
 # under src/.
@@ -89,6 +89,13 @@ set(WWR_COMPILE_TIME_ONLY
     ON
     CACHE BOOL "" FORCE
 )
+# The collectives (NCCL on CUDA, RCCL on HIP), which move rows between the
+# run's GPUs (docs/programming_model.md, "Workers are a hierarchy"). Off by
+# default in wwr, so set here: every crate over fb-core-wwr links them.
+set(WWR_WITH_CCL
+    ON
+    CACHE BOOL "" FORCE
+)
 
 set(_fb_wwr "${CMAKE_CURRENT_SOURCE_DIR}/../deps/WarpWraps")
 if(NOT EXISTS "${_fb_wwr}/CMakeLists.txt")
@@ -103,13 +110,15 @@ endif()
 add_subdirectory("${_fb_wwr}" deps/WarpWraps EXCLUDE_FROM_ALL)
 
 # `all` is what the crates link, and nothing else of wwr: the runtime, BLAS
-# for the overlap's spherical transform (wwr-sys's `blas` feature), and the
-# dense solver for the eigensolver (`solver`).
+# for the overlap's spherical transform (wwr-sys's `blas` feature), the
+# dense solver for the eigensolver (`solver`), and the collectives between
+# the run's devices (`ccl`).
 add_custom_target(
   rust_native_libs ALL COMMENT "The libraries the rust/ crates link"
 )
 add_dependencies(
   rust_native_libs wwr.capi.runtime_api wwr.capi.blas wwr.capi.solver
+  wwr.capi.ccl
 )
 
 # ========================================================================
