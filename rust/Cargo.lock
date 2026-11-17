@@ -412,6 +412,10 @@ version = "0.1.0"
 dependencies = [
  "contracts",
  "fb-basis",
+ "fb-core-arena",
+ "fb-core-error-handling",
+ "fb-core-planner",
+ "fb-core-thread-pool",
  "fb-core-types",
  "fb-integrals-mmd",
  "fb-integrals-sys",

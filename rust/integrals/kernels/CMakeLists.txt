@@ -1,7 +1,8 @@
 # libfb_integrals_kernels.so: the integrals launch wrappers rust/ has forked
 # from src/integrals -- mmd's records, bound and dressed bound, the
 # overlap, the kinetic energy, the nuclear attraction, density fitting's
-# metric, three-center integrals and their symmetrization, and rust/'s own
+# metric, three-center integrals and their symmetrization, rust/'s own
+# pack and gather over density fitting's packed shell-pair map, and rust/'s own
 # conventional ERI (the packed tensor, its exchange gather, the packing and
 # unpacking around the GEMVs, and the dense J- and K-layout row blocks, with
 # no C++ launcher behind them) -- with the
@@ -43,6 +44,7 @@ set(_fb_integrals_sources
     one_electron/potential_en/potential_en_launch.cu
     eri/density_fitting/metric/metric_launch.cu
     eri/density_fitting/three_center/three_center_launch.cu
+    eri/density_fitting/packed/packed_launch.cu
     eri/conventional/conventional_launch.cu
     eri/conventional/dense/dense_launch.cu
     ${_fb_integrals_units}

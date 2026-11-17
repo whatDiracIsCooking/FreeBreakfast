@@ -43,9 +43,11 @@
 //! **The index tables.** [`Packing::write_tables`] writes, per column,
 //! its `(m, n)` in the `nao × nao` matrix and its weight in a packed
 //! density, 1 on a diagonal shell pair's block and 2 on the others: the
-//! `i32` and `f64` arrays the device pack, unpack and gather kernels read,
-//! written by a CPU task straight into its pinned rows (`docs/memory.md`,
-//! "The table"), since they are as long as a row of B. The map itself
+//! `i32` and `f64` arrays the device pack and gather read
+//! ([`fb_integrals_sys::PackedTables`]), written by a CPU task straight
+//! into its pinned rows (`docs/memory.md`, "The table"), since they are as
+//! long as a row of B: [`fb_integrals_sys::add_packed_tables`] takes this
+//! as its fill. The map itself
 //! holds a block per pair, never a table per column. [`Packing::pack`]
 //! and [`Packing::unpack`] are the host's reading of the same tables, the
 //! reference those kernels are held to bitwise.

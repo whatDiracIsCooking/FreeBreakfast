@@ -31,6 +31,7 @@
 //! | nothing: the C++ tree compiles its kernels into the binary | [`check_library`], the library's [`fb_integrals_abi_version`] and [`fb_integrals_backend`] against the bindings' |
 //! | nothing: the C++ tree has no conventional mode | [`fb_conventional_eri_class`], [`fb_conventional_exchange`], [`fb_conventional_pack`] and [`fb_conventional_unpack`], rust/'s own launchers over FelizJueves's `eri/full_eri` units (`eri<la, lb, lc, ld>`, `eri_kperm`), and [`FB_CONVENTIONAL_MAX_MOMENTUM`], [`FB_CONVENTIONAL_MAX_AO`], [`FB_CONVENTIONAL_PAIR_FIELDS`], [`FB_CONVENTIONAL_TASK_FIELDS`]; the safe path is [`add_conventional_tasks`], [`pack`] and [`unpack`] |
 //! | nothing: the C++ tree has no conventional mode | [`fb_dense_eri_class`], rust/'s own launcher over FelizJueves's dense `eri/full_eri` units (`eri_dj<la, lb, lc, ld>`, `eri_dk<la, lb, lc, ld>`), [`FB_DENSE_LAYOUT_J`], [`FB_DENSE_LAYOUT_K`]; and [`fb_dense_row_dot`], a row-major matrix by a vector in an order fixed by its width; the safe path is [`add_dense_tasks`] and [`dense_row_dot`] |
+//! | nothing: the C++ B is square and resident | [`fb_packed_pack`] and [`fb_packed_gather`], rust/'s own pack of a density into density fitting's packed shell-pair map and gather of packed columns back into the square; the safe path is [`add_packed_tables`] and [`PackedTables`] |
 //! | the other one-electron families (the dipole, the mixed overlap, the derivatives), J, K, density fitting past the metric and (mn\|P), and the rest | not forked yet |
 //!
 //! **The safe layer.** What a caller uses (`docs/gpu_layer.md`, "The safe
@@ -91,6 +92,13 @@
 //!   [`dense_row_dot`], a sub-block by a vector, each entry in an order
 //!   its width fixes, over slices whose lengths are checked in every build.
 //!
+//! - [`add_packed_tables`], the tasks that fill a packed shell-pair map's
+//!   per-column index tables into pinned rows, check every index inside the
+//!   matrix and upload them, returning a [`PackedTables`]; its
+//!   [`PackedTables::pack`] packs a density into the map's columns and its
+//!   [`PackedTables::gather`] gathers a packed batch into square matrices,
+//!   over slices whose lengths are checked in every build.
+//!
 //! A class kernel writes at AO offsets held in device memory, so
 //! [`ClassRows`] is a type only [`add_record_tasks`] makes; its doc comment
 //! has why a launcher may trust it.
@@ -103,6 +111,7 @@ mod classes;
 mod conventional;
 mod dense;
 mod metric;
+mod packed;
 mod records;
 mod three_center;
 
@@ -111,6 +120,7 @@ pub use classes::{kinetic_class, overlap_class, potential_en_class};
 pub use conventional::{add_conventional_tasks, pack, packed_pairs, unpack};
 pub use dense::{DenseBlocks, add_dense_tasks, dense_row_dot};
 pub use metric::{AuxTable, add_metric_tasks};
+pub use packed::{PackedTables, add_packed_tables};
 pub use records::{
     ClassPairs, ClassRows, Fields, MixedClassRows, RecordTables, ShellTable,
     add_mixed_record_tasks, add_record_tasks,

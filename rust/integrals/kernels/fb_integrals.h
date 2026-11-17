@@ -7,6 +7,7 @@
 #include "eri/conventional/conventional.h"
 #include "eri/conventional/dense/dense.h"
 #include "eri/density_fitting/metric/metric.h"
+#include "eri/density_fitting/packed/packed.h"
 #include "eri/density_fitting/three_center/three_center.h"
 #include "mmd/mmd.h"
 #include "one_electron/kinetic/kinetic.h"
@@ -24,7 +25,7 @@ extern "C" {
 /// The version of this header's ABI. Bump it with any change to a
 /// declaration here or in a header this one includes, so that fb-integrals-sys
 /// refuses a library built from another version of them.
-#define FB_INTEGRALS_ABI_VERSION ((uint32_t)7)
+#define FB_INTEGRALS_ABI_VERSION ((uint32_t)8)
 
 /// FB_INTEGRALS_ABI_VERSION as this library was compiled. A plain host
 /// function: it calls no runtime and needs no device.
