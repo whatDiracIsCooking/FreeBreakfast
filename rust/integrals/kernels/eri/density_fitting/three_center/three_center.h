@@ -81,6 +81,48 @@ fb_launch_status fb_three_center_class(wwr_stream stream, const fb_primitive_pai
 fb_launch_status fb_three_center_symmetrize(wwr_stream stream, int32_t n_ao, int32_t n_aux,
                                             const double *input, double *output);
 
+/// The fields of one packed cell (an AO shell pair crossed with an aux
+/// shell), each a segment of n_cell int32s, in this order: the pair's bra
+/// record range [ab_rec0, ab_rec1) among its class's records, the aux shell's
+/// record range [p_rec0, p_rec1), the cell's destination offset dst, and its
+/// diagonal flag diag, 1 for a shell's pair with itself and 0 otherwise.
+#define FB_THREE_CENTER_PACKED_CELL_FIELDS ((int32_t)6)
+
+/// Writes class (cls->la, cls->lb, lp) of the Cartesian (mn|P) into the
+/// packed eri3, n_col columns of n_aux doubles, on stream: the generated
+/// peri3<la, lb, lp>, one thread per cell, each cell's whole Cartesian block
+/// at its destination, element (a, b, q) at dst + n_aux (a nB + b) + q, a
+/// the bra shell's Cartesian (momentum la), b the ket's (lb, nB of them) and
+/// q the aux shell's. A pair whose block opens at column c, crossed with an
+/// aux shell at Cartesian offset off_p, has dst = c n_aux + off_p. A
+/// diagonal cell (diag = 1, read only when la == lb) stores its full square
+/// block; any other stores its block once, with no (m, n) mirror. Every
+/// element is bitwise the square fb_three_center_class's
+/// [off_a + a][off_b + b][off_p + q]: the same records, cells and
+/// arithmetic, in the same form, only the stores moved.
+///
+/// The bra records are cls's, read in place, as fb_three_center_class reads
+/// them; aux is FB_THREE_CENTER_AUX_FIELDS segments of n_aux_rec doubles, and
+/// cells FB_THREE_CENTER_PACKED_CELL_FIELDS segments of n_cell int32s, each
+/// cell a shell pair of cls's class, its bra record range inside
+/// [0, cls->n_rec), with an aux shell of lp, its block inside eri3. Each
+/// element is a plain store: cells whose blocks do not overlap need no
+/// ordering among them and no zeroing before the first, and a run is
+/// bit-reproducible. Every array is device memory.
+///
+/// Returns FB_LAUNCH_INVALID_ARGUMENT for a null cls, a null array (one of
+/// cls's eleven it reads among them), a count not positive (cls->n_rec among
+/// them) or an n_col and n_aux whose n_col * n_aux does not fit the kernels'
+/// 32-bit index, and FB_LAUNCH_UNSUPPORTED for a class with no kernel (as
+/// fb_three_center_class's table), each enqueueing nothing; otherwise the
+/// launch status. Launch errors only: the kernel's own faults surface at the
+/// next synchronization.
+fb_launch_status fb_three_center_packed_class(wwr_stream stream,
+                                              const fb_primitive_pair_class_view *cls, int32_t lp,
+                                              int32_t n_aux_rec, const double *aux, int32_t n_cell,
+                                              const int32_t *cells, int32_t n_col, int32_t n_aux,
+                                              double *eri3);
+
 #ifdef __cplusplus
 }
 #endif

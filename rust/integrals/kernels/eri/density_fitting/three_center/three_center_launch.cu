@@ -18,7 +18,10 @@
 // la > lb (only la <= lb is emitted), so nothing here names a class: a class
 // the table names but no unit defines fails to link. Launching a
 // specialization another TU defines wants relocatable device code under nvcc
-// (CMakeLists.txt).
+// (CMakeLists.txt). The packed form, fb_three_center_packed_class, launches
+// packed/kernels/'s peri3<la, lb, lP> through peri3.h's peri3_kernels the
+// same way: rust/'s own, which the C++ tree does not have
+// (tools/emit/packed_three_center_kernels.py).
 
 // Standard headers, and ours (which include only standard headers), before the
 // wwr headers below: under HIP the vendor runtime header they pull in must not
@@ -41,6 +44,7 @@
 #include <runtime.h>
 
 #include "eri/density_fitting/three_center/kernels/eri3.h"
+#include "eri/density_fitting/three_center/packed/kernels/peri3.h"
 
 static_assert(std::extent_v<decltype(eri3_kernels), 0> == FB_THREE_CENTER_MAX_MOMENTUM + 1 &&
                   std::extent_v<decltype(eri3_kernels), 1> == FB_THREE_CENTER_MAX_MOMENTUM + 1,
@@ -49,6 +53,11 @@ static_assert(std::extent_v<decltype(eri3_kernels), 0> == FB_THREE_CENTER_MAX_MO
 static_assert(std::extent_v<decltype(eri3_kernels), 2> == FB_THREE_CENTER_AUX_MAX_MOMENTUM + 1,
               "kernels/'s [lP] extent and FB_THREE_CENTER_AUX_MAX_MOMENTUM disagree: rerun "
               "tools/emit/df_kernels.py");
+static_assert(std::extent_v<decltype(peri3_kernels), 0> == FB_THREE_CENTER_MAX_MOMENTUM + 1 &&
+                  std::extent_v<decltype(peri3_kernels), 1> == FB_THREE_CENTER_MAX_MOMENTUM + 1 &&
+                  std::extent_v<decltype(peri3_kernels), 2> == FB_THREE_CENTER_AUX_MAX_MOMENTUM + 1,
+              "packed/kernels/'s [la][lb][lP] extents and the three-center limits disagree: "
+              "rerun tools/emit/packed_three_center_kernels.py");
 static_assert(FB_THREE_CENTER_MAX_MOMENTUM == free_breakfast::kMaxAngularMomentum,
               "(mn|P)'s orbital limit and the orbital basis's kMaxAngularMomentum disagree");
 
@@ -144,5 +153,49 @@ extern "C" fb_launch_status fb_three_center_symmetrize(const wwr_stream stream, 
   three_center_symmetrize_kernel<<<
       free_breakfast::math::idivup(threads, free_breakfast::kFourWarps), free_breakfast::kFourWarps,
       0, static_cast<wwr::wwrStream_t>(stream)>>>(n_ao, n_aux, input, output);
+  return static_cast<fb_launch_status>(wwr_get_last_error());
+}
+
+extern "C" fb_launch_status fb_three_center_packed_class(const wwr_stream stream,
+                                                         const fb_primitive_pair_class_view *cls,
+                                                         const int32_t lp, const int32_t n_aux_rec,
+                                                         const double *aux, const int32_t n_cell,
+                                                         const int32_t *cells, const int32_t n_col,
+                                                         const int32_t n_aux, double *eri3) {
+  if (cls == nullptr || aux == nullptr || cells == nullptr || eri3 == nullptr || n_aux_rec < 1 ||
+      n_cell < 1 || n_col < 1 || n_aux < 1 || int64_t{n_col} * n_aux > INT32_MAX) {
+    return FB_LAUNCH_INVALID_ARGUMENT;
+  }
+  // The bra fields the kernels read, in their parameter order.
+  const double *const bra[] = {cls->zeta, cls->p_x,  cls->p_y,  cls->p_z,  cls->pa_x, cls->pa_y,
+                               cls->pa_z, cls->pb_x, cls->pb_y, cls->pb_z, cls->s};
+  for (const double *field : bra) {
+    if (field == nullptr) {
+      return FB_LAUNCH_INVALID_ARGUMENT;
+    }
+  }
+  if (cls->n_rec < 1) {
+    return FB_LAUNCH_INVALID_ARGUMENT;
+  }
+  const int32_t la = cls->la;
+  const int32_t lb = cls->lb;
+  if (la < 0 || lb < la || lb > FB_THREE_CENTER_MAX_MOMENTUM || lp < 0 ||
+      lp > FB_THREE_CENTER_AUX_MAX_MOMENTUM) {
+    return FB_LAUNCH_UNSUPPORTED;
+  }
+  const auto a = [&](const int32_t field) {
+    return aux + (static_cast<size_t>(field) * static_cast<size_t>(n_aux_rec));
+  };
+  const auto c = [&](const int32_t field) {
+    return cells + (static_cast<size_t>(field) * static_cast<size_t>(n_cell));
+  };
+  const auto kernel = peri3_kernels[la][lb][lp];
+  // One thread per cell, kFourWarps to a block.
+  const uint32_t blocks =
+      free_breakfast::math::idivup(static_cast<uint32_t>(n_cell), free_breakfast::kFourWarps);
+  kernel<<<blocks, free_breakfast::kFourWarps, 0, static_cast<wwr::wwrStream_t>(stream)>>>(
+      n_cell, cls->n_rec, n_aux_rec, n_col, n_aux, bra[0], bra[1], bra[2], bra[3], bra[4], bra[5],
+      bra[6], bra[7], bra[8], bra[9], bra[10], a(0), a(1), a(2), a(3), a(4), c(0), c(1), c(2), c(3),
+      c(4), c(5), eri3);
   return static_cast<fb_launch_status>(wwr_get_last_error());
 }

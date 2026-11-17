@@ -2,10 +2,11 @@
 # from src/integrals -- mmd's records, bound and dressed bound, the
 # overlap, the kinetic energy, the nuclear attraction, density fitting's
 # metric, three-center integrals and their symmetrization, rust/'s own
-# pack and gather over density fitting's packed shell-pair map, and rust/'s own
-# conventional ERI (the packed tensor, its exchange gather, the packing and
-# unpacking around the GEMVs, and the dense J- and K-layout row blocks, with
-# no C++ launcher behind them) -- with the
+# packed three-center integrals, the pack and gather over density fitting's
+# packed shell-pair map, and rust/'s own conventional ERI (the packed tensor,
+# its exchange gather, the packing and unpacking around the GEMVs, and the
+# dense J- and K-layout row blocks), with no C++ launcher behind them -- with
+# the
 # FelizJueves units they launch, one shared object with its own device link,
 # which fb-integrals-sys (../sys) links (docs/gpu_layer.md, "Build"). Built
 # from these forked sources, rust/device_headers and FelizJueves's include/
@@ -13,11 +14,16 @@
 #
 # The emitted units (mmd/kernels/, one_electron/{overlap,kinetic,
 # potential_en}/kernels/, eri/density_fitting/{metric,three_center}/kernels/,
+# eri/density_fitting/three_center/packed/kernels/,
 # eri/conventional/kernels/, eri/conventional/dense/kernels/, and shared/'s
 # Boys routine) are
 # tools/emit/one_electron_kernels.py's, tools/emit/exchange_kernels.py's,
-# tools/emit/df_kernels.py's and tools/emit/conventional_kernels.py's, copied
-# here byte for byte (README.md, "Build and test").
+# tools/emit/df_kernels.py's, tools/emit/packed_three_center_kernels.py's and
+# tools/emit/conventional_kernels.py's, copied here byte for byte (README.md,
+# "Build and test").
+#
+# The packed three-center pattern is relative, to fit 80 columns: GLOB reads
+# it from this directory and returns absolute paths, as for the rest.
 #
 # Linked: wwr::device PRIVATE for runtime.h and WWR_WARP_SIZE; the C ABI's
 # runtime_api library PRIVATE for wwr_get_last_error(). No other kernel
@@ -33,6 +39,7 @@ file(GLOB _fb_integrals_units CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/one_electron/potential_en/kernels/*.cu
      ${CMAKE_CURRENT_SOURCE_DIR}/eri/density_fitting/metric/kernels/*.cu
      ${CMAKE_CURRENT_SOURCE_DIR}/eri/density_fitting/three_center/kernels/*.cu
+     eri/density_fitting/three_center/packed/kernels/*.cu
      ${CMAKE_CURRENT_SOURCE_DIR}/eri/conventional/kernels/*.cu
      ${CMAKE_CURRENT_SOURCE_DIR}/eri/conventional/dense/kernels/*.cu
 )
