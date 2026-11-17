@@ -16,6 +16,8 @@ test-support = []
 contracts.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-log.workspace = true
+# statvfs of /dev/shm, which a collectives' system error reports.
+libc.workspace = true
 # BLAS and the dense solver for the handles in `blas` and `solver`, and the
 # collectives for `ccl`, beside
 # the runtime.

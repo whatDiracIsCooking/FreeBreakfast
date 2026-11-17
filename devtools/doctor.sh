@@ -421,6 +421,26 @@ if [ -n "${DOCTOR_GPU_VENDORS// /}" ]; then
     esac
   done
 
+  # More than one card: is /dev/shm big enough for the collectives between
+  # them? NCCL/RCCL move a collective between two cards with no peer path
+  # they will take (two NVLink pairs joined by a PCIe host bridge) through a
+  # /dev/shm segment of tens of MiB per pair. Docker's default is 64 MiB, so a
+  # clique across the pairs fails with a bare WWR_CCL_RESULT_SYSTEM_ERROR.
+  # The devcontainers and compose pass --shm-size=1g; a container made before
+  # that still has 64 MiB until it is rebuilt.
+  if [ "$gpus_found" -gt 1 ]; then
+    shm=$(shm_mib)
+    if [ -z "$shm" ]; then
+      note "/dev/shm size unreadable -- a collective across cards may need --shm-size"
+    elif [ "$shm" -lt 512 ]; then
+      warn "/dev/shm is $shm MiB with $gpus_found GPUs -- a collective across cards fails (WWR_CCL_RESULT_SYSTEM_ERROR) below 512 MiB"
+      note "the devcontainers pass --shm-size=1g: devtools/devcontainer.sh rebuild, on the host"
+      note "until then, export NCCL_P2P_LEVEL=SYS"
+    else
+      ok "/dev/shm is $shm MiB for $gpus_found GPUs"
+    fi
+  fi
+
   if [ "$gpus_found" -eq 0 ]; then
     warn "no GPU of any declared vendor found -- runtime tests will FAIL, not skip"
     note "nothing in test/ calls GTEST_SKIP; read the BUILD as the result instead"

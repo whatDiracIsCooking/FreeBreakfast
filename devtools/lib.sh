@@ -278,6 +278,14 @@ cuda_driver_ceiling() {
     sed -n 's/.*CUDA Version: *\([0-9][0-9.]*\).*/\1/p' | head -1
 }
 
+# The size of /dev/shm (or of the filesystem at $1) in whole MiB; empty when
+# df cannot read it. Docker gives a container 64 MiB unless it is started
+# with --shm-size, and NCCL/RCCL need far more between cards with no peer
+# path (doctor's `gpu devices` section, the devcontainers' --shm-size=1g).
+shm_mib() {
+  df -Pk "${1:-/dev/shm}" 2>/dev/null | awk 'NR == 2 && $2 ~ /^[0-9]+$/ { print int($2 / 1024) }'
+}
+
 # Whether dotted version $1 is at least $2.
 version_ge() {
   [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$2" ]

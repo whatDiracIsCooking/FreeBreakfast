@@ -313,6 +313,7 @@ dependencies = [
  "contracts",
  "fb-core-error-handling",
  "fb-core-log",
+ "libc",
  "wwr-sys",
 ]
 

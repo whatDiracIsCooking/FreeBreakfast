@@ -58,6 +58,9 @@
   // the next systemd daemon-reload. ../cuda/ has the whole mechanism, and why
   // these are paths rather than cgroup rules. The AMD half below already had
   // it, which is why only CUDA ever dropped here.
+  // --shm-size=1g: the collectives library's shared-memory transport between
+  // cards with no peer path needs more than docker's 64 MiB /dev/shm. See
+  // ../cuda/ for the whole story, and why not --ipc=host.
   "runArgs": [
     "--gpus", "all",
     "--device=/dev/nvidiactl",
@@ -68,7 +71,8 @@
     "--device=/dev/dri",
     "--group-add", "${localEnv:FREE_BREAKFAST_RENDER_GID:109}",        // EDIT: fallback gid
     "--group-add", "${localEnv:FREE_BREAKFAST_VIDEO_GID:44}",          // EDIT: fallback gid
-    "--security-opt", "seccomp=unconfined"
+    "--security-opt", "seccomp=unconfined",
+    "--shm-size=1g"
   ],
 
   // CLAUDE CODE IS NOT A FEATURE HERE, deliberately. The

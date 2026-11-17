@@ -345,6 +345,15 @@ own `build-compose*/` rather than the preset's default.
 `up` reuses the running container, applies none of the change, and reports
 success with the same container id.
 
+**The containers' `/dev/shm` is 1 GiB (`--shm-size=1g`, compose's `shm_size`),
+not docker's 64 MiB.** NCCL/RCCL move a collective between two cards with no
+peer path they will take (NVLink pairs joined by a PCIe host bridge) through
+`/dev/shm`, and 64 MiB fails a clique across the pairs with a bare
+`WWR_CCL_RESULT_SYSTEM_ERROR`. A container made before the flag keeps 64 MiB
+until `devtools/devcontainer.sh rebuild` on the host; `devtools/doctor.sh`
+warns about it, and `NCCL_P2P_LEVEL=SYS` is the stopgap until then, not the
+fix (`rust/README.md`, "Build and test").
+
 ### The duplication that is load-bearing
 
 `PROJECT_NAME` in `devtools/config.sh` and the volume/container names in the

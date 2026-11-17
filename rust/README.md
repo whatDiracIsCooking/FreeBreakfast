@@ -301,11 +301,16 @@ devices 0 and 1, or every device it sees, and the gates run it only where
 wwr sees two (`docs/testing.md`, "Selecting GPU tiers in cargo"). A
 collective between two cards with no peer path the library will take, as
 PCIe through a host bridge, goes through shared memory, a `/dev/shm`
-segment of tens of MiB per pair; a container's default 64 MiB is too
-small, and the clique's first collective fails with
-`WWR_CCL_RESULT_SYSTEM_ERROR` (`NCCL_DEBUG=WARN` names the segment).
-Run the container with a larger `--shm-size`, or let NCCL take the peer
-path over the bridge with `NCCL_P2P_LEVEL=SYS`. The host-only
+segment of tens of MiB per pair; docker's default 64 MiB is too small,
+and the clique's first collective fails with `WWR_CCL_RESULT_SYSTEM_ERROR`.
+The devcontainers and `docker/compose.yaml` start the container with
+`--shm-size=1g`, which a container made before that carries only after
+`devtools/devcontainer.sh rebuild` on the host; `devtools/doctor.sh` warns
+when more than one card is visible and `/dev/shm` is under 512 MiB, and
+the error itself names `/dev/shm`'s size and the fix (`fb_core_wwr::ccl`).
+Until the rebuild, `NCCL_P2P_LEVEL=SYS` is the stopgap: it lets NCCL take
+the peer path over the bridge, overriding its own judgment of the
+topology for every run, so it is not the fix. The host-only
 tests (the fake handle kind, error codes and contracts) need no GPU, and
 `fb-core-log`, `fb-core-error-handling`, `fb-core-types`,
 `fb-core-primitives`, `fb-core-constants`, `fb-atom`, `fb-molecule`,

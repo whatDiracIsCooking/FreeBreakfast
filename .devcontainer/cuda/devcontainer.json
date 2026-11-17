@@ -76,12 +76,24 @@
   // container-creation time. The list is the COMPUTE set, and a node that does
   // not exist makes `docker run` fail outright -- so /dev/nvidia-modeset
   // (display) and /dev/nvidia-caps (MIG) are deliberately absent.
+  //
+  // WHY --shm-size=1g: docker gives a container a 64 MiB /dev/shm. NCCL (and
+  // RCCL) move a collective between two cards with no peer path they will
+  // take -- as two NVLink pairs that reach each other only through a
+  // PCIe host bridge (PHB), below NCCL's default P2P level -- through a
+  // /dev/shm segment of tens of MiB per pair, so a four-card clique fails
+  // with a bare WWR_CCL_RESULT_SYSTEM_ERROR. 1g fits it. --shm-size, not
+  // --ipc=host: it keeps the container's own IPC namespace. NCCL_P2P_LEVEL=SYS
+  // is the stopgap for a container started before this line; it overrides
+  // NCCL's own topology judgment for every run, so it is not the fix.
+  // Applied only by `devtools/devcontainer.sh rebuild` (not `up`).
   "runArgs": [
     "--gpus", "all",
     "--device=/dev/nvidiactl",
     "--device=/dev/nvidia0",                     // EDIT: one line per card
     "--device=/dev/nvidia-uvm",
-    "--device=/dev/nvidia-uvm-tools"
+    "--device=/dev/nvidia-uvm-tools",
+    "--shm-size=1g"
   ],
 
   // CLAUDE CODE IS NOT A FEATURE HERE, deliberately. The

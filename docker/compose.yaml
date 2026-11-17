@@ -36,6 +36,14 @@
 # at CONFIGURE time. On a build host with no GPU, use a pinned preset instead
 # (BUILD_PRESET=ci-cuda, which pins sm_86) and drop the `deploy`
 # block from that service.
+#
+# Every service also sets shm_size: 1gb. Docker's default /dev/shm is 64 MiB,
+# and NCCL/RCCL move a collective between two cards with no peer path they
+# will take (a PCIe host bridge between NVLink pairs) through a /dev/shm
+# segment of tens of MiB per pair, so a clique over more than one pair fails
+# with WWR_CCL_RESULT_SYSTEM_ERROR. shm_size rather than ipc: host keeps the
+# container's own IPC namespace. .devcontainer/cuda/devcontainer.json has the
+# same --shm-size and the longer story.
 services:
   build:
     image: ${FREE_BREAKFAST_IMAGE:-free-breakfast:latest}
@@ -100,6 +108,7 @@ services:
         cmake --build "$$build_dir" $${CLEAN:+--clean-first} $${REBUILD:+--clean-first} \
           > >(tee .log/build.$$ts.out.txt) \
           2> >(tee .log/build.$$ts.err.txt >&2)
+    shm_size: 1gb  # see the header: the collectives' /dev/shm
     deploy:
       resources:
         reservations:
@@ -164,6 +173,7 @@ services:
             || pytest_rc=$$?
         fi
         exit $$(( gtest_rc > 0 || pytest_rc > 0 ? 1 : 0 ))
+    shm_size: 1gb  # see the header: the collectives' /dev/shm
     deploy:
       resources:
         reservations:
@@ -230,6 +240,7 @@ services:
           pytest_rc=$$?
         fi
         exit $$(( gtest_rc || pytest_rc ))
+    shm_size: 1gb  # see the header: the collectives' /dev/shm
     deploy:
       resources:
         reservations:
@@ -307,6 +318,7 @@ services:
           pytest_rc=$$?
         fi
         exit $$(( gtest_rc || pytest_rc ))
+    shm_size: 1gb  # see the header: the collectives' /dev/shm
     deploy:
       resources:
         reservations:

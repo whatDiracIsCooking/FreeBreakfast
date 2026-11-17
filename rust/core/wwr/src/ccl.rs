@@ -41,10 +41,22 @@
 //! events already say. What no rank can check is a peer's count; a peer
 //! whose count differs is the first rule broken.
 //!
+//! **A system error on several devices names `/dev/shm`.** Between two
+//! devices with no peer path the library will take, as two NVLink pairs
+//! joined only by a PCIe host bridge, it moves the data through a
+//! `/dev/shm` segment of tens of MiB per pair, and a container's default
+//! 64 MiB is too small: the clique's first collective, or its making, fails
+//! with `WWR_CCL_RESULT_SYSTEM_ERROR` and nothing more. So a system error on
+//! a clique of more than one rank reads `/dev/shm`'s size and says so in
+//! the error's message, with the fix, a container started with
+//! `--shm-size`, and `NCCL_P2P_LEVEL=SYS` as the stopgap until then. It is
+//! still the error, a value like every other status here.
+//!
 //! **f64 alone.** Every row a collective moves in this tree is `f64`; a
 //! caller that needs another type is the reason to add a trait over the
 //! C ABI's data types.
 
+use std::mem::MaybeUninit;
 use std::panic::Location;
 
 use wwr_sys::{wwr_ccl_comm, wwr_ccl_data_type, wwr_ccl_red_op, wwr_ccl_result};
@@ -53,9 +65,9 @@ use crate::common::{ErrorCode, SourceLocation};
 use crate::device_slice::{DeviceSlice, DeviceSliceMut};
 use crate::handle::{DeviceHandle, DeviceHandleStream};
 use crate::runtime::Stream;
-use crate::{gpu_log_error_at, gpu_status, gpu_status_at};
+use crate::{gpu_log_error_at, gpu_status_at};
 use contracts::{debug_requires, requires};
-use fb_core_error_handling::{Result, Status};
+use fb_core_error_handling::{Error, Result, Status};
 use fb_core_log::{eq, fits_i32, lt};
 
 /// `wwrcclResult_t`, as the C ABI hands it back. The name is the
@@ -119,7 +131,8 @@ impl Comm {
     /// # Errors
     /// The library's refusal, as a `GpuRuntime` error naming the status:
     /// a device listed twice or not visible, or a clique the devices cannot
-    /// form.
+    /// form, a system error on more than one device naming `/dev/shm`'s
+    /// size (the module's doc).
     #[requires(lt!(0, devices.len()) && fits_i32!(devices.len()), "a clique has a rank, counted in an i32")]
     #[track_caller]
     pub fn init_all(devices: &[i32]) -> Result<Vec<Comm>> {
@@ -132,7 +145,7 @@ impl Comm {
         // `ndev` device indices, both live locals or borrows for the call.
         let status =
             unsafe { wwr_sys::wwr_ccl_comm_init_all(raw.as_mut_ptr(), ndev, devices.as_ptr()) };
-        gpu_status_at(status, location)?;
+        ccl_status_at(status, n, location, shm_bytes)?;
         Ok(raw
             .into_iter()
             .zip(devices)
@@ -185,17 +198,18 @@ impl Drop for Comm {
 /// together, `wwrcclGroupStart` before it and `wwrcclGroupEnd` after: how
 /// one thread issues a call for several ranks, and how a rank issues
 /// several point-to-point calls, a receive from every peer, as one. The
-/// group is ended whatever `f` returns.
+/// group is ended whatever `f` returns. `comm` is a rank of the clique
+/// the group's calls are on, whose size a failure's message reads.
 ///
 /// # Errors
 /// The first failure: the group's start, `f`'s, or its end.
 #[track_caller]
-pub fn group(f: impl FnOnce() -> Status) -> Status {
+pub fn group(comm: &Comm, f: impl FnOnce() -> Status) -> Status {
     // SAFETY: a plain library call.
-    gpu_status(unsafe { wwr_sys::wwr_ccl_group_start() })?;
+    ccl_status(unsafe { wwr_sys::wwr_ccl_group_start() }, comm)?;
     let result = f();
     // SAFETY: as above, ending the group started here.
-    let ended = gpu_status(unsafe { wwr_sys::wwr_ccl_group_end() });
+    let ended = ccl_status(unsafe { wwr_sys::wwr_ccl_group_end() }, comm);
     result.and(ended)
 }
 
@@ -214,7 +228,7 @@ pub fn broadcast_send(comm: &Comm, send: &impl DeviceSlice<f64>, stream: &Stream
     // in-place broadcast reads its buffer and writes none of it, so the
     // const pointer is never written through; the handle and the stream
     // are live.
-    gpu_status(unsafe {
+    let status = unsafe {
         wwr_sys::wwr_ccl_bcast(
             send.as_ptr().cast_mut().cast(),
             send.len(),
@@ -223,7 +237,8 @@ pub fn broadcast_send(comm: &Comm, send: &impl DeviceSlice<f64>, stream: &Stream
             comm.raw,
             stream.stream(),
         )
-    })
+    };
+    ccl_status(status, comm)
 }
 
 /// A rank's half of a broadcast from `root`: `recv` written with the
@@ -249,7 +264,7 @@ pub fn broadcast_recv(
     // SAFETY: `recv` is device memory of `len` elements with no other user
     // until the enqueued work finishes (DeviceSliceMut's promise), and the
     // library writes `len` of them; the handle and the stream are live.
-    gpu_status(unsafe {
+    let status = unsafe {
         wwr_sys::wwr_ccl_bcast(
             ptr.cast(),
             len,
@@ -258,7 +273,8 @@ pub fn broadcast_recv(
             comm.raw,
             stream.stream(),
         )
-    })
+    };
+    ccl_status(status, comm)
 }
 
 /// A rank's half of a sum to `root`, not the root itself: `send` added
@@ -287,7 +303,7 @@ pub fn reduce_send(
     // enqueued work finishes (DeviceSlice's promise); a rank that is not
     // the root writes no receive buffer, so none is passed; the handle and
     // the stream are live.
-    gpu_status(unsafe {
+    let status = unsafe {
         wwr_sys::wwr_ccl_reduce(
             send.as_ptr().cast(),
             std::ptr::null_mut(),
@@ -298,7 +314,8 @@ pub fn reduce_send(
             comm.raw,
             stream.stream(),
         )
-    })
+    };
+    ccl_status(status, comm)
 }
 
 /// The root's half of a sum: every rank's `send`, this one's included,
@@ -320,7 +337,7 @@ pub fn reduce_recv(
     // length above, until the enqueued work finishes, `recv` with no other
     // user, so apart from `send` (DeviceSlice's and DeviceSliceMut's
     // promises); the handle and the stream are live.
-    gpu_status(unsafe {
+    let status = unsafe {
         wwr_sys::wwr_ccl_reduce(
             send.as_ptr().cast(),
             ptr.cast(),
@@ -331,7 +348,8 @@ pub fn reduce_recv(
             comm.raw,
             stream.stream(),
         )
-    })
+    };
+    ccl_status(status, comm)
 }
 
 /// Every rank's `send` summed into every rank's `recv`, on `stream`.
@@ -350,7 +368,7 @@ pub fn all_reduce(
 ) -> Status {
     let ptr = recv.as_mut_ptr();
     // SAFETY: as in `reduce_recv`.
-    gpu_status(unsafe {
+    let status = unsafe {
         wwr_sys::wwr_ccl_all_reduce(
             send.as_ptr().cast(),
             ptr.cast(),
@@ -360,7 +378,8 @@ pub fn all_reduce(
             comm.raw,
             stream.stream(),
         )
-    })
+    };
+    ccl_status(status, comm)
 }
 
 /// Every rank's `send` written into every rank's `recv`, rank `r`'s at
@@ -387,7 +406,7 @@ pub fn all_gather(
     // finishes, `recv` with no other user, so apart from `send`
     // (DeviceSlice's and DeviceSliceMut's promises); the handle and the
     // stream are live.
-    gpu_status(unsafe {
+    let status = unsafe {
         wwr_sys::wwr_ccl_all_gather(
             send.as_ptr().cast(),
             ptr.cast(),
@@ -396,7 +415,8 @@ pub fn all_gather(
             comm.raw,
             stream.stream(),
         )
-    })
+    };
+    ccl_status(status, comm)
 }
 
 /// `send` sent to rank `peer`, on `stream`; `peer` calls [`recv`] from
@@ -413,7 +433,7 @@ pub fn send(comm: &Comm, send: &impl DeviceSlice<f64>, peer: usize, stream: &Str
     // SAFETY: `send` is device memory of its `len()` elements until the
     // enqueued work finishes (DeviceSlice's promise); the handle and the
     // stream are live.
-    gpu_status(unsafe {
+    let status = unsafe {
         wwr_sys::wwr_ccl_send(
             send.as_ptr().cast(),
             send.len(),
@@ -422,7 +442,8 @@ pub fn send(comm: &Comm, send: &impl DeviceSlice<f64>, peer: usize, stream: &Str
             comm.raw,
             stream.stream(),
         )
-    })
+    };
+    ccl_status(status, comm)
 }
 
 /// `recv` written with what rank `peer` [`send`]s this rank, on `stream`.
@@ -443,7 +464,7 @@ pub fn recv(
     // SAFETY: `recv` is device memory of `len` elements with no other user
     // until the enqueued work finishes (DeviceSliceMut's promise), and the
     // library writes `len` of them; the handle and the stream are live.
-    gpu_status(unsafe {
+    let status = unsafe {
         wwr_sys::wwr_ccl_recv(
             ptr.cast(),
             len,
@@ -452,7 +473,79 @@ pub fn recv(
             comm.raw,
             stream.stream(),
         )
+    };
+    ccl_status(status, comm)
+}
+
+/// A collectives status as a [`Status`], located at the caller, for a call
+/// on `comm`'s clique: [`gpu_status`](crate::gpu_status) and the reading
+/// of `/dev/shm` a system error on several devices adds.
+#[track_caller]
+fn ccl_status(code: wwr_ccl_result, comm: &Comm) -> Status {
+    ccl_status_at(code, comm.ranks, Location::caller(), shm_bytes)
+}
+
+/// [`ccl_status`] at `location`, for a clique of `ranks`, `/dev/shm`'s
+/// size read by `shm` only for a system error on more than one rank.
+fn ccl_status_at(
+    code: wwr_ccl_result,
+    ranks: usize,
+    location: SourceLocation,
+    shm: impl FnOnce() -> Option<u64>,
+) -> Status {
+    gpu_status_at(code, location).map_err(|error| {
+        if code != wwr_ccl_result::WWR_CCL_RESULT_SYSTEM_ERROR || ranks < 2 {
+            return error;
+        }
+        Error {
+            message: format!("{}{}", error.message, shm_hint(ranks, shm())),
+            ..error
+        }
     })
+}
+
+/// The size of `/dev/shm` the library's shared-memory transport needs at
+/// least, a clique over two NVLink pairs bridged by PCIe with room to
+/// spare; the devcontainers pass `--shm-size=1g`, and `devtools/doctor.sh`
+/// warns below the same 512 MiB.
+const SHM_ENOUGH: u64 = 512 << 20;
+
+/// What a system error on `ranks` devices adds to the status's message,
+/// given `/dev/shm`'s size in bytes, or `None` when it could not be read.
+fn shm_hint(ranks: usize, shm: Option<u64>) -> String {
+    const FIX: &str = "run the container with --shm-size=1g (the devcontainers pass it: \
+                       devtools/devcontainer.sh rebuild), or export NCCL_P2P_LEVEL=SYS until then";
+    match shm {
+        Some(bytes) if bytes < SHM_ENOUGH => format!(
+            " on {ranks} devices: most likely /dev/shm, {} MiB here, too small for the \
+             shared-memory transport between devices with no peer path; {FIX}",
+            bytes >> 20
+        ),
+        Some(bytes) => format!(
+            " on {ranks} devices; /dev/shm is {} MiB, so not its size: NCCL_DEBUG=WARN names \
+             the failing call",
+            bytes >> 20
+        ),
+        None => format!(
+            " on {ranks} devices: /dev/shm could not be read; if it is under {} MiB, {FIX}",
+            SHM_ENOUGH >> 20
+        ),
+    }
+}
+
+/// The size of `/dev/shm` in bytes, `statvfs`'s blocks times its fragment
+/// size, or `None` when it cannot be read.
+fn shm_bytes() -> Option<u64> {
+    let mut stat = MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: the path is a NUL-terminated literal and `stat` has room for
+    // the one struct the call writes.
+    let rc = unsafe { libc::statvfs(c"/dev/shm".as_ptr(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        return None;
+    }
+    // SAFETY: a call that returned 0 has written the whole struct.
+    let stat = unsafe { stat.assume_init() };
+    stat.f_blocks.checked_mul(stat.f_frsize)
 }
 
 /// A rank as the C ABI takes it. Every rank is below the clique's size,
@@ -465,6 +558,7 @@ fn rank_i32(rank: usize) -> i32 {
 mod tests {
     use super::*;
     use crate::common::ScopedDeviceIndex;
+    use crate::gpu_status;
     use crate::runtime::device_count;
     use crate::runtime::tests::{DeviceBytes, ok};
 
@@ -541,7 +635,7 @@ mod tests {
                 })
             })
             .collect();
-        group(|| {
+        group(&comms[0], || {
             for (r, buf) in bufs.iter_mut().enumerate() {
                 if r == root {
                     broadcast_send(&comms[r], buf, &ranks[r].stream)?;
@@ -565,14 +659,14 @@ mod tests {
         let mut gathered: Vec<DeviceBytes> = ranks.iter().map(|k| k.zeros(n * len)).collect();
         let mut summed: Vec<DeviceBytes> = ranks.iter().map(|k| k.zeros(len)).collect();
         let mut root_sum = ranks[0].zeros(len);
-        group(|| {
+        group(&comms[0], || {
             for r in 0..n {
                 all_gather(&comms[r], &sends[r], &mut gathered[r], &ranks[r].stream)?;
             }
             Ok(())
         })
         .unwrap();
-        group(|| {
+        group(&comms[0], || {
             for r in 0..n {
                 if r == 0 {
                     reduce_recv(&comms[0], &sends[0], &mut root_sum, &ranks[0].stream)?;
@@ -583,7 +677,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        group(|| {
+        group(&comms[0], || {
             for r in 0..n {
                 all_reduce(&comms[r], &sends[r], &mut summed[r], &ranks[r].stream)?;
             }
@@ -608,7 +702,7 @@ mod tests {
             .map(|r| ranks[r].upload(&piece(r, lens[r])))
             .collect();
         let mut received: Vec<DeviceBytes> = lens.iter().map(|&l| ranks[0].zeros(l)).collect();
-        group(|| {
+        group(&comms[0], || {
             for r in 1..n {
                 send(&comms[r], &pieces[r], 0, &ranks[r].stream)?;
                 recv(&comms[0], &mut received[r], r, &ranks[0].stream)?;
@@ -633,6 +727,82 @@ mod tests {
             "WWR_CCL_RESULT_INVALID_USAGE (the caller used the library wrongly)"
         );
         assert_eq!(gpu_status(wwr_ccl_result::WWR_CCL_RESULT_SUCCESS), Ok(()));
+    }
+
+    /// A system error on several devices names `/dev/shm`'s size and the
+    /// fix; any other status, or one device, is the status alone, and
+    /// `/dev/shm` is not read for it.
+    #[test]
+    fn a_system_error_on_several_devices_names_dev_shm() {
+        use wwr_ccl_result::{WWR_CCL_RESULT_INTERNAL_ERROR, WWR_CCL_RESULT_SYSTEM_ERROR};
+        let status = "WWR_CCL_RESULT_SYSTEM_ERROR (a call to the system failed)";
+        let fix = "run the container with --shm-size=1g (the devcontainers pass it: \
+                   devtools/devcontainer.sh rebuild), or export NCCL_P2P_LEVEL=SYS until then";
+        let message = |code, ranks, shm: Option<u64>| {
+            ccl_status_at(code, ranks, Location::caller(), || shm)
+                .unwrap_err()
+                .message
+        };
+        assert_eq!(
+            message(WWR_CCL_RESULT_SYSTEM_ERROR, 4, Some(64 << 20)),
+            format!(
+                "{status} on 4 devices: most likely /dev/shm, 64 MiB here, too small for the \
+                 shared-memory transport between devices with no peer path; {fix}"
+            )
+        );
+        assert_eq!(
+            message(WWR_CCL_RESULT_SYSTEM_ERROR, 2, Some((512 << 20) - 1)),
+            format!(
+                "{status} on 2 devices: most likely /dev/shm, 511 MiB here, too small for the \
+                 shared-memory transport between devices with no peer path; {fix}"
+            )
+        );
+        assert_eq!(
+            message(WWR_CCL_RESULT_SYSTEM_ERROR, 4, Some(1 << 30)),
+            format!(
+                "{status} on 4 devices; /dev/shm is 1024 MiB, so not its size: NCCL_DEBUG=WARN \
+                 names the failing call"
+            )
+        );
+        assert_eq!(
+            message(WWR_CCL_RESULT_SYSTEM_ERROR, 4, None),
+            format!(
+                "{status} on 4 devices: /dev/shm could not be read; if it is under 512 MiB, {fix}"
+            )
+        );
+
+        let unread = |code, ranks| {
+            ccl_status_at(code, ranks, Location::caller(), || {
+                unreachable!("/dev/shm read for {code:?} on {ranks}")
+            })
+            .unwrap_err()
+        };
+        assert_eq!(unread(WWR_CCL_RESULT_SYSTEM_ERROR, 1).message, status);
+        let other = unread(WWR_CCL_RESULT_INTERNAL_ERROR, 4);
+        assert_eq!(
+            (other.kind, other.message.as_str()),
+            (
+                fb_core_error_handling::ErrorKind::GpuRuntime,
+                "WWR_CCL_RESULT_INTERNAL_ERROR (an internal check failed)"
+            )
+        );
+        assert_eq!(
+            ccl_status_at(
+                wwr_ccl_result::WWR_CCL_RESULT_SUCCESS,
+                4,
+                Location::caller(),
+                || { unreachable!("/dev/shm read for a success") }
+            ),
+            Ok(())
+        );
+    }
+
+    /// `/dev/shm`'s size as `statvfs` reads it: a filesystem every Linux
+    /// host and container mounts, of at least a MiB.
+    #[test]
+    fn dev_shm_has_a_size() {
+        let bytes = shm_bytes().expect("/dev/shm is mounted");
+        assert!(bytes >= 1 << 20, "{bytes} bytes");
     }
 
     /// Needs a GPU. A clique of one rank: every collective is a copy.
