@@ -108,7 +108,11 @@ iteration in flight; the heap row a download writes is one its loop
 carries, written by its one user in the body. A range that runs past the
 row's end is clamped to it, the window and the device row keeping their
 full length, so the last of `total.div_ceil(len)` trips moves the
-`total - k len` elements left.
+`total - k len` elements left. A device row that is a matrix narrower
+than the heap row's, a batch of B's columns into B, comes down through
+`Dag::download_heap_pitched`, the same two nodes with the window's runs
+written at a pitch, each trip's moved on by its run; it has no clamp, so
+a short last batch is a loop of its own.
 A task never writes such a copy by hand; a copy inside a task's larger
 work, a solver's `info` flag down beside its launch, stays the task's.
 On one card the copy node is the transport; between cards, placement's
@@ -179,7 +183,14 @@ order and the larger first are within 0.02%, and the larger first to 1.015
 on DIIS's, where start order meets the bound exactly; the three together
 came to 1.026 at worst, the guess config's pinned table. The bound is a
 measurement, not a theorem: a plan that breaks it is a finding about the
-assigner, read before the bound is moved.
+assigner, read before the bound is moved. Beside the 3%, each laid-out
+table, each copy of a counted loop's body, may hold one alignment less a
+byte more: the bound credits the largest padding as if its row lay last,
+and the assigner orders rows by position and size, not padding, so the
+row that ends the block may carry less. Without it the packed B build's
+one-column batch (#1691), a body of a few KiB, came to 4,256 bytes against
+4,120, the 232 bytes of padding credited less the 96 of the row it ended
+on; on every other golden the term is not needed.
 
 **"Precedes" is the plan's rank order, so reuse adds edges.** The positions
 the assigner packs against are the nodes' ranks, the order they were added
@@ -398,7 +409,10 @@ the heap row's end, and the batch task reads the
 and once more, and stops at its first error: in run `k` the parts before
 part `k` have their widths and the rest are at 1, and part `k`'s fixed
 bytes of each kind are that kind's table's `live_at` its position, a loop's
-region whole, less the part's own at width 1; its room is the worker's less
+region whole, less the part's own at width 1, the region of a loop that
+starts at its position as laid out, else its declared bytes, so a part
+whose bytes bound its region from above is measured against the rows
+really beside it; its room is the worker's less
 those, of each kind, bisected once by `widest`, the largest width whose
 bytes fit both. A worker's room is asked once, when the first part on it is
 measured, so a DAG with no part reads none and the declaration's refusals
@@ -673,7 +687,8 @@ can name. In it:
   whose `run` is a copy between kinds alone, so a pinned-to-device or device-to-pinned move is one line at
   its caller, on whichever lane of the worker the caller names. Its
   `Dag::upload_heap` and `Dag::download_heap` move a range of a heap row
-  through a pinned window, a CPU node and a copy node each, whose host
+  through a pinned window, and `Dag::download_heap_pitched` runs of one
+  at a pitch, a CPU node and a copy node each, whose host
   halves are the only `CpuTask`s whose `run` is a copy alone: a heap row
   reaches the device through them and nothing else.
 
@@ -708,7 +723,7 @@ A GPU task's `run(device, pinned, stream)` and a CPU task's
 | Rule | Check | Tier |
 |---|---|---|
 | No two live rows alias | The assigner fuzzed as a pure function over random rows and orders | 3 |
-| The block is within 3% of its lower bound on every committed golden | Every golden's text read, each table's total against its live rows' padded bytes at their largest, each loop's region against its body's | 3 |
+| The block is within 3% of its lower bound, and one alignment per table, on every committed golden | Every golden's text read, each table's total against its live rows' padded bytes at their largest, each loop's region against its body's | 3 |
 | The block is the plan | The arena's total, committed and compared bitwise per example config | 3 |
 | `bytes(width)` is monotone | Bisection against a linear scan over random dims | 3 |
 | Admission refuses what does not fit | A cap one byte under the peak refused naming the rows live at it; a cap under a row refused naming that row, the DF step's B not live at its peak among them; one byte over admitted, as the C++ nested cases pin the room to the byte | 3 |

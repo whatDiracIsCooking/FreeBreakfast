@@ -147,13 +147,14 @@ const LAUNCH_SHAPE: &[&str] = &[
 /// The tasks whose whole work is a copy between kinds, as `(file, how
 /// many, why)`, counted as [`ERROR_LOGS`] is, in non-test code: everything
 /// else adds a copy node (`Dag::upload`, `Dag::download`,
-/// `Dag::download_rows`, `Dag::upload_heap`, `Dag::download_heap`). The
-/// list only shrinks.
+/// `Dag::download_rows`, `Dag::upload_heap`, `Dag::download_heap`,
+/// `Dag::download_heap_pitched`). The list only shrinks.
 const COPY_TASKS: &[(&str, usize, &str)] = &[(
     "core/planner/src/copy.rs",
-    5,
+    6,
     "the planner's copy nodes themselves, `Dag::upload`, `Dag::download` and `Dag::download_rows`, \
-     and the host halves of `Dag::upload_heap` and `Dag::download_heap`",
+     and the host halves of `Dag::upload_heap`, `Dag::download_heap` and \
+     `Dag::download_heap_pitched`",
 )];
 
 /// The one crate whose items may be named for the planner, as a path from

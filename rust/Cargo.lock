@@ -440,6 +440,7 @@ dependencies = [
  "fb-core-planner",
  "fb-core-thread-pool",
  "fb-core-types",
+ "fb-core-wwr",
  "fb-integrals-eri-density-fitting-fit",
  "fb-integrals-eri-density-fitting-metric",
  "fb-integrals-eri-density-fitting-pair-map",
@@ -453,6 +454,7 @@ dependencies = [
  "fb-recipes-matrix-ao",
  "fb-test-support",
  "serde_json",
+ "wwr-sys",
 ]
 
 [[package]]

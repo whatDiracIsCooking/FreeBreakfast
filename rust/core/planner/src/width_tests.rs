@@ -319,6 +319,39 @@ fn a_counted_loop_takes_its_trips_from_the_width() {
     assert_eq!(lines[0].0, log::Level::Warn);
 }
 
+/// A counted loop's part whose bytes bound its region from above, more
+/// loosely at small widths (a floor of ten columns' ring): measured
+/// against its loop's region as laid out, not its bytes at 1, its width
+/// is the largest admission accepts, where the bytes at 1 would have
+/// handed it the floor's slack as room.
+#[test]
+fn a_loose_bound_is_measured_against_the_region_laid_out() {
+    keep_logs();
+    struct Floored(Columns);
+    impl Adaptive for Floored {
+        fn width_max(&self) -> usize {
+            self.0.width_max()
+        }
+        fn bytes(&self, width: usize) -> usize {
+            self.0.bytes(width).max(self.0.bytes(10))
+        }
+    }
+    let part = Floored(Columns {
+        copies: 2,
+        ..Columns::new(8 * COLUMN, 64)
+    });
+    let room = 8 * N + 2 * 20 * 8 * COLUMN;
+    let (planned, width) = Dag::plan_within(device(room), |dag| {
+        Ok(batched(dag, |dag| dag.width("loose", 0, &part)))
+    })
+    .unwrap();
+    assert_eq!(width, 20);
+    assert!(admit(planned.device_table(0), room, "gpu0").is_ok());
+    let mut wider = Dag::new();
+    batched(&mut wider, |_| 21);
+    assert!(admit(wider.plan().device_table(0), room, "gpu0").is_err());
+}
+
 /// Two parts in schedule order: `p0` makes W0, `width0` columns read at
 /// the end, and `p1` holds `width1` columns of scratch beside Y while W0
 /// is live.

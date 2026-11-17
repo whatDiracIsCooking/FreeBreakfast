@@ -135,8 +135,9 @@ impl AuxTable {
         self.momentum.len()
     }
 
-    /// The records.
-    pub(crate) fn n_rec(&self) -> usize {
+    /// The records, one per primitive: the aux row of the three-center
+    /// tasks holds [`FB_THREE_CENTER_AUX_FIELDS`](crate::FB_THREE_CENTER_AUX_FIELDS) times it.
+    pub fn n_rec(&self) -> usize {
         self.records.len()
     }
 

@@ -845,6 +845,16 @@ impl<K: Kind> Table<K> {
         self.live(Some(position)).map(|(_, bytes)| bytes).sum()
     }
 
+    /// The bytes of the region of the loop whose body starts at
+    /// `position`, every copy of a counted loop's body, as laid out; `None`
+    /// when no loop starts there.
+    pub fn region_from(&self, position: usize) -> Option<usize> {
+        self.regions
+            .iter()
+            .find(|g| *g.positions.start() == position)
+            .map(|g| g.bytes)
+    }
+
     /// What the block holds live at `position`, by name and bytes: the rows
     /// outside every loop's body in declaration order, then each outermost
     /// loop's region, named `loop first-last`. At `None`, the worker rows

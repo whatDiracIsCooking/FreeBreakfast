@@ -14,16 +14,19 @@ fb-basis.workspace = true
 fb-core-arena.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-planner.workspace = true
+fb-core-thread-pool = { workspace = true, features = ["device"] }
+fb-core-wwr.workspace = true
+fb-integrals-eri-density-fitting-fit.workspace = true
 fb-integrals-eri-density-fitting-pair-map.workspace = true
 fb-integrals-eri-density-fitting-transform.workspace = true
 fb-integrals-mmd.workspace = true
 fb-integrals-sys.workspace = true
 fb-recipes-matrix-ao.workspace = true
+# BLAS for the batch's transpose.
+wwr-sys = { workspace = true, features = ["blas"] }
 
 [dev-dependencies]
-fb-core-thread-pool = { workspace = true, features = ["device"] }
 fb-core-types.workspace = true
-fb-integrals-eri-density-fitting-fit.workspace = true
 fb-integrals-eri-density-fitting-metric.workspace = true
 fb-io-basis.workspace = true
 fb-io-npy.workspace = true

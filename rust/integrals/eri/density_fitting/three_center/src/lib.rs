@@ -53,8 +53,13 @@
 //! `add_batch_fit`). B's heap row is pair-fastest (the pair map's crate
 //! doc), so the batch's element `(Q, c)` lands at `first + c +
 //! n_columns · Q` there, `first` the batch's first spherical column: the
-//! copy into the heap row is a transpose, the build loop's to make. There
-//! is no C++ counterpart.
+//! copy into the heap row is a transpose.
+//!
+//! [`add_packed_b`] is the build loop that makes it: B in a heap row on
+//! the host, built by class in batches of an adaptive width, each a
+//! counted loop's trip of those tasks, the fit against one L, the
+//! transpose and the pitched download into the heap row, so no device row
+//! holds B whole. There is no C++ counterpart for either.
 //!
 //! | C++ | Here |
 //! |---|---|
@@ -71,6 +76,10 @@
 //! | `three_center_footprint(basis, aux)` | nothing: the layout declares every row, and the arena's size is the plan's golden |
 
 #![forbid(unsafe_code)]
+
+mod build;
+
+pub use build::add_packed_b;
 
 use std::ops::Range;
 
@@ -177,9 +186,13 @@ pub fn add_three_center(
 /// transform`, stream), whose output this is. The Cartesian batch is the
 /// transform's input row, and ends there.
 ///
-/// The batch is fixed at planning: a build of B over several batches
-/// adds these tasks once per batch, each its own rows, and U's slots make
-/// U copied up once for all of them.
+/// `pairs` is the first of `trips` batches of one size side by side, batch
+/// `k` the range moved on by `k` of its lengths: outside a loop the tasks
+/// compute the first, and in a counted loop of `trips` trips batch `k` in
+/// trip `k`, as [`add_packed_b`] builds B. Every batch's pairs must be of
+/// the first's classes, pair for pair, so that its columns and its
+/// transform are the first's. U's slots make U copied up once for every
+/// build over them.
 ///
 /// First, before anything is added, the kernel library's load check and
 /// what the kernels can take, as for [`add_three_center`].
@@ -202,10 +215,15 @@ pub fn add_three_center(
     "map is a map of basis's pairs"
 )]
 #[debug_requires(pairs.start < pairs.end, "a batch of at least one kept pair")]
-#[debug_requires(pairs.end <= map.pairs().len(), "the batch is of map's kept pairs")]
+#[debug_requires(trips > 0, "at least one batch")]
+#[debug_requires(
+    pairs.start + trips * pairs.len() <= map.pairs().len(),
+    "every batch is of map's kept pairs"
+)]
 #[allow(
     clippy::too_many_arguments,
-    reason = "add_three_center's, with the map and the batch's range of its pairs"
+    reason = "add_three_center's, with the map, the first batch's range of its pairs and the \
+              batches"
 )]
 #[track_caller]
 pub fn add_packed_three_center(
@@ -216,6 +234,7 @@ pub fn add_packed_three_center(
     aux: &BasisSet,
     map: &PairMap,
     pairs: Range<usize>,
+    trips: usize,
     u: &mut Option<RowId<Device, f64>>,
     u_aux: &mut Option<RowId<Device, f64>>,
 ) -> Result<RowId<Device, f64>> {
@@ -232,12 +251,14 @@ pub fn add_packed_three_center(
     }
     let n_aux = [n_aux, aux.nao_sphe() as usize];
     let tables = record_tables(basis);
-    let kept: Vec<usize> = map.pairs()[pairs.clone()].iter().map(|k| k.pair).collect();
+    let every = pairs.start..pairs.start + trips * pairs.len();
+    let kept: Vec<usize> = map.pairs()[every].iter().map(|k| k.pair).collect();
     let u = [
         add_harmonics(dag, worker, basis, u),
         add_harmonics(dag, worker, aux, u_aux),
     ];
-    let cartesian = add_packed_three_center_tasks(dag, worker, classes, &tables, &table, &kept);
+    let cartesian =
+        add_packed_three_center_tasks(dag, worker, classes, &tables, &table, &kept, trips);
     // Never an error past the refusal above, so nothing is added and then
     // refused: each of the transform's counts is at most `n_col · n_aux`
     // (`n_aux_cart`; `n_aux · n_b_sph` and a class's `pairs · n_a`, since
