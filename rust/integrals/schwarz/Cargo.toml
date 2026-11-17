@@ -1,0 +1,27 @@
+[package]
+name = "fb-integrals-schwarz"
+description = "integrals/schwarz: the Cartesian Schwarz diagonal sqrt((mn|mn)) per shell pair, on the host at planning"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+contracts.workspace = true
+fb-basis.workspace = true
+
+[dev-dependencies]
+fb-io-basis.workspace = true
+fb-io-npy.workspace = true
+fb-io-xyz.workspace = true
+# The projection test's device B (tests/projection.rs), tier 4.
+fb-core-arena.workspace = true
+fb-core-error-handling.workspace = true
+fb-core-planner.workspace = true
+fb-core-thread-pool = { workspace = true, features = ["device"] }
+fb-integrals-eri-density-fitting-fit.workspace = true
+fb-integrals-eri-density-fitting-metric.workspace = true
+fb-integrals-eri-density-fitting-three-center.workspace = true
+fb-integrals-mmd.workspace = true
