@@ -48,6 +48,11 @@ const RUST_ONLY: &[(&str, &str, &str)] = &[
         "tools/emit/conventional_kernels.py",
         "test/pytest/test_conventional_kernels.py",
     ),
+    (
+        "integrals/kernels/eri/density_fitting/three_center/packed/kernels",
+        "tools/emit/packed_three_center_kernels.py",
+        "test/pytest/test_packed_three_center_kernels.py",
+    ),
 ];
 
 fn rust_root() -> PathBuf {

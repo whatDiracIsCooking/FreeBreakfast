@@ -23,7 +23,7 @@ use fb_integrals_sys::{
     FB_METRIC_PAIR_FIELDS, FB_METRIC_RECORD_FIELDS, FB_THREE_CENTER_AUX_FIELDS,
     FB_THREE_CENTER_AUX_MAX_MOMENTUM, FB_THREE_CENTER_CELL_FIELDS, FB_THREE_CENTER_MAX_MOMENTUM,
     fb_metric_class, fb_primitive_pair_class_view, fb_three_center_class,
-    fb_three_center_symmetrize,
+    fb_three_center_packed_class, fb_three_center_symmetrize,
 };
 use std::f64::consts::PI;
 use std::ptr::{NonNull, null, null_mut};
@@ -443,6 +443,85 @@ fn three_center_wrappers_refuse_before_launching() {
             symmetrize(2, 1, base.wrapping_add(shift).cast_const(), base),
             FB_LAUNCH_INVALID_ARGUMENT,
             "input {shift} past output"
+        );
+    }
+}
+
+/// The packed launcher's refusals: every class outside the table is
+/// FB_LAUNCH_UNSUPPORTED, and a null array (the view or one of its bra
+/// fields among them), a count not positive or an n_col * n_aux past an
+/// int32's index is FB_LAUNCH_INVALID_ARGUMENT. No device is touched.
+#[test]
+fn packed_three_center_refuses_before_launching() {
+    let d = NonNull::<f64>::dangling().as_ptr();
+    let i = NonNull::<i32>::dangling().as_ptr();
+    let (max, aux_max) = (
+        FB_THREE_CENTER_MAX_MOMENTUM,
+        FB_THREE_CENTER_AUX_MAX_MOMENTUM,
+    );
+    // SAFETY: every call below is refused before it reads a device pointer.
+    let peri3 = |l: [i32; 3], counts: [i32; 5], bra: *const f64, aux, cells, out| unsafe {
+        let [n_bra, n_aux_rec, n_cell, n_col, n_aux] = counts;
+        let view = bra_view(l[0], l[1], n_bra, [bra; 11]);
+        fb_three_center_packed_class(
+            null_mut(),
+            &view,
+            l[2],
+            n_aux_rec,
+            aux,
+            n_cell,
+            cells,
+            n_col,
+            n_aux,
+            out,
+        )
+    };
+    let ones = [1; 5];
+    for l in [
+        [1, 0, 0],
+        [0, max + 1, 0],
+        [max + 1, max + 1, 0],
+        [0, 0, aux_max + 1],
+        [0, 0, -1],
+        [-1, 0, 0],
+    ] {
+        assert_eq!(peri3(l, ones, d, d, i, d), FB_LAUNCH_UNSUPPORTED, "{l:?}");
+    }
+    for slot in 0..5 {
+        let mut counts = ones;
+        counts[slot] = 0;
+        assert_eq!(
+            peri3([0; 3], counts, d, d, i, d),
+            FB_LAUNCH_INVALID_ARGUMENT,
+            "{counts:?}"
+        );
+    }
+    // 2^20 * 2^11 = 2^31, one past an int32; one fewer column fits.
+    assert_eq!(
+        peri3([0; 3], [1, 1, 1, 1 << 20, 2048], d, d, i, d),
+        FB_LAUNCH_INVALID_ARGUMENT
+    );
+    for f in 0..11 {
+        let mut fields = [d.cast_const(); 11];
+        fields[f] = null();
+        let view = bra_view(0, 0, 1, fields);
+        // SAFETY: as above.
+        let status =
+            unsafe { fb_three_center_packed_class(null_mut(), &view, 0, 1, d, 1, i, 1, 1, d) };
+        assert_eq!(status, FB_LAUNCH_INVALID_ARGUMENT, "bra field {f} null");
+    }
+    // SAFETY: as above.
+    let status =
+        unsafe { fb_three_center_packed_class(null_mut(), null(), 0, 1, d, 1, i, 1, 1, d) };
+    assert_eq!(status, FB_LAUNCH_INVALID_ARGUMENT, "a null view");
+    for (aux, cells, out) in [
+        (null(), i.cast_const(), d),
+        (d.cast_const(), null(), d),
+        (d.cast_const(), i.cast_const(), null_mut()),
+    ] {
+        assert_eq!(
+            peri3([0; 3], ones, d, aux, cells, out),
+            FB_LAUNCH_INVALID_ARGUMENT
         );
     }
 }
