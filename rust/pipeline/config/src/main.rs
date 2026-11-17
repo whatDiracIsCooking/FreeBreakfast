@@ -1,6 +1,7 @@
 //! `free-breakfast <config.toml>`: read the config, plan it, write the
 //! plan's `plan.txt` and `plan.dot` into its output directory, admit it
-//! against the `[memory]` caps, run it once on device 0, and write its
+//! against the `[memory]` caps, run it once on the run's devices
+//! (`num_gpus`, its workers all on device 0 today), and write its
 //! products, `timing.json` and `timing.dot` there (`fb_pipeline_config`). `main` is the one place an error is
 //! logged, and the process exits with its kind's code
 //! (`docs/diagnostics.md`, "The one boundary").
@@ -14,16 +15,15 @@ use std::rc::Rc;
 use fb_core_error_handling::{Error, Status};
 use fb_core_log::{self as log, LogLevel};
 use fb_core_thread_pool::{DeviceStream, default_n_cpu};
-use fb_core_wwr::runtime::Stream;
+use fb_core_wwr::runtime::{Stream, device_count};
 use fb_core_wwr::solver::SolverHandle;
 use fb_pipeline_config::{KERNEL_STACK_BYTES, admit_plan, plan, read_config};
 use fb_recipes_diagonalize::syevd_lwork;
 
-/// The devices the plan's GPU workers run on, worker `w` on `DEVICES[w]`.
-const DEVICES: [i32; 1] = [0];
-
-/// Read, plan (syevd's work asked of a solver handle on device 0, if the
-/// plan asks), make the output directory and write the plan into it,
+/// Read; check a `num_gpus` above 1 against the devices the runtime sees,
+/// a count that makes no stream, for the run's device list, `0..num_gpus`, worker
+/// `w` on its device `w`; plan (syevd's work asked of a solver handle on
+/// device 0, if the plan asks), make the output directory and write the plan into it,
 /// `plan.txt` its text and `plan.dot` its graph, so a plan admission
 /// refuses can still be read; admit every worker's tables and the heap's against the
 /// `[memory]` caps (each device's reserve measured with its worker's
@@ -31,7 +31,7 @@ const DEVICES: [i32; 1] = [0];
 /// host blocks against `MemAvailable` within the cgroup's limit),
 /// run, and write `timing.json` and `timing.dot`, the graph with the run's
 /// times on it. Everything a config can get wrong is refused before a
-/// device is touched or the directory made, and a plan too large for its
+/// stream is made or the directory made, and a plan too large for its
 /// caps or its card before a block is made.
 fn run(args: &[String]) -> Status {
     let [_, config] = args else {
@@ -39,6 +39,7 @@ fn run(args: &[String]) -> Status {
         return Err(Error::config(format!("usage: {program} <config.toml>")));
     };
     let config = read_config(Path::new(config))?;
+    let devices = config.devices(device_count)?;
     let planned = plan(&config, |n| {
         syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n)
     })?;
@@ -57,13 +58,15 @@ fn run(args: &[String]) -> Status {
         // The worker's stream and handles exist for the reading, so the
         // reserve holds them; the run's own are made with its backend.
         |w| {
-            let _worker = DeviceStream::new(DEVICES[w]);
-            fb_core_arena::device_memory(DEVICES[w])
+            let _worker = DeviceStream::new(devices[w]);
+            fb_core_arena::device_memory(devices[w])
         },
-        |w| fb_core_wwr::runtime::stack_growth(DEVICES[w], KERNEL_STACK_BYTES),
+        |w| fb_core_wwr::runtime::stack_growth(devices[w], KERNEL_STACK_BYTES),
         fb_core_arena::host_available()?,
     )?;
-    let mut instance = planned.instantiate(&DEVICES);
+    // A device past the plan's workers holds nothing: the instance makes
+    // blocks, and its backend streams, for the workers alone.
+    let mut instance = planned.instantiate(&devices);
     let mut backend = instance.backend();
     let record = instance.run(&mut backend, default_n_cpu(1));
     // Written whether or not the run failed: the record holds the error,

@@ -42,8 +42,9 @@ push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   --no-deps` with warnings denied, the one gate of their rustdoc, and, once
   both pass, under that card's lock every test, one test thread. A device case is
   `#[ignore = "tier 4: needs a GPU"]`: it runs (--include-ignored) only when
-  wwr sees a device, and every case that did not run is printed in one list
-  with its reason.
+  wwr sees a device; a case that needs a second one is `#[ignore = "tier 5:
+  needs two GPUs"]` on a `tier5_` function, and runs only when wwr sees
+  two. Every case that did not run is printed in one list with its reason.
   Every cargo call but `cargo fmt` passes --locked: a manifest change that
   did not update rust/Cargo.lock fails the gate.
 
@@ -1199,7 +1200,14 @@ def cargo_half(
 # A device case is declared once, on the case: `#[ignore = "tier 4: needs a
 # GPU"]` (rust/docs/testing.md, "Selecting GPU tiers in cargo"). A plain
 # `cargo test` lists it as ignored, with that reason; tier 4 runs it with
-# --include-ignored, and only once wwr itself has seen a device.
+# --include-ignored, and only once wwr itself has seen a device. A case that
+# needs a second device is `#[ignore = "tier 5: needs two GPUs"]` on a
+# function named `tier5_...` (fb-doc-check holds the pair): with one device
+# tier 4 skips it by that name, and lists it as skipped.
+TIER5_PREFIX = "tier5_"
+TIER5_REASON = "tier 5: needs two GPUs"
+# One case of libtest's --list output.
+TEST_LISTED = re.compile(r"^(.+): test$")
 TEST_IGNORED = re.compile(r"^test (.+?) \.\.\. ignored(?:, (.*))?$")
 # One case's outcome in libtest's human output.
 TEST_OUTCOME = re.compile(r"^test (.+?) \.\.\. (ok|FAILED|ignored)(?:, .*)?$")
@@ -1331,6 +1339,19 @@ def cargo_skips(lines: list[str]) -> list[str]:
     return skips
 
 
+def cargo_listed(lines: list[str], reason: str) -> list[str]:
+    """Every case a `cargo test -- --list` printed, as cargo_skips names a
+    skipped one, each with `reason`."""
+    listed = []
+    name = "?"
+    for line in lines:
+        if m := CARGO_RUNNING.match(line):
+            name = cargo_binary(m)
+        elif m := TEST_LISTED.match(line):
+            listed.append(f"{name}: {m.group(1)} -- {reason}")
+    return listed
+
+
 def cargo_package(package_id: str) -> str:
     """The package name in a cargo package id, in any of its spellings:
     `path+file:///…/dir#name@0.1.0`, `path+file:///…/name#0.1.0` (the
@@ -1414,8 +1435,10 @@ def cargo_tier4(
     A failure of either fails tier 4 and runs no test. A device case runs only
     when wwr sees a device under the card lock; otherwise it is reported
     ignored, and every ignored case is printed in one list with its
-    reason. Skips, exit 0, where cmake is absent: the libraries cannot be
-    built. `fast`, `counts` and `cases` as cargo_half's; with `skips`, every
+    reason. A tier-5 case (TIER5_PREFIX) runs only when wwr sees two
+    devices; with one it is skipped by name and listed in that list.
+    Skips, exit 0, where cmake is absent: the libraries cannot be built.
+    `fast`, `counts` and `cases` as cargo_half's; with `skips`, every
     case the test run reported ignored is appended to it (cargo_skips)."""
     backend = backend_of_preset(preset, cfg)
     if why := toolchain_unavailable():
@@ -1498,6 +1521,8 @@ def cargo_tier4(
         say(f"{tag}:   {seen}")
         if count:
             cmd.append("--include-ignored")
+        if count == 1:
+            cmd += ["--skip", TIER5_PREFIX]
         start = time.monotonic()
         with log.open("a") as f:
             f.write(f"--- tier 4: {' '.join(cmd)} ---\n")
@@ -1526,6 +1551,30 @@ def cargo_tier4(
     if cases is not None:
         cases += cargo_cases(lines)
     ignored_cases = cargo_skips(lines)
+    if count == 1:
+        # The tier-5 cases the --skip filtered out, which libtest does not
+        # name: listed by a second, build-free call.
+        listing = cargo_cmd(
+            "test", *jflag, *selected, "--", "--list", "--ignored", TIER5_PREFIX
+        )
+        with log.open("a") as f:
+            f.write(f"--- tier 4: {' '.join(listing)} ---\n")
+            listed = subprocess.run(
+                listing,
+                cwd=RUST_DIR,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+            f.write(listed.stdout)
+        if listed.returncode != 0:
+            say(f"{tag}: tier 4 FAILED: listing the tier-5 cases", err=True)
+            return listed.returncode
+        ignored_cases += cargo_listed(
+            listed.stdout.splitlines(), f"{TIER5_REASON}, one visible"
+        )
     if skips is not None:
         skips += ignored_cases
     if ignored_cases:

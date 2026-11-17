@@ -281,7 +281,7 @@ Three lifetimes, each owning the next.
 
 | | What it is | How many | Lives |
 |---|---|---|---|
-| **Process** | The running binary: one config, one logger, the devices, the worker budget | One | `main` to exit |
+| **Process** | The running binary: one config, one logger, the devices (`num_gpus` of them, "The run's devices"), the worker budget | One | `main` to exit |
 | **Plan** | A DAG with its dimensions fixed, scheduled, placed and admitted: the offset tables, the worker assignment, the sync points | One per calculation; the pipeline's, with its steps' and their iterations' nested inside | Planning to drop, run any number of times between |
 | **Block** | One contiguous allocation of one memory kind on one GPU worker, sized to the plan's peak for that worker and kind | Per top-level plan, one per GPU worker it uses, per kind | The plan's instantiation to its drop |
 
@@ -604,6 +604,36 @@ through the handoffs, rather than exploiting only the paths the DAG
 already has. Giving a reuse up for concurrency when the cap leaves room is
 admission's search, and not built ([`memory.md`](memory.md), "Open
 questions").
+
+### The run's devices
+
+**A run holds `num_gpus` devices, `0..num_gpus`.** The config's top-level
+`num_gpus` (`fb_pipeline_config::Config::num_gpus`, default 1) is how many
+devices the process holds for the run, devices `0` to `num_gpus - 1` in
+that order, its device list. 0 is refused as the file is read, before any
+device is touched, and a count above the devices the runtime sees is
+refused, naming both numbers, before the plan is made; at 1 the runtime
+is not asked, so a config without the key runs as it did before the key
+existed. GPU worker `w` is on the list's device `w`.
+
+**Work does not spread yet.** A count above 1 is accepted and changes
+nothing: the planner places every GPU worker as it does on one device, so
+a plan's workers are where they are at 1, and the instance makes blocks,
+streams and handles for the plan's workers alone (`Instance::instantiate`
+takes the devices its tables need and leaves the rest). A further device
+holds nothing, and a run's plan, its `plan.txt` and `plan.dot`, and its
+products are those of one device. Placing workers over the list is the
+next step, and the worker table's "GPUs on one node" row prices its
+edges.
+
+**One lane is privileged: lane 0 of the worker on the list's first
+device.** Its `DeviceStream` says so (`DeviceStream::is_privileged`), set
+when the `Device` backend makes the run's streams and false on every other
+lane, and on a stream made outside a backend (`DeviceStream::new`), which
+is no run's. It is the lane that will own the run's run-wide work, the
+host I/O and the reductions every device's partials meet in, once work
+spreads; on one device it is the lane every one-lane plan already runs on.
+Nothing reads it yet.
 
 ### Forks inside a task
 

@@ -290,7 +290,9 @@ reason, so no runner, feature or harness is needed to see it:
   `cargo test -p <crate> -- --ignored` a crate's device cases alone.
 - **`#[ignore]` means "needs a device" and nothing else** in this
   workspace, so `--include-ignored` runs exactly the device cases beside the
-  rest. A doc block that is not a test is fenced `text`, not `ignore`, and a
+  rest. A case that needs a second device says
+  `#[ignore = "tier 5: needs two GPUs"]` instead, and its name starts
+  `tier5_`, the name the gates skip it by (below). A doc block that is not a test is fenced `text`, not `ignore`, and a
   slow case uses the switch of "Slow cases", below.
 - **The gate decides whether a device is there, not each case.** Tier 4
   (`devtools/test.py push` and `pr`) builds the libraries
@@ -331,8 +333,16 @@ rustdoc's lints (a broken intra-doc link) on a crate that links, since the
 tiers-1-to-3 `cargo doc` documents only the link-free members; a failure is
 a `tier 4 rustdoc: FAILED` line and runs no test either.
 
-Tier 5 needs a second device, which no case asks for yet; when one does,
-the same rule extends with a reason of its own and a count in the probe.
+**Tier 5 needs a second device, and extends the same rule.** Its case
+says `#[ignore = "tier 5: needs two GPUs"]` on a function named
+`tier5_...`, and `fb-doc-check` holds the pair both ways. The probe's count
+decides it: with two devices or more, `--include-ignored` runs it beside
+the device cases; with one, tier 4 adds `--skip tier5_`, and a second,
+build-free `cargo test -- --list --ignored tier5_` names the cases that
+filter left out, each listed in the skip list as `tier 5: needs two GPUs,
+one visible`; with none, it is ignored with its reason like every device
+case. So a one-card machine skips it visibly and never fails it. The
+weekly tier-5 run on a multi-GPU VM is not built ("What runs when").
 
 ## Slow cases
 

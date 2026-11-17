@@ -11,6 +11,7 @@
 //! | `:graph_exec`, `GraphExecWrapper` | [`GraphExec`] |
 //! | `:device_handle`, `kit::DeviceHandle` | nothing: see below |
 //! | `StreamView`, `EventView`, `GraphExecView` | the handle views [`view()`](super::handle::DeviceBoundHandle::view) returns |
+//! | `wwrGetDeviceCount` | [`device_count`] |
 //! | free_breakfast's `Device::stack_growth` (`src/core/wwr/device.cppm`) | [`stack_growth`], measured rather than computed |
 //!
 //! Each wrapper is a newtype over the handle it is built on, and derefs to
@@ -130,6 +131,22 @@ pub fn stack_growth(dev_idx: i32, per_thread: usize) -> Result<usize> {
     let status = unsafe { wwr_sys::wwr_device_set_limit(stack, limit) };
     gpu_status_at(status, location)?;
     Ok(before.saturating_sub(after?))
+}
+
+/// How many devices the runtime sees from this process, the count the
+/// device indices `0..n` run over: `wwr_get_device_count`.
+///
+/// # Errors
+/// The runtime's failure, among them the no-device status a machine with
+/// no card, or no driver, returns.
+#[track_caller]
+pub fn device_count() -> Result<usize> {
+    let mut count = 0;
+    // SAFETY: a plain runtime call writing one local.
+    let status = unsafe { wwr_sys::wwr_get_device_count(&mut count) };
+    gpu_status_at(status, std::panic::Location::caller())?;
+    // A count the runtime gives is never negative; one would read as none.
+    Ok(usize::try_from(count).unwrap_or(0))
 }
 
 /// The first failure of a destroy that is two runtime calls, both made:
@@ -286,6 +303,19 @@ pub mod tests {
             wwr_sys::wwr_device_get_limit(&mut limit, wwr_sys::wwr_limit::WWR_LIMIT_STACK_SIZE)
         });
         limit
+    }
+
+    /// The runtime counts device 0, which every device case uses, and no
+    /// index at or past the count can be made current. Needs a GPU.
+    #[cfg(test)]
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn the_device_count_covers_device_0_and_ends_there() {
+        let n = super::device_count().unwrap();
+        assert!(n >= 1, "{n} devices");
+        let past = i32::try_from(n).unwrap();
+        assert!(crate::common::ScopedDeviceIndex::try_new(past).is_err());
+        assert!(crate::common::ScopedDeviceIndex::try_new(past - 1).is_ok());
     }
 
     /// The stack term for the C++ tree's largest per-thread stack, 16,912

@@ -98,7 +98,10 @@ over the same crates, one test thread. A device case is declared on the
 case, `#[ignore = "tier 4: needs a GPU"]`, so a plain `cargo test` lists it
 as ignored with that reason. The gate asks wwr (`wwr_get_device_count`, in a
 child, under the lock) whether it sees a device, passes `--include-ignored`
-only if it does, and after the counts prints one list, `tier 4 skipped N
+only if it does; a case that needs a second device, `#[ignore = "tier 5:
+needs two GPUs"]` on a `tier5_` function, runs only if it sees two, and with
+one is skipped by that name (`--skip tier5_`) and listed by a second,
+build-free `--list` call. After the counts it prints one list, `tier 4 skipped N
 case(s) (<why>)`, every case that did not run with its binary and reason, or
 `tier 4 skipped: none`. No device visible is a skip, exit 0, as
 `FBF_REQUIRE_GPU()` is; a failing case fails the gate. Where cmake is absent,

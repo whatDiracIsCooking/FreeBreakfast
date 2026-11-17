@@ -2,8 +2,10 @@
 //! holds, each failing with the file and line of every departure:
 //!
 //! - **`#[ignore]` is a device case's, and says so**: every `ignore` in an
-//!   attribute is `ignore = "tier 4: needs a GPU"` (`docs/testing.md`,
-//!   "Selecting GPU tiers in cargo").
+//!   attribute is `ignore = "tier 4: needs a GPU"`, or `ignore = "tier 5:
+//!   needs two GPUs"` on a case whose name starts `tier5_`, and a case so
+//!   named carries that reason (`docs/testing.md`, "Selecting GPU tiers in
+//!   cargo").
 //! - **No Markdown beside a module**: the only `.md` under `rust/` are the
 //!   workspace's `README.md` and `CLAUDE.md`, the design documents under
 //!   `docs/`, a crate's front page that its `src/lib.rs` includes, and a
@@ -49,8 +51,13 @@ use fb_doc_check::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// The one reason an `#[ignore]` may give.
+/// The reason a device case's `#[ignore]` gives.
 const DEVICE_REASON: &str = "tier 4: needs a GPU";
+/// The reason a case that needs a second device gives, on a function whose
+/// name starts [`TWO_DEVICE_PREFIX`], which the gates skip by.
+const TWO_DEVICE_REASON: &str = "tier 5: needs two GPUs";
+/// The name a tier-5 case starts with, and no other function.
+const TWO_DEVICE_PREFIX: &str = "tier5_";
 /// The contract attributes compiled out of a release build.
 const DEBUG_CONTRACTS: [&str; 3] = ["debug_requires", "debug_ensures", "debug_invariant"];
 /// The contract attributes checked in every build.
@@ -98,11 +105,24 @@ fn debug_only(source: &str, a: &Attr) -> bool {
 
 // ---------------------------------------------------------------- ignore
 
-/// Every `ignore` in an attribute of one file that is not
-/// `ignore = "tier 4: needs a GPU"`, `cfg_attr` included.
+/// The name of the first function declared at or after `from` in `code`,
+/// or "" if none is.
+fn next_fn(code: &str, from: usize) -> &str {
+    words(&code[from..])
+        .windows(2)
+        .find(|w| w[0].1 == "fn")
+        .map_or("", |w| w[1].1)
+}
+
+/// Every `ignore` in an attribute of one file that is neither
+/// `ignore = "tier 4: needs a GPU"` nor `ignore = "tier 5: needs two
+/// GPUs"` on a `tier5_` function, `cfg_attr` included; and every
+/// `tier5_` function without the tier-5 reason.
 fn bad_ignores(path: &str, source: &str) -> Vec<String> {
     let code = code_only(source);
+    let squeeze = |r: &str| format!("=\"{}\"", r.replace(' ', ""));
     let mut failures = Vec::new();
+    let mut tier5 = Vec::new();
     for a in attributes(&code) {
         for (at, w) in words(&code[a.start..a.end]) {
             if w != "ignore" {
@@ -112,14 +132,32 @@ fn bad_ignores(path: &str, source: &str) -> Vec<String> {
                 .chars()
                 .filter(|c| !c.is_whitespace())
                 .collect();
-            let reason = format!("=\"{}\"", DEVICE_REASON.replace(' ', ""));
-            if !after.starts_with(&reason) {
+            let line = line_of(source, a.start + at);
+            if after.starts_with(&squeeze(TWO_DEVICE_REASON)) {
+                let name = next_fn(&code, a.end);
+                tier5.push(name);
+                if !name.starts_with(TWO_DEVICE_PREFIX) {
+                    failures.push(format!(
+                        "{path}:{line}: `{TWO_DEVICE_REASON}` on `{name}`, whose name does \
+                         not start `{TWO_DEVICE_PREFIX}`: the gates skip a tier-5 case by it"
+                    ));
+                }
+            } else if !after.starts_with(&squeeze(DEVICE_REASON)) {
                 failures.push(format!(
-                    "{path}:{}: an ignore without the reason `{DEVICE_REASON}`; \
-                     #[ignore] means a device case and nothing else",
-                    line_of(source, a.start + at)
+                    "{path}:{line}: an ignore without the reason `{DEVICE_REASON}` or \
+                     `{TWO_DEVICE_REASON}`; #[ignore] means a device case and nothing else"
                 ));
             }
+        }
+    }
+    for w in words(&code).windows(2) {
+        let (at, name) = w[1];
+        if w[0].1 == "fn" && name.starts_with(TWO_DEVICE_PREFIX) && !tier5.contains(&name) {
+            failures.push(format!(
+                "{path}:{}: `{name}` starts `{TWO_DEVICE_PREFIX}` without the reason \
+                 `{TWO_DEVICE_REASON}`: the gates would skip it on one device",
+                line_of(source, at)
+            ));
         }
     }
     failures
@@ -144,8 +182,19 @@ fn every_ignore_is_a_device_case() {
 #[test]
 fn an_ignore_needs_the_device_reason() {
     let good = "#[test]\n#[ignore = \"tier 4: needs a GPU\"]\nfn f() {}\n\
-                #[cfg_attr(not(x), ignore = \"tier 4:  needs a GPU\")]\nfn g() {}\n";
+                #[cfg_attr(not(x), ignore = \"tier 4:  needs a GPU\")]\nfn g() {}\n\
+                #[test]\n#[ignore = \"tier 5: needs two GPUs\"]\nfn tier5_h() {}\n";
     assert_eq!(bad_ignores("a.rs", good), Vec::<String>::new());
+    // The tier-5 reason on a case not named for it, and the name without
+    // the reason.
+    let bad = "#[ignore = \"tier 5: needs two GPUs\"]\nfn f() {}\n\
+               #[ignore = \"tier 4: needs a GPU\"]\nfn tier5_g() {}\n";
+    let f = bad_ignores("a.rs", bad);
+    assert_eq!(f.len(), 2, "{f:#?}");
+    assert!(
+        f[0].starts_with("a.rs:1:") && f[1].starts_with("a.rs:4:"),
+        "{f:#?}"
+    );
     let bad = "#[ignore]\nfn f() {}\n#[ignore = \"slow\"]\nfn g() {}\n\
                #[cfg_attr(x, ignore)]\nfn h() {}\n";
     let f = bad_ignores("a.rs", bad);

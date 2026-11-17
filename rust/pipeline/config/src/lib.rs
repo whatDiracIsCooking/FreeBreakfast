@@ -5,8 +5,8 @@
 //! when the calculation diagonalizes), makes the output directory and
 //! writes the plan into it, `plan.txt` its text and `plan.dot` its
 //! [`Graph`](fb_core_planner::Graph), admits every worker's tables against
-//! the `[memory]` caps ([`admit_plan`]), runs the plan once on device 0,
-//! and writes `timing.json`, the run's
+//! the `[memory]` caps ([`admit_plan`]), runs the plan once on the run's
+//! devices ([`Config::num_gpus`]), and writes `timing.json`, the run's
 //! [`Record`](fb_core_thread_pool::Record), and `timing.dot`, the graph
 //! with the run's times on it, beside the products. Its `main`
 //! is the one place an error is logged, exiting with
@@ -79,6 +79,19 @@
 //! host's available memory, so a plan that does not fit is refused naming
 //! its rows before the first launch (`docs/memory.md`, "Admission").
 //!
+//! **Devices.** `num_gpus` ([`Config::num_gpus`]) is how many devices the
+//! run holds, devices `0..num_gpus` ([`Config::devices`]), default 1; 0 is
+//! refused as the file is read, and a count above the devices the runtime
+//! sees by the binary before it plans; at 1 the runtime is not asked, so
+//! a run without the key is the run it was before the key existed. The first device's lane 0 is the
+//! run's privileged lane ([`DeviceStream::is_privileged`]). A count above
+//! 1 is accepted but does not yet spread work: the planner places every
+//! GPU worker as it does at 1, on device 0, and the instance makes blocks
+//! and streams for its workers alone, so the further devices hold nothing
+//! and a run's plan, products and record are those of one device.
+//!
+//! [`DeviceStream::is_privileged`]: fb_core_thread_pool::DeviceStream::is_privileged
+//!
 //! **Paths.** The geometry and a basis path are relative to the config
 //! file's directory, which [`read_config`] joins; a compiled-in basis name
 //! is not a path and is never joined ([`fb_io_basis::is_builtin_basis`]).
@@ -115,6 +128,7 @@
 //! | `preflight`'s fold and `check_plan`, the pool capped at the cap less `kDeviceReserve`, the pre-warm against the card | [`admit_plan`]: [`fb_core_arena::admit`] on each table, the device's cap the smaller of the key and the card, less the reserve measured at planning (at least [`DEVICE_RESERVE`]) and the kernels' stack ([`KERNEL_STACK_BYTES`]) |
 //! | `check_pinned_node` against `/proc/meminfo`'s `MemAvailable`, under a pinned cap | the same check in [`admit_plan`], at every cap, the default's included, against [`fb_core_arena::host_available`], `MemAvailable` within the cgroup's limit |
 //! | nothing: host data too large to pin goes to pageable memory, outside every count | `[memory] max_host_mem` ([`MemoryCaps::max_host_mem`]): the plan's heap block, admitted against it, and with the pinned blocks against the host's available memory ([`fb_core_arena::admit_host`]) |
+//! | `NodeResourcesConfig::devices`, every visible device when unset; the pipeline's device steps on `node.device(0)` | [`Config::num_gpus`], devices `0..num_gpus`, default 1, a count past the visible devices refused; every GPU worker on device 0 |
 //! | `-o <output_dir>`, default `fbf_output` | [`Config::output`], the same default |
 //! | `-i <input_dir>` | nothing: paths are relative to the config file |
 //! | `main`, `print_products` | `src/main.rs`: the error logged once, the exit code, `plan.txt`, `plan.dot`, `timing.json`, `timing.dot` |
