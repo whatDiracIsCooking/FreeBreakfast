@@ -40,6 +40,16 @@
 # The host's git user.name/user.email always go in this way too, as
 # GIT_AUTHOR_*/GIT_COMMITTER_*, so commits made inside are attributed.
 #
+# EVERY NVIDIA CARD IS PINNED on `up` and `rebuild`: one --device=/dev/nvidiaN
+# per card node this host has, added through a generated --override-config
+# (nvidia_pin_override_args), so a 4-GPU box pins four cards with no edit to
+# the tracked json. A host with no NVIDIA card, and the hip variant, get none.
+#
+# DEVCONTAINER_DRY_RUN=1 prints the CLI command `up` or `rebuild` would run
+# (secrets redacted), and the runArgs it would pass, and runs nothing:
+#
+#   DEVCONTAINER_DRY_RUN=1 devtools/devcontainer.sh rebuild
+#
 # The three configs, and what each is:
 #
 #   .devcontainer/cuda/devcontainer.json      CUDA 13 (the default)
@@ -604,6 +614,44 @@ ensure_nvidia_uvm_nodes() {
     echo "devcontainer: WARNING -- nvidia-modprobe could not create /dev/nvidia-uvm" >&2
 }
 
+# Pin every NVIDIA card the host has, not only the /dev/nvidia0 the json names.
+# A card reached through `--gpus all` alone is granted by the nvidia hook at
+# container start, and that grant drops on the next device-cgroup regeneration
+# (the json's comment block has the mechanism; #190, #1702). A --device= path
+# survives it, but the tracked json cannot list four cards: a --device= naming
+# a missing node makes `docker run` fail on a host with fewer.
+#
+# So the cards are added here, at creation time: a copy of the config with one
+# `--device=/dev/nvidiaN` per card node it does not already pass, inserted
+# after its own /dev/nvidia0 line (lib.sh's nvidia_pin_override), handed to
+# the CLI as --override-config. The CLI reads the override IN PLACE of the
+# config but keeps the config's own path for everything else -- relative
+# build paths, `${localWorkspaceFolder}`, and the devcontainer.config_file
+# label that container_ids, `down` and `exec` match on -- so nothing else
+# changes. With
+# nothing to add (one card, no card, the hip variant) no override is passed
+# at all, and the call is exactly what it was before.
+#
+# `up` passes it too, but it only matters when `up` creates the container: a
+# reused one keeps the devices it was made with (doctor.sh names any it lacks).
+PIN_OVERRIDE=
+PIN_OVERRIDE_ARGS=()
+nvidia_pin_override_args() {
+  PIN_OVERRIDE_ARGS=()
+  [ -n "${dc_config_path:-}" ] || return 0
+  local pins=()
+  mapfile -t pins < <(nvidia_pin_args "$dc_config_path")
+  [ "${#pins[@]}" -gt 0 ] || return 0
+  PIN_OVERRIDE=$(mktemp --suffix=.devcontainer.json)
+  trap 'rm -f "$PIN_OVERRIDE"' EXIT
+  if ! nvidia_pin_override "$dc_config_path" "$PIN_OVERRIDE" "${pins[@]}"; then
+    echo "error: cannot add the card pins to $dc_config_path (no --device=/dev/nvidiactl line)" >&2
+    exit 1
+  fi
+  PIN_OVERRIDE_ARGS=(--override-config "$PIN_OVERRIDE")
+  echo "devcontainer: pinning ${pins[*]#--device=} beside the config's own" >&2
+}
+
 # End the `docker run --sig-proxy=false -a STDOUT -a STDERR ...` client the
 # CLI leaves behind after `up`. It is orphaned (PPID 1) once the CLI exits, but
 # it inherited the CLI's stdout -- through run_cli's sed, OUR stdout -- and
@@ -763,10 +811,18 @@ report_agy_pin() {
 # carriage-returned status, and (before `shell` stopped routing through here)
 # the shell prompt itself. GNU sed only; the images and the host are both
 # Ubuntu.
+REDACT='s/(GH_TOKEN|GITHUB_TOKEN|GEMINI_API_KEY|ANTHROPIC_API_KEY_FREE_BREAKFAST)=[A-Za-z0-9_.-]+/\1=***REDACTED***/g'
 run_cli() {
   local rc=0
-  "${CLI[@]}" "$@" > >(sed -u -E 's/(GH_TOKEN|GITHUB_TOKEN|GEMINI_API_KEY|ANTHROPIC_API_KEY_FREE_BREAKFAST)=[A-Za-z0-9_.-]+/\1=***REDACTED***/g') \
-    2> >(sed -u -E 's/(GH_TOKEN|GITHUB_TOKEN|GEMINI_API_KEY|ANTHROPIC_API_KEY_FREE_BREAKFAST)=[A-Za-z0-9_.-]+/\1=***REDACTED***/g' >&2) || rc=$?
+  if [ -n "${DEVCONTAINER_DRY_RUN:-}" ]; then
+    # The command as a shell would need it typed, then the runArgs the CLI
+    # would read: the override's when there is one, the config's otherwise.
+    { printf 'would run:'; printf ' %q' "${CLI[@]}" "$@"; echo; } | sed -E "$REDACT"
+    sed -n '/"runArgs"/,/\]/p' "${PIN_OVERRIDE:-${dc_config_path:-/dev/null}}"
+    return 0
+  fi
+  "${CLI[@]}" "$@" > >(sed -u -E "$REDACT") \
+    2> >(sed -u -E "$REDACT" >&2) || rc=$?
   # Let the redirections drain before the caller reads the next line.
   wait
   return "$rc"
@@ -777,12 +833,14 @@ case "${1:-}" in
     shift
     require_git_dir
     require_cache_dirs
-    ensure_nvidia_uvm_nodes
+    [ -n "${DEVCONTAINER_DRY_RUN:-}" ] || ensure_nvidia_uvm_nodes
     export_host_gids
     host_mount_args
     remote_env_args
+    nvidia_pin_override_args
     run_cli up --workspace-folder "$WORKSPACE" "${DC_CONFIG[@]}" \
-      "${HOST_MOUNT_ARGS[@]}" "${REMOTE_ENV_ARGS[@]}" "$@"
+      "${PIN_OVERRIDE_ARGS[@]}" "${HOST_MOUNT_ARGS[@]}" "${REMOTE_ENV_ARGS[@]}" "$@"
+    [ -z "${DEVCONTAINER_DRY_RUN:-}" ] || exit 0
     release_attach_client
     name_host_gids
     tag_variant_image
@@ -802,13 +860,15 @@ case "${1:-}" in
     shift
     require_git_dir
     require_cache_dirs
-    ensure_nvidia_uvm_nodes
+    [ -n "${DEVCONTAINER_DRY_RUN:-}" ] || ensure_nvidia_uvm_nodes
     export_host_gids
     host_mount_args
     remote_env_args
+    nvidia_pin_override_args
     run_cli up --workspace-folder "$WORKSPACE" \
       --remove-existing-container "${DC_CONFIG[@]}" \
-      "${HOST_MOUNT_ARGS[@]}" "${REMOTE_ENV_ARGS[@]}" "$@"
+      "${PIN_OVERRIDE_ARGS[@]}" "${HOST_MOUNT_ARGS[@]}" "${REMOTE_ENV_ARGS[@]}" "$@"
+    [ -z "${DEVCONTAINER_DRY_RUN:-}" ] || exit 0
     release_attach_client
     # Again on `rebuild`, not only `up`: a fresh container means a fresh
     # /etc/group, so the entry has to be re-added rather than inherited.

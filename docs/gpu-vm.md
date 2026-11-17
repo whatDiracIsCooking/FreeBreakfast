@@ -22,10 +22,13 @@ Do not use these:
 
 - **V100 and RTX 6000 (Turing).** They are below the sm_80 floor, so the tree
   does not configure. `gpu-vm-setup.sh` and `doctor.sh` both refuse them.
-- **Multi-GPU instances.** The devcontainer passes `/dev/nvidia0` alone, and
-  the GPU lock in `devtools/lib.sh` assumes one card per backend. A 2×/4×/8×
-  box would run as a 1× box. The collectives between cards also need a
-  `/dev/shm` larger than docker's 64 MiB, which the devcontainer's
+- **Multi-GPU instances, for the C++ gates.** The devcontainer pins every
+  card (`devtools/devcontainer.sh` adds a `--device=` per card the host has),
+  and the Rust rebuild's `num_gpus` runs use them all. But the GPU lock in
+  `devtools/lib.sh` (`with_gpu_card`, and `devtools/test.py`'s `Card`) holds
+  one whole card per run and admits device 0 of each backend alone, so the
+  C++ gates run a 2×/4×/8× box as a 1× box. The collectives between cards
+  need a `/dev/shm` larger than docker's 64 MiB, which the devcontainer's
   `--shm-size=1g` gives (`rust/README.md`, "Build and test").
 
 Pick an Ubuntu image that ships Docker and the NVIDIA container toolkit

@@ -76,7 +76,12 @@ kernel the *next reboot* will pick, not just the running one. Both drivers here
 are out-of-tree, a failed per-kernel rebuild is silent, and the card is lost at
 the reboot rather than at the upgrade — so a warning there means *do not reboot
 until it is fixed*. It is the host-side half of the GPU plumbing; the
-container-side half is the `--device=` lines in `.devcontainer/*/`.
+container-side half is the `--device=` lines in `.devcontainer/*/`, which
+pin `/dev/nvidia0` there and every further card through
+`devtools/devcontainer.sh` at `up`/`rebuild` (the json cannot list cards a
+host may not have). Doctor's `gpu devices` section names any card a container
+does not pin (on the host, from `docker inspect`) or can no longer open
+(inside it).
 
 Doctor resolves the tools it reports through `VENV_PATHS`, not `PATH` — the
 cmakelang pair lives in `.venv/bin` on the host and `/opt/venv/bin` in the

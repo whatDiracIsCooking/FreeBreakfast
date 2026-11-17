@@ -53,18 +53,20 @@
   // `up`/`rebuild`; the value after the colon is the fallback for opening this
   // config directly, and is host-specific like CUDA_ARCH and GPU_TARGETS
   // above.
-  // The four NVIDIA --device= lines are not redundant beside --gpus all: they
-  // are what stops the CUDA card dropping out of a long-running container on
-  // the next systemd daemon-reload. ../cuda/ has the whole mechanism, and why
-  // these are paths rather than cgroup rules. The AMD half below already had
-  // it, which is why only CUDA ever dropped here.
+  // The NVIDIA --device= lines are not redundant beside --gpus all: they
+  // are what stops a CUDA card dropping out of a long-running container on
+  // the next systemd daemon-reload. ../cuda/ has the whole mechanism, why
+  // these are paths rather than cgroup rules, and why only card 0 is named
+  // here: devtools/devcontainer.sh adds a line for each further card the
+  // host has. The AMD half below already had it, which is why only CUDA ever
+  // dropped here.
   // --shm-size=1g: the collectives library's shared-memory transport between
   // cards with no peer path needs more than docker's 64 MiB /dev/shm. See
   // ../cuda/ for the whole story, and why not --ipc=host.
   "runArgs": [
     "--gpus", "all",
     "--device=/dev/nvidiactl",
-    "--device=/dev/nvidia0",                     // EDIT: one line per card
+    "--device=/dev/nvidia0",                     // cards 1..N: devcontainer.sh
     "--device=/dev/nvidia-uvm",
     "--device=/dev/nvidia-uvm-tools",
     "--device=/dev/kfd",

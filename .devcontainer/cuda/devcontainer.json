@@ -77,6 +77,18 @@
   // not exist makes `docker run` fail outright -- so /dev/nvidia-modeset
   // (display) and /dev/nvidia-caps (MIG) are deliberately absent.
   //
+  // EVERY CARD, not just /dev/nvidia0: a card reached through --gpus all alone
+  // drops on a reapply exactly as above, while the cards it shares the host
+  // with stay -- so on a multi-GPU host it is cards 1..N that vanish (#1702).
+  // This file cannot list them, since it is the same file on a one-card host
+  // and a missing --device= node fails `docker run`. So it pins card 0 alone,
+  // and devtools/devcontainer.sh `up`/`rebuild` adds one
+  // --device=/dev/nvidiaN line per further card the host has, through a
+  // generated --override-config (DEVCONTAINER_DRY_RUN=1 prints the result).
+  // Opening this config directly (VS Code "Reopen in Container", a bare
+  // `devcontainer up`) pins card 0 only. devtools/doctor.sh names any card a
+  // container does not pin (on the host) or can no longer open (inside).
+  //
   // WHY --shm-size=1g: docker gives a container a 64 MiB /dev/shm. NCCL (and
   // RCCL) move a collective between two cards with no peer path they will
   // take -- as two NVLink pairs that reach each other only through a
@@ -90,7 +102,7 @@
   "runArgs": [
     "--gpus", "all",
     "--device=/dev/nvidiactl",
-    "--device=/dev/nvidia0",                     // EDIT: one line per card
+    "--device=/dev/nvidia0",                     // cards 1..N: devcontainer.sh
     "--device=/dev/nvidia-uvm",
     "--device=/dev/nvidia-uvm-tools",
     "--shm-size=1g"
