@@ -42,6 +42,20 @@
 //! plan's table at planning: a pair of sets that does not fit is refused by
 //! admission ([`fb_core_arena::admit`]), with the rows at the peak named.
 //!
+//! [`add_packed_three_center`] is the same integrals over a batch of a
+//! packed shell-pair map's kept pairs ([`PairMap`]), the body a build of
+//! a packed B wraps: the packed launches of
+//! [`add_packed_three_center_tasks`], each pair's `(m, n)` stored once
+//! and so no average, then the per-class spherical transform of
+//! [`add_spherical_transform`]. Its output, `naux` × the batch's
+//! spherical columns with the aux index fastest, is what the fit's left
+//! solve against L takes (`fb_integrals_eri_density_fitting_fit`'s
+//! `add_batch_fit`). B's heap row is pair-fastest (the pair map's crate
+//! doc), so the batch's element `(Q, c)` lands at `first + c +
+//! n_columns · Q` there, `first` the batch's first spherical column: the
+//! copy into the heap row is a transpose, the build loop's to make. There
+//! is no C++ counterpart.
+//!
 //! | C++ | Here |
 //! |---|---|
 //! | `three_center(res, basis, classes, aux, b, max_bytes)`, into the caller's `b` | [`add_three_center`]`(dag, worker, basis, classes, aux, u, u_aux)`, returning (mn\|P)'s row; the slots of U and U_aux passed in, as every transform takes them |
@@ -58,15 +72,19 @@
 
 #![forbid(unsafe_code)]
 
+use std::ops::Range;
+
 use contracts::debug_requires;
 use fb_basis::BasisSet;
 use fb_core_arena::{Device, RowId};
 use fb_core_error_handling::{Error, Result};
 use fb_core_planner::Dag;
+use fb_integrals_eri_density_fitting_pair_map::PairMap;
+use fb_integrals_eri_density_fitting_transform::add_spherical_transform;
 use fb_integrals_mmd::record_tables;
 use fb_integrals_sys::{
     AuxTable, ClassRows, FB_THREE_CENTER_AUX_MAX_MOMENTUM, FB_THREE_CENTER_MAX_MOMENTUM,
-    add_three_center_tasks,
+    add_packed_three_center_tasks, add_three_center_tasks,
 };
 use fb_recipes_matrix_ao::add_harmonics;
 
@@ -120,6 +138,118 @@ pub fn add_three_center(
     u: &mut Option<RowId<Device, f64>>,
     u_aux: &mut Option<RowId<Device, f64>>,
 ) -> Result<RowId<Device, f64>> {
+    let table = checked_aux_table("add_three_center", basis, aux)?;
+    let (n, n_aux) = (basis.nao_cart() as usize, aux.nao_cart() as usize);
+    if i32::try_from(n * n * n_aux).is_err() {
+        return Err(Error::unsupported(format!(
+            "add_three_center: the Cartesian tensor, {n} x {n} x {n_aux} elements ({} bytes), is \
+             past the kernels' 32-bit index",
+            8 * n * n * n_aux
+        )));
+    }
+    let tables = record_tables(basis);
+    let u = [
+        add_harmonics(dag, worker, basis, u),
+        add_harmonics(dag, worker, aux, u_aux),
+    ];
+    let n_sph = [basis.nao_sphe() as usize, aux.nao_sphe() as usize];
+    Ok(add_three_center_tasks(
+        dag, worker, classes, &tables, &table, u, n_sph,
+    ))
+}
+
+/// Add the spherical three-center integrals of the kept shell pairs
+/// `pairs` of `map`, a batch, to `dag` on GPU worker `worker`, and return
+/// them, packed: an output row of `naux · s` doubles, `s` the batch's
+/// spherical columns ([`PairMap::sphe`]), element `(Q, c)` at
+/// `Q + naux · c`, the aux index fastest and `c` relative to the batch's
+/// first spherical column. Each pair's block is its `(m, n)` alone, once,
+/// with no average: a diagonal pair's full square, any other pair's `m`
+/// on its bra shell.
+///
+/// `basis`, `classes`, `aux`, `u` and `u_aux` are as for
+/// [`add_three_center`]; `map` is the packed shell-pair map of `basis`,
+/// built from its [`record_tables`]. The tasks are `harmonics` and
+/// `upload U` for each slot still `None` ([`add_harmonics`]), then those
+/// of [`add_packed_three_center_tasks`] (`packed three-center tables`,
+/// CPU, and `packed three-center`, stream: the batch's Cartesian columns,
+/// aux fastest), then [`add_spherical_transform`]'s (`spherical
+/// transform`, stream), whose output this is. The Cartesian batch is the
+/// transform's input row, and ends there.
+///
+/// The batch is fixed at planning: a build of B over several batches
+/// adds these tasks once per batch, each its own rows, and U's slots make
+/// U copied up once for all of them.
+///
+/// First, before anything is added, the kernel library's load check and
+/// what the kernels can take, as for [`add_three_center`].
+///
+/// # Errors
+/// As [`add_three_center`], the count named being the batch's Cartesian
+/// columns times the aux basis's Cartesian functions, which bounds every
+/// count [`add_spherical_transform`] refuses too. Nothing is added to
+/// `dag` on an error.
+///
+/// # Panics
+/// If `classes`, or a row `u` or `u_aux` holds, are rows of another
+/// worker's or another plan's table ([`Dag::add_gpu`]), or, in every
+/// build, if `classes` are not the records of `basis`
+/// ([`add_packed_three_center_tasks`]' contract against its tables).
+#[debug_requires(basis.nshells() > 0, "an orbital basis of at least one shell")]
+#[debug_requires(aux.nshells() > 0, "an aux basis of at least one shell")]
+#[debug_requires(
+    map.cart().nao() == basis.nao_cart() as usize,
+    "map is a map of basis's pairs"
+)]
+#[debug_requires(pairs.start < pairs.end, "a batch of at least one kept pair")]
+#[debug_requires(pairs.end <= map.pairs().len(), "the batch is of map's kept pairs")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "add_three_center's, with the map and the batch's range of its pairs"
+)]
+#[track_caller]
+pub fn add_packed_three_center(
+    dag: &mut Dag<'_>,
+    worker: usize,
+    basis: &BasisSet,
+    classes: &[ClassRows],
+    aux: &BasisSet,
+    map: &PairMap,
+    pairs: Range<usize>,
+    u: &mut Option<RowId<Device, f64>>,
+    u_aux: &mut Option<RowId<Device, f64>>,
+) -> Result<RowId<Device, f64>> {
+    let table = checked_aux_table("add_packed_three_center", basis, aux)?;
+    let blocks = map.cart().blocks();
+    let n_col = blocks[pairs.end - 1].end() - blocks[pairs.start].column;
+    let n_aux = aux.nao_cart() as usize;
+    if i32::try_from(n_col * n_aux).is_err() {
+        return Err(Error::unsupported(format!(
+            "add_packed_three_center: the Cartesian batch, {n_col} columns x {n_aux} elements ({} \
+             bytes), is past the kernels' 32-bit index",
+            8 * n_col * n_aux
+        )));
+    }
+    let n_aux = [n_aux, aux.nao_sphe() as usize];
+    let tables = record_tables(basis);
+    let kept: Vec<usize> = map.pairs()[pairs.clone()].iter().map(|k| k.pair).collect();
+    let u = [
+        add_harmonics(dag, worker, basis, u),
+        add_harmonics(dag, worker, aux, u_aux),
+    ];
+    let cartesian = add_packed_three_center_tasks(dag, worker, classes, &tables, &table, &kept);
+    // Never an error past the refusal above, so nothing is added and then
+    // refused: each of the transform's counts is at most `n_col · n_aux`
+    // (`n_aux_cart`; `n_aux · n_b_sph` and a class's `pairs · n_a`, since
+    // a block's `n_a · n_b` columns are at least `n_b` and `n_a`).
+    add_spherical_transform(dag, worker, map, pairs, n_aux, cartesian, u)
+}
+
+/// The kernel library's load check, then each shell of `basis` and `aux`
+/// within the kernels' momenta, `who` naming the caller in the error; and
+/// the aux table of `aux`.
+#[track_caller]
+fn checked_aux_table(who: &str, basis: &BasisSet, aux: &BasisSet) -> Result<AuxTable> {
     // Not `map_err(Error::gpu)`: through a function pointer the error's
     // origin would be core's, not this call's caller.
     if let Err(e) = fb_integrals_sys::check_library() {
@@ -134,22 +264,13 @@ pub fn add_three_center(
             .find(|(_, shell)| shell.angular_momentum() > max)
         {
             return Err(Error::unsupported(format!(
-                "add_three_center: {which} shell {s} has momentum {}, but the three-center \
-                 kernels cover {which} shells through l = {max}",
+                "{who}: {which} shell {s} has momentum {}, but the three-center kernels cover \
+                 {which} shells through l = {max}",
                 shell.angular_momentum()
             )));
         }
     }
-    let (n, n_aux) = (basis.nao_cart() as usize, aux.nao_cart() as usize);
-    if i32::try_from(n * n * n_aux).is_err() {
-        return Err(Error::unsupported(format!(
-            "add_three_center: the Cartesian tensor, {n} x {n} x {n_aux} elements ({} bytes), is \
-             past the kernels' 32-bit index",
-            8 * n * n * n_aux
-        )));
-    }
-
-    let mut table = AuxTable::new(n_aux);
+    let mut table = AuxTable::new(aux.nao_cart() as usize);
     for (s, shell) in (0..).zip(aux.shells()) {
         let c = shell.center();
         table.push_shell(
@@ -162,13 +283,5 @@ pub fn add_three_center(
                 .map(|p| (p.exponent, p.coefficient)),
         );
     }
-    let tables = record_tables(basis);
-    let u = [
-        add_harmonics(dag, worker, basis, u),
-        add_harmonics(dag, worker, aux, u_aux),
-    ];
-    let n_sph = [basis.nao_sphe() as usize, aux.nao_sphe() as usize];
-    Ok(add_three_center_tasks(
-        dag, worker, classes, &tables, &table, u, n_sph,
-    ))
+    Ok(table)
 }

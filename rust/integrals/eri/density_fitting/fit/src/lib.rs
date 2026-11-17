@@ -22,6 +22,13 @@
 //!   when the check passed: on a failed factorization it, and every reader
 //!   of B, is skipped.
 //!
+//! [`add_batch_fit`] is that last task alone, over any `columns` columns
+//! of a tensor against an L [`add_cholesky`] made once: the fit of a
+//! packed batch of shell pairs, whose columns are solved apart from every
+//! other batch's, so a B built batch by batch is the one-batch B column
+//! for column. [`add_density_fit`] is [`add_cholesky`], then it over the
+//! square tensor's `nao²` columns.
+//!
 //! **The layout** is the C++ one. The tensor and B are `naux` × `nao²`,
 //! column-major at leading dimension `naux`: element `(P, n + nao m)` at
 //! `P + naux (n + nao m)`, so P is fastest, then n, then m. B's `[Q][n][m]`
@@ -99,28 +106,70 @@ pub fn add_density_fit(
     metric: RowId<Device, f64>,
     tensor: RowId<Device, f64>,
 ) -> Result<(RowId<Device, f64>, RowId<Device, f64>)> {
-    let (l, checked) = add_cholesky(dag, worker, "L", naux, metric)?;
-    let b = dag.add_gpu(
+    let factor = add_cholesky(dag, worker, "L", naux, metric)?;
+    Ok((
+        add_batch_fit(dag, worker, naux, nao * nao, factor, tensor),
+        factor.0,
+    ))
+}
+
+/// Add the fit of `columns` columns of a three-center tensor, `tensor`,
+/// against a metric's factor L, to `dag` on GPU worker `worker`, and
+/// return B = L⁻¹ `tensor`: an output row of `naux · columns` doubles
+/// named `"B"`, in the tensor's layout.
+///
+/// `tensor` is an earlier task's output of `naux · columns` doubles,
+/// column-major at leading dimension `naux`, element `(P, c)` at
+/// `P + naux · c`, left as it was: a packed batch of shell pairs'
+/// spherical columns
+/// (`fb_integrals_eri_density_fitting_three_center::add_packed_three_center`'s),
+/// or the square tensor's `nao²` ([`add_density_fit`]'s). Each column is
+/// solved alone, so a batch's B is its columns of the whole tensor's. B
+/// keeps the aux index fastest; a packed B's heap row is pair-fastest
+/// (`fb_integrals_eri_density_fitting_pair_map`'s crate doc), so a
+/// batch's `(Q, c)` goes to `first + c + n_columns · Q` there, `first` the
+/// batch's first column: that copy is a transpose, the build loop's.
+/// `factor` is [`add_cholesky`]'s `(L, checked)` over the `naux` × `naux`
+/// metric, added once for every batch fitted against it. The task added
+/// is `density fit` (stream), which reads `tensor`, L and `checked`, so it
+/// runs after the check and only when the check passed.
+///
+/// # Panics
+/// If a row is of another worker's table ([`Dag::add_gpu`]).
+#[debug_requires(naux > 0, "a fitting set of at least one function")]
+#[debug_requires(columns > 0, "a batch of at least one column")]
+#[requires(fits_i32!(naux), "naux fits the BLAS's i32")]
+#[requires(fits_i32!(columns), "columns fits the BLAS's i32")]
+#[track_caller]
+pub fn add_batch_fit(
+    dag: &mut Dag<'_>,
+    worker: usize,
+    naux: usize,
+    columns: usize,
+    factor: (RowId<Device, f64>, RowId<Pinned, i32>),
+    tensor: RowId<Device, f64>,
+) -> RowId<Device, f64> {
+    let (l, checked) = factor;
+    dag.add_gpu(
         "density fit",
         worker,
         Fit {
             tensor,
             l,
             checked,
-            nao,
+            columns,
             naux,
         },
-    );
-    Ok((b, l))
+    )
 }
 
-/// GPU: (P|mn) copied into B, then `B ← L⁻¹ B`.
+/// GPU: the tensor copied into B, then `B ← L⁻¹ B`.
 struct Fit {
     tensor: RowId<Device, f64>,
     l: RowId<Device, f64>,
     /// Read only to order the task after a check that passed.
     checked: RowId<Pinned, i32>,
-    nao: usize,
+    columns: usize,
     naux: usize,
 }
 
@@ -131,11 +180,11 @@ impl GpuTask for Fit {
         device.read(self.tensor);
         device.read(self.l);
         host.read(self.checked);
-        device.output("B", self.naux * self.nao * self.nao)
+        device.output("B", self.naux * self.columns)
     }
 
     fn dims(&self) -> Vec<(&'static str, usize)> {
-        vec![("nao", self.nao), ("naux", self.naux)]
+        vec![("columns", self.columns), ("naux", self.naux)]
     }
 
     fn run(
@@ -147,9 +196,9 @@ impl GpuTask for Fit {
     ) -> Status {
         let mut b = device.take_mut(*b);
         memcpy_d2d(&b, device.get(self.tensor), worker)?;
-        // add_density_fit checked that naux and nao² fit an i32; the handle
+        // add_batch_fit checked that naux and columns fit an i32; the handle
         // is the worker's, bound to its stream, so the solve follows the copy.
-        let (naux, pairs) = (self.naux as i32, (self.nao * self.nao) as i32);
+        let (naux, columns) = (self.naux as i32, self.columns as i32);
         trsm(
             worker.blas(),
             wwr_blas_side_mode::WWR_BLAS_SIDE_LEFT,
@@ -157,7 +206,7 @@ impl GpuTask for Fit {
             wwr_blas_operation::WWR_BLAS_OP_N,
             wwr_blas_diag_type::WWR_BLAS_DIAG_NON_UNIT,
             naux,
-            pairs,
+            columns,
             1.0,
             &device.get(self.l),
             naux,

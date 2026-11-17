@@ -5,13 +5,15 @@
 //! worker's device and pinned table among it, is the committed golden
 //! `tests/golden/plan_naux41_nao5.txt`, `FB_BLESS=1` rewriting it
 //! (`docs/testing.md`, "Performance"). Planning touches no device; it does
-//! load `libfb_recipes_kernels.so`, whose load check planning runs.
+//! load `libfb_recipes_kernels.so`, whose load check planning runs. And
+//! [`add_batch_fit`]'s plan over two batches against one factor.
 
 use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
-use fb_integrals_eri_density_fitting_fit::add_density_fit;
+use fb_integrals_eri_density_fitting_fit::{add_batch_fit, add_density_fit};
+use fb_recipes_cholesky::add_cholesky;
 use fb_test_support::golden;
 
 /// The fitting set's size.
@@ -97,4 +99,49 @@ fn an_empty_orbital_basis_is_refused() {
     let mut dag = Dag::new();
     let (metric, tensor) = inputs(&mut dag);
     let _ = add_density_fit(&mut dag, 0, 0, NAUX, metric, tensor);
+}
+
+/// Two batches fitted against one factor: one `cholesky` and one check,
+/// then a `density fit` per batch, each after its own tensor's producer,
+/// `cholesky` and the check, its B `naux` × the batch's columns. Catches a
+/// batch fit that refactors the metric or runs before the check.
+#[test]
+fn batches_share_one_factor() {
+    let mut dag = Dag::new();
+    let metric = dag.add_gpu(
+        "metric",
+        0,
+        Input {
+            name: "M",
+            len: NAUX * NAUX,
+        },
+    );
+    let factor = add_cholesky(&mut dag, 0, "L", NAUX, metric).unwrap();
+    let mut bs = Vec::new();
+    for (name, columns) in [("first batch", 7), ("second batch", 3)] {
+        let tensor = dag.add_gpu(
+            "three center",
+            0,
+            Input {
+                name,
+                len: NAUX * columns,
+            },
+        );
+        bs.push((
+            add_batch_fit(&mut dag, 0, NAUX, columns, factor, tensor),
+            columns,
+        ));
+    }
+    let planned = dag.plan();
+    assert_eq!(planned.len(), 7, "{planned}");
+    // metric 0, cholesky 1, check 2, then a tensor and its fit per batch.
+    for (fit, tensor) in [(4, 3), (6, 5)] {
+        let after = planned.predecessors(fit);
+        for t in [1, 2, tensor] {
+            assert!(after.contains(&t), "fit {fit} after {t}: {planned}");
+        }
+    }
+    for (b, columns) in bs {
+        assert_eq!(planned.device_table(0).len(b), NAUX * columns);
+    }
 }
