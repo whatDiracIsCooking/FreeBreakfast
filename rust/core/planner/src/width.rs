@@ -188,9 +188,15 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
     /// the schedule leaves there, per kind: the worker's room less the
     /// bytes its table of that kind holds live at the position with the
     /// part at width 1 ([`Table::live_at`](fb_core_arena::Table::live_at),
-    /// a loop's region whole), less the part's own at width 1
+    /// a loop's region whole), less the part's own at width 1: the region
+    /// of a loop whose body starts at the position, as the table lays it
+    /// out ([`Table::region_from`](fb_core_arena::Table::region_from)), a
+    /// counted loop over the part's batches, else what the part declares
     /// ([`bytes(1)`](Adaptive::bytes) on the device,
-    /// [`pinned_bytes(1)`](Adaptive::pinned_bytes) pinned). Planned by
+    /// [`pinned_bytes(1)`](Adaptive::pinned_bytes) pinned). So a part whose
+    /// bytes bound its loop's region from above, its rows' sum where the
+    /// assigner reuses some, is measured against the bytes really live
+    /// beside it, and its width fits. Planned by
     /// [`Dag::plan`] alone, with no room, it is its
     /// [`width_max`](Adaptive::width_max).
     pub fn width(&mut self, name: &str, worker: usize, part: &impl Adaptive) -> usize {
@@ -312,15 +318,21 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
                 None => *asked[worker].insert(rooms(worker)?),
             };
             let planned = dag.lay_out();
-            let device = planned.device_table(worker).live_at(position);
-            let pinned = planned.host_table(worker).live_at(position);
+            // The part's own at width 1: the region of a loop its tasks
+            // start at the position, as laid out, else what it declares.
+            let (device_table, host_table) =
+                (planned.device_table(worker), planned.host_table(worker));
+            let device_own = device_table.region_from(position).unwrap_or(device_least);
+            let pinned_own = host_table.region_from(position).unwrap_or(pinned_least);
+            let device = device_table.live_at(position);
+            let pinned = host_table.live_at(position);
             let left = Room {
                 device: room
                     .device
-                    .saturating_sub(device.saturating_sub(device_least)),
+                    .saturating_sub(device.saturating_sub(device_own)),
                 pinned: room
                     .pinned
-                    .saturating_sub(pinned.saturating_sub(pinned_least)),
+                    .saturating_sub(pinned.saturating_sub(pinned_own)),
             };
             (widths, next) = (chosen, Some(left));
         }

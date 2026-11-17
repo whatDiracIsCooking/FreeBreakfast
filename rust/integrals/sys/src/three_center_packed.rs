@@ -5,8 +5,9 @@
 //!
 //! The tasks, added in this order:
 //!
-//! - **`packed three-center tables`**, on the CPU: the aux records and the
-//!   cells, both formed at planning, written into two pinned rows.
+//! - **`packed three-center tables`**, on the CPU: the aux records, formed
+//!   at planning, and the cells of its trip's batch, written from the
+//!   staging into two pinned rows.
 //! - **`packed three-center`**, on the worker's stream: both rows uploaded
 //!   into scratch, then one [`fb_three_center_packed_class`] launch per
 //!   class `(la, lb, lP)` with a cell, each class's bra fields read in
@@ -18,9 +19,11 @@
 //! destination in place of the three AO offsets, the pair's first column
 //! times the aux count plus the aux shell's offset, and whether the pair is
 //! a shell's with itself, whose block is then stored whole. Every
-//! destination is formed here, at planning, from the batch's own columns,
-//! so each block lies inside the output by construction.
+//! destination is formed from the first batch's columns, at planning,
+//! which every batch shares, its pairs of the first's classes pair for
+//! pair, so each block lies inside the output by construction.
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use contracts::{debug_ensures, requires};
@@ -52,10 +55,12 @@ struct CellClass {
     n_cell: usize,
 }
 
-/// What the tasks need, formed at planning.
+/// What the tasks need, formed at planning: a trip's shape, the same in
+/// every trip, and every trip's pairs' own fields, from which the tables
+/// task writes its trip's cells.
 #[derive(Debug)]
 struct Staging {
-    /// The batch's columns.
+    /// A trip's columns.
     n_col: usize,
     /// The aux basis's Cartesian functions: each column's length.
     n_aux: usize,
@@ -66,8 +71,55 @@ struct Staging {
     n_aux_rec: usize,
     /// The cell classes, in launch order.
     cells: Vec<CellClass>,
-    /// Every cell, field-major per cell class: the cells row.
-    cell_fields: Vec<i32>,
+    /// Per cell class, its pairs' places in a trip.
+    cell_pairs: Vec<Range<usize>>,
+    /// The cells of a trip, every class's: the cells row holds
+    /// `CELL_FIELDS` times it.
+    n_cells: usize,
+    /// A trip's pairs.
+    per_trip: usize,
+    /// Each place's first column in a trip, the same in every trip.
+    column: Vec<usize>,
+    /// Every trip's pairs in order, each its record range and whether it
+    /// is a shell's with itself.
+    pair: Vec<([i32; 2], bool)>,
+    /// The aux shells of each momentum, and each shell's record range
+    /// (`n_shells + 1` long) and first Cartesian function.
+    aux_of_l: Vec<Vec<usize>>,
+    aux_rec_begin: Vec<i32>,
+    aux_ao_offset: Vec<i32>,
+}
+
+impl Staging {
+    /// Trip `trip`'s cells into `out`, the cells row: per cell class at
+    /// `CELL_FIELDS` times its first cell, field-major, the pair outer and
+    /// the aux shell inner. In range: every destination is below
+    /// `n_col n_aux`, which fits an i32 ([`staging`]).
+    fn write_cells(&self, trip: usize, out: &mut [i32]) {
+        let base = trip * self.per_trip;
+        for (cc, places) in self.cells.iter().zip(&self.cell_pairs) {
+            let shells = &self.aux_of_l[cc.lp as usize];
+            let run = &mut out[CELL_FIELDS * cc.begin..CELL_FIELDS * (cc.begin + cc.n_cell)];
+            let mut k = 0;
+            for place in places.clone() {
+                let ([rec0, rec1], diagonal) = self.pair[base + place];
+                for &sh in shells {
+                    let fields = [
+                        rec0,
+                        rec1,
+                        self.aux_rec_begin[sh],
+                        self.aux_rec_begin[sh + 1],
+                        (self.column[place] * self.n_aux) as i32 + self.aux_ao_offset[sh],
+                        i32::from(diagonal),
+                    ];
+                    for (f, v) in fields.into_iter().enumerate() {
+                        run[f * cc.n_cell + k] = v;
+                    }
+                    k += 1;
+                }
+            }
+        }
+    }
 }
 
 /// Add the Cartesian (mn|P) of a batch of shell pairs of an orbital basis
@@ -76,21 +128,29 @@ struct Staging {
 /// batch's columns, column `c`'s `aux.n_cart()` aux functions contiguous,
 /// element `(c, P)` at `c · aux.n_cart() + P`.
 ///
-/// `pairs` are the batch's shell pairs, each by its index among the
-/// pairs of `tables` in their order (class by class, as
-/// [`RecordTables::classes`] lists them), and each owns one block of
-/// columns, side by side from column 0 in `pairs`' order: a pair of
-/// momenta `(la, lb)` owns `n_cart(la) · n_cart(lb)` columns, element
-/// `(a, b)` of its block, `a` its bra shell's Cartesian and `b` its ket's,
-/// at its first column plus `a · n_cart(lb) + b`. A shell's pair with
-/// itself owns its full square block; any other pair's `(m, n)` stands for
-/// `(n, m)` too. So a range of the packed shell-pair map's kept pairs
-/// (`fb_integrals_eri_density_fitting_pair_map`) has that map's Cartesian
-/// columns, each relative to the range's first, and every element is
-/// bitwise the square tensor's `(m, n, P)`
+/// `pairs` are `trips` batches of shell pairs side by side, each pair by
+/// its index among the pairs of `tables` in their order (class by class,
+/// as [`RecordTables::classes`] lists them), batch `k` the `k`-th
+/// `pairs.len() / trips` of them; outside a loop the batch is the first,
+/// and in a counted loop of `trips` trips the tasks compute batch `k` in
+/// trip `k`, from their views' iteration. Each pair of a batch owns one
+/// block of columns, side by side from column 0 in the batch's order: a
+/// pair of momenta `(la, lb)` owns `n_cart(la) · n_cart(lb)` columns,
+/// element `(a, b)` of its block, `a` its bra shell's Cartesian and `b`
+/// its ket's, at its first column plus `a · n_cart(lb) + b`. A shell's
+/// pair with itself owns its full square block; any other pair's `(m, n)`
+/// stands for `(n, m)` too. So a range of the packed shell-pair map's
+/// kept pairs (`fb_integrals_eri_density_fitting_pair_map`) has that
+/// map's Cartesian columns, each relative to the range's first, and every
+/// element is bitwise the square tensor's `(m, n, P)`
 /// ([`add_three_center_tasks`](crate::add_three_center_tasks)' Cartesian
 /// tensor, before its transform): the same kernels' arithmetic, only the
 /// stores moved.
+///
+/// Every batch has the first's classes, pair for pair, so its columns
+/// and its launches are the first's: the rows and the launches are
+/// formed once, at planning, and only the cells' record ranges are each
+/// trip's, written by the tables task when it runs.
 ///
 /// `classes` are the orbital basis's records ([`add_record_tasks`]) and
 /// `tables` the tables they were formed from; `aux` the auxiliary basis's
@@ -109,15 +169,20 @@ struct Staging {
 /// # Panics
 /// If `n_col · aux.n_cart()` does not fit the kernels' 32-bit index, or a
 /// class's cell count does not fit an `i32`, both counts the body forms;
-/// or a class is of another worker's or plan's table ([`Dag::add_gpu`]).
+/// if a batch's classes are not the first's, pair for pair, which the
+/// first's columns and launches would not fit; or a class is of another
+/// worker's or plan's table ([`Dag::add_gpu`]); and when the plan runs,
+/// if a trip is past the `trips`-th.
 #[requires(tables.formed(classes), "classes are the records of tables")]
-#[debug_requires(!pairs.is_empty(), "a batch of at least one pair")]
+#[debug_requires(trips > 0, "at least one batch")]
+#[debug_requires(pairs.len() >= trips, "a batch of at least one pair")]
+#[debug_requires(pairs.len().is_multiple_of(trips), "the batches are of one size")]
 #[debug_requires(
-    pairs.is_sorted_by(|a, b| a < b),
-    "the pairs ascending, each once, in the tables' order"
+    pairs.chunks(pairs.len() / trips).all(|b| b.is_sorted_by(|a, b| a < b)),
+    "each batch's pairs ascending, each once, in the tables' order"
 )]
 #[debug_requires(
-    pairs.last().is_none_or(|&p| p < tables.n_pairs()),
+    pairs.iter().all(|&p| p < tables.n_pairs()),
     "every pair is one of the tables'"
 )]
 #[debug_requires(aux.n_shells() > 0, "an aux basis of at least one shell")]
@@ -129,8 +194,9 @@ pub fn add_packed_three_center_tasks(
     tables: &RecordTables,
     aux: &AuxTable,
     pairs: &[usize],
+    trips: usize,
 ) -> RowId<Device, f64> {
-    let staging = Arc::new(staging(classes, tables, aux, pairs));
+    let staging = Arc::new(staging(classes, tables, aux, pairs, trips));
     let tables = dag.add_cpu(
         "packed three-center tables",
         worker,
@@ -146,11 +212,12 @@ pub fn add_packed_three_center_tasks(
     .out
 }
 
-/// The staging of [`add_packed_three_center_tasks`]: the cells formed from
-/// the batch's pairs, every extent it asserts checked.
+/// The staging of [`add_packed_three_center_tasks`]: a batch's shape,
+/// formed from the first, and every batch's pairs' fields, every extent
+/// it asserts checked.
 #[debug_ensures(
     ret.cells.iter().try_fold(0, |at, c| (c.begin == at).then_some(at + c.n_cell))
-        == Some(pairs.len() * aux.n_shells()),
+        == Some(ret.per_trip * aux.n_shells()),
     "every pair meets every aux shell in exactly one cell, the cell classes in order"
 )]
 #[track_caller]
@@ -159,6 +226,7 @@ fn staging(
     tables: &RecordTables,
     aux: &AuxTable,
     pairs: &[usize],
+    trips: usize,
 ) -> Staging {
     let n_aux = aux.n_cart();
     let n_l = aux.momentum.iter().copied().max().unwrap_or(0) as usize + 1;
@@ -167,24 +235,45 @@ fn staging(
         aux_of_l[l as usize].push(s);
     }
 
-    // Each batch pair's class and its place there, in the batch's order, and
-    // its first column.
-    let mut first = 0;
-    let mut runs: Vec<Vec<([i32; 2], usize, bool)>> = vec![Vec::new(); classes.len()];
+    // Each pair's class, record range and diagonal flag, every batch's.
+    let ends: Vec<usize> = tables
+        .classes()
+        .iter()
+        .scan(0, |end, c| {
+            *end += c.bra.len();
+            Some(*end)
+        })
+        .collect();
+    let mut of_class = Vec::with_capacity(pairs.len());
+    let mut pair = Vec::with_capacity(pairs.len());
+    for &p in pairs {
+        let class = ends.partition_point(|&end| end <= p);
+        let c = &tables.classes()[class];
+        let q = p - (ends[class] - c.bra.len());
+        of_class.push(class);
+        pair.push(([c.rec_begin[q], c.rec_begin[q + 1]], c.bra[q] == c.ket[q]));
+    }
+    let per_trip = pairs.len() / trips;
+    assert!(
+        of_class
+            .chunks(per_trip)
+            .all(|b| b == &of_class[..per_trip]),
+        "add_packed_three_center_tasks: every batch's pairs must be of the first's classes, pair \
+         for pair"
+    );
+
+    // The first batch's columns, and its places class by class.
+    let mut column = Vec::with_capacity(per_trip);
+    let mut places: Vec<Range<usize>> = vec![0..0; classes.len()];
     let mut n_col = 0;
-    let mut wanted = pairs.iter().copied().peekable();
-    for (class, c) in tables.classes().iter().enumerate() {
-        let n_pairs = c.bra.len();
-        while let Some(pair) = wanted.next_if(|&p| p < first + n_pairs) {
-            let p = pair - first;
-            runs[class].push((
-                [c.rec_begin[p], c.rec_begin[p + 1]],
-                n_col,
-                c.bra[p] == c.ket[p],
-            ));
-            n_col += n_cart_of(c.la) * n_cart_of(c.lb);
+    for (place, &class) in of_class[..per_trip].iter().enumerate() {
+        let c = &tables.classes()[class];
+        if places[class].is_empty() {
+            places[class] = place..place;
         }
-        first += n_pairs;
+        places[class].end = place + 1;
+        column.push(n_col);
+        n_col += n_cart_of(c.la) * n_cart_of(c.lb);
     }
     assert!(
         n_col
@@ -195,11 +284,11 @@ fn staging(
     );
 
     let mut cells = Vec::new();
-    let mut cell_fields = Vec::new();
+    let mut cell_pairs = Vec::new();
     let mut n_cells = 0;
-    for (class, (c, runs)) in classes.iter().zip(&runs).enumerate() {
+    for (class, (c, places)) in classes.iter().zip(&places).enumerate() {
         for (lp, shells) in aux_of_l.iter().enumerate() {
-            let n_cell = runs.len() * shells.len();
+            let n_cell = places.len() * shells.len();
             if n_cell == 0 {
                 continue;
             }
@@ -210,34 +299,13 @@ fn staging(
                 c.la(),
                 c.lb()
             );
-            // The class's cells, field-major, the pair outer and the aux
-            // shell inner. In range: every destination is below
-            // n_col n_aux, which fits an i32 (above).
-            let mut run = vec![0; CELL_FIELDS * n_cell];
-            let mut k = 0;
-            for &([rec0, rec1], column, diagonal) in runs {
-                for &sh in shells {
-                    let fields = [
-                        rec0,
-                        rec1,
-                        aux.rec_begin[sh],
-                        aux.rec_begin[sh + 1],
-                        (column * n_aux) as i32 + aux.ao_offset[sh],
-                        i32::from(diagonal),
-                    ];
-                    for (f, v) in fields.into_iter().enumerate() {
-                        run[f * n_cell + k] = v;
-                    }
-                    k += 1;
-                }
-            }
-            cell_fields.extend(run);
             cells.push(CellClass {
                 class,
                 lp: lp as i32,
                 begin: n_cells,
                 n_cell,
             });
+            cell_pairs.push(places.clone());
             n_cells += n_cell;
         }
     }
@@ -253,7 +321,14 @@ fn staging(
         aux: records,
         n_aux_rec: aux.n_rec(),
         cells,
-        cell_fields,
+        cell_pairs,
+        n_cells,
+        per_trip,
+        column,
+        pair,
+        aux_of_l,
+        aux_rec_begin: aux.rec_begin.clone(),
+        aux_ao_offset: aux.ao_offset.clone(),
     }
 }
 
@@ -272,8 +347,8 @@ impl<K> Clone for TableRows<K> {
 
 impl<K> Copy for TableRows<K> {}
 
-/// CPU: the aux records and the cells, formed at planning, into pinned
-/// rows.
+/// CPU: the aux records, formed at planning, and its trip's cells, from
+/// the staging, into pinned rows.
 struct Tables {
     staging: Arc<Staging>,
 }
@@ -285,14 +360,14 @@ impl CpuTask for Tables {
         let s = &self.staging;
         TableRows {
             aux: host.output("packed three-center aux", s.aux.len()),
-            cells: host.output("packed three-center cells", s.cell_fields.len()),
+            cells: host.output("packed three-center cells", CELL_FIELDS * s.n_cells),
         }
     }
 
     fn run(&self, rows: &Self::Rows, host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         let s = &self.staging;
         memcpy_h2p(host, rows.aux, &s.aux);
-        memcpy_h2p(host, rows.cells, &s.cell_fields);
+        s.write_cells(host.iteration(), host.take_mut(rows.cells));
         Ok(())
     }
 }
@@ -329,7 +404,7 @@ impl GpuTask for PackedThreeCenter {
         PackedRows {
             tables: TableRows {
                 aux: device.scratch("packed three-center aux", s.aux.len()),
-                cells: device.scratch("packed three-center cells", s.cell_fields.len()),
+                cells: device.scratch("packed three-center cells", CELL_FIELDS * s.n_cells),
             },
             out: device.output("(mn|P) packed", s.n_col * s.n_aux),
         }
@@ -369,8 +444,11 @@ impl GpuTask for PackedThreeCenter {
             // aux holds the AUX_FIELDS segments of n_aux_rec doubles, and
             // the class's cells are CELL_FIELDS segments of n_cell int32s
             // inside the cells row, both copied above on this stream from
-            // the tables task, which wrote the cells staging formed at
-            // planning: every bra range a pair's prefix in its class, so
+            // the tables task, which wrote its trip's cells from the
+            // staging formed at planning, whichever trip it was, every
+            // batch's pairs of the first's classes pair for pair (staging
+            // asserts it), so its columns are the first's: every bra range
+            // a pair's prefix in its class, so
             // inside [0, n_rec) (the classes are the tables', a contract),
             // its aux range from the AuxTable's prefix, and its destination
             // its pair's first column times n_aux plus the aux shell's
@@ -796,8 +874,8 @@ mod tests {
                 },
             )
             .out;
-        let all = add_packed_three_center_tasks(&mut dag, 0, &classes, &t, &aux, &every);
-        let part = add_packed_three_center_tasks(&mut dag, 0, &classes, &t, &aux, &some);
+        let all = add_packed_three_center_tasks(&mut dag, 0, &classes, &t, &aux, &every, 1);
+        let part = add_packed_three_center_tasks(&mut dag, 0, &classes, &t, &aux, &some, 1);
         let col = |pairs: &[usize]| -> usize {
             let mut sizes = Vec::new();
             for c in t.classes() {

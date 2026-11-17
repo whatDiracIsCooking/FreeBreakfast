@@ -58,7 +58,7 @@ fn packed_plan_golden() {
         let blocks = map.sphe().blocks();
         let columns = blocks[pairs.end - 1].end() - blocks[pairs.start].column;
         let out = add_packed_three_center(
-            &mut dag, 0, &basis, &classes, &aux, &map, pairs, &mut u, &mut u_aux,
+            &mut dag, 0, &basis, &classes, &aux, &map, pairs, 1, &mut u, &mut u_aux,
         )
         .unwrap();
         outs.push((out, columns));
@@ -134,7 +134,7 @@ fn a_shell_past_the_kernels_is_unsupported_at_planning() {
         let map = PairMap::new(&record_tables(&basis), None, 0.0);
         let all = 0..map.pairs().len();
         let err = add_packed_three_center(
-            &mut dag, 0, &basis, &classes, &aux, &map, all, &mut None, &mut None,
+            &mut dag, 0, &basis, &classes, &aux, &map, all, 1, &mut None, &mut None,
         )
         .unwrap_err();
         assert_eq!(err.kind, ErrorKind::Unsupported, "{err}");

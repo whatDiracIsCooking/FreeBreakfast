@@ -414,6 +414,255 @@ impl<T: Element> GpuTask for DownloadRows<T> {
     }
 }
 
+impl<'a> Dag<'a, Pinned, DeviceStream> {
+    /// Add the download of the device row `src`, `runs` runs of
+    /// `first.len()` elements side by side, into the heap row `dst`, run
+    /// `r` at `first` moved on by `r · pitch`: the pitched form of
+    /// [`Dag::download_heap`], for a matrix whose leading dimension in the
+    /// heap row is wider than the device row's, the columns of a batch
+    /// into a row of every batch's. Two nodes through a pinned window of
+    /// `runs · first.len()` elements, `download <name>` on lane `at`, `src`
+    /// copied into the window `<name> window`, and `unstage <name>` on the
+    /// CPU pool, each run copied into its place once the executor has
+    /// waited for the download's event, for the reason [`Dag::upload_heap`]
+    /// gives.
+    ///
+    /// `dst` is written, not made, as [`Dag::download_heap`] writes it. In
+    /// a loop, iteration `k` writes every run moved on by `k` of its
+    /// lengths, `first.start + k · first.len()` the first run's start: a
+    /// matrix of `pitch` columns cut into batches of one width comes down
+    /// in a counted loop of a trip per batch, batch `k` in trip `k`.
+    ///
+    /// # Panics
+    /// When the plan runs, if `src` is not the window's length long
+    /// (`memcpy_d2p`), or if an iteration's last run runs past the end of
+    /// `dst`.
+    #[debug_requires(first.start < first.end, "a run has an element")]
+    #[debug_requires(runs > 0, "at least one run")]
+    #[debug_requires(runs == 1 || first.len() <= pitch, "the runs do not overlap")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "download_heap's, with the run count and the pitch"
+    )]
+    pub fn download_heap_pitched<T: Element>(
+        &mut self,
+        at: impl Into<LaneId>,
+        src: RowId<Device, T>,
+        dst: RowId<Heap, T>,
+        first: Range<usize>,
+        runs: usize,
+        pitch: usize,
+        name: &str,
+    ) {
+        let at = at.into();
+        let run = first.len();
+        let window = self.add_gpu(
+            format!("download {name}"),
+            at,
+            Download {
+                src,
+                name: format!("{name} window"),
+                len: runs * run,
+            },
+        );
+        self.add_cpu(
+            format!("unstage {name}"),
+            at.worker,
+            UnstagePitched {
+                window,
+                dst,
+                start: first.start,
+                run,
+                runs,
+                pitch,
+            },
+        );
+    }
+}
+
+/// CPU: a pinned window's runs copied into a heap row at a pitch, the host
+/// half of [`Dag::download_heap_pitched`].
+struct UnstagePitched<T, P: StagingKind> {
+    window: RowId<P, T>,
+    dst: RowId<Heap, T>,
+    start: usize,
+    run: usize,
+    runs: usize,
+    pitch: usize,
+}
+
+impl<T: Element, P: StagingKind> CpuTask<P> for UnstagePitched<T, P> {
+    type Rows = ();
+
+    fn layout(&self, pinned: &mut Layout<'_, P>, heap: &mut Layout<'_, Heap>) {
+        pinned.read(self.window);
+        heap.write(self.dst);
+    }
+
+    fn dims(&self) -> Vec<(&'static str, usize)> {
+        vec![("run", self.run), ("runs", self.runs)]
+    }
+
+    fn run(&self, _: &(), pinned: &Bufs<'_, P>, heap: &Bufs<'_, Heap>) -> Status {
+        let from = self.start + heap.iteration() * self.run;
+        let (window, dst) = (pinned.get(self.window), heap.take_mut(self.dst));
+        for r in 0..self.runs {
+            let (at, of) = (from + r * self.pitch, r * self.run);
+            dst[at..at + self.run].copy_from_slice(&window[of..of + self.run]);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod pitched_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use fb_core_arena::PinnedStandIn;
+    use fb_core_thread_pool::HostOnly;
+
+    /// The matrix's rows (runs), its columns (the pitch), and a batch's
+    /// columns.
+    const RUNS: usize = 3;
+    const PITCH: usize = 8;
+    const WIDTH: usize = 2;
+
+    /// Element `i` of a batch window: distinct in most bits.
+    fn value(i: usize) -> f64 {
+        (i as f64 * 0.61).cos() * 1e2 + 1.0 / (i + 3) as f64
+    }
+
+    /// CPU: the destination heap row, left as the block's fill.
+    struct Dst;
+
+    impl<P: StagingKind> CpuTask<P> for Dst {
+        type Rows = RowId<Heap, f64>;
+        fn layout(&self, _: &mut Layout<'_, P>, heap: &mut Layout<'_, Heap>) -> Self::Rows {
+            heap.output("b", RUNS * PITCH)
+        }
+        fn run(&self, _: &Self::Rows, _: &Bufs<'_, P>, _: &Bufs<'_, Heap>) -> Status {
+            Ok(())
+        }
+    }
+
+    /// GPU, the stand-in's: trip `k`'s window, `RUNS` runs of `WIDTH`,
+    /// element `(r, c)` of batch `k` the value of column `k WIDTH + c` of
+    /// run `r`, as the device download would leave it.
+    struct Window;
+
+    impl GpuTask<PinnedStandIn, ()> for Window {
+        type Rows = RowId<PinnedStandIn, f64>;
+        fn layout(
+            &self,
+            _: &mut Layout<'_, Device>,
+            pinned: &mut Layout<'_, PinnedStandIn>,
+        ) -> Self::Rows {
+            pinned.output("b window", RUNS * WIDTH)
+        }
+        fn run(
+            &self,
+            w: &Self::Rows,
+            _: &Bufs<'_, Device>,
+            pinned: &CopyOnly<'_, PinnedStandIn>,
+            _: &(),
+        ) -> Status {
+            let pinned = pinned.bufs();
+            let k = pinned.iteration();
+            let w = pinned.take_mut(*w);
+            for r in 0..RUNS {
+                for c in 0..WIDTH {
+                    w[r * WIDTH + c] = value(r * PITCH + k * WIDTH + c);
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// CPU: a heap row's bits, kept for the test.
+    struct Keep(RowId<Heap, f64>, Arc<Mutex<Vec<u64>>>);
+
+    impl<P: StagingKind> CpuTask<P> for Keep {
+        type Rows = ();
+        fn layout(&self, _: &mut Layout<'_, P>, heap: &mut Layout<'_, Heap>) {
+            heap.read(self.0);
+        }
+        fn run(&self, _: &(), _: &Bufs<'_, P>, heap: &Bufs<'_, Heap>) -> Status {
+            *self.1.lock().unwrap() = heap.get(self.0).iter().map(|x| x.to_bits()).collect();
+            Ok(())
+        }
+    }
+
+    /// A matrix of `PITCH` columns comes down in batches of `WIDTH`
+    /// columns, a counted loop of a trip per batch, depth 2: trip `k`'s
+    /// runs land at columns `k WIDTH ..` of every row, and the heap row
+    /// is bitwise the whole matrix.
+    #[test]
+    fn pitched_batches_tile_the_heap_row() {
+        let keep = Arc::new(Mutex::new(Vec::new()));
+        let mut dag: Dag<'_, PinnedStandIn, ()> = Dag::new();
+        let dst = dag.add_cpu("dst", 0, Dst);
+        let body = dag.len();
+        let window = dag.add_gpu("download b", 0, Window);
+        dag.add_cpu(
+            "unstage b",
+            0,
+            UnstagePitched {
+                window,
+                dst,
+                start: 0,
+                run: WIDTH,
+                runs: RUNS,
+                pitch: PITCH,
+            },
+        );
+        dag.add_counted(body, PITCH / WIDTH, 2);
+        dag.add_cpu("keep", 0, Keep(dst, Arc::clone(&keep)));
+        let mut instance = dag.plan().instantiate(&[0]);
+        let record = instance.run(&mut HostOnly::new(1), 2);
+        record.result.as_ref().unwrap();
+        let want: Vec<u64> = (0..RUNS * PITCH).map(|i| value(i).to_bits()).collect();
+        assert_eq!(*keep.lock().unwrap(), want);
+    }
+
+    /// The download is two nodes named after the row, the window the
+    /// stream node's output and the heap row written by the CPU node.
+    #[test]
+    fn a_pitched_download_is_two_nodes_named_after_its_row() {
+        struct Src;
+        impl GpuTask for Src {
+            type Rows = RowId<Device, f64>;
+            fn layout(&self, d: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
+                d.output("src", RUNS * WIDTH)
+            }
+            fn run(
+                &self,
+                _: &Self::Rows,
+                _: &Bufs<'_, Device>,
+                _: &CopyOnly<'_, Pinned>,
+                _: &DeviceStream,
+            ) -> Status {
+                Ok(())
+            }
+        }
+        let mut dag = Dag::new();
+        let dst = dag.add_cpu("dst", 0, Dst);
+        let body = dag.len();
+        let src = dag.add_gpu("src", 0, Src);
+        dag.download_heap_pitched(0, src, dst, 0..WIDTH, RUNS, PITCH, "b");
+        dag.add_counted(body, PITCH / WIDTH, 2);
+        let planned = dag.plan();
+        let text = planned.to_string();
+        for line in [
+            "    2       0  stream  download b: after 1\n",
+            "    3       0  cpu     unstage b: after 0 2; closes counted loop 1-3, 4 trips, depth 2\n",
+        ] {
+            assert!(text.contains(line), "{line:?} in\n{text}");
+        }
+        assert!(text.contains("b window: "), "{text}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
