@@ -87,10 +87,13 @@
 //! sees by the binary before it plans; at 1 the runtime is not asked, so
 //! a run without the key is the run it was before the key existed. The first device's lane 0 is the
 //! run's privileged lane ([`DeviceStream::is_privileged`]). A count above
-//! 1 is accepted but does not yet spread work: the planner places every
-//! GPU worker as it does at 1, on device 0, and the instance makes blocks
-//! and streams for its workers alone, so the further devices hold nothing
-//! and a run's plan, products and record are those of one device.
+//! 1 spreads `[eri] storage = "dense"`'s row blocks over the devices,
+//! worker `w` on device `w`, each SCF build's J and K a broadcast, a
+//! product per device and a gather (`fb_integrals_eri_conventional`'s
+//! `add_dense_jk`); every other task is worker 0's, and the instance
+//! makes blocks and streams for the plan's workers alone, so without the
+//! dense storage the further devices hold nothing and a run's plan,
+//! products and record are those of one device.
 //!
 //! [`DeviceStream::is_privileged`]: fb_core_thread_pool::DeviceStream::is_privileged
 //!
@@ -111,7 +114,7 @@
 //! | `[guess] from`, `Load<GuessStep>`, `GuessStep::load` | [`GuessStep::from`], [`fb_pipeline_guess::add_loaded_guess`], its file's header checked at planning |
 //! | `[guess] from` with another key: `loads 'from' a file, so takes no option` | the same refusal, `InvalidConfig`, from [`GuessStep::check`] |
 //! | `[eri] mode`, `EriStep::mode`, `EriMode` | [`EriStep::mode`], required: [`EriMode::DensityFitting`], or [`EriMode::Conventional`], which the C++ does not have; integral-direct is not ported |
-//! | nothing: the C++ tree stores no four-index tensor | `[eri] mode = "conventional"`, the closed-shell RHF over the packed tensors (`fb_integrals_eri_conventional`), Rust only; an open shell refused at planning |
+//! | nothing: the C++ tree stores no four-index tensor | `[eri] mode = "conventional"`, the closed-shell RHF over the packed tensors (`fb_integrals_eri_conventional`), or with `storage = "dense"` over the dense row blocks spread across `num_gpus` devices, Rust only; an open shell refused at planning |
 //! | `[eri] aux_basis`, a fitting set's name or a path joined to the input directory, `<basis>-acCD-6-6` when empty | [`EriStep::aux_basis`], a compiled-in name alone, never joined, required under `"density_fitting"` and refused under `"conventional"` by [`read_config`] ([`EriStep::check`]), as is one not carried |
 //! | `[eri]` beside an SCF, the integral-direct default when absent | required beside [`Calculation::Rhf`], refused beside every other, by its row of tables |
 //! | `[scf]`, `ScfStep` and its keys | [`Config::scf`], [`fb_pipeline_scf::ScfStep`] itself, its range checked by [`read_config`] |
@@ -131,7 +134,7 @@
 //! | `preflight`'s fold and `check_plan`, the pool capped at the cap less `kDeviceReserve`, the pre-warm against the card | [`admit_plan`]: [`fb_core_arena::admit`] on each table, the device's cap the smaller of the key and the card, less the reserve measured at planning (at least [`DEVICE_RESERVE`]) and the kernels' stack ([`KERNEL_STACK_BYTES`]) |
 //! | `check_pinned_node` against `/proc/meminfo`'s `MemAvailable`, under a pinned cap | the same check in [`admit_plan`], at every cap, the default's included, against [`fb_core_arena::host_available`], `MemAvailable` within the cgroup's limit |
 //! | nothing: host data too large to pin goes to pageable memory, outside every count | `[memory] max_host_mem` ([`MemoryCaps::max_host_mem`]): the plan's heap block, admitted against it, and with the pinned blocks against the host's available memory ([`fb_core_arena::admit_host`]) |
-//! | `NodeResourcesConfig::devices`, every visible device when unset; the pipeline's device steps on `node.device(0)` | [`Config::num_gpus`], devices `0..num_gpus`, default 1, a count past the visible devices refused; every GPU worker on device 0 |
+//! | `NodeResourcesConfig::devices`, every visible device when unset; the pipeline's device steps on `node.device(0)` | [`Config::num_gpus`], devices `0..num_gpus`, default 1, a count past the visible devices refused; the dense conventional ERI's rows spread over them, every other task on device 0 |
 //! | `-o <output_dir>`, default `fbf_output` | [`Config::output`], the same default |
 //! | `-i <input_dir>` | nothing: paths are relative to the config file |
 //! | `main`, `print_products` | `src/main.rs`: the error logged once, the exit code, `plan.txt`, `plan.dot`, `timing.json`, `timing.dot` |

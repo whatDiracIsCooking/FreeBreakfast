@@ -57,7 +57,7 @@
 //! | each class forked from the one before, so the sorts share the carve | each class on its own lane, with no scratch to share, so nothing chains them |
 //! | `three_center` copying the sorted records' offsets back and regrouping them by shell pair | [`record_tables`], formed again at planning by a reader: each pair's record range is its prefix, its offsets its shells' |
 //! | `primitive_pair_classes_footprint` | the plan's tables ([`Plan`](fb_core_planner::Plan)): the footprint is the layout |
-//! | `mixed_primitive_pair_classes(res, rows, cols)`, `mixed_sweep` | [`add_mixed_records`]`(dag, worker, rows, cols)`: the same tasks over both bases' table, returning [`MixedClassRows`], which no one-basis launcher takes |
+//! | `mixed_primitive_pair_classes(res, rows, cols)`, `mixed_sweep` | [`add_mixed_records`]`(dag, worker, rows, cols)`: the same tasks over both bases' table, returning [`MixedClassRows`], which no one-basis launcher takes; [`mixed_record_tables`], the tables, for a reader at planning |
 //! | `mixed_primitive_pair_classes_footprint` | the plan's tables, as for one basis |
 //!
 //! [`BasisSet`]: fb_basis::BasisSet
@@ -127,6 +127,24 @@ pub fn add_records(
 #[track_caller]
 pub fn record_tables(basis: &fb_basis::BasisSet) -> fb_integrals_sys::RecordTables {
     tables::tables(basis)
+}
+
+/// The tables [`add_mixed_records`] forms the records between `rows` and
+/// `cols` from: every ordered shell pair, `i` of `rows` outer and `j` of
+/// `cols` inner, in its class `(l_i, l_j)`, ascending, with its first
+/// record, and both bases' shell table, `rows`' shells first. A host
+/// function, as [`record_tables`] is: what a reader of the records calls
+/// at planning for what their order puts where.
+///
+/// # Panics
+/// As [`RecordTables::mixed`](fb_integrals_sys::RecordTables::mixed),
+/// which two bases' own sweep never trips.
+#[track_caller]
+pub fn mixed_record_tables(
+    rows: &fb_basis::BasisSet,
+    cols: &fb_basis::BasisSet,
+) -> fb_integrals_sys::RecordTables {
+    tables::mixed_tables(rows, cols)
 }
 
 /// Add the records between two bases, `rows` and `cols`, to `dag` on GPU

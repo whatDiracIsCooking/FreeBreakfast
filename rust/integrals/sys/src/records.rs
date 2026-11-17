@@ -293,6 +293,28 @@ impl RecordTables {
             .unwrap_or(0)
     }
 
+    /// The shells whose pairs are bras: the bra basis's of two, or every
+    /// shell of one basis.
+    pub(crate) fn n_bra_shells(&self) -> usize {
+        self.n_bra_shells.unwrap_or(self.shells.ao_offset.len())
+    }
+
+    /// Whether `classes` could be the records [`add_mixed_record_tasks`]
+    /// formed from these tables of a basis with itself: two bases' tables
+    /// over the same Cartesian AO count, one class per class, in their
+    /// order, each with the class's momenta and record count. Then each
+    /// pair's prefix is a record range inside its class's rows, and both of
+    /// its shells' offsets open blocks inside the one `n_cart`.
+    pub(crate) fn formed_with_itself(&self, classes: &[MixedClassRows]) -> bool {
+        self.n_bra_shells.is_some()
+            && self.n_cart[0] == self.n_cart[1]
+            && classes.len() == self.classes.len()
+            && classes.iter().zip(&self.classes).all(|(c, p)| {
+                (c.rows.la, c.rows.lb, c.rows.n_rec, c.n_cart())
+                    == (p.la, p.lb, p.n_rec(), self.n_cart)
+            })
+    }
+
     /// Whether `classes` could be the records [`add_record_tasks`] formed
     /// from these one basis's tables: one per class, in their order, each
     /// with the class's momenta and record count, over their Cartesian AOs.
@@ -602,7 +624,9 @@ impl ClassRows {
 /// `i <= j` pairs and folds each value into one triangle that the build
 /// then mirrors, so a two-basis class handed to
 /// one would build the wrong matrix, and no one-basis launcher takes this
-/// type. What makes its offsets trustworthy is [`ClassRows`]' argument,
+/// type. The dense ERI's does, over a basis with itself
+/// ([`add_dense_tasks`](crate::add_dense_tasks)): its tasks are every
+/// ordered shell quartet. What makes its offsets trustworthy is [`ClassRows`]' argument,
 /// with each offset's block inside its own basis's AOs
 /// ([`RecordTables::mixed`]).
 #[derive(Clone, Copy, Debug)]
@@ -642,6 +666,12 @@ impl MixedClassRows {
     /// The integer fields' rows, as [`ClassRows::i32_rows`] orders them.
     pub fn i32_rows(&self) -> [RowId<Device, i32>; 4] {
         self.rows.i32_rows()
+    }
+
+    /// The class's rows as one basis's, for a launcher in this crate that
+    /// reads the fields alone and takes the offsets from its own staging.
+    pub(crate) fn rows(&self) -> &ClassRows {
+        &self.rows
     }
 }
 

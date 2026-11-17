@@ -28,6 +28,10 @@ pub fn basis_on(xyz: &Path, basis: &str) -> BasisSet {
 }
 
 /// The records and the conventional integrals of `basis`, added to `dag`.
+#[allow(
+    dead_code,
+    reason = "the packed path's binaries call it, the dense one's does not"
+)]
 pub fn add_step(
     dag: &mut Dag<'_>,
     basis: &BasisSet,

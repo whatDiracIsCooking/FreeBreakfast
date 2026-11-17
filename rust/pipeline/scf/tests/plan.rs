@@ -24,7 +24,7 @@ use fb_core_error_handling::{Error, ErrorKind, Result, Status};
 use fb_core_planner::{Dag, Decision, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_molecule::Molecule;
-use fb_pipeline_eri::{EriMode, EriStep};
+use fb_pipeline_eri::{EriMode, EriStep, EriStorage};
 use fb_pipeline_scf::{Run, ScfStep, add_density, add_fock, occupied_orbitals};
 use fb_test_support::golden;
 
@@ -74,6 +74,7 @@ fn scf_run(step: &ScfStep) -> Result<Run> {
         "cc-pvdz",
         &EriStep::density_fitting("cc-pvdz-jkfit"),
         step,
+        1,
         |_| Ok(LWORK),
     )
 }
@@ -101,6 +102,7 @@ fn conventional() -> EriStep {
     EriStep {
         mode: EriMode::Conventional,
         aux_basis: None,
+        storage: None,
     }
 }
 
@@ -118,12 +120,42 @@ fn conventional_scf_plan_golden() {
         "cc-pvdz",
         &conventional(),
         &ScfStep::default(),
+        1,
         |_| Ok(LWORK),
     )
     .expect("water plans");
     golden(
         env!("CARGO_MANIFEST_DIR"),
         "plan_scf_h2o_cc-pvdz_conventional.txt",
+        &text(run.planned()),
+    );
+}
+
+/// The whole RHF run of water in cc-pVDZ over the dense conventional
+/// storage on two GPU workers: the setup on worker 0, each worker's
+/// records and row blocks, and the body's J and K as `dense density`, the
+/// broadcast, a `dense jk` per worker, the two gathers and `dense
+/// spherical`, the loop's body spanning both workers. The plan text is the
+/// committed golden; the plan's ranks are its two workers.
+#[test]
+fn dense_scf_plan_golden() {
+    let eri = EriStep {
+        storage: Some(EriStorage::Dense),
+        ..conventional()
+    };
+    let run = Run::new(
+        &water(0, 1),
+        "cc-pvdz",
+        &eri,
+        &ScfStep::default(),
+        2,
+        |_| Ok(LWORK),
+    )
+    .expect("water plans");
+    assert_eq!((run.planned().n_workers(), run.planned().ranks()), (2, 2));
+    golden(
+        env!("CARGO_MANIFEST_DIR"),
+        "plan_scf_h2o_cc-pvdz_dense_2.txt",
         &text(run.planned()),
     );
 }
@@ -139,6 +171,7 @@ fn an_open_shell_over_the_conventional_integrals_is_unsupported() {
         "sto-3g",
         &conventional(),
         &ScfStep::default(),
+        1,
         |_| Ok(LWORK),
     )
     .err()
@@ -163,6 +196,7 @@ fn a_refused_input_is_an_error() {
             basis,
             &EriStep::density_fitting(aux),
             &step,
+            1,
             |_| Ok(LWORK),
         )
     };
@@ -175,6 +209,7 @@ fn a_refused_input_is_an_error() {
         "sto-3g",
         &EriStep::density_fitting("cc-pvdz-jkfit"),
         &step,
+        1,
         |n| {
             asked = Some(n);
             Err(Error::gpu("no device"))
@@ -362,6 +397,7 @@ fn rohf_plan_golden() {
         "cc-pvdz",
         &EriStep::density_fitting("cc-pvdz-jkfit"),
         &ScfStep::default(),
+        1,
         |_| Ok(LWORK),
     )
     .expect("the cation plans");
@@ -383,6 +419,7 @@ fn an_open_shell_planning_cannot_hold_is_refused() {
         "sto-3g",
         &EriStep::density_fitting("cc-pvdz-jkfit"),
         &step,
+        1,
         |_| Ok(LWORK),
     )
     .err()
@@ -404,6 +441,7 @@ fn no_beta_electron_plans_without_a_beta_exchange() {
             "sto-3g",
             &EriStep::density_fitting("cc-pvdz-jkfit"),
             &step,
+            1,
             |_| Ok(LWORK),
         )
         .expect("the doublet plans");

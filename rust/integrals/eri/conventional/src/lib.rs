@@ -45,13 +45,44 @@
 //! two GEMVs, so a run that builds many Fock matrices over a few dozen AOs
 //! pays the tensor once.
 //!
+//! **Dense storage, over the run's GPUs.** [`add_dense`] stores the
+//! tensor unpacked instead, as two dense `n_cart² × n_cart²` matrices,
+//!
+//! ```text
+//! M_J[(m,n), (l,s)] = (mn|ls)      J = M_J vec(D)
+//! M_K[(m,n), (l,s)] = (ml|ns)      K = M_K vec(D)
+//! ```
+//!
+//! with no symmetry (every ordered shell quartet one task, FelizJueves's
+//! `eri/full_eri/dense.py`; `fb_integrals_sys`'s `dense` module has the
+//! layout), and cuts their rows over GPU workers `0..workers` at shell
+//! boundaries, each worker holding only its own rows, so the cap is the
+//! cards' memory: `2 rows · n_cart² · 8` bytes on a worker of `rows`, each
+//! worker's table admitted against its card. [`add_dense_jk`] is then one
+//! build: worker 0 forms `D_cart`, a broadcast sends it to every worker,
+//! each multiplies its rows by it ([`fb_integrals_sys::dense_row_dot`],
+//! an order fixed per row), two gathers bring the pieces of `vec(J)` and
+//! `vec(K)` back onto worker 0, and worker 0 transforms them to the
+//! spherical AOs and symmetrizes them. Every element of the blocks is its
+//! ordered quartet's one store, the broadcast and the gathers are exact
+//! and each entry's sum is its row's alone, so J and K are the same bits on
+//! one worker or several: an ordered partition
+//! (`docs/programming_model.md`, "Two kinds of distribution"). The price
+//! against the packed tensors is memory, about 8× theirs, and the build's
+//! work, every unique integral computed by each of its orderings in both
+//! layouts.
+//!
 //! | C++ (`free_breakfast`) | Here |
 //! |---|---|
-//! | nothing: the C++ tree stores no four-index tensor | [`add_conventional`] and [`add_conventional_jk`], rust/'s own, over FelizJueves's `eri/full_eri` kernels |
+//! | nothing: the C++ tree stores no four-index tensor | [`add_conventional`] and [`add_conventional_jk`], rust/'s own, over FelizJueves's `eri/full_eri` kernels; [`add_dense`] and [`add_dense_jk`], the dense storage over the run's GPUs, over its dense ones |
 //!
 //! [`FB_CONVENTIONAL_MAX_AO`]: fb_integrals_sys::FB_CONVENTIONAL_MAX_AO
 
 #![forbid(unsafe_code)]
+
+mod dense;
+
+pub use dense::{Dense, add_dense, add_dense_jk};
 
 use contracts::debug_requires;
 use fb_basis::BasisSet;

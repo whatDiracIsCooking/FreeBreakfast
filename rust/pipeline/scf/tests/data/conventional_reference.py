@@ -9,6 +9,16 @@ Usage (from the checkout root; PySCF is in the `tools` dependency group):
         rust/integrals/one_electron/overlap/tests/data/h2o.xyz \\
         cc-pvdz $D/scf_h2o_cc-pvdz_conventional.npy
 
+and the glycine chains of the dense storage's cases (`tests/dense.rs`):
+
+    for c in "gly5 sto-3g" "gly5 6-31g" "gly10 sto-3g"; do set -- $c
+      OMP_NUM_THREADS=16 uv run --group tools python \
+        $D/conventional_reference.py $D/$1.xyz $2 $D/scf_$1_$2_conventional.npy
+    done
+
+which printed E = -1095.576256404689 (122 AOs, 14 cycles), -1109.536034292519
+(223 AOs, 15 cycles) and -2116.201478445260 (237 AOs, 17 cycles).
+
 It writes one float64 .npy of shape (1,): the total energy in hartree,
 electronic plus nuclear repulsion. The molecule and the set come as
 scf_reference.py's do, through the three-center crate's reference.py

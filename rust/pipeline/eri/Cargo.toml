@@ -9,6 +9,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+contracts.workspace = true
 fb-basis.workspace = true
 fb-core-arena.workspace = true
 fb-core-error-handling.workspace = true

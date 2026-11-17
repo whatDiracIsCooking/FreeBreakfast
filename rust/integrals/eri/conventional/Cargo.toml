@@ -1,6 +1,6 @@
 [package]
 name = "fb-integrals-eri-conventional"
-description = "integrals/eri/conventional: the packed four-index ERI and its exchange-ordered gather stored once, and J and K of a density by one GEMV each, as tasks"
+description = "integrals/eri/conventional: the packed four-index ERI and its exchange-ordered gather stored once, and J and K of a density by one GEMV each; or the dense J- and K-layout matrices cut by rows over the GPU workers, J and K by a broadcast, a product per worker and a gather; as tasks"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

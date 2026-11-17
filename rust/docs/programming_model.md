@@ -634,7 +634,10 @@ existed. GPU worker `w` is on the list's device `w`.
 **Work spreads where a builder names the workers.** Placement is the
 builder's: it names each task's worker, so a builder that spreads names
 workers `0..num_gpus`, one per device, and one that does not puts every
-task on worker 0, as every calculation of the binary still does. The
+task on worker 0, as every calculation of the binary does but one: the RHF
+over `[eri] storage = "dense"`, whose builder
+(`fb_integrals_eri_conventional::add_dense`) cuts the dense ERI's rows
+over the workers and gathers each build's J and K onto worker 0. The
 instance makes each worker's blocks on its device and the backend its
 lanes' streams, handles and fork streams there
 (`Plan::instantiate(&devices)`, `Instance::backend`), for the plan's

@@ -3,7 +3,8 @@
 # overlap, the kinetic energy, the nuclear attraction, density fitting's
 # metric, three-center integrals and their symmetrization, and rust/'s own
 # conventional ERI (the packed tensor, its exchange gather, the packing and
-# unpacking around the GEMVs, with no C++ launcher behind it) -- with the
+# unpacking around the GEMVs, and the dense J- and K-layout row blocks, with
+# no C++ launcher behind them) -- with the
 # FelizJueves units they launch, one shared object with its own device link,
 # which fb-integrals-sys (../sys) links (docs/gpu_layer.md, "Build"). Built
 # from these forked sources, rust/device_headers and FelizJueves's include/
@@ -11,7 +12,8 @@
 #
 # The emitted units (mmd/kernels/, one_electron/{overlap,kinetic,
 # potential_en}/kernels/, eri/density_fitting/{metric,three_center}/kernels/,
-# eri/conventional/kernels/, and shared/'s Boys routine) are
+# eri/conventional/kernels/, eri/conventional/dense/kernels/, and shared/'s
+# Boys routine) are
 # tools/emit/one_electron_kernels.py's, tools/emit/exchange_kernels.py's,
 # tools/emit/df_kernels.py's and tools/emit/conventional_kernels.py's, copied
 # here byte for byte (README.md, "Build and test").
@@ -31,6 +33,7 @@ file(GLOB _fb_integrals_units CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/eri/density_fitting/metric/kernels/*.cu
      ${CMAKE_CURRENT_SOURCE_DIR}/eri/density_fitting/three_center/kernels/*.cu
      ${CMAKE_CURRENT_SOURCE_DIR}/eri/conventional/kernels/*.cu
+     ${CMAKE_CURRENT_SOURCE_DIR}/eri/conventional/dense/kernels/*.cu
 )
 set(_fb_integrals_sources
     abi.cu
@@ -41,6 +44,7 @@ set(_fb_integrals_sources
     eri/density_fitting/metric/metric_launch.cu
     eri/density_fitting/three_center/three_center_launch.cu
     eri/conventional/conventional_launch.cu
+    eri/conventional/dense/dense_launch.cu
     ${_fb_integrals_units}
 )
 add_library(fb_integrals_kernels SHARED ${_fb_integrals_sources})

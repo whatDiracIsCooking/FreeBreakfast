@@ -1,7 +1,7 @@
 //! `free-breakfast <config.toml>`: read the config, plan it, write the
 //! plan's `plan.txt` and `plan.dot` into its output directory, admit it
 //! against the `[memory]` caps, run it once on the run's devices
-//! (`num_gpus`, its workers all on device 0 today), and write its
+//! (`num_gpus`, GPU worker `w` on device `w`), and write its
 //! products, `timing.json` and `timing.dot` there (`fb_pipeline_config`). `main` is the one place an error is
 //! logged, and the process exits with its kind's code
 //! (`docs/diagnostics.md`, "The one boundary").

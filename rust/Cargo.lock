@@ -704,6 +704,7 @@ dependencies = [
 name = "fb-pipeline-eri"
 version = "0.1.0"
 dependencies = [
+ "contracts",
  "fb-basis",
  "fb-core-arena",
  "fb-core-error-handling",

@@ -30,6 +30,7 @@
 //! | `wwrErrorInvalidValue` for a refusal | [`FB_LAUNCH_INVALID_ARGUMENT`] (a count, a null pointer, a short workspace) or [`FB_LAUNCH_UNSUPPORTED`] (no kernel for the class) |
 //! | nothing: the C++ tree compiles its kernels into the binary | [`check_library`], the library's [`fb_integrals_abi_version`] and [`fb_integrals_backend`] against the bindings' |
 //! | nothing: the C++ tree has no conventional mode | [`fb_conventional_eri_class`], [`fb_conventional_exchange`], [`fb_conventional_pack`] and [`fb_conventional_unpack`], rust/'s own launchers over FelizJueves's `eri/full_eri` units (`eri<la, lb, lc, ld>`, `eri_kperm`), and [`FB_CONVENTIONAL_MAX_MOMENTUM`], [`FB_CONVENTIONAL_MAX_AO`], [`FB_CONVENTIONAL_PAIR_FIELDS`], [`FB_CONVENTIONAL_TASK_FIELDS`]; the safe path is [`add_conventional_tasks`], [`pack`] and [`unpack`] |
+//! | nothing: the C++ tree has no conventional mode | [`fb_dense_eri_class`], rust/'s own launcher over FelizJueves's dense `eri/full_eri` units (`eri_dj<la, lb, lc, ld>`, `eri_dk<la, lb, lc, ld>`), [`FB_DENSE_LAYOUT_J`], [`FB_DENSE_LAYOUT_K`]; and [`fb_dense_row_dot`], a row-major matrix by a vector in an order fixed by its width; the safe path is [`add_dense_tasks`] and [`dense_row_dot`] |
 //! | the other one-electron families (the dipole, the mixed overlap, the derivatives), J, K, density fitting past the metric and (mn\|P), and the rest | not forked yet |
 //!
 //! **The safe layer.** What a caller uses (`docs/gpu_layer.md`, "The safe
@@ -80,6 +81,16 @@
 //!   unpacked, over [`DeviceSlice`](fb_core_wwr::device_slice::DeviceSlice)s
 //!   whose lengths are checked in every build.
 //!
+//! - [`add_dense_tasks`], the two tasks of a row block of the dense
+//!   J-layout and K-layout ERI matrices over the records between a basis
+//!   and itself ([`MixedClassRows`]) and the [`RecordTables`] they were
+//!   formed from: the launches' pairs and task tables staged on the CPU and
+//!   uploaded, then one [`fb_dense_eri_class`] per launch and layout, both
+//!   sides' fields read in place, into two output rows ([`DenseBlocks`]),
+//!   cut into sub-blocks the kernels' 32-bit index reaches; and
+//!   [`dense_row_dot`], a sub-block by a vector, each entry in an order
+//!   its width fixes, over slices whose lengths are checked in every build.
+//!
 //! A class kernel writes at AO offsets held in device memory, so
 //! [`ClassRows`] is a type only [`add_record_tasks`] makes; its doc comment
 //! has why a launcher may trust it.
@@ -90,6 +101,7 @@
 mod bindings;
 mod classes;
 mod conventional;
+mod dense;
 mod metric;
 mod records;
 mod three_center;
@@ -97,6 +109,7 @@ mod three_center;
 pub use bindings::*;
 pub use classes::{kinetic_class, overlap_class, potential_en_class};
 pub use conventional::{add_conventional_tasks, pack, packed_pairs, unpack};
+pub use dense::{DenseBlocks, add_dense_tasks, dense_row_dot};
 pub use metric::{AuxTable, add_metric_tasks};
 pub use records::{
     ClassPairs, ClassRows, Fields, MixedClassRows, RecordTables, ShellTable,

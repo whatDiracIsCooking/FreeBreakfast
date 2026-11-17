@@ -205,11 +205,11 @@ fn run_molecule(
     eri: &EriStep,
     step: &ScfStep,
 ) -> (fb_core_thread_pool::Record, Option<ScfOutput>) {
-    let run = Run::new(molecule, basis, eri, step, |n| {
+    let run = Run::new(molecule, basis, eri, step, 1, |n| {
         syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n)
     })
     .expect("the case plans");
-    run.run(0)
+    run.run(&[0])
 }
 
 /// The case `stem` run over `eri` with `step`, converged and held to the
@@ -302,6 +302,7 @@ fn water_over_the_conventional_integrals_converges_to_pyscf() {
     let eri = EriStep {
         mode: EriMode::Conventional,
         aux_basis: None,
+        storage: None,
     };
     converges_to_pyscf("h2o", &water(), &eri, &ScfStep::default());
 }
