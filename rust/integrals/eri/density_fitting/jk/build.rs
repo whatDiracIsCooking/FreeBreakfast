@@ -1,5 +1,6 @@
 //! Give the tests an rpath to `libfb_recipes_kernels.so`, which K's mirror
-//! launches, and to the C ABI libraries beside
+//! launches, to `libfb_integrals_kernels.so`, which the streamed pass's pack
+//! and gather launch, and to the C ABI libraries beside
 //! `libwwr_capi_runtime_api.so`, `libwwr_capi_blas.so` among them
 //! (`rust/kernel_lib.rs`): fb-recipes-sys's and wwr-sys's rpaths reach their
 //! own targets only.
@@ -9,4 +10,5 @@ include!("../../../../kernel_lib.rs");
 
 fn main() {
     link_kernel_lib("recipes");
+    link_kernel_lib("integrals");
 }

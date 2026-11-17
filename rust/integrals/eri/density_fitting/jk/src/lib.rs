@@ -24,7 +24,18 @@
 //! writes an output row of its own, so an SCF iteration's J and K, two
 //! tasks with no edge between them, may run on two workers' streams.
 //!
-//! **The layout** is the C++ one, every matrix column-major and packed:
+//! [`add_streamed_jk`] adds **the streamed pass**: every J and K of a set
+//! of contractions ([`Contraction`]) from one read of a packed B that
+//! lives in a heap row, streamed through a pinned window in aux batches of
+//! an adaptive width (at most [`BATCH_MAX`]), as a counted loop of ring
+//! depth 2, so no device row holds B whole. B's packed layout is
+//! `fb-integrals-eri-density-fitting-pair-map`'s, and its pack and gather
+//! `fb_integrals_sys::PackedTables`'. It has no C++ counterpart: the C++ B
+//! is square and resident. The resident [`add_df_coulomb`] and
+//! [`add_df_exchange`] stay until the pipeline switches to it, and are its
+//! reference.
+//!
+//! **The layout** of the resident tasks is the C++ one, every matrix column-major and packed:
 //!
 //! | Row | Shape | Element | Size (doubles) |
 //! |---|---|---|---|
@@ -48,7 +59,7 @@
 //! | `wwr::gemv<double, int32_t>`, `wwr::gemmStridedBatched<…>`, `wwr::syrk<…>` with `kOne`, `kZero`, `kTwo` | [`gemv`], [`gemm_strided_batched`] and [`syrk`], the same modes, on the stream worker's handle, the scalars by value |
 //! | `symmetrize(res, WWRBLAS_FILL_MODE_LOWER, nao, k, nao)` | [`symmetrize_from`], the same fill mode |
 //! | `nao == 0`: an empty success; `naux` (or `nocc`) `== 0`: J (or K) zeroed; a negative count: `InvalidConfig` | refused at planning: every count is at least 1 |
-//! | `nao²` (J) or `naux · nocc` (K) past `int32_t`: `InvalidConfig` | an always-on contract (J) or `assert!` (K), since the BLAS's counts are `i32`s |
+//! | `nao²` (J) or `naux · nocc` (K) past `int32_t`: `InvalidConfig` | an always-on contract, since the BLAS's counts are `i32`s |
 //! | `ScopedDeviceIndex` for the call | nothing: a stream worker's tasks run on its device |
 //! | nothing: the C++ tree compiles its kernels into the binary | [`fb_recipes_sys::check_library`] first, at planning, for K's mirror |
 //! | `df_exchange(res, nao, naux, rank, b, left, right, k)`, the two-factor K | not ported: an SCF's density is `2 C Cᵀ`; a response density's port brings it |
@@ -59,6 +70,10 @@
 //! [`syrk`]: fb_core_wwr::blas::syrk
 
 #![forbid(unsafe_code)]
+
+mod streamed;
+
+pub use streamed::{BATCH_MAX, Contraction, add_streamed_jk};
 
 use contracts::debug_requires;
 use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
@@ -130,11 +145,13 @@ pub fn add_df_coulomb(
 /// `libfb_recipes_kernels.so` is not the one the bindings describe.
 ///
 /// # Panics
-/// If `nao`, `naux · nao` or `naux · nocc` does not fit an `i32`, the
-/// BLAS's integer, or a row is of another worker's table ([`Dag::add_gpu`]).
+/// If a row is of another worker's table ([`Dag::add_gpu`]).
 #[debug_requires(naux > 0, "a fitting set of at least one function")]
 #[debug_requires(nao > 0, "an orbital basis of at least one function")]
 #[debug_requires(nocc > 0, "a factor of at least one column")]
+#[requires(fits_i32!(nao), "nao fits the BLAS's i32")]
+#[requires(fits_i32!(naux.checked_mul(nao)), "naux · nao fits the BLAS's i32")]
+#[requires(fits_i32!(naux.checked_mul(nocc)), "naux · nocc fits the BLAS's i32")]
 #[track_caller]
 pub fn add_df_exchange(
     dag: &mut Dag<'_>,
@@ -145,17 +162,6 @@ pub fn add_df_exchange(
     b: RowId<Device, f64>,
     c: RowId<Device, f64>,
 ) -> Result<RowId<Device, f64>> {
-    for (what, count) in [
-        ("nao", Some(nao)),
-        ("naux · nao", naux.checked_mul(nao)),
-        ("naux · nocc", naux.checked_mul(nocc)),
-    ] {
-        assert!(
-            count.is_some_and(|count| i32::try_from(count).is_ok()),
-            "add_df_exchange: {what} (nao = {nao}, naux = {naux}, nocc = {nocc}) does not fit \
-             the BLAS's i32"
-        );
-    }
     // Not `map_err(Error::gpu)`: through a function pointer the error's
     // origin would be core's, not this call's caller.
     if let Err(e) = fb_recipes_sys::check_library() {
