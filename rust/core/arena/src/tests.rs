@@ -135,7 +135,7 @@ struct GoldenTable {
     name: String,
     total: usize,
     rows: Vec<Row>,
-    regions: Vec<(Row, Vec<Row>)>,
+    regions: Vec<(Row, usize, Vec<Row>)>,
 }
 
 /// Every table in a golden's text: a `table:` line, then its row lines
@@ -168,8 +168,13 @@ fn golden_tables(file: &str, text: &str) -> Vec<GoldenTable> {
                 first: first.parse().expect("a loop's first position"),
                 last: last.parse().expect("a loop's last position"),
             };
+            // A counted loop's region holds its body `copies` times.
+            let copies = words
+                .iter()
+                .position(|&w| w == "copies")
+                .map_or(1, |at| words[at - 1].parse().expect("a region's copies"));
             t.regions
-                .push((row(bytes, DEVICE_ALIGNMENT, life), Vec::new()));
+                .push((row(bytes, DEVICE_ALIGNMENT, life), copies, Vec::new()));
         } else if let [_, bytes, "task" | "edge" | "worker", life, ..] = words[..] {
             let Ok(bytes) = bytes.parse() else { continue };
             let life = match life.split_once('-') {
@@ -181,7 +186,7 @@ fn golden_tables(file: &str, text: &str) -> Vec<GoldenTable> {
             };
             let r = row(bytes, DEVICE_ALIGNMENT, life);
             match t.regions.last_mut() {
-                Some((_, body)) => body.push(r),
+                Some((_, _, body)) => body.push(r),
                 None => t.rows.push(r),
             }
         }
@@ -207,7 +212,8 @@ fn golden_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 }
 
 /// The assigner's quality, measured: every committed golden's block, and
-/// each loop's region, is within 3% of [`live_bound`], a region counted as
+/// each loop's region, is within 3% of [`live_bound`] (a counted loop's
+/// region of its body's bound times its copies), a region counted as
 /// one row of its parent (`docs/memory.md`, "Lifetimes"). The goldens'
 /// own tests hold their text to the code; this holds the text to the
 /// bound, so an assigner or planning change that wastes bytes fails here
@@ -235,11 +241,11 @@ fn goldens_are_within_the_bound() {
                     over.push(format!("{name}: {total} bytes, bound {bound}"));
                 }
             };
-            for (i, (region, body)) in t.regions.iter().enumerate() {
+            for (i, (region, copies, body)) in t.regions.iter().enumerate() {
                 check(
                     format!("{} loop {i}", t.name),
                     region.bytes,
-                    live_bound(body),
+                    copies * live_bound(body),
                 );
                 parent.push(*region);
             }
