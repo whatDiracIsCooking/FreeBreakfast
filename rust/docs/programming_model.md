@@ -535,6 +535,10 @@ distribution, and only one of them costs a task's author anything.
   Coulomb build over slices of the shell-pair list: one task's work sliced
   over workers, a broadcast in and a reduce out. This is the partition a task
   may declare, and it is the only place distribution reaches into a task.
+  It is built as a task per worker over its slice, `Partition`'s range,
+  with `Dag::broadcast` in and `Dag::gather` or `Dag::reduce` out
+  ("Collectives"); the slice is the task's dimension, so the task is still
+  written once, for one stream.
 
 Keeping the partition opt-in is what keeps single-GPU code honest: a task
 without one is written once, for one stream, and is still placeable on any
@@ -550,7 +554,7 @@ the orchestrator prices it by where the two ends landed:
 |---|---|---|
 | Threads on one host | A shared pointer | An ordered accumulate into one buffer |
 | Streams on one GPU | A shared pointer | An ordered accumulate into one buffer |
-| GPUs on one node | A device-to-device copy per card | Partials copied to one card, or a peer reduce |
+| GPUs on one node | The collectives library's broadcast, on the devices | Its reduce, or a gather of disjoint pieces |
 | Nodes | A network transfer | A network reduce |
 
 The single-GPU case is the degenerate one: broadcast is a pointer, reduce is
@@ -627,24 +631,87 @@ refused, naming both numbers, before the plan is made; at 1 the runtime
 is not asked, so a config without the key runs as it did before the key
 existed. GPU worker `w` is on the list's device `w`.
 
-**Work does not spread yet.** A count above 1 is accepted and changes
-nothing: the planner places every GPU worker as it does on one device, so
-a plan's workers are where they are at 1, and the instance makes blocks,
-streams and handles for the plan's workers alone (`Instance::instantiate`
-takes the devices its tables need and leaves the rest). A further device
-holds nothing, and a run's plan, its `plan.txt` and `plan.dot`, and its
-products are those of one device. Placing workers over the list is the
-next step, and the worker table's "GPUs on one node" row prices its
-edges.
+**Work spreads where a builder names the workers.** Placement is the
+builder's: it names each task's worker, so a builder that spreads names
+workers `0..num_gpus`, one per device, and one that does not puts every
+task on worker 0, as every calculation of the binary still does. The
+instance makes each worker's blocks on its device and the backend its
+lanes' streams, handles and fork streams there
+(`Plan::instantiate(&devices)`, `Instance::backend`), for the plan's
+workers alone, and the clique of communicators when the plan holds a
+collective ("Collectives", below); a device past the plan's last worker
+holds nothing. So a plan whose tasks are all on worker 0 is, at any
+`num_gpus`, the plan of one device: its `plan.txt`, `plan.dot` and
+products are unchanged by the key. Two workers on one device are
+allowed, and run as two threads with blocks of their own, but not with a
+collective, whose clique needs a device per rank.
+
+**What crosses between workers.** A task reads only rows of its own
+worker's tables, which are on its device. A row reaches another worker
+by a collective ("Collectives"); an ordering reaches one through a CPU
+node, which waits on the host for the producer's event, or, in the
+executor, through an edge between lanes of two workers, a wait on the
+consumer's device for an event recorded on the producer's. Both runtimes
+let a stream wait on an event of another device in one process, so that
+edge costs no host wait, as between two lanes of one worker. The
+planner adds no such edge of its own yet; the collectives need none.
+
+**What an edge across devices costs, the "GPUs on one node" row, is not
+priced.** The planner chooses no placement, so it has no price to compare;
+the builder that names the workers is choosing with the cost in mind, and
+the plan's text names every collective's parts, and its tables the rows
+each moves, which is what a price would read ("Open questions").
 
 **One lane is privileged: lane 0 of the worker on the list's first
 device.** Its `DeviceStream` says so (`DeviceStream::is_privileged`), set
 when the `Device` backend makes the run's streams and false on every other
 lane, and on a stream made outside a backend (`DeviceStream::new`), which
-is no run's. It is the lane that will own the run's run-wide work, the
-host I/O and the reductions every device's partials meet in, once work
-spreads; on one device it is the lane every one-lane plan already runs on.
-Nothing reads it yet.
+is no run's. It is the lane that owns the run's run-wide work, the host
+I/O and the reductions every device's partials meet in: a builder that
+spreads gathers and reduces onto worker 0, and every collective's part
+there runs on that lane. On one device it is the lane every one-lane plan
+already runs on. Nothing reads the flag yet.
+
+### Collectives
+
+**A collective is one step of the plan with a part on every GPU worker.**
+`Dag::add_collective(name, parts)` adds part `w` as a GPU task on lane 0
+of worker `w`, at consecutive positions, each part's layout holding its
+own worker's rows; the parts exchange the rows on the devices, each part
+calling its rank of the clique (`DeviceStream::comm`) on its lane's
+stream. No edge joins the parts: the collective completes on each device
+when every rank has issued its part, which the library waits for on the
+devices, not on the host. The builders over it are the planner's, as the
+copy nodes are:
+
+| Builder | Moves | Result |
+|---|---|---|
+| `Dag::broadcast` | a root's row to every worker | each worker's row, the root's own the source; exact |
+| `Dag::gather` | each worker's piece, rows `split.range(w)` of a `Partition`, onto a root | one row of `split.total()` there; exact, the pieces disjoint |
+| `Dag::reduce` | each worker's partial, summed onto a root | one row there; unordered, the library's order |
+
+**Every worker issues the collectives in plan order.** A rank whose part
+of one collective is enqueued after its part of the next leaves both
+waiting on the devices for good, and the executor enqueues a worker's
+ready nodes in rank order but only the ready ones. So the plan orders
+each part after its worker's part of the collective before, or after the
+decision of the loop that held that one; the parts are on lane 0, one
+stream per worker, so the device keeps the order the thread issued.
+Every other wait a part can meet is on an event already recorded or a
+CPU node that waits on parts already issued, so no cycle forms.
+
+**The clique is every worker's, made with the backend.** A collective
+spans every GPU worker of its plan (a contract at `Dag::plan`, which
+counts the ranks, `Plan::ranks`), and the backend of a plan that holds
+one makes the clique over its workers' devices, a rank per worker, before
+any run (`Device::make_clique`), its ranks dropped with the backend. A
+plan with none makes none, so the binary's plans pay nothing for it.
+
+**Where a collective may lie.** In a decision loop's body whole or not at
+all, the next iteration's parts issued after the decision, which waits
+for this iteration's; in no counted loop's, whose trips in flight could
+issue two collectives on two workers in two orders. Both are contracts
+of `Dag::add_loop` and `Dag::add_counted`.
 
 ### Forks inside a task
 
@@ -1001,6 +1068,13 @@ itself, split it there.
   process per node and a clique made from a shared id
   (`wwr_ccl_comm_init_rank_scalable`), or MPI beside it. Nothing in the
   model depends on the choice, and nothing here decides it.
+- **Pricing edges across devices.** The worker table's "GPUs on one
+  node" row says what a broadcast and a reduce are there, and the plan
+  names each collective's bytes, but the planner chooses no placement, so
+  it prices none. When placement becomes its search, the price of a
+  collective is a measurement per topology (NVLink pairs and PCIe through
+  a host bridge differ by an order on the A6000 node) before it is a
+  formula.
 - **Pinned blocks and NUMA.** On a multi-socket node, pinned pages on the
   GPU's own socket copy faster than pages across the interconnect. A pinned
   block is allocated on its worker's thread, so pinning that thread to the

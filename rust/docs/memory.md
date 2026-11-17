@@ -476,6 +476,15 @@ decision loop's body, from the writer's last trip. The accumulator above
 may be a row of the decision loop's body: K zeroed in the SCF's body before the batches, written by the counted
 loop's one user, and read after it, every iteration.
 
+**A loop's body may span workers.** Its tasks may be on several GPU
+workers, on several devices, as the body of a multi-GPU SCF is: each
+worker's table lays out that worker's body rows in a region of its own,
+the decision, a CPU node, waits for every worker's body nodes, and a row a
+worker carries from one iteration to the next is that worker's, in its
+table, by the rule below. Rows cross between the workers only through
+collectives ([`programming_model.md`](programming_model.md),
+"Collectives").
+
 **A carried row is the parent's.** The density, the occupied factor and
 DIIS's history pass from one iteration to the next. Such a row is produced
 before the loop (the guess, a zero fill, `add_diis`'s `diis history` task),

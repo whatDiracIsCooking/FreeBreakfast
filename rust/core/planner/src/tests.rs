@@ -1613,3 +1613,206 @@ fn heap_rows_are_the_plans() {
         Some(("heap", 8))
     );
 }
+
+/// A collective's part on its worker: reads `input` and writes an output
+/// of one element, the worker's index. For planning tests; on `HostOnly`
+/// workers it exchanges nothing.
+struct Part {
+    worker: usize,
+    input: Option<RowId<PinnedStandIn, f64>>,
+}
+
+impl GpuTask<PinnedStandIn, ()> for Part {
+    type Rows = RowId<PinnedStandIn, f64>;
+
+    fn layout(&self, _: &mut Layout<'_, Device>, h: &mut Layout<'_, PinnedStandIn>) -> Self::Rows {
+        if let Some(input) = self.input {
+            h.read(input);
+        }
+        h.output("part", 1)
+    }
+
+    fn run(
+        &self,
+        &out: &Self::Rows,
+        _: &Bufs<'_, Device>,
+        h: &CopyOnly<'_, PinnedStandIn>,
+        _: &(),
+    ) -> Status {
+        h.bufs().take_mut(out)[0] = self.worker as f64;
+        Ok(())
+    }
+}
+
+/// Two workers, three collectives: one before a loop, one in its body and
+/// one after it. Each collective's parts take consecutive positions, part
+/// `w` on lane 0 of worker `w`, and each part runs after its worker's part
+/// of the collective before, which for the one after the loop is the
+/// loop's decision: every worker issues the three in plan order. The plan
+/// text names each part's collective, and the plan runs.
+#[test]
+fn collectives_are_one_step_each_issued_in_plan_order_on_every_worker() {
+    let mut dag = Dag::<PinnedStandIn, ()>::new();
+    let parts = |input: Option<&Vec<RowId<PinnedStandIn, f64>>>| {
+        (0..2)
+            .map(|w| Part {
+                worker: w,
+                input: input.map(|rows| rows[w]),
+            })
+            .collect::<Vec<_>>()
+    };
+    let first = dag.add_collective("first", parts(None));
+    let body = dag.len();
+    let second = dag.add_collective("second", parts(Some(&first)));
+    dag.add_loop("stop", 0, body, 3, Stops);
+    dag.add_collective("third", parts(Some(&second)));
+    let planned = dag.plan();
+    assert_eq!(planned.ranks(), 2);
+    for (pos, worker) in [(0, 0), (1, 1), (2, 0), (3, 1), (5, 0), (6, 1)] {
+        assert_eq!(
+            planned.placement(pos),
+            Placement::Stream(LaneId { worker, lane: 0 })
+        );
+    }
+    assert_eq!(planned.predecessors(2), &[0]);
+    assert_eq!(planned.predecessors(3), &[1]);
+    assert_eq!(planned.predecessors(4), &[2, 3]);
+    // After the decision, never after a body node (and after the first
+    // collective's users, whose bytes its output takes).
+    for pos in [5, 6] {
+        let after = planned.predecessors(pos);
+        assert!(after.contains(&4), "{pos}: {after:?}");
+        assert!(
+            after.iter().all(|&u| !(2..4).contains(&u)),
+            "{pos}: {after:?}"
+        );
+    }
+    let text = planned.to_string();
+    for line in [
+        "    1       1  stream  first; collective 0-1",
+        "    3       1  stream  second: after 1; collective 2-3",
+        "    6       1  stream  third: after 1 4; collective 5-6",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+    planned
+        .instantiate(&[0, 1])
+        .run(&mut HostOnly::new(2), 1)
+        .result
+        .unwrap();
+}
+
+/// A plan without a collective needs no clique.
+#[test]
+fn a_plan_without_a_collective_has_no_ranks() {
+    let out = Arc::new(std::sync::Mutex::new(0.0));
+    assert_eq!(fixed_point_dag(&out).plan().ranks(), 0);
+}
+
+/// A collective that leaves a worker out is refused when the plan is made:
+/// the clique is every worker's.
+#[test]
+#[cfg(debug_assertions)] // the contract is compiled out of release
+#[should_panic(expected = "a collective spans every GPU worker of the plan")]
+fn a_collective_spans_every_worker() {
+    let mut dag = Dag::<PinnedStandIn, ()>::new();
+    dag.add_gpu(
+        "elsewhere",
+        1,
+        Part {
+            worker: 1,
+            input: None,
+        },
+    );
+    dag.add_collective(
+        "one",
+        vec![Part {
+            worker: 0,
+            input: None,
+        }],
+    );
+    let _ = dag.plan();
+}
+
+/// A collective in a counted loop is refused when the loop is closed.
+#[test]
+#[cfg(debug_assertions)] // the contract is compiled out of release
+#[should_panic(expected = "a counted loop holds no collective")]
+fn a_counted_loop_holds_no_collective() {
+    let mut dag = Dag::<PinnedStandIn, ()>::new();
+    let body = dag.len();
+    dag.add_collective(
+        "one",
+        vec![Part {
+            worker: 0,
+            input: None,
+        }],
+    );
+    dag.add_counted(body, 2, 1);
+}
+
+/// One loop whose body spans two workers, each with its own iterate: the
+/// fixed point of [`fixed_point_dag`] on each, `x` and `prev` carried in
+/// each worker's own table, the decision reading worker 0's alone. Both
+/// reach the fixed point in the same 41 iterations, each read after the
+/// loop through the decision.
+#[test]
+fn a_loop_body_spans_two_workers_each_carrying_its_rows() {
+    let outs = [0, 1].map(|_| Arc::new(std::sync::Mutex::new(0.0)));
+    let mut dag = Dag::<PinnedStandIn, ()>::new();
+    let rows: Vec<IterateRows> = (0..2).map(|w| dag.add_cpu("init", w, Iterate)).collect();
+    let body = dag.len();
+    let nexts: Vec<_> = (0..2)
+        .map(|w| {
+            let next = dag.add_gpu("step", w, Step(rows[w].x));
+            dag.add_cpu("carry", w, Carry { next, x: rows[w].x });
+            next
+        })
+        .collect();
+    dag.add_loop(
+        "converged",
+        0,
+        body,
+        100,
+        Converged {
+            next: nexts[0],
+            prev: rows[0].prev,
+        },
+    );
+    for w in 0..2 {
+        dag.add_cpu("report", w, Report(rows[w].x, Arc::clone(&outs[w])));
+    }
+    let planned = dag.plan();
+    assert_eq!(planned.n_workers(), 2);
+    assert_eq!(planned.ranks(), 0);
+    for w in 0..2 {
+        let text = planned.host_table(w).to_string();
+        assert!(text.contains("loop 2-6: region of"), "worker {w}: {text}");
+    }
+    let mut instance = planned.instantiate(&[0, 1]);
+    let record = instance.run(&mut HostOnly::new(2), 2);
+    record.result.unwrap();
+    let decision: Vec<_> = record.iterations.values().copied().collect();
+    assert_eq!(decision, [41]);
+    for (w, out) in outs.iter().enumerate() {
+        let got = *out.lock().unwrap();
+        assert!((got - 2.0).abs() <= 1e-12, "worker {w}: {got}");
+    }
+}
+
+/// A loop whose body starts inside a collective is refused when it is
+/// closed: a collective is one step, in a loop whole or not at all.
+#[test]
+#[cfg(debug_assertions)] // the contract is compiled out of release
+#[should_panic(expected = "a loop holds a collective whole or not at all")]
+fn a_loop_holds_a_collective_whole() {
+    let mut dag = Dag::<PinnedStandIn, ()>::new();
+    let parts = (0..2)
+        .map(|w| Part {
+            worker: w,
+            input: None,
+        })
+        .collect();
+    dag.add_collective("split", parts);
+    dag.add_loop("stop", 0, 1, 3, Stops);
+}

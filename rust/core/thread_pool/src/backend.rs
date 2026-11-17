@@ -13,6 +13,8 @@ use fb_core_error_handling::{Result, Status};
 #[cfg(feature = "device")]
 use fb_core_wwr::blas::BlasHandle;
 #[cfg(feature = "device")]
+use fb_core_wwr::ccl::Comm;
+#[cfg(feature = "device")]
 use fb_core_wwr::common::ScopedDeviceIndex;
 #[cfg(feature = "device")]
 use fb_core_wwr::device_slice::DeviceSliceMut;
@@ -172,6 +174,9 @@ pub struct DeviceStream {
     forks: Option<Rc<Forks>>,
     /// Whether this is the run's privileged lane ([`DeviceStream::is_privileged`]).
     privileged: bool,
+    /// The worker's rank of the run's clique, on lane 0 of each of its
+    /// workers once [`Device::make_clique`] made it; `None` otherwise.
+    comm: Option<Comm>,
 }
 
 /// A GPU worker's fork streams ([`DeviceStream::fork_join`]): outside its
@@ -228,6 +233,7 @@ impl DeviceStream {
             stream,
             forks,
             privileged,
+            comm: None,
         }
     }
 
@@ -332,6 +338,20 @@ impl DeviceStream {
         result
     }
 
+    /// The worker's rank of the run's clique of communicators
+    /// ([`fb_core_wwr::ccl`]), on lane 0, the lane every part of a
+    /// collective is placed on (`docs/programming_model.md`,
+    /// "Collectives"): what a collective's part on this worker calls.
+    ///
+    /// # Panics
+    /// If the lane has no rank: it is not lane 0, or the backend made no
+    /// clique ([`Device::make_clique`]), its plan having no collective.
+    pub fn comm(&self) -> &Comm {
+        self.comm
+            .as_ref()
+            .expect("a lane with no rank: collectives run on lane 0 of a backend with a clique")
+    }
+
     /// The lane's BLAS handle, bound to its stream: pass its `get()` to
     /// a `wwr_blas_*` call, and the call enqueues on the stream.
     ///
@@ -387,7 +407,9 @@ pub enum DeviceStream {}
 ///
 /// Built once per plan and reused every run, one run at a time
 /// ([`run`](super::run) borrows it exclusively): the streams, fork
-/// streams, handles and events are created here, never during a run.
+/// streams, handles and events are created here, and the clique of
+/// communicators a plan's collectives need by [`Device::make_clique`],
+/// never during a run.
 ///
 /// Neither `Send` nor `Sync`, as the raw runtime handles inside it are not:
 /// only a run shares it across threads, its workers, through `run`'s own
@@ -501,6 +523,26 @@ impl Device {
             .as_mut()
             .expect("a lane made without library handles has no workspace to bind")
             .bind_workspace(workspace)
+    }
+
+    /// Make the run's clique of communicators over the devices of GPU
+    /// workers `0..ranks`, rank `w` on worker `w`'s device, and hand each
+    /// rank to lane 0 of its worker ([`DeviceStream::comm`]), where every
+    /// part of a collective runs. `&mut self`, so never during a run: a
+    /// planner instance makes it with its backend when its plan holds a
+    /// collective. The workers' devices are distinct: the library refuses a
+    /// device listed twice.
+    ///
+    /// # Errors
+    /// As [`Comm::init_all`]: the library's refusal.
+    #[debug_requires(0 < ranks && ranks <= self.streams.len(), "a rank per worker, at least one")]
+    #[track_caller]
+    pub fn make_clique(&mut self, ranks: usize) -> Status {
+        let comms = Comm::init_all(&self.devices[..ranks])?;
+        for (lanes, comm) in self.streams.iter_mut().zip(comms) {
+            lanes[0].comm = Some(comm);
+        }
+        Ok(())
     }
 
     fn events(&self, node: NodeId, trip: usize) -> &(Event, Event) {

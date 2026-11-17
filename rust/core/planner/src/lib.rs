@@ -38,6 +38,14 @@
 //!   range of a heap row through a pinned window, a CPU and a GPU node
 //!   each: a copy that is a node's whole work is never a
 //!   hand-written task (`docs/memory.md`, "The table").
+//! - [`Dag::add_collective`]: one step with a part on every GPU worker,
+//!   each on its worker's lane 0 holding its worker's rows, the parts
+//!   exchanging rows on the devices through the backend's clique, and
+//!   each worker's collectives issued in plan order
+//!   (`docs/programming_model.md`, "Collectives"). With `device`,
+//!   `Dag::broadcast`, `Dag::gather` and `Dag::reduce` are the planner's
+//!   own: a row from a root to every worker, the pieces of a
+//!   [`Partition`] onto a root, and partials summed onto one.
 //!
 //! [`Bufs::iteration`]: fb_core_arena::Bufs::iteration
 //! - [`Plan`] ([`Dag::plan`]): each worker's device and host tables and
@@ -137,9 +145,11 @@
 //! derived from the DAG's shape. The assigner packs to the fewest bytes,
 //! so every reuse between two lanes serializes them; nothing gives a reuse
 //! up for concurrency (`docs/memory.md`, "Open questions"). A task
-//! reads only rows of its own worker; an edge between workers needs a
-//! transport row, which placement would add. No partition or reduce: every
-//! edge is one producer's output. No adaptive widths, no sub-DAG with
+//! reads only rows of its own worker; a row crosses between workers by a
+//! collective alone, whose parts the caller places on every worker, and no
+//! edge between workers is priced. A partition is the caller's tasks over
+//! a [`Partition`]'s ranges, not a declaration the planner slices. No
+//! adaptive widths, no sub-DAG with
 //! dimensions of its own, and of loops in a loop's body only a counted
 //! loop in a decision loop's. Every
 //! dependency is a row: an ordering with no buffer behind it has no way to
@@ -147,6 +157,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "device")]
+mod collective;
 #[cfg(feature = "device")]
 mod copy;
 mod dag;
@@ -156,6 +168,7 @@ mod graph;
 #[cfg(test)]
 mod graph_tests;
 mod instance;
+mod partition;
 mod task;
 #[cfg(test)]
 mod tests;
@@ -163,6 +176,7 @@ mod tests;
 pub use dag::{Dag, Plan};
 pub use graph::Graph;
 pub use instance::Instance;
+pub use partition::Partition;
 pub use task::{CpuTask, Decision, GpuTask};
 
 /// The bytes of device memory each worker's BLAS handle is handed as its

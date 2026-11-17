@@ -369,6 +369,11 @@ every case that calls it is named here, which `fb-doc-check`'s
 - `fb-pipeline-scf`'s `benzene_converges_to_pyscf`, the DF-RHF loop for
   benzene in cc-pVDZ / cc-pVDZ-JKFIT against PySCF;
   `water_converges_to_pyscf` is its family's representative.
+- `fb-core-planner`'s `tier5_every_split_is_bitwise_one_workers`, the
+  partitioned product on one, two and four workers against one another,
+  a clique made per run;
+  `tier5_a_partitioned_product_in_a_loop_across_devices` is its family's
+  representative.
 
 libtest has no skipped state, so a returned case counts as passed; the
 gate's line, not the count, is what says it did not run. `#[ignore]` is

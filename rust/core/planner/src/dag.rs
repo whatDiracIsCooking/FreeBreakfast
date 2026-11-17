@@ -132,6 +132,23 @@ pub struct Dag<'a, H: StagingKind = Pinned, S = DeviceStream> {
     nodes: Vec<Node<'a, H, S>>,
     /// Each loop, in plan order.
     loops: Vec<Loop>,
+    /// Each collective, in plan order.
+    collectives: Vec<Collective>,
+}
+
+/// A collective of a [`Dag`]: its parts' positions, consecutive from
+/// `first`, part `w` on lane 0 of worker `w`, one per worker of `ranks`.
+#[derive(Clone, Copy)]
+pub(super) struct Collective {
+    pub(super) first: usize,
+    pub(super) ranks: usize,
+}
+
+impl Collective {
+    /// Whether `pos` is one of its parts.
+    fn holds(&self, pos: usize) -> bool {
+        self.first <= pos && pos < self.first + self.ranks
+    }
 }
 
 /// A loop of a [`Dag`]: its positions, from its body's first to its
@@ -158,6 +175,7 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
             heap: TableBuilder::new(),
             nodes: Vec::new(),
             loops: Vec::new(),
+            collectives: Vec::new(),
         }
     }
 
@@ -187,9 +205,9 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
     /// contracts ([`TableBuilder::read`], [`TableBuilder::write`]).
     ///
     /// # Panics
-    /// If the layout reads a row of another worker's table (an edge between
-    /// two workers needs a transport row, which placement does not make
-    /// yet): here, by the table's contract, in a debug build; in every
+    /// If the layout reads a row of another worker's table (a row crosses
+    /// between workers by a collective alone, [`Dag::add_collective`]):
+    /// here, by the table's contract, in a debug build; in every
     /// build, when the task's run asks for the row, by the view's checks
     /// ([`Bufs`]).
     pub fn add_gpu<T>(&mut self, name: impl Into<String>, at: impl Into<LaneId>, task: T) -> T::Rows
@@ -248,6 +266,41 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
         rows
     }
 
+    /// Add a collective: one logical step with a part on every GPU worker
+    /// of the plan, part `w` of `parts` a GPU task on lane 0 of worker `w`,
+    /// each holding its own worker's rows (`docs/programming_model.md`,
+    /// "Collectives"). Returns each part's rows, in worker order. The
+    /// parts take consecutive positions, so the collective is one step of
+    /// the plan order, and the plan orders each worker's collectives in
+    /// that order, so every worker issues them in the same one; the parts
+    /// exchange their rows on the devices, through the clique the backend
+    /// makes for a plan that holds one (`DeviceStream::comm`), and need no
+    /// edge between them. `Dag::broadcast`, `Dag::gather` and `Dag::reduce`
+    /// are the collectives built on it.
+    ///
+    /// A collective lies in a decision loop's body whole or not at all, and
+    /// in no counted loop's: two trips in flight could issue two
+    /// collectives on two workers in two orders.
+    ///
+    /// The layouts' declarations are held to their tables' contracts, as
+    /// in [`Dag::add_gpu`].
+    #[debug_requires(!parts.is_empty(), "a collective has a part")]
+    pub fn add_collective<T>(&mut self, name: &str, parts: Vec<T>) -> Vec<T::Rows>
+    where
+        T: GpuTask<H, S> + 'a,
+        T::Rows: 'a,
+    {
+        let first = self.nodes.len();
+        let ranks = parts.len();
+        let rows = parts
+            .into_iter()
+            .enumerate()
+            .map(|(w, part)| self.add_gpu(name, w, part))
+            .collect();
+        self.collectives.push(Collective { first, ranks });
+        rows
+    }
+
     /// Close a loop: the tasks from position `body` to the last one added
     /// are its body, replayed in the same run, on the same workers, until
     /// `decision`, a CPU node added after them on GPU worker `worker`'s
@@ -289,6 +342,10 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
         "a loop holds another whole or not at all"
     )]
     #[debug_requires(max_iterations > 0, "the bound admits an iteration")]
+    #[debug_requires(
+        self.collectives.iter().all(|c| !c.holds(body) || c.first == body),
+        "a loop holds a collective whole or not at all"
+    )]
     pub fn add_loop<D>(
         &mut self,
         name: impl Into<String>,
@@ -367,6 +424,10 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
     )]
     #[debug_requires(trips > 0, "the loop has an iteration")]
     #[debug_requires(0 < depth && depth <= trips, "the depth is from 1 to the trip count")]
+    #[debug_requires(
+        self.collectives.iter().all(|c| c.first + c.ranks <= body),
+        "a counted loop holds no collective"
+    )]
     pub fn add_counted(&mut self, body: usize, trips: usize, depth: usize) {
         self.loops.push(Loop {
             first: body,
@@ -430,8 +491,14 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
     /// and derive each task's dependencies: the producer of every row it
     /// reads, the writer a loop's carried row is ordered against, and
     /// every handoff into it; a loop's decision also runs after every task
-    /// of its body. Pure: no device. The rows a loop carries are held to
+    /// of its body, and each part of a collective after the worker's part
+    /// of the collective before (`docs/programming_model.md`,
+    /// "Collectives"). Pure: no device. The rows a loop carries are held to
     /// the tables' contracts ([`TableBuilder::build`]).
+    #[debug_requires(
+        self.collectives.iter().all(|c| c.ranks == self.workers.len()),
+        "a collective spans every GPU worker of the plan"
+    )]
     pub fn plan(mut self) -> Plan<'a, H, S> {
         for w in &mut self.workers {
             // Lane 0 has its handles whatever its tasks say; a lane above
@@ -490,6 +557,24 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
         for l in loops.iter().filter(|l| l.counted.is_none()) {
             deps[l.last].extend(l.first..l.last);
         }
+        // Each worker's collectives in plan order: part `w` of one after
+        // part `w` of the one before, or after the decision of the loop
+        // whose body holds that one and not this.
+        for (c, d) in self.collectives.iter().zip(self.collectives.iter().skip(1)) {
+            for w in 0..d.ranks.min(c.ranks) {
+                let (u, v) = (c.first + w, d.first + w);
+                let after = loops
+                    .iter()
+                    .find(|l| l.counted.is_none() && l.first <= u && u < l.last && l.last < v)
+                    .map_or(u, |l| l.last);
+                deps[v].insert(after);
+            }
+        }
+        let ranks = if self.collectives.is_empty() {
+            0
+        } else {
+            tables.len()
+        };
         let mut pairs = vec![heap.reads(), heap.handoffs()];
         for (device, host) in &tables {
             pairs.extend([
@@ -517,6 +602,8 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
             nodes: self.nodes,
             deps: deps.into_iter().map(|d| d.into_iter().collect()).collect(),
             loops: self.loops,
+            collectives: self.collectives,
+            ranks,
         }
     }
 
@@ -543,6 +630,7 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
 /// Its text ([`fmt::Display`]) is the plan's golden: each task's worker,
 /// lane and dependencies, each loop's span and bound on its decision's
 /// line and each counted loop's span, trips and depth on its body's last,
+/// and each collective's span on each of its parts' lines,
 /// then every non-empty table, a loop's region and body in it: each
 /// worker's, then the heap's. A GPU
 /// task's lane reads `stream` on a worker of one lane and `stream<l>` on a
@@ -566,6 +654,10 @@ pub struct Plan<'a, H: StagingKind = Pinned, S = DeviceStream> {
     pub(super) nodes: Vec<Node<'a, H, S>>,
     pub(super) deps: Vec<Vec<usize>>,
     pub(super) loops: Vec<Loop>,
+    pub(super) collectives: Vec<Collective>,
+    /// The ranks of the clique its collectives need, one per GPU worker;
+    /// 0 for a plan with none.
+    pub(super) ranks: usize,
 }
 
 impl<H: StagingKind, S> Plan<'_, H, S> {
@@ -614,6 +706,13 @@ impl<H: StagingKind, S> Plan<'_, H, S> {
     pub fn placement(&self, pos: usize) -> Placement {
         self.nodes[pos].placement()
     }
+
+    /// The ranks of the clique its collectives exchange rows through, one
+    /// per GPU worker, which its instance's backend makes; 0 for a plan
+    /// that holds no collective, whose backend makes none.
+    pub fn ranks(&self) -> usize {
+        self.ranks
+    }
 }
 
 impl<H: StagingKind, S> fmt::Display for Plan<'_, H, S> {
@@ -654,6 +753,9 @@ impl<H: StagingKind, S> fmt::Display for Plan<'_, H, S> {
                     f,
                     "; decides loop {body}-{pos}, at most {max_iterations} iterations"
                 )?;
+            }
+            for c in self.collectives.iter().filter(|c| c.holds(pos)) {
+                write!(f, "; collective {}-{}", c.first, c.first + c.ranks - 1)?;
             }
             for l in self.loops.iter().filter(|l| l.last == pos) {
                 if let Some((trips, depth)) = l.counted {

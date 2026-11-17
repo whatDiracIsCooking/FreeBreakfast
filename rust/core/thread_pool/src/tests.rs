@@ -1602,6 +1602,84 @@ fn tier5_one_privileged_lane_across_two_devices() {
     run(&mut plan, &mut device, 1).result.unwrap();
 }
 
+/// Devices 0 and 1, a GPU worker on each: an edge between workers on two
+/// devices is a wait on the device, the consumer's stream waiting on the
+/// producer's event recorded on the other device, with no host wait.
+///
+/// Worker 0's node enqueues a chain of copies on device 0 that ends by
+/// writing `src`, still running when it returns; worker 1's node, after
+/// it, copies `src` across to `dst` on device 1. Without the wait the copy
+/// reads the zeros `src` started as, and the CPU node's comparison fails.
+/// The edge adds no sync point: the record's are the CPU node's and the
+/// two workers' exits. Tier 5: it needs a second device.
+#[cfg(feature = "device-tests")]
+#[test]
+#[ignore = "tier 5: needs two GPUs"]
+fn tier5_an_edge_between_devices_waits_on_the_device() {
+    use fb_core_wwr::common::ScopedDeviceIndex;
+    use fb_core_wwr::runtime::Stream;
+    use fb_core_wwr::runtime::tests::DeviceBytes;
+
+    const N: usize = 64 << 20;
+    const HOPS: usize = 32;
+    let want = pattern(N, 3);
+    let zeros = vec![0u8; N];
+    let setup = Stream::new(0);
+    let a = DeviceBytes::upload(&want, &setup);
+    let b = DeviceBytes::new(N);
+    let src = DeviceBytes::upload(&zeros, &setup);
+    let (dst, seen) = {
+        let _one = ScopedDeviceIndex::new(1);
+        let on_one = Stream::new(1);
+        (DeviceBytes::upload(&zeros, &on_one), Mutex::new(Vec::new()))
+    };
+
+    let mut plan: TaskGraph<'_, DeviceStream> = TaskGraph::new();
+    let produce = plan.add("produce", on(0, 0), &[], |lane| {
+        let Lane::Stream { stream, .. } = lane else {
+            unreachable!()
+        };
+        for _ in 0..HOPS / 2 {
+            d2d_on(&b, &a, N, stream);
+            d2d_on(&a, &b, N, stream);
+        }
+        d2d_on(&src, &a, N, stream);
+        Ok(())
+    });
+    let across = plan.add("across", on(1, 0), &[produce], |lane| {
+        let Lane::Stream { stream, .. } = lane else {
+            unreachable!()
+        };
+        d2d_on(&dst, &src, N, stream);
+        Ok(())
+    });
+    let read = plan.add("read", Placement::Cpu, &[across], |_| {
+        let _one = ScopedDeviceIndex::new(1);
+        *seen.lock().unwrap() = dst.read(&Stream::new(1));
+        Ok(())
+    });
+    let mut device = Device::new(&[0, 1], &plan, &[], &[]);
+    let record = run(&mut plan, &mut device, 1);
+    record.result.as_ref().unwrap();
+    assert!(
+        *seen.lock().unwrap() == want,
+        "the edge across devices did not wait"
+    );
+    let syncs: Vec<_> = record
+        .syncs
+        .iter()
+        .map(|s| (s.node, s.worker.as_str(), s.waited_for))
+        .collect();
+    assert_eq!(
+        syncs,
+        [
+            (Some(read), "cpu0", across),
+            (None, "gpu0.0", produce),
+            (None, "gpu1.0", across),
+        ]
+    );
+}
+
 /// Device 0, one run: a loop whose body is a stream node and a CPU node
 /// after it reads each iteration's stream scope back, one per iteration.
 ///
