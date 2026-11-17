@@ -18,7 +18,8 @@
 //!   calls `memcpy_p2d` or `memcpy_d2p` and no other free function, its
 //!   other calls the views' and iterators' methods, and an `impl CpuTask`
 //!   whose `run` names its heap view and does nothing but a
-//!   `copy_from_slice` between rows, are in [`COPY_TASKS`]: the planner's
+//!   `copy_from_slice` between rows, its range perhaps clamped to a row's
+//!   end, are in [`COPY_TASKS`]: the planner's
 //!   own three, and the two host halves of its heap copies.
 //! - **"The planner" names `fb_core_planner` alone**
 //!   (`docs/programming_model.md`, "The orchestrator derives"): no item
@@ -476,8 +477,9 @@ fn block_end(code: &str, from: usize) -> Option<(usize, usize)> {
 /// or `Ok(`, never another free or path function, a kernel's launch, a
 /// BLAS call or another copy. And of each `impl … CpuTask … for` whose
 /// `run` is a copy between a heap row and a pinned one alone: its heap
-/// view is named, not `_`, and its calls are `copy_from_slice` and the
-/// views' `get`, `take_mut` and `iteration`, nothing else.
+/// view is named, not `_`, and its calls are `copy_from_slice`, the
+/// views' `get`, `take_mut` and `iteration`, and a range's clamp to a
+/// row's end, `len` and `min`, nothing else.
 fn copy_tasks(code: &str) -> Vec<usize> {
     let mut found = Vec::new();
     let mut from = 0;
@@ -512,7 +514,7 @@ fn copy_tasks(code: &str) -> Vec<usize> {
             match w {
                 "memcpy_p2d" | "memcpy_d2p" if gpu => copies += 1,
                 "copy_from_slice" if cpu && method => copies += 1,
-                "get" | "take_mut" | "iteration" if cpu && method => {}
+                "get" | "take_mut" | "iteration" | "len" | "min" if cpu && method => {}
                 _ if gpu && method => {}
                 // A tuple pattern or a condition, not a call.
                 "Ok" | "Some" | "for" | "in" | "if" | "while" | "match" | "return" | "let" => {}
@@ -810,6 +812,10 @@ fn the_copy_scan_sees_a_copy_alone() {
                   let from = self.start + heap.iteration() * self.len;\n        \
                   pinned.take_mut(*w).copy_from_slice(&heap.get(self.src)[from..from + self.len]);\n        Ok(())\n    }\n}\n";
     assert_eq!(copy_tasks(staged), [1]);
+    let clamped = "impl CpuTask for Stage {\n    fn run(&self, w: &R, p: &Bufs<'_, Pinned>, heap: &Bufs<'_, Heap>) -> Status {\n        \
+                   let src = heap.get(self.src);\n        let to = src.len().min(from + self.len);\n        \
+                   let range = &src[from..to];\n        p.take_mut(*w)[..range.len()].copy_from_slice(range);\n        Ok(())\n    }\n}\n";
+    assert_eq!(copy_tasks(clamped), [1]);
     let unstaged = "impl CpuTask for Back {\n    fn run(&self, _: &(), p: &Bufs<'_, Pinned>, heap: &Bufs<'_, Heap>) -> Status {\n        \
                     heap.take_mut(self.dst)[a..b].copy_from_slice(p.get(self.w));\n        Ok(())\n    }\n}\n";
     assert_eq!(copy_tasks(unstaged), [1]);

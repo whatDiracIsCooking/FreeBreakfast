@@ -39,8 +39,8 @@ use fb_integrals_eri_density_fitting_pair_map::{Packing, PairMap};
 use fb_integrals_mmd::record_tables;
 use fb_integrals_sys::add_packed_tables;
 
-/// The fitting set's size: two full batches of 64 and a short one of 22
-/// at the widest batch.
+/// The fitting set's size: two full batches of 64 and a ragged last one
+/// of 22 at the widest batch.
 const NAUX: usize = 150;
 /// The two factors' columns.
 const NOCC: [usize; 2] = [5, 3];
@@ -365,13 +365,14 @@ fn check(ran: &Ran, nao: usize, bitwise: bool) {
 }
 
 /// Every pair kept, at the widest batch (two full batches of 64 in the
-/// ring and the short one of 22): J and K within the bar of the resident
-/// tasks', exactly symmetric, the one pass bitwise the two. Catches a
-/// batch read at the wrong offset of the heap row, a packed weight or a
-/// diagonal block counted twice, the gather's slab read in the wrong
-/// order by the batched gemm, an accumulator overwritten rather than
-/// added to, the short batch lost, and two contractions of one pass
-/// sharing a row they should not. Needs a GPU.
+/// ring and the ragged last one of 22): J and K within the bar of the
+/// resident tasks', exactly symmetric, the one pass bitwise the two.
+/// Catches a batch read at the wrong offset of the heap row, a packed
+/// weight or a diagonal block counted twice, the gather's slab read in
+/// the wrong order by the batched gemm, an accumulator overwritten rather
+/// than added to, the ragged last batch lost or read past its 22
+/// functions, and two contractions of one pass sharing a row they should
+/// not. Needs a GPU.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn every_pair_kept_is_the_resident_within_the_bar() {
@@ -433,8 +434,8 @@ fn narrowed_room(inp: &Inputs) -> usize {
 
 /// The passes in a decision loop of three iterations, as the SCF holds
 /// them: the last iteration's J and K bitwise the top level's, and at the
-/// bar. Catches the short batch's range taken from the decision loop's
-/// iteration rather than its trip, and a pass whose accumulators carry one
+/// bar. Catches a batch's range taken from the decision loop's iteration
+/// rather than its trip, and a pass whose accumulators carry one
 /// iteration's sums into the next. Needs a GPU.
 #[test]
 #[ignore = "tier 4: needs a GPU"]

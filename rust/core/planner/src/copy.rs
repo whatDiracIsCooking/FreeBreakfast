@@ -121,8 +121,19 @@ impl<'a> Dag<'a, Pinned, DeviceStream> {
     /// iteration in flight; or, outside a loop, as `n` calls, one per
     /// range.
     ///
+    /// A range that runs past the end of `src` is clamped to it: the
+    /// iteration copies `min(len, src.len() - start_k)` elements, `start_k`
+    /// its range's start, into the head of the window and the device row,
+    /// which keep the full length, the rest of them left as an earlier
+    /// trip or the block left it. So a row of `total` elements cut into
+    /// ranges of `len` goes up in `total.div_ceil(len)` trips, the last
+    /// one ragged (`docs/memory.md`, "Adaptive widths: one planner
+    /// routine"), and the task that reads the device row reads that count
+    /// alone, `len.min(total - k len)` in trip `k`, from its own views'
+    /// iteration.
+    ///
     /// # Panics
-    /// When the plan runs, if an iteration's range runs past the end of
+    /// When the plan runs, if an iteration's range starts past the end of
     /// `src`.
     #[debug_requires(range.start <= range.end, "a range runs forward")]
     pub fn upload_heap<T: Element>(
@@ -172,11 +183,15 @@ impl<'a> Dag<'a, Pinned, DeviceStream> {
     /// by `k` of its lengths, as [`Dag::upload_heap`] reads: a row cut into
     /// `n` ranges comes down in a counted loop of `n` trips, range `k` in
     /// trip `k`. A task after the loop that reads `dst` runs after the
-    /// last trip's write.
+    /// last trip's write. A range that runs past the end of `dst` is
+    /// clamped to it, as [`Dag::upload_heap`] clamps: the whole of `src`
+    /// comes down into the window, and the head of the window that the
+    /// clamped range holds goes into it, so a row of `total` elements
+    /// comes down in `total.div_ceil(len)` trips.
     ///
     /// # Panics
     /// When the plan runs, if `src` is not the range's length long
-    /// (`memcpy_d2p`), or if an iteration's range runs past the end of
+    /// (`memcpy_d2p`), or if an iteration's range starts past the end of
     /// `dst`.
     #[debug_requires(range.start <= range.end, "a range runs forward")]
     pub fn download_heap<T: Element>(
@@ -233,11 +248,13 @@ impl<T: Element, P: StagingKind> CpuTask<P> for Stage<T> {
     }
 
     fn run(&self, window: &Self::Rows, pinned: &Bufs<'_, P>, heap: &Bufs<'_, Heap>) -> Status {
-        // This iteration's range: the first moved on by its lengths.
+        // This iteration's range: the first moved on by its lengths, its
+        // end clamped to the row's.
+        let src = heap.get(self.src);
         let from = self.start + heap.iteration() * self.len;
-        pinned
-            .take_mut(*window)
-            .copy_from_slice(&heap.get(self.src)[from..from + self.len]);
+        let to = src.len().min(from + self.len);
+        let range = &src[from..to];
+        pinned.take_mut(*window)[..range.len()].copy_from_slice(range);
         Ok(())
     }
 }
@@ -264,8 +281,11 @@ impl<T: Element, P: StagingKind> CpuTask<P> for Unstage<T, P> {
     }
 
     fn run(&self, _: &(), pinned: &Bufs<'_, P>, heap: &Bufs<'_, Heap>) -> Status {
+        let dst = heap.take_mut(self.dst);
         let from = self.start + heap.iteration() * self.len;
-        heap.take_mut(self.dst)[from..from + self.len].copy_from_slice(pinned.get(self.window));
+        let to = dst.len().min(from + self.len);
+        let range = &mut dst[from..to];
+        range.copy_from_slice(&pinned.get(self.window)[..range.len()]);
         Ok(())
     }
 }
@@ -520,15 +540,15 @@ mod tests {
         (i as f64 * 0.37).sin() * 1e3 + 1.0 / (i + 1) as f64
     }
 
-    /// CPU: the source heap row, filled, and the destination, the heap
-    /// row the ranges come back into, left as the block's fill.
-    struct Source;
+    /// CPU: the source heap row of `.0` elements, filled, and the
+    /// destination, the heap row the ranges come back into, left as the
+    /// block's fill.
+    struct Source(usize);
 
     impl<P: StagingKind> CpuTask<P> for Source {
         type Rows = (RowId<Heap, f64>, RowId<Heap, f64>);
         fn layout(&self, _: &mut Layout<'_, P>, heap: &mut Layout<'_, Heap>) -> Self::Rows {
-            let n = RANGES * PIECE;
-            (heap.output("b", n), heap.output("b back", n))
+            (heap.output("b", self.0), heap.output("b back", self.0))
         }
         fn run(&self, rows: &Self::Rows, _: &Bufs<'_, P>, heap: &Bufs<'_, Heap>) -> Status {
             let src = heap.take_mut(rows.0);
@@ -561,7 +581,7 @@ mod tests {
     #[test]
     fn a_heap_copy_is_two_nodes_named_after_its_row() {
         let mut dag = Dag::new();
-        let (src, dst) = dag.add_cpu("source", 0, Source);
+        let (src, dst) = dag.add_cpu("source", 0, Source(RANGES * PIECE));
         let body = dag.len();
         let d = dag.upload_heap(LaneId { worker: 0, lane: 1 }, src, 0..PIECE, "b");
         dag.download_heap(0, d, dst, 0..PIECE, "b back");
@@ -644,12 +664,24 @@ mod tests {
     /// a heap row cut into ranges, staged range `k` in trip `k` of a
     /// counted loop of depth 2 and unstaged into range `k` of a second
     /// heap row, which comes back bitwise the first. Each half is one
-    /// entry per trip in the record, under its own name.
+    /// entry per trip in the record, under its own name. A row whose
+    /// length is no multiple of the range's comes back the same way in
+    /// `div_ceil` trips, the last range clamped to the row's end: a clamp
+    /// that copied too few elements leaves the block's fill in the
+    /// second row, and one that copied past the end panics.
     #[test]
     fn heap_ranges_round_trip_bitwise() {
+        for total in [RANGES * PIECE, RANGES * PIECE - 2] {
+            round_trip(total);
+        }
+    }
+
+    /// [`heap_ranges_round_trip_bitwise`] over a row of `total` elements.
+    fn round_trip(total: usize) {
+        let trips = total.div_ceil(PIECE);
         let keep = Arc::new(Mutex::new(Vec::new()));
         let mut dag: Dag<'_, PinnedStandIn, ()> = Dag::new();
-        let (src, dst) = dag.add_cpu("source", 0, Source);
+        let (src, dst) = dag.add_cpu("source", 0, Source(total));
         let body = dag.len();
         let window = dag.add_cpu(
             "stage b",
@@ -672,24 +704,24 @@ mod tests {
                 len: PIECE,
             },
         );
-        dag.add_counted(body, RANGES, 2);
+        dag.add_counted(body, trips, 2);
         dag.add_cpu("keep", 0, Keep(dst, Arc::clone(&keep)));
         let mut instance = dag.plan().instantiate(&[0]);
         for run in 0..2 {
             let record = instance.run(&mut HostOnly::new(1), 2);
             record.result.as_ref().unwrap();
             let got = std::mem::take(&mut *keep.lock().unwrap());
-            let want: Vec<u64> = (0..RANGES * PIECE).map(|i| value(i).to_bits()).collect();
-            assert_eq!(got, want, "run {run}");
+            let want: Vec<u64> = (0..total).map(|i| value(i).to_bits()).collect();
+            assert_eq!(got, want, "total {total}, run {run}");
             for name in ["stage b", "unstage b back"] {
-                let trips: Vec<_> = record
+                let got: Vec<_> = record
                     .tasks
                     .iter()
                     .filter(|t| t.name == name)
                     .map(|t| (t.iteration, t.dims.get("len").copied()))
                     .collect();
-                let each: Vec<_> = (0..RANGES).map(|k| (Some(k), Some(PIECE))).collect();
-                assert_eq!(trips, each, "run {run}: {name}");
+                let each: Vec<_> = (0..trips).map(|k| (Some(k), Some(PIECE))).collect();
+                assert_eq!(got, each, "total {total}, run {run}: {name}");
             }
         }
     }
