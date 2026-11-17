@@ -40,6 +40,9 @@ pub struct Instance<'a, H: StagingKind = Pinned, S = DeviceStream> {
     /// Per worker, its BLAS workspace rows, each with its lane, if declared.
     #[cfg_attr(not(feature = "device"), allow(dead_code))]
     pub(super) blas_workspaces: Vec<Vec<(usize, RowId<Device, u8>)>>,
+    /// The ranks of the clique its collectives need; 0 for none.
+    #[cfg_attr(not(feature = "device"), allow(dead_code))]
+    ranks: usize,
 }
 
 /// A worker's device block and host block.
@@ -125,6 +128,7 @@ impl<'a, H: StagingKind, S: 'a> Plan<'a, H, S> {
             libraries: self.libraries,
             forks: self.forks,
             blas_workspaces: self.blas_workspaces,
+            ranks: self.ranks,
         }
     }
 }
@@ -206,15 +210,20 @@ impl<H: StagingKind> Instance<'_, H, DeviceStream> {
     /// [`HeldRow`](fb_core_arena::HeldRow) for as long as the backend
     /// lives, which keeps the block alive with it, so the backend may
     /// outlive the instance; a second backend made while the first lives
-    /// would find the row held.
+    /// would find the row held. For a plan that holds a collective
+    /// ([`Dag::add_collective`]), the clique its parts exchange rows
+    /// through, a rank per worker on lane 0 (`Device::make_clique`); the
+    /// workers' devices are then distinct.
     ///
-    /// Aborts, as a failed create does, if a handle refuses its workspace.
+    /// Aborts, as a failed create does, if a handle refuses its workspace
+    /// or the library refuses the clique.
     ///
     /// # Panics
     /// If a lane's workspace row is already held: a backend made from this
     /// instance before still lives.
     ///
     /// [`Dag::blas_workspace`]: super::Dag::blas_workspace
+    /// [`Dag::add_collective`]: super::Dag::add_collective
     /// [`GpuTask::uses_libraries`]: super::GpuTask::uses_libraries
     /// [`GpuTask::forks`]: super::GpuTask::forks
     #[track_caller]
@@ -227,6 +236,9 @@ impl<H: StagingKind> Instance<'_, H, DeviceStream> {
                 let held = self.blocks[worker].0.hold(row);
                 check_or_abort(backend.bind_blas_workspace(LaneId { worker, lane }, held));
             }
+        }
+        if self.ranks > 0 {
+            check_or_abort(backend.make_clique(self.ranks));
         }
         backend
     }

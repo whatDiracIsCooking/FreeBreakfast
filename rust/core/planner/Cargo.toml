@@ -11,13 +11,14 @@ workspace = true
 [features]
 default = ["device", "device-tests"]
 # Device and Pinned blocks and the Device backend, from the arena and the
-# thread pool. Without it the crate links no library; its unit tests run on
-# Heap blocks and HostOnly workers either way.
-device = ["fb-core-arena/device", "fb-core-thread-pool/device"]
-# What the device test needs beyond `device`: wwr itself, for streams and
-# raw copies. A feature rather than dev-dependencies, which cannot be
+# thread pool, and the collectives' calls and copies, from fb-core-wwr.
+# Without it the crate links no library; its unit tests run on Heap blocks
+# and HostOnly workers either way.
+device = ["fb-core-arena/device", "fb-core-thread-pool/device", "dep:fb-core-wwr"]
+# What the device test needs beyond `device`: wwr's raw bindings, for raw
+# copies. A feature rather than dev-dependencies, which cannot be
 # optional; a dependent takes `device` alone, never this.
-device-tests = ["device", "dep:fb-core-wwr", "dep:wwr-sys"]
+device-tests = ["device", "dep:wwr-sys"]
 
 [dependencies]
 contracts.workspace = true
@@ -35,4 +36,9 @@ proptest.workspace = true
 # A round trip through pinned and device rows on a card.
 [[test]]
 name = "planner_device"
+required-features = ["device-tests"]
+
+# The collectives across cards: a partitioned product in a decision loop.
+[[test]]
+name = "collectives"
 required-features = ["device-tests"]
