@@ -249,10 +249,11 @@ fn guess_refusals() {
 }
 
 /// What `[eri]` refuses, each `InvalidConfig` naming the key or table: the
-/// C++ default mode, which is not ported; a missing `aux_basis`, which has
-/// no default; an unknown key; a well-formed table beside a calculation
-/// other than `rhf`; its absence beside `rhf`; and a fitting set that is
-/// not compiled in.
+/// C++ default mode, which is not ported; a missing `aux_basis` under
+/// `density_fitting`, which has no default; an `aux_basis` under
+/// `conventional`, which fits nothing; an unknown key; a well-formed table
+/// beside a calculation other than `rhf`; its absence beside `rhf`; and a
+/// fitting set that is not compiled in.
 #[test]
 fn eri_refusals() {
     let cases = [
@@ -263,8 +264,13 @@ fn eri_refusals() {
         ),
         (
             "eri_no_aux_basis",
-            format!("{GUESS}[eri]\nmode = \"density_fitting\"\n"),
-            "missing field `aux_basis`",
+            RHF.replace("aux_basis = \"cc-pvdz-jkfit\"\n", ""),
+            "[eri] aux_basis: mode = \"density_fitting\" needs a fitting set",
+        ),
+        (
+            "eri_conventional_with_aux_basis",
+            RHF.replace("density_fitting", "conventional"),
+            "[eri] aux_basis: 'cc-pvdz-jkfit' given, but mode = \"conventional\" fits nothing",
         ),
         (
             "eri_unknown_key",

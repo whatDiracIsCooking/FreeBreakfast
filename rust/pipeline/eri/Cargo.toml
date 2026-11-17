@@ -1,6 +1,6 @@
 [package]
 name = "fb-pipeline-eri"
-description = "pipeline/eri: the density-fitted ERI step, the aux basis placed and B = L⁻¹ (P|mn) built once as tasks"
+description = "pipeline/eri: the ERI step, the density-fitted B = L⁻¹ (P|mn) over a placed aux basis, or the conventional packed tensors, built once as tasks"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -13,6 +13,7 @@ fb-basis.workspace = true
 fb-core-arena.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-planner.workspace = true
+fb-integrals-eri-conventional.workspace = true
 fb-integrals-eri-density-fitting-fit.workspace = true
 fb-integrals-eri-density-fitting-metric.workspace = true
 fb-integrals-eri-density-fitting-three-center.workspace = true

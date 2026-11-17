@@ -1,6 +1,6 @@
 [package]
 name = "fb-pipeline-scf"
-description = "pipeline/scf: the DF-RHF and DF-ROHF loop, one iteration's tasks replayed to convergence, from the Roothaan step, the density, the Fock matrix (an open shell's Roothaan effective one), the energy and the DIIS residual; and the whole run of a molecule"
+description = "pipeline/scf: the DF-RHF and DF-ROHF loop, and the RHF over the conventional integrals, one iteration's tasks replayed to convergence, from the Roothaan step, the density, the Fock matrix (an open shell's Roothaan effective one), the energy and the DIIS residual; and the whole run of a molecule"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -16,6 +16,7 @@ fb-core-log.workspace = true
 fb-core-planner.workspace = true
 fb-core-thread-pool = { workspace = true, features = ["device"] }
 fb-core-wwr.workspace = true
+fb-integrals-eri-conventional.workspace = true
 fb-integrals-eri-density-fitting-jk.workspace = true
 fb-integrals-mmd.workspace = true
 fb-integrals-one-electron-core-hamiltonian.workspace = true

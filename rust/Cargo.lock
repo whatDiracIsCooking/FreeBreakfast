@@ -328,6 +328,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "fb-integrals-eri-conventional"
+version = "0.1.0"
+dependencies = [
+ "contracts",
+ "fb-basis",
+ "fb-core-arena",
+ "fb-core-error-handling",
+ "fb-core-planner",
+ "fb-core-thread-pool",
+ "fb-core-wwr",
+ "fb-integrals-mmd",
+ "fb-integrals-sys",
+ "fb-io-basis",
+ "fb-io-npy",
+ "fb-io-xyz",
+ "fb-recipes-matrix-ao",
+ "fb-recipes-symmetrize",
+ "fb-recipes-sys",
+ "fb-test-support",
+ "wwr-sys",
+]
+
+[[package]]
 name = "fb-integrals-eri-density-fitting-fit"
 version = "0.1.0"
 dependencies = [
@@ -686,6 +709,7 @@ dependencies = [
  "fb-core-error-handling",
  "fb-core-planner",
  "fb-core-thread-pool",
+ "fb-integrals-eri-conventional",
  "fb-integrals-eri-density-fitting-fit",
  "fb-integrals-eri-density-fitting-jk",
  "fb-integrals-eri-density-fitting-metric",
@@ -736,6 +760,7 @@ dependencies = [
  "fb-core-thread-pool",
  "fb-core-types",
  "fb-core-wwr",
+ "fb-integrals-eri-conventional",
  "fb-integrals-eri-density-fitting-jk",
  "fb-integrals-mmd",
  "fb-integrals-one-electron-core-hamiltonian",

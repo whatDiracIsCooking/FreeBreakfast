@@ -60,8 +60,9 @@ use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_integrals_one_electron_overlap::add_overlap;
 use fb_molecule::Molecule;
 use fb_molecule_nuclei::add_nuclei;
-use fb_pipeline_eri::add_df_eri;
+use fb_pipeline_eri::{Eri, EriMode, EriStep, add_df_eri};
 use fb_pipeline_guess::{add_guess_upload, add_loaded_guess};
+
 use fb_pipeline_scf::{Run, ScfOutput, ScfStep, add_scf};
 use fb_recipes_diagonalize::syevd_lwork;
 use fb_recipes_orthogonalize::{ORTHOGONALIZE_EIGENVALUE_FLOOR, add_orthogonalize};
@@ -180,40 +181,52 @@ fn water() -> PathBuf {
         .join("../../integrals/one_electron/overlap/tests/data/h2o.xyz")
 }
 
-/// The run of `xyz` in cc-pVDZ over cc-pVDZ-JKFIT with `step`, syevd's
-/// work asked of a solver handle on device 0, run once there.
-fn run(xyz: &Path, step: &ScfStep) -> (fb_core_thread_pool::Record, Option<ScfOutput>) {
-    let molecule = fb_io_xyz::read_xyz(xyz, 0, 1).unwrap();
-    run_molecule(&molecule, "cc-pvdz", "cc-pvdz-jkfit", step)
+/// The fitted integrals of the density-fitted cases.
+fn df() -> EriStep {
+    EriStep::density_fitting("cc-pvdz-jkfit")
 }
 
-/// The run of `molecule` in `basis` over `aux_basis` with `step`, syevd's
+/// The run of `xyz` in cc-pVDZ over `eri` with `step`, syevd's work asked
+/// of a solver handle on device 0, run once there.
+fn run(
+    xyz: &Path,
+    eri: &EriStep,
+    step: &ScfStep,
+) -> (fb_core_thread_pool::Record, Option<ScfOutput>) {
+    let molecule = fb_io_xyz::read_xyz(xyz, 0, 1).unwrap();
+    run_molecule(&molecule, "cc-pvdz", eri, step)
+}
+
+/// The run of `molecule` in `basis` over `eri` with `step`, syevd's
 /// work asked of a solver handle on device 0, run once there.
 fn run_molecule(
     molecule: &Molecule,
     basis: &str,
-    aux_basis: &str,
+    eri: &EriStep,
     step: &ScfStep,
 ) -> (fb_core_thread_pool::Record, Option<ScfOutput>) {
-    let run = Run::new(molecule, basis, aux_basis, step, |n| {
+    let run = Run::new(molecule, basis, eri, step, |n| {
         syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n)
     })
     .expect("the case plans");
     run.run(0)
 }
 
-/// The case `stem` run with `step`, converged and held to the energy bar,
+/// The case `stem` run over `eri` with `step`, converged and held to the
+/// energy bar against `scf_<stem>_cc-pvdz_<aux_basis>.npy`, or
+/// `..._conventional.npy` over the conventional integrals,
 /// the residual under the tolerance, the arena's count the same at every
 /// iteration, on an AMD card this process's VRAM the same from the second
 /// iteration on, and no warning: the SAD guess is positive
 /// semidefinite, so `guess check` has nothing to say. Returns the lines the
 /// decision logged as it restarted a singular DIIS subspace.
-fn converges_to_pyscf(stem: &str, xyz: &Path, step: &ScfStep) -> Vec<String> {
+fn converges_to_pyscf(stem: &str, xyz: &Path, eri: &EriStep, step: &ScfStep) -> Vec<String> {
     let _turn = turn();
-    let (record, out) = run(xyz, step);
+    let (record, out) = run(xyz, eri, step);
     record.result.unwrap();
     let out = out.expect("a converged run brings its products back");
-    let e_ref = fb_io_npy::read_npy(&data(&format!("scf_{stem}_cc-pvdz_cc-pvdz-jkfit.npy")))
+    let integrals = eri.aux_basis.as_deref().unwrap_or("conventional");
+    let e_ref = fb_io_npy::read_npy(&data(&format!("scf_{stem}_cc-pvdz_{integrals}.npy")))
         .unwrap()
         .data[0];
     let miss = (out.energy - e_ref).abs();
@@ -272,7 +285,25 @@ fn converges_to_pyscf(stem: &str, xyz: &Path, step: &ScfStep) -> Vec<String> {
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn water_converges_to_pyscf() {
-    converges_to_pyscf("h2o", &water(), &ScfStep::default());
+    converges_to_pyscf("h2o", &water(), &df(), &ScfStep::default());
+}
+
+/// Water in cc-pVDZ over the conventional integrals, the stored packed
+/// tensors (`[eri] mode = "conventional"`), against PySCF's exact RHF
+/// (`tests/data/conventional_reference.py`), at the same bar: the
+/// integrals agree with PySCF's `get_jk` to about 1e-14 of their largest
+/// (`fb-integrals-eri-conventional`'s `tests/jk.rs`), so the bar's
+/// analysis above holds with three decades more margin. The fitted and
+/// the exact energies differ by 2.1e-5 hartree here, so a run that used
+/// the fit fails it. Needs a GPU.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn water_over_the_conventional_integrals_converges_to_pyscf() {
+    let eri = EriStep {
+        mode: EriMode::Conventional,
+        aux_basis: None,
+    };
+    converges_to_pyscf("h2o", &water(), &eri, &ScfStep::default());
 }
 
 /// Benzene in cc-pVDZ over cc-pVDZ-JKFIT (114 AOs, 558 fitting functions),
@@ -286,7 +317,7 @@ fn benzene_converges_to_pyscf() {
         eprintln!("skipped: slow case (FREE_BREAKFAST_FAST_TESTS is set)");
         return;
     }
-    converges_to_pyscf("benzene", &data("benzene.xyz"), &ScfStep::default());
+    converges_to_pyscf("benzene", &data("benzene.xyz"), &df(), &ScfStep::default());
 }
 
 /// Ethylene at #856's DF-SA3-CASSCF(2,2) S1/S0 MECI in cc-pVDZ over
@@ -327,7 +358,12 @@ fn ethylene_takes_the_diis_restart_and_converges_to_pyscf() {
         commutator_tolerance: 1e-8,
         ..ScfStep::default()
     };
-    let restarted = converges_to_pyscf("ethylene_meci856", &data("ethylene_meci856.xyz"), &step);
+    let restarted = converges_to_pyscf(
+        "ethylene_meci856",
+        &data("ethylene_meci856.xyz"),
+        &df(),
+        &step,
+    );
     assert!(
         !restarted.is_empty(),
         "ethylene_meci856: no singular-DIIS restart was logged"
@@ -346,7 +382,7 @@ fn too_few_iterations_is_max_iterations_exceeded() {
         max_iterations: 2,
         ..ScfStep::default()
     };
-    let (record, out) = run(&water(), &step);
+    let (record, out) = run(&water(), &df(), &step);
     let err = record.result.expect_err("not converged in two builds");
     assert_eq!(err.kind, ErrorKind::MaxIterationsExceeded, "{err:?}");
     assert!(out.is_none());
@@ -423,7 +459,7 @@ fn a_guess_with_a_negative_eigenvalue_is_warned_of() {
         &molecule,
         n,
         lwork,
-        &eri,
+        &Eri::DensityFitted(eri),
         [h, s, x],
         guess,
     )

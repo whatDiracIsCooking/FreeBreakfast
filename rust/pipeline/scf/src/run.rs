@@ -1,5 +1,6 @@
-//! A whole run: a molecule, a basis and a fitting set to the converged
-//! DF-RHF or DF-ROHF energy, orbitals and density on the host.
+//! A whole run: a molecule, a basis and its two-electron integrals (a
+//! fitting set, or the conventional tensors) to the converged RHF or
+//! DF-ROHF energy, orbitals and density on the host.
 
 use std::sync::{Arc, Mutex};
 
@@ -12,7 +13,7 @@ use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_integrals_one_electron_overlap::add_overlap;
 use fb_molecule::Molecule;
 use fb_molecule_nuclei::add_nuclei;
-use fb_pipeline_eri::add_df_eri;
+use fb_pipeline_eri::{EriStep, add_eri};
 use fb_pipeline_guess::{add_guess_upload, add_sad_guess};
 use fb_recipes_orthogonalize::{ORTHOGONALIZE_EIGENVALUE_FLOOR, add_orthogonalize};
 
@@ -45,10 +46,10 @@ pub struct ScfOutput {
     pub d: Vec<f64>,
 }
 
-/// The DF-RHF or DF-ROHF of one molecule in one basis over one fitting
-/// set, from the SAD guess, planned once: the nuclei ([`add_nuclei`]), the records
+/// The RHF or DF-ROHF of one molecule in one basis over one `[eri]` step,
+/// from the SAD guess, planned once: the nuclei ([`add_nuclei`]), the records
 /// ([`add_records`]), S ([`add_overlap`]), H ([`add_core_hamiltonian`])
-/// and the fitted integrals ([`add_df_eri`]) over one build of the records
+/// and the two-electron integrals ([`add_eri`]) over one build of the records
 /// and one staging of the orbital basis's spherical transform,
 /// `X = S^(-1/2)` ([`add_orthogonalize`], at the default floor), the SAD
 /// guess and its upload
@@ -65,10 +66,12 @@ pub struct Run {
 }
 
 impl Run {
-    /// Plan the DF-RHF of `molecule`, or its DF-ROHF when its multiplicity
+    /// Plan the RHF of `molecule`, or its DF-ROHF when its multiplicity
     /// is above 1, in the basis `basis`, a compiled-in name or a BSE JSON
-    /// path ([`fb_io_basis::resolve_basis`]), over the compiled-in fitting
-    /// set `aux_basis`, with the options `step`. `lwork` maps the number of
+    /// path ([`fb_io_basis::resolve_basis`]), over the two-electron
+    /// integrals `eri` asks for (a compiled-in fitting set,
+    /// [`EriStep::density_fitting`], or the conventional tensors), with the
+    /// options `step`. `lwork` maps the number of
     /// spherical AOs `n` to syevd's work at `n` on the device the plan will
     /// run on, [`syevd_lwork`](fb_recipes_diagonalize::syevd_lwork) on a
     /// solver handle there; every eigensolve is at `n` or under, so it is
@@ -78,13 +81,13 @@ impl Run {
     /// The readers' refusals: a basis that is neither a carried name nor a
     /// readable document, an element the basis or the fitting set lacks;
     /// `lwork`'s error; and the planning errors of [`add_records`],
-    /// [`add_orthogonalize`], [`add_df_eri`], [`add_sad_guess`] and
+    /// [`add_orthogonalize`], [`add_eri`], [`add_sad_guess`] and
     /// [`add_scf`], an electron count of the wrong parity for the
     /// multiplicity and an option out of range among them.
     pub fn new(
         molecule: &Molecule,
         basis: &str,
-        aux_basis: &str,
+        eri: &EriStep,
         step: &ScfStep,
         lwork: impl FnOnce(usize) -> Result<usize>,
     ) -> Result<Run> {
@@ -110,7 +113,7 @@ impl Run {
             s,
             ORTHOGONALIZE_EIGENVALUE_FLOOR,
         )?;
-        let eri = add_df_eri(&mut dag, 0, molecule, &basis, &classes, &mut u, aux_basis)?;
+        let eri = add_eri(&mut dag, 0, molecule, &basis, &classes, &mut u, eri)?;
         let guess = add_sad_guess(&mut dag, 0, &basis, molecule.atoms())?;
         let guess = add_guess_upload(&mut dag, 0, &basis, guess);
         let (scalars, [eps, c, d]) = add_scf(

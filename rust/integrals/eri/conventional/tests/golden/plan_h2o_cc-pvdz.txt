@@ -1,0 +1,191 @@
+plan: 23 tasks, GPU workers: 1
+ task  worker  lane    name: after
+    0       0  cpu     mmd tables
+    1       0  stream0  upload prim_begin: after 0
+    2       0  stream0  upload exponent: after 0
+    3       0  stream0  upload coefficient: after 0
+    4       0  stream0  upload c_x: after 0
+    5       0  stream0  upload c_y: after 0
+    6       0  stream0  upload c_z: after 0
+    7       0  stream0  upload ao_offset: after 0
+    8       0  stream0  upload rank: after 0
+    9       0  stream0  upload bra: after 0
+   10       0  stream0  upload ket: after 0
+   11       0  stream0  upload rec_begin: after 0
+   12       0  stream0  mmd records (0,0): after 1 2 3 4 5 6 7 8 9 10 11
+   13       0  stream1  mmd records (0,1): after 1 2 3 4 5 6 7 8 9 10 11 12
+   14       0  stream2  mmd records (0,2): after 1 2 3 4 5 6 7 8 9 10 11
+   15       0  stream3  mmd records (1,1): after 1 2 3 4 5 6 7 8 9 10 11 12 13 14
+   16       0  stream4  mmd records (1,2): after 1 2 3 4 5 6 7 8 9 10 11 14 15
+   17       0  stream5  mmd records (2,2): after 1 2 3 4 5 6 7 8 9 10 11 14 15 16
+   18       0  cpu     harmonics: after 0 1 2 3 4 5 6 7 8 9 10 11
+   19       0  stream0  upload U: after 12 13 15 18
+   20       0  cpu     conventional tables: after 0 1 2 3 4 5 6 7 8 9 10 11 18 19
+   21       0  stream0  conventional eri: after 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 19 20
+   22       0  stream0  exchange gather: after 12 13 14 15 16 17 20 21
+worker 0 device table: 141 rows, 35249940 bytes
+peak: 35249532 bytes at node 22
+    offset      bytes  owner   life     name: users (w writes, r reads)
+         0   33554432  worker  plan     blas workspace
+  33618688         52  edge    1-17     prim_begin: 1w 12r 13r 14r 15r 16r 17r
+  33615360        432  edge    2-17     exponent: 2w 12r 13r 14r 15r 16r 17r
+  33615872        432  edge    3-17     coefficient: 3w 12r 13r 14r 15r 16r 17r
+  33617920         96  edge    4-17     c_x: 4w 12r 13r 14r 15r 16r 17r
+  33618176         96  edge    5-17     c_y: 5w 12r 13r 14r 15r 16r 17r
+  33618432         96  edge    6-17     c_z: 6w 12r 13r 14r 15r 16r 17r
+  33618944         48  edge    7-17     ao_offset: 7w 12r 13r 14r 15r 16r 17r
+  33619200         48  edge    8-17     rank: 8w 12r 13r 14r 15r 16r 17r
+  33616896        312  edge    9-17     bra: 9w 12r 13r 14r 15r 16r 17r
+  33617408        312  edge    10-17    ket: 10w 12r 13r 14r 15r 16r 17r
+  33616384        336  edge    11-17    rec_begin: 11w 12r 13r 14r 15r 16r 17r
+  34424320       8624  edge    12-21    zeta (0,0): 12w 21r
+  34433024       8624  edge    12-21    p_x (0,0): 12w 21r
+  34441728       8624  edge    12-21    p_y (0,0): 12w 21r
+  34450432       8624  edge    12-21    p_z (0,0): 12w 21r
+  34459136       8624  edge    12-21    pa_x (0,0): 12w 21r
+  34467840       8624  edge    12-21    pa_y (0,0): 12w 21r
+  34476544       8624  edge    12-21    pa_z (0,0): 12w 21r
+  34485248       8624  edge    12-21    pb_x (0,0): 12w 21r
+  34493952       8624  edge    12-21    pb_y (0,0): 12w 21r
+  34502656       8624  edge    12-21    pb_z (0,0): 12w 21r
+  34511360       8624  edge    12-21    s (0,0): 12w 21r
+  33554432       8624  edge    12-12    ea (0,0): 12w
+  33563136       8624  edge    12-12    eb (0,0): 12w
+  33571840       8624  edge    12-12    bound (0,0): 12w
+  33580544       8624  edge    12-12    bound_ab (0,0): 12w
+  33589248       8624  edge    12-12    bound_ba (0,0): 12w
+  33597952       4312  edge    12-12    off_a (0,0): 12w
+  33602304       4312  edge    12-12    off_b (0,0): 12w
+  33606656       4312  edge    12-12    rank_a (0,0): 12w
+  33611008       4312  edge    12-12    rank_b (0,0): 12w
+  34520064       3440  edge    13-21    zeta (0,1): 13w 21r
+  34523648       3440  edge    13-21    p_x (0,1): 13w 21r
+  34527232       3440  edge    13-21    p_y (0,1): 13w 21r
+  34530816       3440  edge    13-21    p_z (0,1): 13w 21r
+  34534400       3440  edge    13-21    pa_x (0,1): 13w 21r
+  34537984       3440  edge    13-21    pa_y (0,1): 13w 21r
+  34541568       3440  edge    13-21    pa_z (0,1): 13w 21r
+  34545152       3440  edge    13-21    pb_x (0,1): 13w 21r
+  34548736       3440  edge    13-21    pb_y (0,1): 13w 21r
+  34552320       3440  edge    13-21    pb_z (0,1): 13w 21r
+  34555904       3440  edge    13-21    s (0,1): 13w 21r
+  33554432       3440  edge    13-13    ea (0,1): 13w
+  33558016       3440  edge    13-13    eb (0,1): 13w
+  33561600       3440  edge    13-13    bound (0,1): 13w
+  33565184       3440  edge    13-13    bound_ab (0,1): 13w
+  33568768       3440  edge    13-13    bound_ba (0,1): 13w
+  33572352       1720  edge    13-13    off_a (0,1): 13w
+  33574144       1720  edge    13-13    off_b (0,1): 13w
+  33575936       1720  edge    13-13    rank_a (0,1): 13w
+  33577728       1720  edge    13-13    rank_b (0,1): 13w
+  34571776        344  edge    14-21    zeta (0,2): 14w 21r
+  34572288        344  edge    14-21    p_x (0,2): 14w 21r
+  34572800        344  edge    14-21    p_y (0,2): 14w 21r
+  34573312        344  edge    14-21    p_z (0,2): 14w 21r
+  34573824        344  edge    14-21    pa_x (0,2): 14w 21r
+  34574336        344  edge    14-21    pa_y (0,2): 14w 21r
+  34574848        344  edge    14-21    pa_z (0,2): 14w 21r
+  34575360        344  edge    14-21    pb_x (0,2): 14w 21r
+  34575872        344  edge    14-21    pb_y (0,2): 14w 21r
+  34576384        344  edge    14-21    pb_z (0,2): 14w 21r
+  34576896        344  edge    14-21    s (0,2): 14w 21r
+  34559488        344  edge    14-14    ea (0,2): 14w
+  34560000        344  edge    14-14    eb (0,2): 14w
+  34560512        344  edge    14-14    bound (0,2): 14w
+  34561024        344  edge    14-14    bound_ab (0,2): 14w
+  34561536        344  edge    14-14    bound_ba (0,2): 14w
+  34562048        172  edge    14-14    off_a (0,2): 14w
+  34562304        172  edge    14-14    off_b (0,2): 14w
+  34562560        172  edge    14-14    rank_a (0,2): 14w
+  34562816        172  edge    14-14    rank_b (0,2): 14w
+  34563328        536  edge    15-21    zeta (1,1): 15w 21r
+  34564096        536  edge    15-21    p_x (1,1): 15w 21r
+  34564864        536  edge    15-21    p_y (1,1): 15w 21r
+  34565632        536  edge    15-21    p_z (1,1): 15w 21r
+  34566400        536  edge    15-21    pa_x (1,1): 15w 21r
+  34567168        536  edge    15-21    pa_y (1,1): 15w 21r
+  34567936        536  edge    15-21    pa_z (1,1): 15w 21r
+  34568704        536  edge    15-21    pb_x (1,1): 15w 21r
+  34569472        536  edge    15-21    pb_y (1,1): 15w 21r
+  34570240        536  edge    15-21    pb_z (1,1): 15w 21r
+  34571008        536  edge    15-21    s (1,1): 15w 21r
+  34559488        536  edge    15-15    ea (1,1): 15w
+  34560256        536  edge    15-15    eb (1,1): 15w
+  34561024        536  edge    15-15    bound (1,1): 15w
+  34561792        536  edge    15-15    bound_ab (1,1): 15w
+  34562560        536  edge    15-15    bound_ba (1,1): 15w
+  33554432        268  edge    15-15    off_a (1,1): 15w
+  33554944        268  edge    15-15    off_b (1,1): 15w
+  33555456        268  edge    15-15    rank_a (1,1): 15w
+  33555968        268  edge    15-15    rank_b (1,1): 15w
+  34577408         80  edge    16-21    zeta (1,2): 16w 21r
+  34577664         80  edge    16-21    p_x (1,2): 16w 21r
+  34577920         80  edge    16-21    p_y (1,2): 16w 21r
+  34578176         80  edge    16-21    p_z (1,2): 16w 21r
+  34578432         80  edge    16-21    pa_x (1,2): 16w 21r
+  34578688         80  edge    16-21    pa_y (1,2): 16w 21r
+  34578944         80  edge    16-21    pa_z (1,2): 16w 21r
+  34579200         80  edge    16-21    pb_x (1,2): 16w 21r
+  34579456         80  edge    16-21    pb_y (1,2): 16w 21r
+  34579712         80  edge    16-21    pb_z (1,2): 16w 21r
+  34579968         80  edge    16-21    s (1,2): 16w 21r
+  34559488         80  edge    16-16    ea (1,2): 16w
+  34559744         80  edge    16-16    eb (1,2): 16w
+  34560000         80  edge    16-16    bound (1,2): 16w
+  34560256         80  edge    16-16    bound_ab (1,2): 16w
+  34560512         80  edge    16-16    bound_ba (1,2): 16w
+  34560768         40  edge    16-16    off_a (1,2): 16w
+  34561024         40  edge    16-16    off_b (1,2): 16w
+  34561280         40  edge    16-16    rank_a (1,2): 16w
+  34561536         40  edge    16-16    rank_b (1,2): 16w
+  34580224          8  edge    17-21    zeta (2,2): 17w 21r
+  34580480          8  edge    17-21    p_x (2,2): 17w 21r
+  34580736          8  edge    17-21    p_y (2,2): 17w 21r
+  34580992          8  edge    17-21    p_z (2,2): 17w 21r
+  34581248          8  edge    17-21    pa_x (2,2): 17w 21r
+  34581504          8  edge    17-21    pa_y (2,2): 17w 21r
+  34581760          8  edge    17-21    pa_z (2,2): 17w 21r
+  34582016          8  edge    17-21    pb_x (2,2): 17w 21r
+  34582272          8  edge    17-21    pb_y (2,2): 17w 21r
+  34582528          8  edge    17-21    pb_z (2,2): 17w 21r
+  34582784          8  edge    17-21    s (2,2): 17w 21r
+  34559488          8  edge    17-17    ea (2,2): 17w
+  34559744          8  edge    17-17    eb (2,2): 17w
+  34560000          8  edge    17-17    bound (2,2): 17w
+  34560256          8  edge    17-17    bound_ab (2,2): 17w
+  34560512          8  edge    17-17    bound_ba (2,2): 17w
+  34560768          4  edge    17-17    off_a (2,2): 17w
+  34561024          4  edge    17-17    off_b (2,2): 17w
+  34561280          4  edge    17-17    rank_a (2,2): 17w
+  34561536          4  edge    17-17    rank_b (2,2): 17w
+  33554432       4800  edge    19-19    U: 19w
+  34562048       1248  task    21-21    conventional pairs: 21w
+  34399488      24648  task    21-21    conventional tasks: 21w
+  34559488       2500  task    21-21    pidx: 21w
+  33554432     845000  edge    21-22    ERI_pp: 21w 22r
+  35247104       1300  task    22-22    pm: 22w
+  35248640       1300  task    22-22    pn: 22w
+  35244544       2500  task    22-22    pidx: 22w
+  34399488     845000  edge    22-22    X_pp: 22w
+handoffs: 1->21 2->21 3->21 4->21 5->21 6->21 7->21 8->21 9->21 10->21 11->21 12->13 12->15 12->19 12->21 12->22 13->15 13->19 13->21 13->22 14->15 14->16 14->17 14->21 14->22 15->16 15->17 15->19 15->21 15->22 16->17 16->21 16->22 17->21 17->22 19->21 21->22
+worker 0 pinned table: 17 rows, 31712 bytes
+peak: 30996 bytes at node 20
+    offset      bytes  owner   life     name: users (w writes, r reads)
+      3328         52  edge    0-1      prim_begin: 0w 1r
+         0        432  edge    0-2      exponent: 0w 2r
+       512        432  edge    0-3      coefficient: 0w 3r
+      2560         96  edge    0-4      c_x: 0w 4r
+      2816         96  edge    0-5      c_y: 0w 5r
+      3072         96  edge    0-6      c_z: 0w 6r
+      3584         48  edge    0-7      ao_offset: 0w 7r
+      3840         48  edge    0-8      rank: 0w 8r
+      1536        312  edge    0-9      bra: 0w 9r
+      2048        312  edge    0-10     ket: 0w 10r
+      1024        336  edge    0-11     rec_begin: 0w 11r
+         0       4800  edge    18-19    U: 18w 19r
+     30464       1248  edge    20-21    conventional pairs: 20w 21r
+         0      24648  edge    20-21    conventional tasks: 20w 21r
+     24832       2500  edge    20-22    pidx: 20w 21r 22r
+     27392       1300  edge    20-22    pm: 20w 22r
+     28928       1300  edge    20-22    pn: 20w 22r
+handoffs: 0->18 0->20 1->18 1->20 2->18 2->20 3->18 3->20 4->18 4->20 5->18 5->20 6->18 6->20 7->18 7->20 8->18 8->20 9->18 9->20 10->18 10->20 11->18 11->20 18->20 19->20

@@ -126,12 +126,13 @@ reaches (`FB_RECIPES_ABI_VERSION` is 6, bumped as the inverse square root,
 the symmetrization, the Cholesky diagonal tile and the DIIS solve joined the
 merge sort, then as the inverse square root took its floor's factor from the
 device;
-`FB_INTEGRALS_ABI_VERSION` is 5, bumped as the kinetic and
+`FB_INTEGRALS_ABI_VERSION` is 6, bumped as the kinetic and
 nuclear-attraction wrappers with `fb_nuclei_view`, then density fitting's
 metric and three-center launchers, joined the overlap, then as the records'
 order left (`fb_mmd_order` and its query removed, `fb_mmd_records` taking
 no permutation), then as `fb_three_center_class` took a class view for its
-bra records instead of a packed buffer;
+bra records instead of a packed buffer, then as the conventional ERI's
+launchers joined;
 `FB_LOCALIZATION_ABI_VERSION` is 1, the Pipek-Mezey launchers; `fb-doc-check`'s
 `doc_lists.rs` holds these numbers to the headers). The bump is held:
 `devtools/rust-bindings.py` records in each module's bindings, beside the
@@ -626,10 +627,14 @@ symmetrization, the Cholesky diagonal tile and the DIIS solve:
 `fb_merge_sort*`, `fb_inverse_sqrt`, `fb_symmetrize`, `fb_mirror_triangle`,
 `fb_cholesky_diagonal` and `fb_diis_solve`) and `libfb_integrals_kernels.so` (the
 primitive-pair records, the overlap, the kinetic energy, the nuclear
-attraction, and density fitting's metric, three-center integrals and their
-symmetrization: `fb_mmd_*`, `fb_ordered_pair_bound`, `fb_overlap_class`,
-`fb_kinetic_class`, `fb_potential_en_class`, `fb_metric_class`,
-`fb_three_center_class` and `fb_three_center_symmetrize`) and
+attraction, density fitting's metric, three-center integrals and their
+symmetrization, and the conventional ERI's packed tensor, its exchange
+gather and the packing around its GEMVs: `fb_mmd_*`,
+`fb_ordered_pair_bound`, `fb_overlap_class`, `fb_kinetic_class`,
+`fb_potential_en_class`, `fb_metric_class`, `fb_three_center_class`,
+`fb_three_center_symmetrize`, `fb_conventional_eri_class`,
+`fb_conventional_exchange`, `fb_conventional_pack` and
+`fb_conventional_unpack`) and
 `libfb_localization_kernels.so` (Pipek-Mezey's populations, pair angles,
 rotations, functional and identity: `fb_pm_*`) today, each beside
 its two ABI entries; `fb-doc-check`'s `doc_lists.rs` fails a function a
@@ -683,7 +688,13 @@ under `DIR` that their default writes for the C++ tree, and `rust/` carries
 the families it has forked from such a run, each directory at the same
 relative path. From one generator at one `deps/FelizJueves` they are byte
 for byte the C++ tree's units, so after a bump both trees are emitted again
-([`README.md`](../README.md), "Build and test", has the commands).
+([`README.md`](../README.md), "Build and test", has the commands). A
+family the C++ tree does not have ([`design.md`](design.md), "What already
+exists": a kernel the C++ tree lacks too is added to `rust/` alone) has no
+C++ twin to agree with: its generator writes `rust/` alone, by default,
+and its own test emits it again under another root and compares byte for
+byte. The conventional ERI's units, `tools/emit/conventional_kernels.py`'s,
+are the first.
 
 **FelizJueves can emit part of the wrappers.** Its header already names the
 block a unit was sized for and emits the dispatch table, and for a

@@ -333,6 +333,10 @@ impl Fields {
     /// cell carries its pair's, formed at planning.
     pub const THREE_CENTER: Self =
         Self(1 << F_ZETA | 0b111 << F_P_X | 0b111 << F_PA_X | 0b111 << F_PB_X | 1 << F_S);
+    /// The conventional ERI's, each side's: the three-center bra's fields,
+    /// read from the bra class and from the ket class alike. The offsets
+    /// are not among them: each pair's are staged at planning.
+    pub const CONVENTIONAL: Self = Self::THREE_CENTER;
 
     /// The fields of either set: a task that launches two families over
     /// one class, as the core Hamiltonian does, reads both.
@@ -1157,6 +1161,7 @@ mod tests {
             ("one_electron/kinetic", Fields::KINETIC),
             ("one_electron/potential_en", Fields::POTENTIAL_EN),
             ("eri/density_fitting/three_center", Fields::THREE_CENTER),
+            ("eri/conventional", Fields::CONVENTIONAL),
         ] {
             let set: std::collections::BTreeSet<String> = VIEW_FIELDS
                 .iter()

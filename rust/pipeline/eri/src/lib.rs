@@ -1,14 +1,28 @@
 //! `src/pipeline/eri` (module `free_breakfast.pipeline.eri`), its
-//! density-fitted branch: the pipeline's two-electron integrals as the
-//! fitted factor
+//! density-fitted branch, and a conventional one the C++ tree does not
+//! have: the pipeline's two-electron integrals, built once as tasks of a
+//! [`Dag`] for every reader of the plan, in the mode `[eri] mode` names
+//! ([`EriStep`], [`add_eri`], returning an [`Eri`]).
+//!
+//! **`"conventional"`** ([`add_conventional`]): the whole four-index
+//! tensor of a small basis stored once, packed by AO pair, and its
+//! exchange-ordered gather, each SCF iteration's J and K then one GEMV
+//! over each (`fb_integrals_eri_conventional`'s crate doc has the packing
+//! and the Cartesian-to-spherical handling). Exact, with no fitting set;
+//! a basis of at most 150 Cartesian AOs and shells through d, refused at
+//! planning otherwise. Rust only: it is named for what it is in the
+//! literature, the stored-integral SCF that integral-direct is the
+//! alternative to, beside the C++ `IntegralDirect` and `DensityFitting`
+//! that each name how J and K are formed.
+//!
+//! **`"density_fitting"`** ([`add_df_eri`]): the fitted factor
 //!
 //! ```text
 //! M = (P|Q) = L Lᵀ
 //! B = L⁻¹ (P|mn)
 //! ```
 //!
-//! of the orbital basis over an auxiliary one, built once as tasks of a
-//! [`Dag`] for every reader of the plan: each SCF iteration's J and K
+//! of the orbital basis over an auxiliary one: each SCF iteration's J and K
 //! (`fb_integrals_eri_density_fitting_jk`) read B's row, and none rebuilds
 //! it. The C++ `src/pipeline/eri` is the reference design; its README has
 //! why the aux basis and L are kept beside B.
@@ -47,8 +61,10 @@
 //!
 //! | C++ (`free_breakfast`) | Here |
 //! |---|---|
+//! | `EriStep::run`, returning the mode's product | [`add_eri`], returning an [`Eri`] |
 //! | `EriStep::run` with `mode = DensityFitting`, `DensityFitted` | [`add_df_eri`], returning [`DensityFitted`] |
-//! | `[eri] mode`, `aux_basis`, `EriStep`'s options read by `src/pipeline/config` | [`EriStep`], [`EriMode`]: the config's `[eri]` table, deserialized by `fb-pipeline-config`, its name checked by [`EriStep::check`] |
+//! | nothing: the C++ tree stores no four-index tensor | `mode = "conventional"`, [`EriMode::Conventional`]: [`add_conventional`], [`Eri::Conventional`] (Rust only) |
+//! | `[eri] mode`, `aux_basis`, `EriStep`'s options read by `src/pipeline/config` | [`EriStep`], [`EriMode`]: the config's `[eri]` table, deserialized by `fb-pipeline-config`, its keys checked against the mode by [`EriStep::check`] |
 //! | `EriMode::IntegralDirect`, J's and K's pair classes | not ported |
 //! | `default_aux_basis`, `<name>-acCD-6-6` when `aux_basis` is empty | not ported: the aux basis is always named |
 //! | `resolve_aux_basis(spec)` over a name or a path, an unknown name `IO` | a compiled-in name alone, an unknown one `InvalidConfig` at planning |
@@ -65,6 +81,7 @@ use fb_basis::BasisSet;
 use fb_core_arena::{Device, RowId};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::Dag;
+use fb_integrals_eri_conventional::{Conventional, add_conventional};
 use fb_integrals_eri_density_fitting_fit::add_density_fit;
 use fb_integrals_eri_density_fitting_metric::add_metric;
 use fb_integrals_eri_density_fitting_three_center::add_three_center;
@@ -73,7 +90,7 @@ use fb_molecule::Molecule;
 use serde::Deserialize;
 
 /// `[eri]`: the config's table of the two-electron integrals, built once
-/// for every reader of the plan ([`add_df_eri`]). Each field is a key, and
+/// for every reader of the plan ([`add_eri`]). Each field is a key, and
 /// any other key is refused by name.
 ///
 /// ```text
@@ -81,35 +98,61 @@ use serde::Deserialize;
 /// mode = "density_fitting"
 /// aux_basis = "cc-pvdz-jkfit"
 /// ```
+///
+/// or, with no fitting set,
+///
+/// ```text
+/// [eri]
+/// mode = "conventional"
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EriStep {
-    /// `mode`: how the integrals are built. Required: `"density_fitting"`
-    /// is the only mode, and the C++ default, `"integral_direct"`, is not
-    /// ported, so no default stands in for it.
+    /// `mode`: how the integrals are built. Required: the C++ default,
+    /// `"integral_direct"`, is not ported, so no default stands in for it.
     pub mode: EriMode,
     /// `aux_basis`: the fitting set, a compiled-in name in any spelling
     /// [`fb_io_basis::is_builtin_aux_basis`] folds (`"cc-pvdz-jkfit"`),
     /// placed over the molecule when the run is planned. Never a path.
-    /// Required; no default (the C++ `<basis>-acCD-6-6` is not ported).
-    pub aux_basis: String,
+    /// Required by `"density_fitting"`, with no default (the C++
+    /// `<basis>-acCD-6-6` is not ported), and refused by
+    /// `"conventional"`, which fits nothing ([`EriStep::check`]).
+    pub aux_basis: Option<String>,
 }
 
 impl EriStep {
-    /// Check the table's values, so a reader of a config can refuse them
-    /// before anything is planned; [`add_df_eri`] checks the name too.
+    /// The density-fitted step over the fitting set `aux_basis`: the table
+    /// `mode = "density_fitting"` and `aux_basis` read into.
+    pub fn density_fitting(aux_basis: &str) -> EriStep {
+        EriStep {
+            mode: EriMode::DensityFitting,
+            aux_basis: Some(aux_basis.to_owned()),
+        }
+    }
+
+    /// Check the table's values against its mode, so a reader of a config
+    /// can refuse them before anything is planned; [`add_df_eri`] checks
+    /// the name too.
     ///
     /// # Errors
-    /// `InvalidConfig`, naming the key: an `aux_basis` that is not a
-    /// compiled-in fitting set.
+    /// `InvalidConfig`, naming the key: under `"density_fitting"`, no
+    /// `aux_basis` or one that is not a compiled-in fitting set; under
+    /// `"conventional"`, an `aux_basis` at all.
     pub fn check(&self) -> Status {
-        if !fb_io_basis::is_builtin_aux_basis(&self.aux_basis) {
-            return Err(Error::config(format!(
-                "[eri] aux_basis: '{}' is not a compiled-in fitting set",
-                self.aux_basis
-            )));
+        match (self.mode, &self.aux_basis) {
+            (EriMode::DensityFitting, None) => Err(Error::config(
+                "[eri] aux_basis: mode = \"density_fitting\" needs a fitting set",
+            )),
+            (EriMode::DensityFitting, Some(aux)) if !fb_io_basis::is_builtin_aux_basis(aux) => {
+                Err(Error::config(format!(
+                    "[eri] aux_basis: '{aux}' is not a compiled-in fitting set"
+                )))
+            }
+            (EriMode::Conventional, Some(aux)) => Err(Error::config(format!(
+                "[eri] aux_basis: '{aux}' given, but mode = \"conventional\" fits nothing"
+            ))),
+            _ => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -120,6 +163,61 @@ pub enum EriMode {
     /// `"density_fitting"`: the fitted factor B = L⁻¹ (P|mn) over
     /// [`EriStep::aux_basis`], with M = (P|Q) = L Lᵀ ([`add_df_eri`]).
     DensityFitting,
+    /// `"conventional"`: the packed four-index tensor and its
+    /// exchange-ordered gather, stored once ([`add_conventional`]); exact,
+    /// for a basis of at most 150 Cartesian AOs with shells through d.
+    /// Rust only: the C++ tree has no such mode.
+    Conventional,
+}
+
+/// The two-electron integrals of a plan, [`add_eri`]'s product: what the
+/// SCF's J and K read, by mode.
+pub enum Eri {
+    /// `"density_fitting"`'s B and L ([`add_df_eri`]).
+    DensityFitted(DensityFitted),
+    /// `"conventional"`'s packed tensors ([`add_conventional`]).
+    Conventional(Conventional),
+}
+
+/// Add the two-electron integrals `step` asks for, of `basis` placed over
+/// `molecule`, to `dag` on GPU worker `worker`, and return them: by
+/// `step.mode`, [`add_df_eri`] over `step.aux_basis` or
+/// [`add_conventional`].
+///
+/// `classes` and `u` are as [`add_df_eri`] takes them, the records of
+/// `basis` and the plan's slot for its U.
+///
+/// # Errors
+/// [`EriStep::check`]'s refusals, at planning, before anything is added;
+/// then the mode's: [`add_df_eri`]'s, or [`add_conventional`]'s, led by
+/// `add_eri: ` (a kernel library that is not the one the bindings describe,
+/// `GpuRuntime`; a shell above d or a basis past 150 Cartesian AOs,
+/// `Unsupported`).
+///
+/// # Panics
+/// As [`add_df_eri`].
+#[track_caller]
+pub fn add_eri(
+    dag: &mut Dag<'_>,
+    worker: usize,
+    molecule: &Molecule,
+    basis: &BasisSet,
+    classes: &[ClassRows],
+    u: &mut Option<RowId<Device, f64>>,
+    step: &EriStep,
+) -> Result<Eri> {
+    step.check()?;
+    match (step.mode, &step.aux_basis) {
+        (EriMode::DensityFitting, Some(aux)) => {
+            add_df_eri(dag, worker, molecule, basis, classes, u, aux).map(Eri::DensityFitted)
+        }
+        _ => add_conventional(dag, worker, basis, classes, u)
+            .map(Eri::Conventional)
+            .map_err(|mut e| {
+                e.message = format!("add_eri: {}", e.message);
+                e
+            }),
+    }
 }
 
 /// The density-fitted integrals of a plan, [`add_df_eri`]'s product.

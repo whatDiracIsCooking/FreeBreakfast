@@ -59,6 +59,7 @@ use fb_core_types::Double3;
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::solver::SolverHandle;
 use fb_molecule::Molecule;
+use fb_pipeline_eri::EriStep;
 use fb_pipeline_scf::{Run, ScfStep};
 use fb_recipes_diagonalize::syevd_lwork;
 
@@ -138,7 +139,7 @@ fn converges_to_pyscf(name: &str) -> fb_pipeline_scf::ScfOutput {
     let run = Run::new(
         &molecule,
         case["basis"].as_str().unwrap(),
-        case["aux_basis"].as_str().unwrap(),
+        &EriStep::density_fitting(case["aux_basis"].as_str().unwrap()),
         &step,
         |n| syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n),
     )

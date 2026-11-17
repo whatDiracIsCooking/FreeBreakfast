@@ -9,7 +9,7 @@ use fb_integrals_one_electron_overlap::add_overlap;
 use fb_localization_pipek_mezey::PmOptions;
 use fb_molecule::Molecule;
 use fb_molecule_nuclei::add_nuclei;
-use fb_pipeline_eri::add_df_eri;
+use fb_pipeline_eri::add_eri;
 use fb_pipeline_guess::{add_guess_upload, add_loaded_guess, add_sad_guess};
 use fb_pipeline_scf::{add_scf, occupied_orbitals};
 use fb_recipes_orthogonalize::{ORTHOGONALIZE_EIGENVALUE_FLOOR, add_orthogonalize};
@@ -34,7 +34,8 @@ use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write}
 /// [`add_loaded_guess`] when [`GuessStep::from`] is set, then
 /// [`add_write_host_npy`] of D to `d.npy`. For [`Calculation::Rhf`]: the
 /// nuclei ([`add_nuclei`]), the records, S, H ([`add_core_hamiltonian`])
-/// and the fitted integrals ([`add_df_eri`]) over one staging of the
+/// and the two-electron integrals ([`add_eri`]: fitted, or the
+/// conventional tensors, by `[eri] mode`) over one staging of the
 /// orbital basis's spherical transform, that guess uploaded ([`add_guess_upload`]),
 /// `X = S^(-1/2)` ([`add_orthogonalize`], at the default floor) and the
 /// loop ([`add_scf`]); then [`add_write_npy`] of C to `c.npy` and of D to
@@ -64,10 +65,14 @@ use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write}
 /// ([`ScfStep::check`]), each `InvalidConfig`; for
 /// [`Calculation::Localization`], [`LocalizationStep::check`]'s refusals;
 /// `lwork`'s error;
-/// and the kernel libraries' load checks ([`add_records`], [`add_df_eri`],
+/// [`EriStep::check`]'s refusals, an open shell or a basis past the
+/// kernels over the conventional integrals (`Unsupported`, [`add_eri`],
+/// [`add_scf`]),
+/// and the kernel libraries' load checks ([`add_records`], [`add_eri`],
 /// [`add_scf`], [`add_pm_localize`]). The guess's data is read when the
 /// plan runs.
 ///
+/// [`EriStep::check`]: fb_pipeline_eri::EriStep::check
 /// [`GuessStep::from`]: fb_pipeline_guess::GuessStep::from
 /// [`ScfStep::check`]: fb_pipeline_scf::ScfStep::check
 /// [`LocalizationStep::check`]: fb_localization_pipek_mezey::LocalizationStep::check
@@ -163,8 +168,8 @@ struct Rhf {
     occupied: [usize; 2],
 }
 
-/// Add the DF-RHF `config` asks for to `dag` on GPU worker 0, its writes
-/// left to the caller: the nuclei, the records, S, H and the fitted
+/// Add the RHF `config` asks for to `dag` on GPU worker 0, its writes
+/// left to the caller: the nuclei, the records, S, H and the two-electron
 /// integrals over one staging of the orbital basis's spherical transform,
 /// the guess uploaded, `X = S^(-1/2)` and the loop, as [`plan`]'s doc has
 /// them; `lwork` asked once, after every refusal.
@@ -195,12 +200,15 @@ fn plan_rhf(
     let classes = add_records(dag, 0, basis)?;
     let s = add_overlap(dag, 0, basis, &classes, &mut u);
     let h = add_core_hamiltonian(dag, 0, basis, &classes, nuclei, &mut u)?;
-    let eri = add_df_eri(dag, 0, molecule, basis, &classes, &mut u, &eri.aux_basis).map_err(
-        |e| match e.kind {
-            ErrorKind::InvalidConfig => keyed(e, "[eri] aux_basis"),
+    let eri = add_eri(dag, 0, molecule, basis, &classes, &mut u, eri).map_err(|e| {
+        match e.kind {
+            // check's own carry their key; add_df_eri's name the set.
+            ErrorKind::InvalidConfig if !e.message.starts_with("[eri]") => {
+                keyed(e, "[eri] aux_basis")
+            }
             _ => e,
-        },
-    )?;
+        }
+    })?;
     let guess = add_guess(dag, config, basis, molecule)?;
     let guess = add_guess_upload(dag, 0, basis, guess);
     let lwork = lwork(n)?;

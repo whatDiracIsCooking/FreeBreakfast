@@ -1,5 +1,6 @@
-//! The DF-RHF and DF-ROHF loop: one iteration's tasks as a loop's body,
-//! replayed until its decision finds the energy and the residual converged.
+//! The DF-RHF and DF-ROHF loop, and the RHF over the conventional
+//! integrals: one iteration's tasks as a loop's body, replayed until its
+//! decision finds the energy and the residual converged.
 
 use std::ops::ControlFlow;
 
@@ -13,9 +14,10 @@ use fb_core_wwr::blas::{dgmm, geam};
 use fb_core_wwr::copy;
 use fb_core_wwr::device_slice::split_at_mut;
 use fb_core_wwr::memset;
+use fb_integrals_eri_conventional::add_conventional_jk;
 use fb_integrals_eri_density_fitting_jk::{add_df_coulomb, add_df_exchange};
 use fb_molecule::{Molecule, nuclear_repulsion_energy};
-use fb_pipeline_eri::DensityFitted;
+use fb_pipeline_eri::Eri;
 use fb_recipes_diagonalize::add_diagonalize;
 use fb_recipes_diis::{DIIS_MAX_HISTORY_LIMIT, Diis, add_diis};
 use fb_recipes_sys::inverse_sqrt;
@@ -118,8 +120,13 @@ impl ScfStep {
 /// density, `n²` doubles, symmetric positive semidefinite (a SAD guess;
 /// `fb_pipeline_guess::add_guess_upload`'s row); the loop carries D in it,
 /// so it holds the last iteration's density after the run, unless it is
-/// rescaled (below). `eri` is the
-/// density-fitted integrals of the same basis (`fb_pipeline_eri::add_df_eri`).
+/// rescaled (below). `eri` is the two-electron integrals of the same basis
+/// (`fb_pipeline_eri::add_eri`): the density-fitted B, whose J and K this
+/// doc names below (`df coulomb`, `df exchange`), or the conventional
+/// tensors, over which each build is one `conventional jk` of the carried
+/// D ([`add_conventional_jk`]), closed shell only. K over the tensors is
+/// of D itself, so a conventional plan builds no rest's K and adds no
+/// `guess exchange`: the first build's K is the guess's whole.
 /// `lwork` is [`syevd_lwork`](fb_recipes_diagonalize::syevd_lwork) at `n`.
 ///
 /// **Before the loop**, when the molecule's electron count `N` is not
@@ -205,7 +212,8 @@ impl ScfStep {
 /// At planning, before anything is added: `InvalidConfig` for an option
 /// out of range ([`ScfStep`]), an electron count of the wrong parity for
 /// the multiplicity ([`occupied_orbitals`]) or more alpha electrons than
-/// the `n` orbitals.
+/// the `n` orbitals; `Unsupported` for an open shell over the conventional
+/// integrals.
 /// Then the kernel library's load check
 /// ([`add_diis`], [`add_df_exchange`]), as `GpuRuntime`; `dag` may hold
 /// some of the tasks after it. At run time, the tasks' errors, and
@@ -232,7 +240,7 @@ pub fn add_scf(
     molecule: &Molecule,
     n: usize,
     lwork: usize,
-    eri: &DensityFitted,
+    eri: &Eri,
     [h, s, x]: [RowId<Device, f64>; 3],
     guess: RowId<Device, f64>,
 ) -> Result<(RowId<Heap, f64>, [RowId<Device, f64>; 3])> {
@@ -246,8 +254,14 @@ pub fn add_scf(
         )));
     }
     let open = n_alpha != n_beta;
+    if open && matches!(eri, Eri::Conventional(_)) {
+        return Err(Error::unsupported(format!(
+            "scf: multiplicity {} is an open shell, but [eri] mode = \"conventional\" builds \
+             the closed-shell RHF alone",
+            molecule.multiplicity()
+        )));
+    }
     let nocc = n_alpha;
-    let naux = eri.aux.nao_sphe() as usize;
     let e_nuc = nuclear_repulsion_energy(molecule);
 
     // Before the loop: the guess rescaled to the electron count, its factor,
@@ -275,24 +289,24 @@ pub fn add_scf(
             n_beta: open.then_some(n_beta),
         },
     );
-    let rest_k = match factor.rest {
-        Some(rest) => Some(add_df_exchange(
-            dag,
-            worker,
-            n,
-            naux,
-            n - nocc,
-            eri.b,
-            rest,
-        )?),
-        None => None,
+    // The rests' K, the density-fitted plan's alone: K over the stored
+    // tensors is of D itself.
+    let df = match eri {
+        Eri::DensityFitted(df) => Some((df.b, df.aux.nao_sphe() as usize)),
+        Eri::Conventional(_) => None,
     };
-    let beta = match factor.beta_rest {
-        Some(rest) => Some((
+    let rest_k = match (factor.rest, df) {
+        (Some(rest), Some((b, naux))) => {
+            Some(add_df_exchange(dag, worker, n, naux, n - nocc, b, rest)?)
+        }
+        _ => None,
+    };
+    let beta = match (factor.beta_rest, df) {
+        (Some(rest), Some((b, naux))) => Some((
             factor.cb,
-            add_df_exchange(dag, worker, n, naux, n - n_beta, eri.b, rest)?,
+            add_df_exchange(dag, worker, n, naux, n - n_beta, b, rest)?,
         )),
-        None => None,
+        _ => None,
     };
     let spin = open.then(|| add_spin_densities(dag, worker, n, guess));
     let diis = add_diis(dag, worker, "DIIS F", n * n, step.diis_history)?;
@@ -300,8 +314,17 @@ pub fn add_scf(
 
     // The body: one iteration.
     let body = dag.len();
-    let j = add_df_coulomb(dag, worker, n, naux, eri.b, guess);
-    let mut k = add_df_exchange(dag, worker, n, naux, nocc, eri.b, factor.c_occ)?;
+    let (j, mut k) = match eri {
+        Eri::DensityFitted(df) => {
+            let naux = df.aux.nao_sphe() as usize;
+            let j = add_df_coulomb(dag, worker, n, naux, df.b, guess);
+            (
+                j,
+                add_df_exchange(dag, worker, n, naux, nocc, df.b, factor.c_occ)?,
+            )
+        }
+        Eri::Conventional(c) => add_conventional_jk(dag, worker, c, guess),
+    };
     if let Some(rest) = rest_k {
         let name = if open { "Ka of D" } else { "K of D" };
         let guess_exchange = GuessExchange {
@@ -315,9 +338,14 @@ pub fn add_scf(
     let (f, spin_fock, e, scalars) = match (beta, spin) {
         (Some((cb, rest)), Some([da, db, identity])) => {
             // No beta electron, no beta factor: Kb is the rest's alone.
-            let kb = cb
-                .map(|cb| add_df_exchange(dag, worker, n, naux, n_beta, eri.b, cb))
-                .transpose()?;
+            // Only a density-fitted plan reaches here (an open shell over
+            // the conventional integrals is refused above).
+            let kb = match (cb, df) {
+                (Some(cb), Some((b, naux))) => {
+                    Some(add_df_exchange(dag, worker, n, naux, n_beta, b, cb)?)
+                }
+                _ => None,
+            };
             let kb = dag.add_gpu(
                 "guess exchange",
                 worker,
