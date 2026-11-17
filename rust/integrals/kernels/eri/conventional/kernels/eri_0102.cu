@@ -53,11 +53,13 @@ __global__ void eri<0, 1, 0, 2>(
     (void)n_krec;
     (void)n_bpair;
     (void)n_kpair;
-    // full ERI, class (0,1|0,2) at L = 3: eri[pidx(m,n), pidx(l,s)] = (mn|ls)
-    // (eri/full_eri/packed.py, eri/eri.py)
-    // launch: one thread per (bra shell pair, ket shell pair) task
-    int32_t task = static_cast<int32_t>(threadIdx.x + blockIdx.x * blockDim.x);
-    if (task < n_task) {
+    // full ERI, class (0,1|0,2) at L = 3, LOW-STACK: eri[pidx(m,n), pidx(l,s)] =
+    // (mn|ls) (eri/full_eri/packed.py, eri/eri.py)
+    // launch: one thread per (task, chunk of 1 bra rows), 3 a task
+    int32_t item = static_cast<int32_t>(threadIdx.x + blockIdx.x * blockDim.x);
+    int32_t chunk = (item / n_task);
+    int32_t task = (item - (chunk * n_task));
+    if (chunk < 3) {
         int32_t tb = task_bra[task];
         int32_t tk = task_ket[task];
         int32_t b0 = brec0[tb];
@@ -68,24 +70,16 @@ __global__ void eri<0, 1, 0, 2>(
         int32_t ob = off_b[tb];
         int32_t oc = off_c[tk];
         int32_t od = off_d[tk];
-        double acc0_0 = 0.0;
-        double acc0_1 = 0.0;
-        double acc0_2 = 0.0;
-        double acc0_3 = 0.0;
-        double acc0_4 = 0.0;
-        double acc0_5 = 0.0;
-        double acc1_0 = 0.0;
-        double acc1_1 = 0.0;
-        double acc1_2 = 0.0;
-        double acc1_3 = 0.0;
-        double acc1_4 = 0.0;
-        double acc1_5 = 0.0;
-        double acc2_0 = 0.0;
-        double acc2_1 = 0.0;
-        double acc2_2 = 0.0;
-        double acc2_3 = 0.0;
-        double acc2_4 = 0.0;
-        double acc2_5 = 0.0;
+        int32_t r0 = (chunk * 1);
+        double Ebx[4];
+        double Eby[4];
+        double Ebz[4];
+        double Ekx[9];
+        double Eky[9];
+        double Ekz[9];
+        double R[20];
+        double G[10];
+        double Er[2];
         // the bra records of the task's bra shell pair, serially
         for (int32_t ib = b0; ib < b1; ib += 1) {
             double ze = zeta_ab[ib];
@@ -93,11 +87,9 @@ __global__ void eri<0, 1, 0, 2>(
             double P1 = p_y[ib];
             double P2 = p_z[ib];
             double sb = s_ab[ib];
-            // the undressed E block of this bra record, once: e_fragment.block_fragment,
-            // inlined
-            double Ebra[3][4];
+            // the bra record's per-axis E^{ij}_t tables, once
             {
-                // fragment e_block_01
+                // fragment e_axis_tables_01
                 const auto zeta = ze;
                 const auto half_inv_zeta = (0.5 / ze);
                 const auto PA_x = pa_x[ib];
@@ -106,10 +98,14 @@ __global__ void eri<0, 1, 0, 2>(
                 const auto PB_y = pb_y[ib];
                 const auto PA_z = pa_z[ib];
                 const auto PB_z = pb_z[ib];
-                auto* const E = Ebra;
+                auto* const Ex = Ebx;
+                auto* const Ey = Eby;
+                auto* const Ez = Ebz;
                 // McMurchie & Davidson report UCRL-13791 (docs/references.md entry 46), eqs.
                 // 2.20-2.21: E^{i+1,j}_t and E^{i,j+1}_t from E^{00}_0 = exp(zeta X_PA X_PB);
                 // undressed
+                // #586's low-stack E path: the per-axis E^{ij}_t stored into Ex, Ey, Ez [(i
+                // (lb+1) + j) (la+lb+1) + t]; the E^{ab}_t block is never formed
                 double Ex_0_0_0 = exp(((zeta * PA_x) * PB_x));
                 double Ex_0_1_0 = (PB_x * Ex_0_0_0);
                 double Ex_0_1_1 = (half_inv_zeta * Ex_0_0_0);
@@ -119,12 +115,15 @@ __global__ void eri<0, 1, 0, 2>(
                 double Ez_0_0_0 = exp(((zeta * PA_z) * PB_z));
                 double Ez_0_1_0 = (PB_z * Ez_0_0_0);
                 double Ez_0_1_1 = (half_inv_zeta * Ez_0_0_0);
-                E[0][0] = ((Ex_0_1_0 * Ey_0_0_0) * Ez_0_0_0);
-                E[0][1] = ((Ex_0_1_1 * Ey_0_0_0) * Ez_0_0_0);
-                E[1][0] = ((Ex_0_0_0 * Ey_0_1_0) * Ez_0_0_0);
-                E[1][2] = ((Ex_0_0_0 * Ey_0_1_1) * Ez_0_0_0);
-                E[2][0] = ((Ex_0_0_0 * Ey_0_0_0) * Ez_0_1_0);
-                E[2][3] = ((Ex_0_0_0 * Ey_0_0_0) * Ez_0_1_1);
+                Ex[0] = Ex_0_0_0;
+                Ex[2] = Ex_0_1_0;
+                Ex[3] = Ex_0_1_1;
+                Ey[0] = Ey_0_0_0;
+                Ey[2] = Ey_0_1_0;
+                Ey[3] = Ey_0_1_1;
+                Ez[0] = Ez_0_0_0;
+                Ez[2] = Ez_0_1_0;
+                Ez[3] = Ez_0_1_1;
             }
             // the ket records of the task's ket shell pair
             for (int32_t ik = k0; ik < k1; ik += 1) {
@@ -134,8 +133,9 @@ __global__ void eri<0, 1, 0, 2>(
                 double PQ_z = (P2 - q_z[ik]);
                 // theta^2 = zeta eta / (zeta + eta), j_engine.md 'Two defects in the source'
                 double theta = sqrt(((ze * et) / (ze + et)));
-                // [p+q]^(0) by the plan's DAG for the quartet (0,1|0,2), statements no element
-                // reads dropped
+                // [t]^(0), |t| <= 3, by the plan's DAG for the quartet (0,1|0,2), once per
+                // record pair, then into the local R (hermite_targets order) so the rolled
+                // sums can index it
                 // [0]^(m) = (2/sqrt(pi)) theta (-2 theta^2)^m F_m(theta^2 |PQ|^2), j_engine.md
                 // 'Two defects in the source'
                 double t2 = (theta * theta);
@@ -181,22 +181,47 @@ __global__ void eri<0, 1, 0, 2>(
                 double R2_0_1_0 = (PQ_z * R2_0_0_1);
                 double R2_1_0_0 = (PQ_y * R2_0_0_1);
                 double R3_0_0_0 = ((PQ_x * R2_0_0_1) + (2.0 * R1_0_0_1));
-                // the undressed E block of this ket record: e_fragment.block_fragment, inlined
-                double Eket[6][10];
+                R[0] = R0_0_0_0;
+                R[1] = R1_0_0_0;
+                R[2] = R0_1_0_0;
+                R[3] = R0_0_1_0;
+                R[4] = R2_0_0_0;
+                R[5] = R1_1_0_0;
+                R[6] = R1_0_1_0;
+                R[7] = R0_2_0_0;
+                R[8] = R0_1_1_0;
+                R[9] = R0_0_2_0;
+                R[10] = R3_0_0_0;
+                R[11] = R2_1_0_0;
+                R[12] = R2_0_1_0;
+                R[13] = R1_2_0_0;
+                R[14] = R1_1_1_0;
+                R[15] = R1_0_2_0;
+                R[16] = R0_3_0_0;
+                R[17] = R0_2_1_0;
+                R[18] = R0_1_2_0;
+                R[19] = R0_0_3_0;
+                // the ket record's per-axis tables from -XQC, -XQD: E^{cd}_q(-X) =
+                // (-1)^{lc+ld-|q|} E^{cd}_q(X), exactly, so SUM_q (-1)^{|q|} E^{cd}_q G[q] =
+                // (-1)^{lc+ld} SUM_q E^{cd}_q(-X) G[q]
                 {
-                    // fragment e_block_02
+                    // fragment e_axis_tables_02
                     const auto zeta = et;
                     const auto half_inv_zeta = (0.5 / et);
-                    const auto PA_x = qc_x[ik];
-                    const auto PB_x = qd_x[ik];
-                    const auto PA_y = qc_y[ik];
-                    const auto PB_y = qd_y[ik];
-                    const auto PA_z = qc_z[ik];
-                    const auto PB_z = qd_z[ik];
-                    auto* const E = Eket;
+                    const auto PA_x = (0.0 - qc_x[ik]);
+                    const auto PB_x = (0.0 - qd_x[ik]);
+                    const auto PA_y = (0.0 - qc_y[ik]);
+                    const auto PB_y = (0.0 - qd_y[ik]);
+                    const auto PA_z = (0.0 - qc_z[ik]);
+                    const auto PB_z = (0.0 - qd_z[ik]);
+                    auto* const Ex = Ekx;
+                    auto* const Ey = Eky;
+                    auto* const Ez = Ekz;
                     // McMurchie & Davidson report UCRL-13791 (docs/references.md entry 46), eqs.
                     // 2.20-2.21: E^{i+1,j}_t and E^{i,j+1}_t from E^{00}_0 = exp(zeta X_PA X_PB);
                     // undressed
+                    // #586's low-stack E path: the per-axis E^{ij}_t stored into Ex, Ey, Ez [(i
+                    // (lb+1) + j) (la+lb+1) + t]; the E^{ab}_t block is never formed
                     double Ex_0_0_0 = exp(((zeta * PA_x) * PB_x));
                     double Ex_0_1_0 = (PB_x * Ex_0_0_0);
                     double Ex_0_1_1 = (half_inv_zeta * Ex_0_0_0);
@@ -215,122 +240,122 @@ __global__ void eri<0, 1, 0, 2>(
                     double Ez_0_2_0 = ((PB_z * Ez_0_1_0) + Ez_0_1_1);
                     double Ez_0_2_1 = ((half_inv_zeta * Ez_0_1_0) + (PB_z * Ez_0_1_1));
                     double Ez_0_2_2 = (half_inv_zeta * Ez_0_1_1);
-                    E[0][0] = ((Ex_0_2_0 * Ey_0_0_0) * Ez_0_0_0);
-                    E[0][1] = ((Ex_0_2_1 * Ey_0_0_0) * Ez_0_0_0);
-                    E[0][4] = ((Ex_0_2_2 * Ey_0_0_0) * Ez_0_0_0);
-                    E[1][0] = ((Ex_0_1_0 * Ey_0_1_0) * Ez_0_0_0);
-                    E[1][1] = ((Ex_0_1_1 * Ey_0_1_0) * Ez_0_0_0);
-                    E[1][2] = ((Ex_0_1_0 * Ey_0_1_1) * Ez_0_0_0);
-                    E[1][5] = ((Ex_0_1_1 * Ey_0_1_1) * Ez_0_0_0);
-                    E[2][0] = ((Ex_0_1_0 * Ey_0_0_0) * Ez_0_1_0);
-                    E[2][1] = ((Ex_0_1_1 * Ey_0_0_0) * Ez_0_1_0);
-                    E[2][3] = ((Ex_0_1_0 * Ey_0_0_0) * Ez_0_1_1);
-                    E[2][6] = ((Ex_0_1_1 * Ey_0_0_0) * Ez_0_1_1);
-                    E[3][0] = ((Ex_0_0_0 * Ey_0_2_0) * Ez_0_0_0);
-                    E[3][2] = ((Ex_0_0_0 * Ey_0_2_1) * Ez_0_0_0);
-                    E[3][7] = ((Ex_0_0_0 * Ey_0_2_2) * Ez_0_0_0);
-                    E[4][0] = ((Ex_0_0_0 * Ey_0_1_0) * Ez_0_1_0);
-                    E[4][2] = ((Ex_0_0_0 * Ey_0_1_1) * Ez_0_1_0);
-                    E[4][3] = ((Ex_0_0_0 * Ey_0_1_0) * Ez_0_1_1);
-                    E[4][8] = ((Ex_0_0_0 * Ey_0_1_1) * Ez_0_1_1);
-                    E[5][0] = ((Ex_0_0_0 * Ey_0_0_0) * Ez_0_2_0);
-                    E[5][3] = ((Ex_0_0_0 * Ey_0_0_0) * Ez_0_2_1);
-                    E[5][9] = ((Ex_0_0_0 * Ey_0_0_0) * Ez_0_2_2);
+                    Ex[0] = Ex_0_0_0;
+                    Ex[3] = Ex_0_1_0;
+                    Ex[4] = Ex_0_1_1;
+                    Ex[6] = Ex_0_2_0;
+                    Ex[7] = Ex_0_2_1;
+                    Ex[8] = Ex_0_2_2;
+                    Ey[0] = Ey_0_0_0;
+                    Ey[3] = Ey_0_1_0;
+                    Ey[4] = Ey_0_1_1;
+                    Ey[6] = Ey_0_2_0;
+                    Ey[7] = Ey_0_2_1;
+                    Ey[8] = Ey_0_2_2;
+                    Ez[0] = Ez_0_0_0;
+                    Ez[3] = Ez_0_1_0;
+                    Ez[4] = Ez_0_1_1;
+                    Ez[6] = Ez_0_2_0;
+                    Ez[7] = Ez_0_2_1;
+                    Ez[8] = Ez_0_2_2;
                 }
                 double w = (sb * s_cd[ik]);
-                // stage 1, per ket row c: I_c[p] = SUM_q +-[p+q] Eket[c, q]
-                double I0_0 = (((R0_0_0_0 * Eket[0][0]) - (R1_0_0_0 * Eket[0][1])) + (R2_0_0_0 * Eket[0][4]));
-                double I0_1 = (((R1_0_0_0 * Eket[0][0]) - (R2_0_0_0 * Eket[0][1])) + (R3_0_0_0 * Eket[0][4]));
-                double I0_2 = (((R0_1_0_0 * Eket[0][0]) - (R1_1_0_0 * Eket[0][1])) + (R2_1_0_0 * Eket[0][4]));
-                double I0_3 = (((R0_0_1_0 * Eket[0][0]) - (R1_0_1_0 * Eket[0][1])) + (R2_0_1_0 * Eket[0][4]));
-                double I1_0 = ((((R0_0_0_0 * Eket[1][0]) - (R1_0_0_0 * Eket[1][1])) - (R0_1_0_0 * Eket[1][2])) + (R1_1_0_0 * Eket[1][5]));
-                double I1_1 = ((((R1_0_0_0 * Eket[1][0]) - (R2_0_0_0 * Eket[1][1])) - (R1_1_0_0 * Eket[1][2])) + (R2_1_0_0 * Eket[1][5]));
-                double I1_2 = ((((R0_1_0_0 * Eket[1][0]) - (R1_1_0_0 * Eket[1][1])) - (R0_2_0_0 * Eket[1][2])) + (R1_2_0_0 * Eket[1][5]));
-                double I1_3 = ((((R0_0_1_0 * Eket[1][0]) - (R1_0_1_0 * Eket[1][1])) - (R0_1_1_0 * Eket[1][2])) + (R1_1_1_0 * Eket[1][5]));
-                double I2_0 = ((((R0_0_0_0 * Eket[2][0]) - (R1_0_0_0 * Eket[2][1])) - (R0_0_1_0 * Eket[2][3])) + (R1_0_1_0 * Eket[2][6]));
-                double I2_1 = ((((R1_0_0_0 * Eket[2][0]) - (R2_0_0_0 * Eket[2][1])) - (R1_0_1_0 * Eket[2][3])) + (R2_0_1_0 * Eket[2][6]));
-                double I2_2 = ((((R0_1_0_0 * Eket[2][0]) - (R1_1_0_0 * Eket[2][1])) - (R0_1_1_0 * Eket[2][3])) + (R1_1_1_0 * Eket[2][6]));
-                double I2_3 = ((((R0_0_1_0 * Eket[2][0]) - (R1_0_1_0 * Eket[2][1])) - (R0_0_2_0 * Eket[2][3])) + (R1_0_2_0 * Eket[2][6]));
-                double I3_0 = (((R0_0_0_0 * Eket[3][0]) - (R0_1_0_0 * Eket[3][2])) + (R0_2_0_0 * Eket[3][7]));
-                double I3_1 = (((R1_0_0_0 * Eket[3][0]) - (R1_1_0_0 * Eket[3][2])) + (R1_2_0_0 * Eket[3][7]));
-                double I3_2 = (((R0_1_0_0 * Eket[3][0]) - (R0_2_0_0 * Eket[3][2])) + (R0_3_0_0 * Eket[3][7]));
-                double I3_3 = (((R0_0_1_0 * Eket[3][0]) - (R0_1_1_0 * Eket[3][2])) + (R0_2_1_0 * Eket[3][7]));
-                double I4_0 = ((((R0_0_0_0 * Eket[4][0]) - (R0_1_0_0 * Eket[4][2])) - (R0_0_1_0 * Eket[4][3])) + (R0_1_1_0 * Eket[4][8]));
-                double I4_1 = ((((R1_0_0_0 * Eket[4][0]) - (R1_1_0_0 * Eket[4][2])) - (R1_0_1_0 * Eket[4][3])) + (R1_1_1_0 * Eket[4][8]));
-                double I4_2 = ((((R0_1_0_0 * Eket[4][0]) - (R0_2_0_0 * Eket[4][2])) - (R0_1_1_0 * Eket[4][3])) + (R0_2_1_0 * Eket[4][8]));
-                double I4_3 = ((((R0_0_1_0 * Eket[4][0]) - (R0_1_1_0 * Eket[4][2])) - (R0_0_2_0 * Eket[4][3])) + (R0_1_2_0 * Eket[4][8]));
-                double I5_0 = (((R0_0_0_0 * Eket[5][0]) - (R0_0_1_0 * Eket[5][3])) + (R0_0_2_0 * Eket[5][9]));
-                double I5_1 = (((R1_0_0_0 * Eket[5][0]) - (R1_0_1_0 * Eket[5][3])) + (R1_0_2_0 * Eket[5][9]));
-                double I5_2 = (((R0_1_0_0 * Eket[5][0]) - (R0_1_1_0 * Eket[5][3])) + (R0_1_2_0 * Eket[5][9]));
-                double I5_3 = (((R0_0_1_0 * Eket[5][0]) - (R0_0_2_0 * Eket[5][3])) + (R0_0_3_0 * Eket[5][9]));
-                // stage 2, per element (r, c): acc += s_i s_k SUM_p Ebra[r, p] I_c[p]
-                acc0_0 = (acc0_0 + (w * ((Ebra[0][0] * I0_0) + (Ebra[0][1] * I0_1))));
-                acc0_1 = (acc0_1 + (w * ((Ebra[0][0] * I1_0) + (Ebra[0][1] * I1_1))));
-                acc0_2 = (acc0_2 + (w * ((Ebra[0][0] * I2_0) + (Ebra[0][1] * I2_1))));
-                acc0_3 = (acc0_3 + (w * ((Ebra[0][0] * I3_0) + (Ebra[0][1] * I3_1))));
-                acc0_4 = (acc0_4 + (w * ((Ebra[0][0] * I4_0) + (Ebra[0][1] * I4_1))));
-                acc0_5 = (acc0_5 + (w * ((Ebra[0][0] * I5_0) + (Ebra[0][1] * I5_1))));
-                acc1_0 = (acc1_0 + (w * ((Ebra[1][0] * I0_0) + (Ebra[1][2] * I0_2))));
-                acc1_1 = (acc1_1 + (w * ((Ebra[1][0] * I1_0) + (Ebra[1][2] * I1_2))));
-                acc1_2 = (acc1_2 + (w * ((Ebra[1][0] * I2_0) + (Ebra[1][2] * I2_2))));
-                acc1_3 = (acc1_3 + (w * ((Ebra[1][0] * I3_0) + (Ebra[1][2] * I3_2))));
-                acc1_4 = (acc1_4 + (w * ((Ebra[1][0] * I4_0) + (Ebra[1][2] * I4_2))));
-                acc1_5 = (acc1_5 + (w * ((Ebra[1][0] * I5_0) + (Ebra[1][2] * I5_2))));
-                acc2_0 = (acc2_0 + (w * ((Ebra[2][0] * I0_0) + (Ebra[2][3] * I0_3))));
-                acc2_1 = (acc2_1 + (w * ((Ebra[2][0] * I1_0) + (Ebra[2][3] * I1_3))));
-                acc2_2 = (acc2_2 + (w * ((Ebra[2][0] * I2_0) + (Ebra[2][3] * I2_3))));
-                acc2_3 = (acc2_3 + (w * ((Ebra[2][0] * I3_0) + (Ebra[2][3] * I3_3))));
-                acc2_4 = (acc2_4 + (w * ((Ebra[2][0] * I4_0) + (Ebra[2][3] * I4_3))));
-                acc2_5 = (acc2_5 + (w * ((Ebra[2][0] * I5_0) + (Ebra[2][3] * I5_3))));
+                // the first record pair stores (+-) w v, every later one adds it: the same
+                // value as a zeroed element's first add, bit for bit
+                int32_t first = ((ib < (b0 + 1)) * (ik < (k0 + 1)));
+                // the chunk's rows, serially
+                for (int32_t xr = r0; xr < (r0 + 1); xr += 1) {
+                    int32_t ra = (xr / 3);
+                    int32_t rb = (xr - (ra * 3));
+                    int32_t pr = pidx[((oa + ra) * n_ao + (ob + rb))];
+                    int32_t a_u = 0;
+                    int32_t a_w = (ra - ((a_u * (a_u + 1)) / 2));
+                    int32_t ax = (0 - a_u);
+                    int32_t ay = (a_u - a_w);
+                    int32_t az = a_w;
+                    int32_t b_u = (0 < rb);
+                    int32_t b_w = (rb - ((b_u * (b_u + 1)) / 2));
+                    int32_t bx = (1 - b_u);
+                    int32_t by = (b_u - b_w);
+                    int32_t bz = b_w;
+                    // the row's E^{ab}_p = (E_x E_y) E_z over its reach, once
+                    int32_t e_i = 0;
+                    for (int32_t e_tx = 0; e_tx < ((ax + bx) + 1); e_tx += 1) {
+                        for (int32_t e_ty = 0; e_ty < ((ay + by) + 1); e_ty += 1) {
+                            for (int32_t e_tz = 0; e_tz < ((az + bz) + 1); e_tz += 1) {
+                                Er[e_i] = ((Ebx[((((ax * 2) + bx) * 2) + e_tx)] * Eby[((((ay * 2) + by) * 2) + e_ty)]) * Ebz[((((az * 2) + bz) * 2) + e_tz)]);
+                                e_i = (e_i + 1);
+                            }
+                        }
+                    }
+                    // G[q] = SUM_p E^{ab}_p [p+q]^(0) for every |q| <= lc + ld, a fold over the
+                    // row's reach in its loop order
+                    for (int32_t q_x = 0; q_x < 3; q_x += 1) {
+                        for (int32_t q_y = 0; q_y < ((2 - q_x) + 1); q_y += 1) {
+                            for (int32_t q_z = 0; q_z < (((2 - q_x) - q_y) + 1); q_z += 1) {
+                                double g = 0.0;
+                                int32_t e_i = 0;
+                                for (int32_t e_tx = 0; e_tx < ((ax + bx) + 1); e_tx += 1) {
+                                    for (int32_t e_ty = 0; e_ty < ((ay + by) + 1); e_ty += 1) {
+                                        for (int32_t e_tz = 0; e_tz < ((az + bz) + 1); e_tz += 1) {
+                                            g = (g + (Er[e_i] * R[(((((((e_tx + q_x) + ((e_ty + q_y) + (e_tz + q_z))) * (((e_tx + q_x) + ((e_ty + q_y) + (e_tz + q_z))) + 1)) * (((e_tx + q_x) + ((e_ty + q_y) + (e_tz + q_z))) + 2)) / 6) + ((((e_ty + q_y) + (e_tz + q_z)) * (((e_ty + q_y) + (e_tz + q_z)) + 1)) / 2)) + (e_tz + q_z))]));
+                                            e_i = (e_i + 1);
+                                        }
+                                    }
+                                }
+                                G[((((((q_x + (q_y + q_z)) * ((q_x + (q_y + q_z)) + 1)) * ((q_x + (q_y + q_z)) + 2)) / 6) + (((q_y + q_z) * ((q_y + q_z) + 1)) / 2)) + q_z)] = g;
+                            }
+                        }
+                    }
+                    // per column (c, d): out += (+-) w SUM_q E^{cd}_q(-X) G[q], rolled over the
+                    // ket tables, in place
+                    for (int32_t c_u = 0; c_u < 1; c_u += 1) {
+                        for (int32_t c_w = 0; c_w < (c_u + 1); c_w += 1) {
+                            int32_t cx = (0 - c_u);
+                            int32_t cy = (c_u - c_w);
+                            int32_t cz = c_w;
+                            for (int32_t d_u = 0; d_u < 3; d_u += 1) {
+                                for (int32_t d_w = 0; d_w < (d_u + 1); d_w += 1) {
+                                    int32_t dx = (2 - d_u);
+                                    int32_t dy = (d_u - d_w);
+                                    int32_t dz = d_w;
+                                    int32_t f_bx = (((cx * 3) + dx) * 3);
+                                    int32_t f_by = (((cy * 3) + dy) * 3);
+                                    int32_t f_bz = (((cz * 3) + dz) * 3);
+                                    double v = 0.0;
+                                    for (int32_t f_tx = 0; f_tx < ((cx + dx) + 1); f_tx += 1) {
+                                        double f_sy = 0.0;
+                                        for (int32_t f_ty = 0; f_ty < ((cy + dy) + 1); f_ty += 1) {
+                                            double f_sz = 0.0;
+                                            for (int32_t f_tz = 0; f_tz < ((cz + dz) + 1); f_tz += 1) {
+                                                f_sz = (f_sz + (Ekz[(f_bz + f_tz)] * G[((((((f_tx + (f_ty + f_tz)) * ((f_tx + (f_ty + f_tz)) + 1)) * ((f_tx + (f_ty + f_tz)) + 2)) / 6) + (((f_ty + f_tz) * ((f_ty + f_tz) + 1)) / 2)) + f_tz)]));
+                                            }
+                                            f_sy = (f_sy + (Eky[(f_by + f_ty)] * f_sz));
+                                        }
+                                        v = (v + (Ekx[(f_bx + f_tx)] * f_sy));
+                                    }
+                                    if (first) {
+                                        eri[(pr * n_pp + pidx[((oc + (((c_u * (c_u + 1)) / 2) + c_w)) * n_ao + (od + (((d_u * (d_u + 1)) / 2) + d_w)))])] = (w * v);
+                                    } else {
+                                        eri[(pr * n_pp + pidx[((oc + (((c_u * (c_u + 1)) / 2) + c_w)) * n_ao + (od + (((d_u * (d_u + 1)) / 2) + d_w)))])] = (eri[(pr * n_pp + pidx[((oc + (((c_u * (c_u + 1)) / 2) + c_w)) * n_ao + (od + (((d_u * (d_u + 1)) / 2) + d_w)))])] + (w * v));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
-        // the packed pair index of every row and column
-        int32_t pr0 = pidx[((oa + 0) * n_ao + (ob + 0))];
-        int32_t pr1 = pidx[((oa + 0) * n_ao + (ob + 1))];
-        int32_t pr2 = pidx[((oa + 0) * n_ao + (ob + 2))];
-        int32_t pc0 = pidx[((oc + 0) * n_ao + (od + 0))];
-        int32_t pc1 = pidx[((oc + 0) * n_ao + (od + 1))];
-        int32_t pc2 = pidx[((oc + 0) * n_ao + (od + 2))];
-        int32_t pc3 = pidx[((oc + 0) * n_ao + (od + 3))];
-        int32_t pc4 = pidx[((oc + 0) * n_ao + (od + 4))];
-        int32_t pc5 = pidx[((oc + 0) * n_ao + (od + 5))];
-        // scatter: one plain store per element and its bra-ket mirror, no atomics --
-        // each element belongs to one task
-        eri[(pr0 * n_pp + pc0)] = acc0_0;
-        eri[(pc0 * n_pp + pr0)] = acc0_0;
-        eri[(pr0 * n_pp + pc1)] = acc0_1;
-        eri[(pc1 * n_pp + pr0)] = acc0_1;
-        eri[(pr0 * n_pp + pc2)] = acc0_2;
-        eri[(pc2 * n_pp + pr0)] = acc0_2;
-        eri[(pr0 * n_pp + pc3)] = acc0_3;
-        eri[(pc3 * n_pp + pr0)] = acc0_3;
-        eri[(pr0 * n_pp + pc4)] = acc0_4;
-        eri[(pc4 * n_pp + pr0)] = acc0_4;
-        eri[(pr0 * n_pp + pc5)] = acc0_5;
-        eri[(pc5 * n_pp + pr0)] = acc0_5;
-        eri[(pr1 * n_pp + pc0)] = acc1_0;
-        eri[(pc0 * n_pp + pr1)] = acc1_0;
-        eri[(pr1 * n_pp + pc1)] = acc1_1;
-        eri[(pc1 * n_pp + pr1)] = acc1_1;
-        eri[(pr1 * n_pp + pc2)] = acc1_2;
-        eri[(pc2 * n_pp + pr1)] = acc1_2;
-        eri[(pr1 * n_pp + pc3)] = acc1_3;
-        eri[(pc3 * n_pp + pr1)] = acc1_3;
-        eri[(pr1 * n_pp + pc4)] = acc1_4;
-        eri[(pc4 * n_pp + pr1)] = acc1_4;
-        eri[(pr1 * n_pp + pc5)] = acc1_5;
-        eri[(pc5 * n_pp + pr1)] = acc1_5;
-        eri[(pr2 * n_pp + pc0)] = acc2_0;
-        eri[(pc0 * n_pp + pr2)] = acc2_0;
-        eri[(pr2 * n_pp + pc1)] = acc2_1;
-        eri[(pc1 * n_pp + pr2)] = acc2_1;
-        eri[(pr2 * n_pp + pc2)] = acc2_2;
-        eri[(pc2 * n_pp + pr2)] = acc2_2;
-        eri[(pr2 * n_pp + pc3)] = acc2_3;
-        eri[(pc3 * n_pp + pr2)] = acc2_3;
-        eri[(pr2 * n_pp + pc4)] = acc2_4;
-        eri[(pc4 * n_pp + pr2)] = acc2_4;
-        eri[(pr2 * n_pp + pc5)] = acc2_5;
-        eri[(pc5 * n_pp + pr2)] = acc2_5;
+        // the bra-ket mirror of every owned element
+        for (int32_t mr = r0; mr < (r0 + 1); mr += 1) {
+            int32_t ra = (mr / 3);
+            int32_t rb = (mr - (ra * 3));
+            int32_t pr = pidx[((oa + ra) * n_ao + (ob + rb))];
+            for (int32_t ci = 0; ci < 1; ci += 1) {
+                for (int32_t di = 0; di < 6; di += 1) {
+                    eri[(pidx[((oc + ci) * n_ao + (od + di))] * n_pp + pr)] = eri[(pr * n_pp + pidx[((oc + ci) * n_ao + (od + di))])];
+                }
+            }
+        }
     }
 }

@@ -53,7 +53,8 @@ extern "C" {
 
 /// Writes class (bra->la, bra->lb | ket->la, ket->lb) of the packed ERI into
 /// eri, n_pp x n_pp doubles, on stream: the generated eri<la, lb, lc, ld>,
-/// one thread per task.
+/// kernels/eri_task_threads.h's threads per task (one through (pp|pp); from
+/// a d shell the low-stack form's, one bra row a thread).
 ///
 /// The bra and ket records are bra's and ket's, read in place: each one's
 /// zeta, p_*, pa_*, pb_* and s, n_rec long; ket's P, P - A and P - B are the
@@ -71,8 +72,9 @@ extern "C" {
 ///
 /// Returns FB_LAUNCH_INVALID_ARGUMENT for a null bra, ket or array (one of
 /// the eleven record fields each side reads among them), a count not
-/// positive (each side's n_rec among them) or an n_ao above
-/// FB_CONVENTIONAL_MAX_AO, and FB_LAUNCH_UNSUPPORTED for a class with no
+/// positive (each side's n_rec among them), an n_ao above
+/// FB_CONVENTIONAL_MAX_AO or n_task times the class's threads per task past
+/// INT32_MAX (the kernels' thread index), and FB_LAUNCH_UNSUPPORTED for a class with no
 /// kernel (0 <= la <= lb <= FB_CONVENTIONAL_MAX_MOMENTUM and
 /// 0 <= lc <= ld <= FB_CONVENTIONAL_MAX_MOMENTUM with (la, lb) not after
 /// (lc, ld) has one), each enqueueing nothing; otherwise the launch status.

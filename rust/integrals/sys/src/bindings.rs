@@ -255,7 +255,8 @@ pub const FB_INTEGRALS_ABI_VERSION: u32 = 7;
 unsafe extern "C" {
     /// Writes class (bra->la, bra->lb | ket->la, ket->lb) of the packed ERI into
     /// eri, n_pp x n_pp doubles, on stream: the generated eri<la, lb, lc, ld>,
-    /// one thread per task.
+    /// kernels/eri_task_threads.h's threads per task (one through (pp|pp); from
+    /// a d shell the low-stack form's, one bra row a thread).
     ///
     /// The bra and ket records are bra's and ket's, read in place: each one's
     /// zeta, p_*, pa_*, pb_* and s, n_rec long; ket's P, P - A and P - B are the
@@ -273,8 +274,9 @@ unsafe extern "C" {
     ///
     /// Returns FB_LAUNCH_INVALID_ARGUMENT for a null bra, ket or array (one of
     /// the eleven record fields each side reads among them), a count not
-    /// positive (each side's n_rec among them) or an n_ao above
-    /// FB_CONVENTIONAL_MAX_AO, and FB_LAUNCH_UNSUPPORTED for a class with no
+    /// positive (each side's n_rec among them), an n_ao above
+    /// FB_CONVENTIONAL_MAX_AO or n_task times the class's threads per task past
+    /// INT32_MAX (the kernels' thread index), and FB_LAUNCH_UNSUPPORTED for a class with no
     /// kernel (0 <= la <= lb <= FB_CONVENTIONAL_MAX_MOMENTUM and
     /// 0 <= lc <= ld <= FB_CONVENTIONAL_MAX_MOMENTUM with (la, lb) not after
     /// (lc, ld) has one), each enqueueing nothing; otherwise the launch status.
@@ -311,7 +313,9 @@ unsafe extern "C" {
     /// Writes class (bra->la, bra->lb | ket->la, ket->lb) of the local row block
     /// eri of the dense matrix in layout (FB_DENSE_LAYOUT_J or
     /// FB_DENSE_LAYOUT_K) on stream: the generated eri_dj<la, lb, lc, ld> or
-    /// eri_dk<la, lb, lc, ld>, one thread per task, a task an ORDERED quartet of
+    /// eri_dk<la, lb, lc, ld>, ../kernels/eri_task_threads.h's threads per task
+    /// (one through (pp|pp); from a d shell the low-stack form's, the n_b rows
+    /// of one bra Cartesian a thread), a task an ORDERED quartet of
     /// shells (a bra shell pair crossed with a ket shell pair) whose (ab|cd)
     /// block it stores, element by element, plainly, with no mirror.
     ///
@@ -338,8 +342,9 @@ unsafe extern "C" {
     /// among them), a count not positive (each side's n_rec among them), an
     /// n_bpair past bra_stride, an n_bpair n_kpair past task_stride, an n_row
     /// that is not a multiple of n_ao, rows past the matrix
-    /// (m0 n_ao + n_row > n_ao^2), or an n_ao^2 or n_row n_ao^2 past INT32_MAX
-    /// (the kernels' flat index); and FB_LAUNCH_UNSUPPORTED for a class with no
+    /// (m0 n_ao + n_row > n_ao^2), an n_ao^2 or n_row n_ao^2 past INT32_MAX
+    /// (the kernels' flat index), or n_bpair n_kpair times the class's threads
+    /// per task past INT32_MAX (their thread index); and FB_LAUNCH_UNSUPPORTED for a class with no
     /// kernel (each momentum in 0..=FB_CONVENTIONAL_MAX_MOMENTUM has one), each
     /// enqueueing nothing; otherwise the launch status. Launch errors only: the
     /// kernel's own faults surface at the next synchronization.

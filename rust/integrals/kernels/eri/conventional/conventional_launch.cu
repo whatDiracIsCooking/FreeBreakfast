@@ -36,7 +36,14 @@
 #include <runtime.h>
 
 #include "eri/conventional/kernels/eri.h"
+#include "eri/conventional/kernels/eri_task_threads.h"
 
+static_assert(
+    std::is_same_v<std::remove_cv_t<decltype(eri_task_threads)>,
+                   int32_t[FB_CONVENTIONAL_MAX_MOMENTUM + 1][FB_CONVENTIONAL_MAX_MOMENTUM + 1]
+                          [FB_CONVENTIONAL_MAX_MOMENTUM + 1][FB_CONVENTIONAL_MAX_MOMENTUM + 1]>,
+    "kernels/eri_task_threads.h and FB_CONVENTIONAL_MAX_MOMENTUM disagree: "
+    "rerun tools/emit/conventional_kernels.py");
 static_assert(std::extent_v<decltype(eri_kernels), 0> == FB_CONVENTIONAL_MAX_MOMENTUM + 1 &&
                   std::extent_v<decltype(eri_kernels), 1> == FB_CONVENTIONAL_MAX_MOMENTUM + 1 &&
                   std::extent_v<decltype(eri_kernels), 2> == FB_CONVENTIONAL_MAX_MOMENTUM + 1 &&
@@ -136,8 +143,17 @@ fb_conventional_eri_class(const wwr_stream stream, const fb_primitive_pair_class
     return FB_LAUNCH_UNSUPPORTED;
   }
   const auto kernel = eri_kernels[la][lb][lc][ld];
-  if (kernel == nullptr) {
+  // Threads per task of the form the class was emitted in (FelizJueves's
+  // task_threads: 1 through (pp|pp); from a d shell the low-stack form's,
+  // one bra row a thread), the task the fast index of the launch.
+  const int32_t per_task = eri_task_threads[la][lb][lc][ld];
+  if (kernel == nullptr || per_task < 1) {
     return FB_LAUNCH_UNSUPPORTED;
+  }
+  // The kernel's thread index is an int32: refused, not wrapped.
+  const int64_t n_thread = static_cast<int64_t>(n_task) * per_task;
+  if (n_thread > INT32_MAX) {
+    return FB_LAUNCH_INVALID_ARGUMENT;
   }
   const auto bp = [&](const int32_t field) {
     return bra_pairs + (static_cast<size_t>(field) * static_cast<size_t>(n_bpair));
@@ -149,7 +165,7 @@ fb_conventional_eri_class(const wwr_stream stream, const fb_primitive_pair_class
     return tasks + (static_cast<size_t>(field) * static_cast<size_t>(n_task));
   };
   // The C ABI's stream is the runtime's, behind a void *.
-  kernel<<<blocks_for(n_task), free_breakfast::kFourWarps, 0,
+  kernel<<<blocks_for(static_cast<int32_t>(n_thread)), free_breakfast::kFourWarps, 0,
            static_cast<wwr::wwrStream_t>(stream)>>>(
       n_task, bra->n_rec, ket->n_rec, n_bpair, n_kpair, n_ao, packed(n_ao), b[0], b[1], b[2], b[3],
       b[4], b[5], b[6], b[7], b[8], b[9], b[10], k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7],

@@ -283,7 +283,8 @@ reading of the card, so the card's bound below and the reserve agree.
 **The stack is what it can still take.** The C++ `Device::stack_growth`: what
 the kernels' stack can still take for a kernel of `kKernelStackBytes` per
 thread (`fb_pipeline_config::KERNEL_STACK_BYTES`, the C++ tree's largest,
-which bounds the Rust forks of its kernels), 0 once a kernel that large has
+which bounds the Rust forks of its kernels and the rust-only conventional
+ERI units, at most 3,856 bytes in their low-stack form), 0 once a kernel that large has
 run, and 0 under HIP, whose scratch is sized per dispatch. wwr's C ABI has no
 device attribute, so the Rust term is measured rather than computed from the
 resident threads: the free memory read either side of raising the stack limit
