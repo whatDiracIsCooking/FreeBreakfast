@@ -255,9 +255,12 @@ fn memory_example() {
 /// The plan is laid out at a stand-in syevd work: the tasks do not depend
 /// on it.
 fn check_timing(config: &Path, timing: &Path, named: &[&str]) -> Record {
-    let planned =
-        fb_pipeline_config::plan(&fb_pipeline_config::read_config(config).unwrap(), |_| Ok(1))
-            .unwrap();
+    let planned = fb_pipeline_config::plan(
+        &fb_pipeline_config::read_config(config).unwrap(),
+        |_| Ok(1),
+        |_| panic!("a card read by a plan with no adaptive part"),
+    )
+    .unwrap();
     let dir = timing.parent().unwrap();
     let text = std::fs::read_to_string(dir.join("plan.txt")).unwrap();
     assert!(

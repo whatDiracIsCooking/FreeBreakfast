@@ -164,7 +164,7 @@ mod read;
 mod schema;
 mod write;
 
-pub use admit::{DEVICE_RESERVE, KERNEL_STACK_BYTES, admit_plan};
+pub use admit::{Card, DEVICE_RESERVE, KERNEL_STACK_BYTES, admit_plan};
 pub use plan::plan;
 pub use read::read_config;
 pub use schema::{BasisSetStep, Calculation, Config, MemoryCaps, MoleculeStep};

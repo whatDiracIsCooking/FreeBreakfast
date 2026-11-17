@@ -493,14 +493,19 @@ reads its device's free memory against its total; the difference is that
 device's reserve, and the C++ <code>kDeviceReserve</code> of 256 MiB
 (<code>fb_pipeline_config::DEVICE_RESERVE</code>) is the least it may be taken as. A card
 another process holds part of shows up here, as a smaller cap, rather than at
-the first allocation. The binary makes the reading at planning, for each
-worker with a device block, with that worker's stream and handles made for it
-(the run's own are made with its backend, after the blocks); it is the one
-reading of the card, so the card's bound below and the reserve agree.</p>
+the first allocation. The binary makes the reading at planning, once per
+worker, the first time planning (for a worker holding an adaptive part) or
+admission (for a worker with a device block) asks for it, with that worker's
+stream and handles made for it (the run's own are made with its backend,
+after the blocks); it is the one reading of the card
+(<code>fb_pipeline_config::Card</code>), so the card's bound below, the reserve and the
+room the adaptive widths are bisected in (&quot;Adaptive widths: one planner
+routine&quot;) agree.</p>
 <p><strong>The stack is what it can still take.</strong> The C++ <code>Device::stack_growth</code>: what
 the kernels' stack can still take for a kernel of <code>kKernelStackBytes</code> per
 thread (<code>fb_pipeline_config::KERNEL_STACK_BYTES</code>, the C++ tree's largest,
-which bounds the Rust forks of its kernels), 0 once a kernel that large has
+which bounds the Rust forks of its kernels and the rust-only conventional
+ERI units, at most 3,856 bytes in their low-stack form), 0 once a kernel that large has
 run, and 0 under HIP, whose scratch is sized per dispatch. wwr's C ABI has no
 device attribute, so the Rust term is measured rather than computed from the
 resident threads: the free memory read either side of raising the stack limit
@@ -661,6 +666,52 @@ the peak and the peak the room, is the programming model's open question on
 adaptive layouts (<a href="programming_model.html"><code>programming_model.md</code></a>, &quot;Open
 questions&quot;); the single pass is the model until a plan shows it is not
 enough.</p>
+<p><strong>The Rust shape.</strong> A layout is called as its task is added, before the
+lifetimes of the rows live at its position are known, so the widths are
+chosen by planning the DAG's declaration more than once. A part's two
+functions are a type's <code>Adaptive</code> implementation (<code>fb_core_planner</code>),
+with a floor below which a narrowed width is a <code>warn</code> (2 by default, so a
+width of 1 is; the streamed J/K batch's is 32) and whether the width is
+rounded down to a power of two, which keeps the fit since <code>bytes</code> is
+monotone; a part with a pinned window that grows with the width declares
+its bytes too, <code>pinned_bytes(width)</code>, monotone as <code>bytes</code> is.
+<code>Dag::plan_within(rooms, build)</code> takes a closure giving each worker's
+<code>Room</code>, its device and pinned bytes, and a closure that declares the DAG,
+asking <code>Dag::width</code> for each part's width just before adding its tasks; the
+part's position is the next task's, and a counted loop over its batches
+takes <code>total.div_ceil(width)</code> trips. The declaration is run once per part
+and once more, and stops at its first error: in run <code>k</code> the parts before
+part <code>k</code> have their widths and the rest are at 1, and part <code>k</code>'s fixed
+bytes of each kind are that kind's table's <code>live_at</code> its position, a loop's
+region whole, less the part's own at width 1; its room is the worker's less
+those, of each kind, bisected once by <code>widest</code>, the largest width whose
+bytes fit both. A worker's room is asked once, when the first part on it is
+measured, so a DAG with no part reads none and the declaration's refusals
+come first. The last run is the plan, its text carrying a <code>width</code> line per
+part. A part inside a decision loop's body is measured against that body's
+region whole, which may leave room the pass does not find. A DAG planned by
+<code>Dag::plan</code> with no rooms gives each part its <code>width_max</code>.</p>
+<p><strong>The rooms are admission's caps, from the one reading.</strong> A worker's device
+room is what admission holds its device block to, the smaller of
+<code>[memory] max_device_mem_per_gpu</code> and the card's total, less the reserve and
+the stack, all from the worker's one reading of its card (&quot;Admission&quot;); its
+pinned room is <code>max_pinned_mem_per_gpu</code>, what admission holds its pinned
+block to (<code>fb_pipeline_config::Card::room</code>). The binary's planning path,
+<code>fb_pipeline_config::plan</code>, hands those rooms to <code>Dag::plan_within</code>, and
+<code>admit_plan</code> takes the same reading, so a plan built inside its rooms is
+admitted, and planning and admission cannot disagree about a card whose
+other tenants moved between two readings. The pinned room is counted, not
+left to admission, because the streamed J/K fold's window is pinned and
+grows with its batch: a ring of two batches of packed B, <code>2 width npair</code>
+doubles, beside an uploaded copy of each on the device and the batch's
+square slab. Its pinned bytes are never more than its device bytes, but the
+pinned cap's floor, 2 GiB, is a quarter of the device cap's, so past about
+2,000 AOs at a batch of 64 the window, not the device, binds. What is left
+to admission is the node: the workers' pinned caps together are refused past
+the host's available memory before any table, and the pinned blocks with the
+heap block, B itself in the streamed fold, are admitted after planning, so a
+heap block that leaves the node less than the windows refuses the plan
+rather than narrowing them.</p>
 <h2 id="sizes-the-dimensions-do-not-fix">Sizes the dimensions do not fix</h2>
 <p>The C++ tree has both of the model's answers, so neither has to be argued
 from first principles:</p>

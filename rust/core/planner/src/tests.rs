@@ -21,6 +21,8 @@ pub(super) enum Decl {
     Write(RowId<Device, f64>),
     Out(&'static str, usize),
     Scratch(&'static str, usize),
+    /// Scratch in the worker's host table, `f64`s.
+    Staged(&'static str, usize),
 }
 
 /// A GPU task that only declares device rows, in a given order, and
@@ -30,7 +32,7 @@ pub(super) struct Declares(pub(super) Vec<Decl>);
 impl GpuTask<PinnedStandIn, ()> for Declares {
     type Rows = Vec<RowId<Device, f64>>;
 
-    fn layout(&self, d: &mut Layout<'_, Device>, _: &mut Layout<'_, PinnedStandIn>) -> Self::Rows {
+    fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, PinnedStandIn>) -> Self::Rows {
         let mut made = Vec::new();
         for &decl in &self.0 {
             match decl {
@@ -42,6 +44,9 @@ impl GpuTask<PinnedStandIn, ()> for Declares {
                 }
                 Decl::Out(name, len) => made.push(d.output(name, len)),
                 Decl::Scratch(name, len) => made.push(d.scratch(name, len)),
+                Decl::Staged(name, len) => {
+                    let _: RowId<PinnedStandIn, f64> = h.scratch(name, len);
+                }
             }
         }
         made

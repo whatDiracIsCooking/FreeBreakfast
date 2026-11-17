@@ -12,22 +12,22 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use fb_core_error_handling::{Error, Status};
+use fb_core_error_handling::{Error, Result, Status};
 use fb_core_log::{self as log, LogLevel};
-use fb_core_thread_pool::{DeviceStream, default_n_cpu};
+use fb_core_thread_pool::default_n_cpu;
 use fb_core_wwr::runtime::{Stream, device_count};
 use fb_core_wwr::solver::SolverHandle;
-use fb_pipeline_config::{KERNEL_STACK_BYTES, admit_plan, plan, read_config};
+use fb_pipeline_config::{Card, admit_plan, plan, read_config};
 use fb_recipes_diagonalize::syevd_lwork;
 
 /// Read; check a `num_gpus` above 1 against the devices the runtime sees,
 /// a count that makes no stream, for the run's device list, `0..num_gpus`, worker
 /// `w` on its device `w`; plan (syevd's work asked of a solver handle on
-/// device 0, if the plan asks), make the output directory and write the plan into it,
+/// device 0, if the plan asks; each adaptive width in its worker's room,
+/// from its card), make the output directory and write the plan into it,
 /// `plan.txt` its text and `plan.dot` its graph, so a plan admission
 /// refuses can still be read; admit every worker's tables and the heap's against the
-/// `[memory]` caps (each device's reserve measured with its worker's
-/// stream and handles made, and the kernels' stack read after it; the
+/// `[memory]` caps (each device's block by its card; the
 /// host blocks against `MemAvailable` within the cgroup's limit),
 /// run, and write `timing.json` and `timing.dot`, the graph with the run's
 /// times on it. Everything a config can get wrong is refused before a
@@ -40,9 +40,20 @@ fn run(args: &[String]) -> Status {
     };
     let config = read_config(Path::new(config))?;
     let devices = config.devices(device_count)?;
-    let planned = plan(&config, |n| {
-        syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n)
-    })?;
+    // Each worker's card is read once, when planning or admission first
+    // asks for it, so the widths and the admission are of one reading.
+    let mut cards: Vec<Option<Card>> = vec![None; devices.len()];
+    let mut card = |w: usize| -> Result<Card> {
+        match cards[w] {
+            Some(card) => Ok(card),
+            None => Ok(*cards[w].insert(Card::read(devices[w])?)),
+        }
+    };
+    let planned = plan(
+        &config,
+        |n| syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n),
+        &mut card,
+    )?;
     std::fs::create_dir_all(&config.output).map_err(|e| {
         Error::io(format!(
             "cannot make the output directory '{}': {e}",
@@ -55,13 +66,7 @@ fn run(args: &[String]) -> Status {
     admit_plan(
         &planned,
         &config.memory,
-        // The worker's stream and handles exist for the reading, so the
-        // reserve holds them; the run's own are made with its backend.
-        |w| {
-            let _worker = DeviceStream::new(devices[w]);
-            fb_core_arena::device_memory(devices[w])
-        },
-        |w| fb_core_wwr::runtime::stack_growth(devices[w], KERNEL_STACK_BYTES),
+        &mut card,
         fb_core_arena::host_available()?,
     )?;
     // A device past the plan's workers holds nothing: the instance makes

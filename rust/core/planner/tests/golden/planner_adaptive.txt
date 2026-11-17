@@ -3,7 +3,7 @@ plan: 3 tasks, GPU workers: 1
     0       0  stream  a
     1       0  stream  part: after 0
     2       0  stream  c: after 0 1
-width between: 20 of 64, worker 0 at node 1, 10240 bytes in a room of 10340
+width between: 20 of 64, worker 0 at node 1, 10240 bytes and 0 pinned in a room of 10340 and 0 pinned
 worker 0 device table: 4 rows, 18432 bytes
 peak: 18432 bytes at node 1
     offset      bytes  owner   life     name: users (w writes, r reads)

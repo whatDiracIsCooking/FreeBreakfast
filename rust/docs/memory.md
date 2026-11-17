@@ -275,10 +275,14 @@ reads its device's free memory against its total; the difference is that
 device's reserve, and the C++ `kDeviceReserve` of 256 MiB
 (`fb_pipeline_config::DEVICE_RESERVE`) is the least it may be taken as. A card
 another process holds part of shows up here, as a smaller cap, rather than at
-the first allocation. The binary makes the reading at planning, for each
-worker with a device block, with that worker's stream and handles made for it
-(the run's own are made with its backend, after the blocks); it is the one
-reading of the card, so the card's bound below and the reserve agree.
+the first allocation. The binary makes the reading at planning, once per
+worker, the first time planning (for a worker holding an adaptive part) or
+admission (for a worker with a device block) asks for it, with that worker's
+stream and handles made for it (the run's own are made with its backend,
+after the blocks); it is the one reading of the card
+(`fb_pipeline_config::Card`), so the card's bound below, the reserve and the
+room the adaptive widths are bisected in ("Adaptive widths: one planner
+routine") agree.
 
 **The stack is what it can still take.** The C++ `Device::stack_growth`: what
 the kernels' stack can still take for a kernel of `kKernelStackBytes` per
@@ -378,20 +382,46 @@ functions are a type's `Adaptive` implementation (`fb_core_planner`),
 with a floor below which a narrowed width is a `warn` (2 by default, so a
 width of 1 is; the streamed J/K batch's is 32) and whether the width is
 rounded down to a power of two, which keeps the fit since `bytes` is
-monotone. `Dag::plan_within(rooms, build)` takes each worker's device room
-and a closure that declares the DAG, asking `Dag::width` for each part's
-width just before adding its tasks; the part's position is the next task's,
-and a counted loop over its batches takes `total.div_ceil(width)` trips.
-The closure is run once per part and once more: in run `k` the parts
-before part `k` have their widths and the rest are at 1, and part `k`'s
-fixed bytes are the device table's `live_at` its position, a loop's region
-whole, less `bytes(1)`; its room is the worker's less those, bisected once
-by `widest`. The last run is the plan, its text carrying a `width` line per
-part. The room is the device table's alone: a pinned window that grows with
-the width is admitted after, and a part inside a decision loop's body is
-measured against that body's region whole, which may leave room the pass
-does not find. A DAG planned by `Dag::plan` with no rooms gives each part
-its `width_max`.
+monotone; a part with a pinned window that grows with the width declares
+its bytes too, `pinned_bytes(width)`, monotone as `bytes` is.
+`Dag::plan_within(rooms, build)` takes a closure giving each worker's
+`Room`, its device and pinned bytes, and a closure that declares the DAG,
+asking `Dag::width` for each part's width just before adding its tasks; the
+part's position is the next task's, and a counted loop over its batches
+takes `total.div_ceil(width)` trips. The declaration is run once per part
+and once more, and stops at its first error: in run `k` the parts before
+part `k` have their widths and the rest are at 1, and part `k`'s fixed
+bytes of each kind are that kind's table's `live_at` its position, a loop's
+region whole, less the part's own at width 1; its room is the worker's less
+those, of each kind, bisected once by `widest`, the largest width whose
+bytes fit both. A worker's room is asked once, when the first part on it is
+measured, so a DAG with no part reads none and the declaration's refusals
+come first. The last run is the plan, its text carrying a `width` line per
+part. A part inside a decision loop's body is measured against that body's
+region whole, which may leave room the pass does not find. A DAG planned by
+`Dag::plan` with no rooms gives each part its `width_max`.
+
+**The rooms are admission's caps, from the one reading.** A worker's device
+room is what admission holds its device block to, the smaller of
+`[memory] max_device_mem_per_gpu` and the card's total, less the reserve and
+the stack, all from the worker's one reading of its card ("Admission"); its
+pinned room is `max_pinned_mem_per_gpu`, what admission holds its pinned
+block to (`fb_pipeline_config::Card::room`). The binary's planning path,
+`fb_pipeline_config::plan`, hands those rooms to `Dag::plan_within`, and
+`admit_plan` takes the same reading, so a plan built inside its rooms is
+admitted, and planning and admission cannot disagree about a card whose
+other tenants moved between two readings. The pinned room is counted, not
+left to admission, because the streamed J/K fold's window is pinned and
+grows with its batch: a ring of two batches of packed B, `2 width npair`
+doubles, beside an uploaded copy of each on the device and the batch's
+square slab. Its pinned bytes are never more than its device bytes, but the
+pinned cap's floor, 2 GiB, is a quarter of the device cap's, so past about
+2,000 AOs at a batch of 64 the window, not the device, binds. What is left
+to admission is the node: the workers' pinned caps together are refused past
+the host's available memory before any table, and the pinned blocks with the
+heap block, B itself in the streamed fold, are admitted after planning, so a
+heap block that leaves the node less than the windows refuses the plan
+rather than narrowing them.
 
 ## Sizes the dimensions do not fix
 
