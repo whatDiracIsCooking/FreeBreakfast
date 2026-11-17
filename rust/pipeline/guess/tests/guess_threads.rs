@@ -32,6 +32,26 @@ fn threads() -> usize {
         .expect("a thread count")
 }
 
+/// The thread count once the kernel has caught up with the run's joins,
+/// waiting up to [`SETTLE`] for it to fall to `want`; the last count seen
+/// if it never does. A join returns before the exiting thread leaves
+/// `Threads:`, so a bare read right after a run can see one too many on a
+/// busy core (`core/thread_pool/tests/thread_pool_threads.rs`, whose
+/// `settled_threads` this is, has the mechanism; #1491).
+fn settled_threads(want: usize) -> usize {
+    let deadline = Instant::now() + SETTLE;
+    let mut now = threads();
+    while now != want && Instant::now() < deadline {
+        std::thread::yield_now();
+        now = threads();
+    }
+    now
+}
+
+/// How long [`settled_threads`] waits: hundreds of times the lag measured
+/// on a loaded core, short enough that a surviving worker fails promptly.
+const SETTLE: Duration = Duration::from_secs(5);
+
 /// CPU, after D: the thread count, once it reaches `expected` (workers are
 /// spawned one after another) or five seconds pass.
 struct Probe {
@@ -111,7 +131,7 @@ fn main() {
         drop(instance);
         let seen = seen.lock().unwrap().expect("the probe ran");
         assert_eq!(seen, expected, "{n_cpu} CPU workers");
-        assert_eq!(threads(), 1, "a worker outlived its run");
+        assert_eq!(settled_threads(1), 1, "a worker outlived its run");
     }
     println!("guess_threads: ok");
 }
