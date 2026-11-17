@@ -450,16 +450,26 @@ elif args[0] == "tree":
     print(f"{name} v0.1.0 (/x)")
     if name == "fb-core-wwr":
         print("wwr-sys v1.0.0 (/x)")
+elif args[0] == "test" and "--list" in args:
+    print("     Running unittests src/lib.rs (/t/deps/fb_core_wwr-0123abcd)")
+    print("runtime::tests::tier5_two: test")
+    print("")
+    print("1 test, 0 benchmarks")
 elif args[0] == "test" and "--no-default-features" not in args:
     artifact("/t/deps/fb_core_wwr-0123abcd", "wwr#fb-core-wwr@0.1.0")
     print("     Running unittests src/lib.rs (/t/deps/fb_core_wwr-0123abcd)")
     print("test status::tests::names ... ok")
-    if "--include-ignored" in args:
+    if "--include-ignored" in args and "--skip" not in args:
+        print("test runtime::stream::tests::syncs ... ok")
+        print("test runtime::tests::tier5_two ... ok")
+        print("test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured")
+    elif "--include-ignored" in args:
         print("test runtime::stream::tests::syncs ... ok")
         print("test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured")
     else:
         print("test runtime::stream::tests::syncs ... ignored, tier 4: needs a GPU")
-        print("test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured")
+        print("test runtime::tests::tier5_two ... ignored, tier 5: needs two GPUs")
+        print("test result: ok. 1 passed; 0 failed; 2 ignored; 0 measured")
     sys.exit(int(os.environ.get("FAKE_CARGO_TIER4_RC", "0")))
 elif args[0] == "test":
     artifact("/t/deps/fb_core_log-0123abcd", "log#fb-core-log@0.1.0")
@@ -801,28 +811,54 @@ def test_tier4_without_a_device_lists_every_device_case_as_skipped(
     rustdoc = "doc --locked -j 4 --no-deps -p fb-core-wwr"
     assert calls.index(clippy) < calls.index(rustdoc) < calls.index(test)
     assert "tier 4 rustdoc: ok" in out
-    assert "tier 4: 1 passed, 0 failed, 1 ignored" in out
-    assert "tier 4 skipped 1 case(s) (no device visible: why):" in out
+    assert "tier 4: 1 passed, 0 failed, 2 ignored" in out
+    assert "tier 4 skipped 2 case(s) (no device visible: why):" in out
     assert (
         "skipped fb_core_wwr unittests src/lib.rs: runtime::stream::tests::syncs"
         " -- tier 4: needs a GPU" in out
     )
+    assert (
+        "skipped fb_core_wwr unittests src/lib.rs: runtime::tests::tier5_two"
+        " -- tier 5: needs two GPUs" in out
+    )
 
 
-def test_tier4_with_a_device_runs_them_and_skips_none(
+def test_tier4_with_one_device_skips_the_tier5_cases_and_names_them(
+    fake_cargo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc, calls = _tier4(monkeypatch, tmp_path, devices=1)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert next(c for c in calls if c.startswith("test")).endswith(
+        "-- --test-threads=1 --include-ignored --skip tier5_"
+    )
+    assert "test --locked -j 4 -p fb-core-wwr -- --list --ignored tier5_" in calls
+    assert "tier 4: 2 passed, 0 failed, 0 ignored" in out
+    assert "tier 4 skipped 1 case(s) (1 device(s) visible):" in out
+    assert (
+        "skipped fb_core_wwr unittests src/lib.rs: runtime::tests::tier5_two"
+        " -- tier 5: needs two GPUs, one visible" in out
+    )
+
+
+def test_tier4_with_two_devices_runs_them_and_skips_none(
     fake_cargo: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.delenv("FREE_BREAKFAST_FAST_TESTS", raising=False)
-    rc, calls = _tier4(monkeypatch, tmp_path, devices=1)
+    rc, calls = _tier4(monkeypatch, tmp_path, devices=2)
     assert rc == 0
     out = capsys.readouterr().out
     assert next(c for c in calls if c.startswith("test")).endswith(
         "-- --test-threads=1 --include-ignored"
     )
-    assert "tier 4: 2 passed, 0 failed, 0 ignored" in out
+    assert not any("--list" in c for c in calls)
+    assert "tier 4: 3 passed, 0 failed, 0 ignored" in out
     assert "tier 4 skipped: none" in out
     # Tier 4 is fast too: --include-ignored runs the device cases, not the
     # slow ones.
@@ -1002,15 +1038,15 @@ def test_nightly_cargo_runs_the_slow_cases_in_both_tiers(
 ) -> None:
     # Cleared whatever the caller's shell exported, as the C++ half's is.
     monkeypatch.setenv("FREE_BREAKFAST_FAST_TESTS", "1")
-    _tier4(monkeypatch, tmp_path, devices=1)  # installs the stand-ins
+    _tier4(monkeypatch, tmp_path, devices=2)  # installs the stand-ins
     fake_cargo.write_text("")
     Path(f"{fake_cargo}.fast").write_text("")
     capsys.readouterr()
     log = tmp_path / "night.log"
     night = gates.nightly_cargo("nightly", {"GPU_HIP_PRESETS": "hip"}, "hip", "4", log)
     assert night.rc == 0
-    # Tier 3's 5 passed and 1 ignored, then tier 4's 2 passed.
-    assert night.counts == [7, 0, 1]
+    # Tier 3's 5 passed and 1 ignored, then tier 4's 3 passed.
+    assert night.counts == [8, 0, 1]
     assert night.skips == []
     assert Path(f"{fake_cargo}.fast").read_text() == "unset\nunset\n"
     calls = fake_cargo.read_text().splitlines()
@@ -1045,6 +1081,10 @@ def test_nightly_cargo_runs_the_slow_cases_in_both_tiers(
             "cargo fb-core-wwr src/lib.rs",
             "pass",
         ),
+        "fb-core-wwr src/lib.rs::runtime::tests::tier5_two": (
+            "cargo fb-core-wwr src/lib.rs",
+            "pass",
+        ),
     }
     # libtest times no case: no number a timing series could misread.
     assert all(c["seconds"] is None for c in night.cases)
@@ -1055,7 +1095,7 @@ def test_nightly_cargo_runs_the_slow_cases_in_both_tiers(
     # The counts are in the night's log, not only on stdout.
     text = log.read_text()
     assert "nightly:   cargo test: 5 passed, 0 failed, 1 ignored" in text
-    assert "nightly:   tier 4: 2 passed, 0 failed, 0 ignored" in text
+    assert "nightly:   tier 4: 3 passed, 0 failed, 0 ignored" in text
 
 
 def test_a_failing_nightly_cargo_tier3_runs_no_tier4(
@@ -1077,7 +1117,7 @@ def test_nightly_cargo_names_the_tier4_cases_that_did_not_run(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # No device: tier 4's one device case is reported ignored.
+    # No device: tier 4's two device cases are reported ignored.
     _tier4(monkeypatch, tmp_path, devices=0)
     monkeypatch.setattr(
         gates, "device_probe", lambda _build: (0, "no device visible: why")
@@ -1090,15 +1130,19 @@ def test_nightly_cargo_names_the_tier4_cases_that_did_not_run(
         "fb_core_wwr unittests src/lib.rs: runtime::stream::tests::syncs"
         " -- tier 4: needs a GPU"
     )
-    assert night.skips == [skipped]
+    tier5 = (
+        "fb_core_wwr unittests src/lib.rs: runtime::tests::tier5_two"
+        " -- tier 5: needs two GPUs"
+    )
+    assert night.skips == [skipped, tier5]
     syncs = "fb-core-wwr src/lib.rs::runtime::stream::tests::syncs"
     assert {c["name"]: c["status"] for c in night.cases}[syncs] == "skip"
     # The summary line's fields, and the list printed beside it.
     capsys.readouterr()
     fields = gates.cargo_summary(night, "nightly", log)
-    assert fields == "  cargo=6/0/2  cargo-skipped=1"
+    assert fields == "  cargo=6/0/3  cargo-skipped=2"
     out = capsys.readouterr().out
-    assert "nightly: cargo tier 4 skipped: 1 case(s)" in out
+    assert "nightly: cargo tier 4 skipped: 2 case(s)" in out
     assert f"nightly:   skipped {skipped}" in out
     assert f"nightly:   skipped {skipped}" in log.read_text()
 

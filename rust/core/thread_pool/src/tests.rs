@@ -1555,6 +1555,53 @@ fn a_lane_with_no_library_user_has_no_handles() {
     );
 }
 
+/// Device 0: of a worker's lanes, lane 0 alone is privileged, and a stream
+/// made outside a backend is not (`docs/programming_model.md`, "The run's
+/// devices").
+#[cfg(feature = "device-tests")]
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn the_first_lane_of_the_first_worker_is_privileged() {
+    let mut plan: TaskGraph<'_, DeviceStream> = TaskGraph::new();
+    for s in 0..3 {
+        plan.add(format!("kernel{s}"), on(0, s), &[], |_| Ok(()));
+    }
+    let device = Device::new(&[0], &plan, &[], &[]);
+    let privileged: Vec<bool> = (0..3)
+        .map(|lane| device.stream(LaneId { worker: 0, lane }).is_privileged())
+        .collect();
+    assert_eq!(privileged, [true, false, false]);
+    assert!(!DeviceStream::new(0).is_privileged());
+}
+
+/// Devices 0 and 1, a GPU worker on each with two lanes: lane 0 of worker
+/// 0, on the list's first device, is the one privileged lane of the run,
+/// and worker 1's lanes are on device 1. Tier 5: it needs a second device
+/// (`docs/testing.md`, "Selecting GPU tiers in cargo").
+#[cfg(feature = "device-tests")]
+#[test]
+#[ignore = "tier 5: needs two GPUs"]
+fn tier5_one_privileged_lane_across_two_devices() {
+    use fb_core_wwr::handle::DeviceHandle;
+
+    let mut plan: TaskGraph<'_, DeviceStream> = TaskGraph::new();
+    for w in 0..2 {
+        for l in 0..2 {
+            plan.add(format!("kernel{w}.{l}"), on(w, l), &[], |_| Ok(()));
+        }
+    }
+    let mut device = Device::new(&[0, 1], &plan, &[], &[]);
+    let lanes: Vec<(i32, bool)> = [(0, 0), (0, 1), (1, 0), (1, 1)]
+        .into_iter()
+        .map(|(worker, lane)| {
+            let stream = device.stream(LaneId { worker, lane });
+            (stream.dev_idx(), stream.is_privileged())
+        })
+        .collect();
+    assert_eq!(lanes, [(0, true), (0, false), (1, false), (1, false)]);
+    run(&mut plan, &mut device, 1).result.unwrap();
+}
+
 /// Device 0, one run: a loop whose body is a stream node and a CPU node
 /// after it reads each iteration's stream scope back, one per iteration.
 ///

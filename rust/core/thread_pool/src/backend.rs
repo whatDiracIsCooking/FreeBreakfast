@@ -170,6 +170,8 @@ pub struct DeviceStream {
     /// The worker's fork streams, shared by its lanes; `None` for a worker
     /// none of whose tasks forks onto two or more.
     forks: Option<Rc<Forks>>,
+    /// Whether this is the run's privileged lane ([`DeviceStream::is_privileged`]).
+    privileged: bool,
 }
 
 /// A GPU worker's fork streams ([`DeviceStream::fork_join`]): outside its
@@ -201,24 +203,43 @@ impl Forks {
 #[cfg(feature = "device")]
 impl DeviceStream {
     /// A non-blocking stream on `dev_idx`, and a BLAS and a dense-solver
-    /// handle bound to it, with no fork streams. Aborts if any cannot be
-    /// made.
+    /// handle bound to it, with no fork streams. Not privileged: a stream
+    /// made outside a [`Device`] is no run's
+    /// ([`DeviceStream::is_privileged`]). Aborts if any cannot be made.
     #[track_caller]
     pub fn new(dev_idx: i32) -> Self {
-        Self::with_libraries(dev_idx, true, None)
+        Self::with_libraries(dev_idx, true, None, false)
     }
 
     /// A non-blocking stream on `dev_idx`, its two handles if `libraries`,
-    /// and its worker's `forks`. Aborts if any cannot be made.
+    /// its worker's `forks`, and whether it is the run's `privileged` lane.
+    /// Aborts if any cannot be made.
     #[track_caller]
-    fn with_libraries(dev_idx: i32, libraries: bool, forks: Option<Rc<Forks>>) -> Self {
+    fn with_libraries(
+        dev_idx: i32,
+        libraries: bool,
+        forks: Option<Rc<Forks>>,
+        privileged: bool,
+    ) -> Self {
         let stream = Rc::new(Stream::new(dev_idx));
         DeviceStream {
             blas: libraries.then(|| BlasHandle::new(Rc::clone(&stream))),
             solver: libraries.then(|| SolverHandle::new(Rc::clone(&stream))),
             stream,
             forks,
+            privileged,
         }
+    }
+
+    /// Whether this is the run's privileged lane: lane 0 of GPU worker 0,
+    /// on the first device of the run's device list, and no other lane of
+    /// a [`Device`]. It is the one that will own the run's run-wide work,
+    /// host I/O and the reductions, once work spreads over devices
+    /// (`docs/programming_model.md`, "The run's devices"); nothing reads
+    /// it yet. Set when the stream is made, by [`Device::new`], and false
+    /// for one made by [`DeviceStream::new`].
+    pub fn is_privileged(&self) -> bool {
+        self.privileged
     }
 
     /// Run `f(i, fork)` for every `i` in `0..n`, each enqueueing on `fork`,
@@ -397,6 +418,8 @@ impl Device {
     /// `forks[w]` fork streams ([`DeviceStream::fork_join`]), outside its
     /// lanes and with no library handles, and none if that is below two or
     /// missing, since one fork would only serialize what this stream does.
+    /// Lane 0 of worker 0, on `devices[0]`, is the run's one privileged
+    /// lane ([`DeviceStream::is_privileged`]).
     #[debug_requires(
         plan.lanes().len() <= devices.len(),
         "a device for every GPU worker of the plan"
@@ -421,7 +444,15 @@ impl Device {
                     .filter(|&k| k >= 2)
                     .map(|k| Rc::new(Forks::new(d, k)));
                 (0..n)
-                    .map(|l| DeviceStream::with_libraries(d, has(l).unwrap_or(false), pool.clone()))
+                    .map(|l| {
+                        let privileged = w == 0 && l == 0;
+                        DeviceStream::with_libraries(
+                            d,
+                            has(l).unwrap_or(false),
+                            pool.clone(),
+                            privileged,
+                        )
+                    })
                     .collect()
             })
             .collect();

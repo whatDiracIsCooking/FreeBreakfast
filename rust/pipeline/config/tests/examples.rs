@@ -94,7 +94,18 @@ fn overlap_example() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("completed: 0 errors"), "{stdout}");
 
-    let s = fb_io_npy::read_npy(&cwd.join("overlap/overlap.npy")).unwrap();
+    check_overlap(&cwd.join("overlap/overlap.npy"));
+
+    check_timing(
+        &config,
+        &cwd.join("overlap/timing.json"),
+        &["download overlap.npy", "write overlap.npy"],
+    );
+}
+
+/// The overlap example's S at `path` against PySCF's, at the bar.
+fn check_overlap(path: &Path) {
+    let s = fb_io_npy::read_npy(path).unwrap();
     let want = fb_io_npy::read_npy(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/h2o_cc-pvdz.npy"),
     )
@@ -112,11 +123,76 @@ fn overlap_example() {
         BAR * scale
     );
     assert!(worst <= BAR * scale, "max |S - S_ref| = {worst:e}");
+}
 
-    check_timing(
-        &config,
-        &cwd.join("overlap/timing.json"),
+/// The two-device example through the binary beside the overlap example:
+/// exit 0, its `plan.txt` and `plan.dot` the overlap example's byte for
+/// byte, its S against PySCF's at the overlap's bar (the classes add
+/// atomically, so S is not bitwise from run to run even on one device),
+/// and every task of its record on worker 0: `num_gpus` above 1 spreads
+/// no work yet (`docs/programming_model.md`, "The run's devices"). Tier
+/// 5: it needs a second device (`docs/testing.md`, "Selecting GPU tiers
+/// in cargo").
+#[test]
+#[ignore = "tier 5: needs two GPUs"]
+fn tier5_two_gpus_example_is_the_overlap_example() {
+    let one = workdir("example_two_gpus_one");
+    let two = workdir("example_two_gpus_two");
+    for (cwd, file) in [(&one, "overlap.toml"), (&two, "two_gpus.toml")] {
+        let out = free_breakfast(cwd, &example(file));
+        assert_eq!(out.status.code(), Some(0), "{file} exits 0");
+    }
+    for product in ["plan.txt", "plan.dot"] {
+        let read = |path: PathBuf| std::fs::read(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        assert!(
+            read(one.join("overlap").join(product)) == read(two.join("two_gpus").join(product)),
+            "{product} differs between one device and two"
+        );
+    }
+    check_overlap(&two.join("two_gpus/overlap.npy"));
+    let record = check_timing(
+        &example("two_gpus.toml"),
+        &two.join("two_gpus/timing.json"),
         &["download overlap.npy", "write overlap.npy"],
+    );
+    assert!(
+        record
+            .tasks
+            .iter()
+            .all(|t| t.worker.starts_with("cpu") || t.worker.starts_with("gpu0.")),
+        "a GPU task left worker 0"
+    );
+    assert!(
+        record.arena.iter().all(|a| a.worker == 0),
+        "a block on a second worker"
+    );
+}
+
+/// `num_gpus` above the devices the runtime sees: `InvalidConfig`, naming
+/// both numbers, before the output directory is made. Needs a GPU, as the
+/// count is the runtime's.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn more_gpus_than_visible_is_refused() {
+    refused(
+        "refused_num_gpus",
+        "calculation = \"overlap\"\nnum_gpus = 4096\n\n[molecule]\nxyz = \"water.xyz\"\n\n\
+         [basis_set]\nbasis = \"sto-3g\"\n",
+        ErrorKind::InvalidConfig,
+        &["num_gpus = 4096", "the runtime sees"],
+    );
+}
+
+/// `num_gpus = 0`: `InvalidConfig`, naming the file and the line, refused
+/// as the file is read, before any device is touched.
+#[test]
+fn zero_gpus_is_refused() {
+    refused(
+        "refused_zero_gpus",
+        "calculation = \"overlap\"\nnum_gpus = 0\n\n[molecule]\nxyz = \"water.xyz\"\n\n\
+         [basis_set]\nbasis = \"sto-3g\"\n",
+        ErrorKind::InvalidConfig,
+        &["config.toml:2:", "nonzero"],
     );
 }
 

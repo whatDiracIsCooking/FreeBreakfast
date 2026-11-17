@@ -29,13 +29,14 @@ use fb_test_support::golden;
 const LWORK: usize = 1234;
 
 /// The examples, by file name.
-const EXAMPLES: [&str; 6] = [
+const EXAMPLES: [&str; 7] = [
     "overlap.toml",
     "guess.toml",
     "rhf.toml",
     "rohf.toml",
     "memory.toml",
     "localization.toml",
+    "two_gpus.toml",
 ];
 
 /// `rust/examples/`.
@@ -62,6 +63,14 @@ fn plan_text(file: &str, calculation: Calculation, golden_name: &str) {
 #[test]
 fn plan_golden() {
     plan_text("overlap.toml", Calculation::Overlap, "plan_overlap.txt");
+}
+
+/// The two-device example plans the overlap example's plan, to the byte:
+/// `num_gpus` places no worker (`docs/programming_model.md`, "The run's
+/// devices").
+#[test]
+fn plan_golden_two_gpus() {
+    plan_text("two_gpus.toml", Calculation::Overlap, "plan_overlap.txt");
 }
 
 /// The guess example: a baked stamp per element of water in cc-pVDZ, `sad
@@ -125,6 +134,43 @@ fn paths_are_the_configs() {
     assert_eq!(
         by_path.basis_set.basis,
         dir.join("my.json").display().to_string()
+    );
+}
+
+/// `num_gpus` defaults to 1 and is read as written; 0 is refused as the
+/// file is read, `InvalidConfig` naming the file and the line; and the
+/// run's devices are `0..num_gpus`, a count above the devices the runtime
+/// sees refused, `InvalidConfig` naming both numbers, and the runtime not
+/// asked at 1.
+#[test]
+fn num_gpus_is_read() {
+    let (_, absent) = read_text("num_gpus_absent", &overlap_config(""));
+    let absent = absent.unwrap();
+    assert_eq!(absent.num_gpus.get(), 1);
+    let unasked = || -> fb_core_error_handling::Result<usize> {
+        panic!("one device asks the runtime nothing")
+    };
+    assert_eq!(absent.devices(unasked).unwrap(), [0]);
+    let example = read_config(&examples().join("two_gpus.toml")).unwrap();
+    assert_eq!(example.num_gpus.get(), 2);
+    assert_eq!(example.devices(|| Ok(4)).unwrap(), [0, 1]);
+    assert_eq!(example.devices(|| Ok(2)).unwrap(), [0, 1]);
+    let error = example.devices(|| Ok(1)).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidConfig, "{error}");
+    assert!(
+        error.message.contains("num_gpus = 2") && error.message.contains("the 1 the runtime sees"),
+        "{error}"
+    );
+    let (_, zero) = read_text(
+        "num_gpus_zero",
+        "num_gpus = 0\ncalculation = \"overlap\"\n[molecule]\nxyz = \"m.xyz\"\n\
+         [basis_set]\nbasis = \"sto-3g\"\n",
+    );
+    let error = zero.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidConfig, "{error}");
+    assert!(
+        error.message.contains("config.toml:1:") && error.message.contains("nonzero"),
+        "{error}"
     );
 }
 

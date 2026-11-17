@@ -1,8 +1,10 @@
 //! The config's schema: [`Config`] and its tables, each key a field whose
 //! doc comment is its default and unit, read by serde.
 
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
+use fb_core_error_handling::{Error, Result};
 use fb_localization_pipek_mezey::LocalizationStep;
 use fb_pipeline_eri::EriStep;
 use fb_pipeline_guess::GuessStep;
@@ -15,6 +17,7 @@ use serde::{Deserialize, Deserializer};
 /// ```text
 /// calculation = "overlap"
 /// output = "overlap"
+/// num_gpus = 1
 ///
 /// [molecule]
 /// xyz = "water.xyz"
@@ -34,6 +37,18 @@ pub struct Config {
     /// Default `"fbf_output"`.
     #[serde(default = "default_output")]
     pub output: PathBuf,
+    /// `num_gpus`: how many devices the run holds, devices `0` to
+    /// `num_gpus - 1` ([`Config::devices`]), the first of them the run's
+    /// privileged one (`docs/programming_model.md`, "The run's devices").
+    /// An integer of at least 1, so 0 is refused when the file is read,
+    /// before any device is touched; one above the devices the runtime
+    /// sees is refused by the binary before planning, and at 1 the runtime
+    /// is not asked. A value above 1 is
+    /// accepted but does not yet spread work: the plan's GPU workers are
+    /// where they are at 1, all on device 0, and the further devices hold
+    /// nothing. Default 1.
+    #[serde(default = "default_num_gpus")]
+    pub num_gpus: NonZeroUsize,
     /// `[molecule]`: the geometry. Required.
     pub molecule: MoleculeStep,
     /// `[basis_set]`: the orbital basis. Required.
@@ -159,6 +174,43 @@ impl Calculation {
 }
 
 impl Config {
+    /// The run's device list, `0..num_gpus`, its first device the
+    /// privileged one. Above one device, `visible()` is asked how many the
+    /// runtime sees; at one it is not asked, and the list is `[0]`, as it
+    /// was before the key existed: device 0's first create is what fails
+    /// on a machine with none.
+    ///
+    /// # Errors
+    /// `visible`'s error; `InvalidConfig`, naming both numbers:
+    /// [`Config::num_gpus`] above the devices `visible` counts.
+    ///
+    /// ```
+    /// # let config: fb_pipeline_config::Config = toml::from_str(
+    /// #     "calculation = \"overlap\"\nnum_gpus = 2\n\
+    /// #      [molecule]\nxyz = \"m.xyz\"\n[basis_set]\nbasis = \"sto-3g\"\n",
+    /// # )
+    /// # .unwrap();
+    /// assert_eq!(config.devices(|| Ok(4))?, [0, 1]);
+    /// assert!(config.devices(|| Ok(1)).is_err());
+    /// # Ok::<(), fb_core_error_handling::Error>(())
+    /// ```
+    pub fn devices(&self, visible: impl FnOnce() -> Result<usize>) -> Result<Vec<i32>> {
+        let n = self.num_gpus.get();
+        if n == 1 {
+            return Ok(vec![0]);
+        }
+        let visible = visible()?;
+        if n > visible {
+            return Err(Error::config(format!(
+                "num_gpus = {n} asks for more devices than the {visible} the runtime sees"
+            )));
+        }
+        // At most `visible`, which the runtime counts in an `i32`.
+        Ok((0..n)
+            .map(|d| i32::try_from(d).unwrap_or(i32::MAX))
+            .collect())
+    }
+
     /// The optional tables, by key, each with whether the config sets it:
     /// those [`Calculation::tables`] places. `[molecule]` and `[basis_set]`
     /// are required by every calculation and `[memory]` read by every one,
@@ -359,6 +411,11 @@ fn byte_size<'de, D: Deserializer<'de>>(deserializer: D) -> std::result::Result<
 
 fn default_output() -> PathBuf {
     PathBuf::from("fbf_output")
+}
+
+/// [`Config::num_gpus`]'s default: one device.
+fn default_num_gpus() -> NonZeroUsize {
+    NonZeroUsize::MIN
 }
 
 #[cfg(test)]
