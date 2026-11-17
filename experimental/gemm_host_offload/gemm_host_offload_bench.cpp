@@ -5,7 +5,7 @@
 //
 //   free_breakfast_gemm_host_offload_bench [--reps 10] [--warmup 3]
 //       [--nao 256,448,640] [--only resident|pipeline] [--ring-gib 6]
-//       [--csv gemm_host_offload.csv]
+//       [--pack-threads 1] [--csv gemm_host_offload.csv]
 //
 // The calls are df_exchange's (src/integrals/eri/density_fitting/jk/jk.cpp):
 // B is [m][n][P] with P fastest, so B_m is naux x nao; X_m = B_m C is one
@@ -35,6 +35,13 @@
 //             batch i+1 overlaps the gemms of batch i.
 //   copies    pipeline with the gemms removed: the copies alone, the same
 //             chunks, the same waits.
+//   heap      B in pageable (heap) host memory, streamed in two hops: the
+//             enqueuing CPU thread copies each batch into a pinned staging
+//             slot (R of them, once the slot's previous upload has landed),
+//             then the copy stream uploads it into the device slot, as
+//             pipeline does. The pack of batch i+1 overlaps the upload of
+//             batch i and the gemms of batch i.
+//   heap-copies  heap with the gemms removed: the two hops alone.
 //
 // Every config is run `warmup` times untimed, then `reps` times, GPU-event
 // timed; within a group the configs are run round-robin, one run of each per
@@ -46,7 +53,7 @@
 // Columns: median, min and interquartile range (as % of the median) of the
 // reps; `excess/b` = (median - T_1) / (n_b - 1), the per-batch cost read off
 // one point; for pipeline, `over` = median - max(T_1, copies at the same
-// batch), what the overlap failed to hide. Per curve, a least-squares fit of
+// batch; for heap, heap-copies), what the overlap failed to hide. Per curve, a least-squares fit of
 // median against n_b gives delta (the slope) with its standard error. K is
 // checked once per config against the one-call build: m keeps every product
 // identical, so it should agree bitwise; P sums in another order, so it is a
@@ -332,15 +339,38 @@ struct RingWork {
   bool copies;            // copy each batch into its slot
   bool gemms;             // run the batch's gemms (and P's syrk)
   const double *resident; // B on the device, when the gemms read it there (events)
-  const double *host;     // B in pinned memory, in `mode`'s layout (pipeline, copies)
+  const double *host;     // B on the host in `mode`'s layout: pinned, or heap when staged
   std::span<double *const> slots;
+  // Pinned slots each batch is packed into before its upload (heap,
+  // heap-copies); empty when `host` is pinned and uploaded from directly.
+  std::span<double *const> staging;
+  std::int32_t pack_threads;
 };
+
+// The heap hop: `count` doubles from pageable `src` into pinned `dst`, split
+// over `threads` CPU threads.
+void pack(double *const dst, const double *const src, const std::int64_t count,
+          const std::int32_t threads) {
+  if (threads <= 1) {
+    std::memcpy(dst, src, static_cast<std::size_t>(count) * sizeof(double));
+    return;
+  }
+  const std::int64_t chunk = fb::math::idivup(count, std::int64_t{threads});
+  parallel_for(threads, [=](const std::int64_t t) {
+    const std::int64_t lo = std::min(count, t * chunk);
+    const std::int64_t hi = std::min(count, lo + chunk);
+    std::memcpy(dst + lo, src + lo, static_cast<std::size_t>(hi - lo) * sizeof(double));
+  });
+}
 
 // The ring: the copy of batch i into slot i % depth waits until the gemm of
 // batch i - depth has consumed that slot, and the gemm of batch i waits until
 // its copy has landed. The copy stream is forked from the compute stream first
 // and joined back into it last, so the build is bracketed by the compute
-// stream's own events.
+// stream's own events. With staging, this thread first waits until the upload
+// of batch i - depth has left staging slot i % depth (its `copied` event) and
+// packs batch i into it; the gemms of batch i - 1 are already enqueued, so the
+// pack overlaps them and the upload before it.
 void enqueue_ring(Ring &ring, const Problem &prob, const Mode mode,
                   const std::vector<Batch> &batches, const RingWork &work, const Operands &ops) {
   check_gpu(wwr::wwrEventRecord(ring.fork, ring.compute), "recording the fork");
@@ -353,7 +383,15 @@ void enqueue_ring(Ring &ring, const Problem &prob, const Mode mode,
     }
     if (work.copies) {
       const auto [offset, count] = host_extent(prob, mode, batch);
-      check_gpu(wwr::wwrMemcpyAsync(work.slots[s], work.host + offset,
+      const double *src = work.host + offset;
+      if (!work.staging.empty()) {
+        if (i >= static_cast<std::size_t>(work.depth)) {
+          check_gpu(wwr::wwrEventSynchronize(ring.copied[s]), "waiting for a staging slot");
+        }
+        pack(work.staging[s], src, count, work.pack_threads);
+        src = work.staging[s];
+      }
+      check_gpu(wwr::wwrMemcpyAsync(work.slots[s], src,
                                     static_cast<std::size_t>(count) * sizeof(double),
                                     wwr::wwrMemcpyHostToDevice, ring.copy),
                 "copying a batch into its slot");
@@ -396,7 +434,19 @@ std::unique_ptr<GraphExec> capture(const wwr::wwrStream_t stream, F &&enqueue) {
 // ---------------------------------------------------------------------------
 // Timing
 
-enum class Variant : std::uint8_t { kChopped, kEvents, kGraph, kPipeline, kCopies };
+enum class Variant : std::uint8_t {
+  kChopped,
+  kEvents,
+  kGraph,
+  kPipeline,
+  kCopies,
+  kHeap,
+  kHeapCopies
+};
+
+bool computes_k(const Variant v) {
+  return v != Variant::kCopies && v != Variant::kHeapCopies;
+}
 
 std::string_view variant_name(const Variant v) {
   switch (v) {
@@ -410,6 +460,10 @@ std::string_view variant_name(const Variant v) {
     return "pipeline";
   case Variant::kCopies:
     return "copies";
+  case Variant::kHeap:
+    return "heap";
+  case Variant::kHeapCopies:
+    return "heap-copies";
   }
   return "?";
 }
@@ -451,6 +505,7 @@ struct Settings {
   bool resident = true;
   bool pipeline = true;
   std::size_t ring_bytes = 6UZ << 30U;
+  std::int32_t pack_threads = 1;
   std::string csv = "gemm_host_offload.csv";
 };
 
@@ -513,11 +568,11 @@ std::string compare_k(const Problem &prob, const std::vector<double> &ref,
 }
 
 // Run each config once into K and compare with the one-call build's K. The
-// copies variant computes no K and is marked "-".
+// copies variants compute no K and are marked "-".
 void check_runs(fb::DeviceResources &res, const Problem &prob, std::vector<Run> &runs,
                 const std::vector<double> &ref, double *const k) {
   for (Run &run : runs) {
-    if (run.variant == Variant::kCopies) {
+    if (!computes_k(run.variant)) {
       run.check = "-";
       continue;
     }
@@ -581,14 +636,15 @@ void report(const std::string_view title, const Problem &prob, const std::vector
             const double t1_ms, std::ofstream &csv) {
   std::println("\n== {}: nao {} naux {} nocc {}   T_1 = {:.3f} ms", title, prob.nao, prob.naux,
                prob.nocc, t1_ms);
-  std::println("{:<15} {:>6} {:>6} {:>10} {:>10} {:>6} {:>10} {:>9} {:>9}", "curve", "b", "n_b",
+  std::println("{:<19} {:>6} {:>6} {:>10} {:>10} {:>6} {:>10} {:>9} {:>9}", "curve", "b", "n_b",
                "median ms", "min ms", "iqr %", "excess/b", "over ms", "K");
 
-  // The copies time at each (mode, depth, batch), for the pipeline's `over`.
-  std::map<std::tuple<Mode, std::int32_t, std::int32_t>, double> copies;
+  // The copies time at each (copies variant, mode, depth, batch), for the
+  // streamed variants' `over`.
+  std::map<std::tuple<Variant, Mode, std::int32_t, std::int32_t>, double> copies;
   for (const Run &run : runs) {
-    if (run.variant == Variant::kCopies) {
-      copies[{run.mode, run.depth, run.batch}] = median(run);
+    if (!computes_k(run.variant)) {
+      copies[{run.variant, run.mode, run.depth, run.batch}] = median(run);
     }
   }
 
@@ -603,17 +659,19 @@ void report(const std::string_view title, const Problem &prob, const std::vector
       const double lo = percentile(run->ms, 0.0);
       const double iqr = percentile(run->ms, 0.75) - percentile(run->ms, 0.25);
       const std::string excess =
-          run->n_b > 1 && run->variant != Variant::kCopies
+          run->n_b > 1 && computes_k(run->variant)
               ? std::format("{:.1f}us", (med - t1_ms) * 1e3 / static_cast<double>(run->n_b - 1))
               : std::string{"-"};
       std::string over = "-";
-      if (run->variant == Variant::kPipeline) {
-        const auto it = copies.find({run->mode, run->depth, run->batch});
+      if (run->variant == Variant::kPipeline || run->variant == Variant::kHeap) {
+        const Variant alone =
+            run->variant == Variant::kPipeline ? Variant::kCopies : Variant::kHeapCopies;
+        const auto it = copies.find({alone, run->mode, run->depth, run->batch});
         if (it != copies.end()) {
           over = std::format("{:.3f}", med - std::max(t1_ms, it->second));
         }
       }
-      std::println("{:<15} {:>6} {:>6} {:>10.3f} {:>10.3f} {:>6.2f} {:>10} {:>9} {:>9}", key,
+      std::println("{:<19} {:>6} {:>6} {:>10.3f} {:>10.3f} {:>6.2f} {:>10} {:>9} {:>9}", key,
                    run->batch, run->n_b, med, lo, 100.0 * iqr / med, excess, over, run->check);
       for (std::size_t r = 0; r < run->ms.size(); ++r) {
         std::println(csv, "{},{},{},{},{},{},{},{},{},{},{}", title, prob.nao, prob.naux, prob.nocc,
@@ -625,7 +683,7 @@ void report(const std::string_view title, const Problem &prob, const std::vector
   std::println("  fits, median ms = T_0 + n_b delta:");
   for (const auto &[key, curve] : curves) {
     const Fit fit = fit_curve(curve);
-    std::println("  {:<15} delta = {:8.2f} +- {:6.2f} us/batch   T_0 = {:.3f} ms   ({} points)",
+    std::println("  {:<19} delta = {:8.2f} +- {:6.2f} us/batch   T_0 = {:.3f} ms   ({} points)",
                  key, fit.slope_us, fit.se_us, fit.intercept_ms, fit.points);
   }
   std::cout.flush();
@@ -741,13 +799,24 @@ void resident_group(fb::DeviceResources &res, Ring &ring, Timer &timer, const Pr
   report("resident", prob, runs, t1, csv);
 }
 
-// pipeline and copies over both modes and both ring depths, B in pinned memory.
-// Each config's ring must fit in `settings.ring_bytes`; one that does not is
-// skipped and said to be.
+// B on the host in the two layouts, each in pinned memory and on the heap,
+// and the pinned staging arena the heap variants pack into.
+struct HostB {
+  const double *pinned_slabs;
+  double *pinned_blocks;
+  const double *heap_slabs;
+  double *heap_blocks;
+  double *staging;
+};
+
+// pipeline and copies (B pinned) and heap and heap-copies (B on the heap,
+// staged through pinned slots) over both modes and both ring depths. Each
+// config's ring must fit in `settings.ring_bytes`, the device arena and the
+// pinned staging arena alike; one that does not is skipped and said to be.
 void pipeline_group(fb::DeviceResources &res, Ring &ring, Timer &timer, const Problem &prob,
-                    Workspace &ws, double *const arena, const double *const host_slabs,
-                    double *const host_blocks, const std::vector<double> &ref, const double t1,
-                    const Settings &settings, std::ofstream &csv) {
+                    Workspace &ws, double *const arena, const HostB &host,
+                    const std::vector<double> &ref, const double t1, const Settings &settings,
+                    std::ofstream &csv) {
   const Operands ops = ws.ops(res);
   const std::size_t arena_count = settings.ring_bytes / sizeof(double);
   std::vector<Run> all;
@@ -755,7 +824,8 @@ void pipeline_group(fb::DeviceResources &res, Ring &ring, Timer &timer, const Pr
   // The slot pointers outlive every closure that reads them.
   std::vector<std::unique_ptr<std::array<double *, kMaxRing>>> slot_sets;
   const auto add = [&](std::vector<Run> &runs, const Mode mode, const std::int32_t size,
-                       const std::int32_t depth, const double *const host) {
+                       const std::int32_t depth, const double *const pinned,
+                       const double *const heap) {
     const std::int64_t slot = std::int64_t{size} * (mode == Mode::kSlab ? prob.slab() : prob.nn());
     if (static_cast<std::size_t>(slot * depth) > arena_count) {
       std::println("  skipped: {} b {} R{} needs {:.1f} GiB of ring", mode_name(mode), size, depth,
@@ -763,24 +833,38 @@ void pipeline_group(fb::DeviceResources &res, Ring &ring, Timer &timer, const Pr
       return;
     }
     auto &slots = *slot_sets.emplace_back(std::make_unique<std::array<double *, kMaxRing>>());
+    auto &staged = *slot_sets.emplace_back(std::make_unique<std::array<double *, kMaxRing>>());
     for (std::int32_t s = 0; s < kMaxRing; ++s) {
       slots[static_cast<std::size_t>(s)] = s < depth ? arena + s * slot : nullptr;
+      staged[static_cast<std::size_t>(s)] = s < depth ? host.staging + s * slot : nullptr;
     }
     const std::vector<Batch> batches = batches_of(prob, mode, size);
     const auto n_b = static_cast<std::int64_t>(batches.size());
     const std::span<double *const> view{slots.data(), static_cast<std::size_t>(depth)};
-    for (const bool gemms : {true, false}) {
-      const RingWork work{depth, true, gemms, nullptr, host, view};
-      runs.push_back({gemms ? Variant::kPipeline : Variant::kCopies,
-                      mode,
-                      depth,
-                      size,
-                      n_b,
-                      [&ring, &prob, mode, batches, work, ops] {
-                        enqueue_ring(ring, prob, mode, batches, work, ops);
-                      },
-                      {},
-                      {}});
+    const std::span<double *const> staging{staged.data(), static_cast<std::size_t>(depth)};
+    for (const bool from_heap : {false, true}) {
+      for (const bool gemms : {true, false}) {
+        const RingWork work{depth,
+                            true,
+                            gemms,
+                            nullptr,
+                            from_heap ? heap : pinned,
+                            view,
+                            from_heap ? staging : std::span<double *const>{},
+                            settings.pack_threads};
+        const Variant variant = from_heap ? (gemms ? Variant::kHeap : Variant::kHeapCopies)
+                                          : (gemms ? Variant::kPipeline : Variant::kCopies);
+        runs.push_back({variant,
+                        mode,
+                        depth,
+                        size,
+                        n_b,
+                        [&ring, &prob, mode, batches, work, ops] {
+                          enqueue_ring(ring, prob, mode, batches, work, ops);
+                        },
+                        {},
+                        {}});
+      }
     }
   };
 
@@ -790,7 +874,7 @@ void pipeline_group(fb::DeviceResources &res, Ring &ring, Timer &timer, const Pr
     std::vector<Run> runs;
     for (const std::int32_t size : slab_batches(prob.nao)) {
       for (const std::int32_t depth : {2, 3}) {
-        add(runs, Mode::kSlab, size, depth, host_slabs);
+        add(runs, Mode::kSlab, size, depth, host.pinned_slabs, host.heap_slabs);
       }
     }
     check_runs(res, prob, runs, ref, ws.k.data());
@@ -803,12 +887,14 @@ void pipeline_group(fb::DeviceResources &res, Ring &ring, Timer &timer, const Pr
   for (const std::int32_t size : aux_batches(prob.naux)) {
     std::vector<Run> runs;
     for (const std::int32_t depth : {2, 3}) {
-      add(runs, Mode::kAux, size, depth, host_blocks);
+      add(runs, Mode::kAux, size, depth, host.pinned_blocks, host.heap_blocks);
     }
     if (runs.empty()) {
       continue;
     }
-    fill_aux_blocks(host_blocks, prob.nao, prob.naux, size);
+    fill_aux_blocks(host.pinned_blocks, prob.nao, prob.naux, size);
+    std::memcpy(host.heap_blocks, host.pinned_blocks,
+                static_cast<std::size_t>(prob.slab() * prob.nao) * sizeof(double));
     check_runs(res, prob, runs, ref, ws.k.data());
     time_round_robin(timer, runs, settings);
     std::ranges::move(runs, std::back_inserter(all));
@@ -851,6 +937,8 @@ Settings parse(const std::span<char *const> args) {
       settings.pipeline = value == "pipeline";
     } else if (flag == "--ring-gib") {
       settings.ring_bytes = static_cast<std::size_t>(parse_int(value)) << 30U;
+    } else if (flag == "--pack-threads") {
+      settings.pack_threads = parse_int(value);
     } else if (flag == "--csv") {
       settings.csv = value;
     } else {
@@ -858,6 +946,7 @@ Settings parse(const std::span<char *const> args) {
     }
   }
   check(settings.reps > 0 && settings.warmup >= 0, "reps > 0 and warmup >= 0");
+  check(settings.pack_threads > 0, "--pack-threads > 0");
   return settings;
 }
 
@@ -886,8 +975,8 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
   for (const std::int32_t nao : settings.naos) {
     max_nn_aux = std::max(max_nn_aux, std::int64_t{nao} * nao * 3 * nao);
   }
-  std::println("reps={} warmup={} ring={} GiB csv={}", settings.reps, settings.warmup,
-               settings.ring_bytes >> 30U, settings.csv);
+  std::println("reps={} warmup={} ring={} GiB pack-threads={} csv={}", settings.reps,
+               settings.warmup, settings.ring_bytes >> 30U, settings.pack_threads, settings.csv);
   fb::Buffers::pinned<double> host_slabs(static_cast<std::size_t>(max_nn_aux));
 
   for (const std::int32_t nao : settings.naos) {
@@ -954,14 +1043,22 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
     }
 
     if (pipelined) {
-      fb::Buffers::pinned<double> host_blocks(static_cast<std::size_t>(largest.slab() * nao));
+      const auto b_count = static_cast<std::size_t>(largest.slab() * nao);
+      fb::Buffers::pinned<double> host_blocks(b_count);
+      // The heap copies are written here, before any timing, so no first-touch
+      // page fault lands in a timed pack.
+      std::vector<double> heap_slabs(host_slabs.data(), host_slabs.data() + b_count);
+      std::vector<double> heap_blocks(b_count);
+      fb::Buffers::pinned<double> staging(settings.ring_bytes / sizeof(double));
       fb::Buffers::device<double> arena{settings.ring_bytes / sizeof(double), res.device()};
+      const HostB host{host_slabs.data(), host_blocks.data(), heap_slabs.data(), heap_blocks.data(),
+                       staging.data()};
       for (const std::int32_t nocc : kPipelineNocc) {
         const Problem prob{nao, naux, nocc};
         std::println(std::cerr, "[{:7.1f}s] pipeline nao {} nocc {}", elapsed(), nao, nocc);
         ws.upload_c(res, prob);
-        pipeline_group(res, ring, timer, prob, ws, arena.data(), host_slabs.data(),
-                       host_blocks.data(), refs[nocc], t1s[nocc], settings, csv);
+        pipeline_group(res, ring, timer, prob, ws, arena.data(), host, refs[nocc], t1s[nocc],
+                       settings, csv);
       }
     }
   }

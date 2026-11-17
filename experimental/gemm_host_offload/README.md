@@ -1,8 +1,8 @@
 # `gemm_host_offload/`
 
 The DF exchange build `K = Xᵀ X`, `X_m = B_m C`, cut into batches, with B
-resident on the device or streamed from pinned host memory through a ring of
-device slots. The question: **what does each batch cost on top of the one-call
+resident on the device, or streamed through a ring of device slots from pinned
+host memory or from the heap (packed into pinned staging slots first). The question: **what does each batch cost on top of the one-call
 build?** The model is
 
 ```
@@ -16,7 +16,8 @@ cross-stream event waits, or the GEMMs' own tail and tile fill.
 ```sh
 cmake --build --preset experimental --target free_breakfast_gemm_host_offload_bench
 free_breakfast_gemm_host_offload_bench [--reps 10] [--warmup 3] [--nao 256,448,640]
-    [--only resident|pipeline] [--ring-gib 6] [--csv gemm_host_offload.csv]
+    [--only resident|pipeline] [--ring-gib 6] [--pack-threads 1]
+    [--csv gemm_host_offload.csv]
 ```
 
 Hold the whole card (`with_gpu_card`, `devtools/lib.sh`) while it runs.
@@ -55,9 +56,18 @@ Variants, each a curve over n_b:
 | `graph` | resident | `chopped` captured once into a graph: no per-call CPU launch. `graph ≈ chopped` rules launch overhead out of δ |
 | `pipeline` | pinned | copies of batch i+1 overlap the gemms of batch i, ring depth R ∈ {2, 3} |
 | `copies` | pinned | `pipeline` with the gemms removed: the copies alone, same chunks, same waits |
+| `heap` | heap | two hops: the enqueuing CPU thread packs each batch into a pinned staging slot (once that slot's previous upload has landed), then the copy stream uploads it as `pipeline` does. The pack of batch i+1 overlaps the upload and the gemms of batch i |
+| `heap-copies` | heap | `heap` with the gemms removed: the two hops alone |
 
-A pipeline config whose ring does not fit `--ring-gib` is skipped and said to
-be.
+`heap` is the Rust design's path (`rust/docs/memory.md`, "Pinned is staging;
+large flat host data is a heap row"): B in a heap row, streamed through a
+pinned window. The staging ring has the device ring's depth R and slot size.
+`--pack-threads` splits each pack over that many CPU threads (default 1, the
+one CPU node of the design). Both host copies of B are written before any
+timing, so no first-touch fault is in a timed pack.
+
+A pipeline config whose ring does not fit `--ring-gib` (the device ring and
+the pinned staging ring alike) is skipped and said to be.
 
 ## Method
 
@@ -69,7 +79,8 @@ batch size only.
 
 Columns: median, min and interquartile range (% of the median); `excess/b` =
 (median − T_1) / (n_b − 1), δ read off one point; for `pipeline`, `over` =
-median − max(T_1, `copies` at that batch), what the overlap failed to hide. Per
+median − max(T_1, `copies` at that batch), what the overlap failed to hide
+(for `heap`, against `heap-copies`). Per
 curve, a least-squares fit of median against n_b gives δ with its standard
 error. T_1 is the resident group's own `chopped m` n_b = 1 point; the pipeline
 group, which runs after B is freed, uses a standalone T_1 timed beforehand.
@@ -83,6 +94,13 @@ Every rep goes to the CSV (`group,nao,naux,nocc,variant,mode,depth,batch,n_b,rep
 
 ## Results
 
+Two cards. The RTX 3080 sections below were the whole sweep (resident and
+pinned streaming, before `heap` existed). The RTX A6000 section reruns the
+pipeline group, pinned and heap side by side, so that comparison is all on
+one card.
+
+### RTX 3080
+
 RTX 3080 (PCIe 4 x16), clocks unpinned, `--reps 10 --warmup 3`, all
 defaults, 2026-11-08; 65 min of a held card. Times are medians, ms.
 
@@ -90,14 +108,14 @@ defaults, 2026-11-08; 65 min of a held card. Times are medians, ms.
 every batch size but b = 1 (~1e-15, see below); the P cut agrees to ≤ 6e-14
 relative, resident and streamed.
 
-### δ is not launch overhead or event waits
+#### δ is not launch overhead or event waits (RTX 3080)
 
 `chopped`, `events` and `graph` agree within their fit errors at every shape,
 on both cuts. At nao 640, nocc 128, m cut: δ = −8.3, −7.5 and −10.4 ± 46
 µs/batch. Neither capturing the launches away nor adding the ring's waits
 changes anything measurable, so whatever a batch costs is the GEMMs' own.
 
-### The m cut: no linear δ, a step at small b, and b = 1 is fastest
+#### The m cut: no linear δ, a step at small b, and b = 1 is fastest (RTX 3080)
 
 δ fits to zero within error at nao ≥ 448 (it is 30–55 ± 8 µs at nao 256).
 What there is instead is a step at small b, the slabs per batch (`chopped`):
@@ -117,7 +135,7 @@ makes now is not the fastest form of its own gemm at these shapes. Worth an
 A/B in `jk.cpp` itself (one gemm per slab, or the batched call with a
 different count) before trusting it beyond this card.
 
-### The P cut: tile quantization, not δ
+#### The P cut: tile quantization, not δ (RTX 3080)
 
 The P cut's straight-line fit (0.5–5 ms/batch) means nothing: its cost is a
 function of b, not of n_b. At nao 640, nocc 128 (`chopped`, T_1 = 749.7):
@@ -130,7 +148,7 @@ Every power of two from 32 up costs ≤ 1%; the 1.5× points 96, 48 and 24 cost
 20%, the same 150 ms each, and below 32 the time grows like 1/b. nocc 64 and
 nao 448 show the same pattern. **A P batch should be a power of two ≥ 32.**
 
-### Streaming B: the overlap works, and the model holds
+#### Streaming B: the overlap works, and the model holds (RTX 3080)
 
 The copies alone take 467.1 ms for B's 5.86 GiB (13.5 GB/s, ~half of PCIe 4
 x16's peak), whatever the chunking: `copies` δ = 1.4 µs/chunk. Ring depth R =
@@ -153,15 +171,78 @@ cut's one syrk runs only after the last slab lands, and nothing hides it.
 For a streamed build **the P cut is the one to use**: its syrk goes with
 each batch.
 
-### Noise
+#### Noise (RTX 3080)
 
 At nao 640 the resident reps spread 4–7% (IQR) while the minima sit within
 0.1% of the median: a few slow reps per config, consistent with clock or
 thermal excursions over a 40 min resident run. The pipeline group's IQR is
 ≤ 0.1%. The conclusions above are all 3% effects or larger, or zero.
 
+### RTX A6000: B streamed from the heap against pinned
+
+RTX A6000 (sm_86, 48 GB, PCIe 4 x16), clocks unpinned, 2026-11-17,
+`--only pipeline --nao 640 --reps 10 --warmup 3 --pack-threads 1`, ring
+6 GiB, the card held alone; 40 min. Host: AMD EPYC (Rome), one thread's
+memcpy measured separately at 16.1 GB/s (heap to pinned, same rate). B is
+5.86 GiB (6.29 GB). Times are medians, ms, R = 2 (R = 3 matches it again).
+
+**K agrees as before.** `heap` gives the same K as `pipeline` at every
+config: the m cut bitwise (1.1e-15 at b = 1), the P cut ≤ 5.5e-14 relative.
+
+**The rates.** Pinned `copies`: 240.3 ms at any chunking, **26.2 GB/s**
+(near PCIe 4 x16's practical ceiling; the 3080 reached only 13.5). The
+heap's two hops, `heap-copies`, are bound by the one-thread pack: 392–410 ms
+at b = 8…128 (P) and b = 2…16 (m), **15.5–16 GB/s**, about the measured
+memcpy rate. The pack overlaps the upload, so the upload adds nothing on top.
+Small batches add a per-batch cost: the m cut at b = 1 (640 batches of
+9.4 MB) takes 701 ms, about 0.47 ms per batch for the host wait on the slot
+and the handoff. Large batches lose the overlap: the first pack and upload
+are not hidden (P b = 768: 476 ms).
+
+**Gemms limit (nocc 128, standalone T_1 = 680.3):** the overlap hides
+nearly all of the 400 ms of the two hops.
+
+| P b | 256 | 128 | 64 | 32 | m b | 16 | 8 | 4 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `pipeline` | 717.7 | 702.1 | 699.3 | 708.0 | | 694.0 | 705.7 | 706.3 |
+| `heap` | 770.5 | 728.0 | 712.9 | 715.3 | | 730.1 | 725.2 | 723.2 |
+
+At P b = 64 the heap costs 13.6 ms (2%) more than pinned. `over` is again
+the unhidden first batch, now pack plus upload (32.7 ms at P b = 64 against
+pinned's 19.0). The tile penalty at 96, 48 and 24 is unchanged (844, 834,
+842). The m cut's b = 1 trick (pinned 655.0) does not carry over: 640
+batches cost the heap 1035 ms.
+
+**Copies limit (nocc 32, T_1 = 169.2):** the heap build is the two hops'
+time: 409–425 ms at P b = 12…128, within 5–15 ms of `heap-copies` (pinned:
+243 ms). The m cut is 484–508 ms at b = 4…32, with `over` 78–86 ms as
+pinned has: its one syrk after the last slab.
+
+**Where the copies and the GEMMs cross.** T_1 is linear in nocc on this
+card: 169.2 ms at 32, 680.3 at 128, about 5.3 ms per occupied orbital at
+nao 640, naux 1920. The copies cost as much as the GEMMs at **nocc ≈ 45
+pinned** (240 ms) and **nocc ≈ 75 from the heap** with one pack thread
+(about 400 ms). Above that the stream is hidden; below it a build costs the
+two hops. The batch to use does not change: a P batch of 32 or 64 is the
+best or near it for heap and pinned, at both nocc.
+
+**Preliminary: four pack threads** (`--pack-threads 4`, same day and card;
+the run was stopped after its nocc 32 group, so this covers only that
+shape). `heap-copies` falls to 266–275 ms at P b = 64…128 and m b = 16…64,
+about **23 GB/s**, 11–14% over pinned. `heap` at nocc 32 reaches 272 ms
+(P b = 128; pinned 251.6) and 277 at b = 48. But each batch costs about
+1 ms more (fit δ 0.8–1.0 ms; this bench starts its threads at every pack),
+so small batches lose: P b = 8 takes 543 ms, m b = 1 820. So a split pack
+gets most of the way to the pinned rate at a batch of ≥ 32, and the heap
+crossover drops to nocc ≈ 51. The nocc 128 half was not run.
+
 ### Still to do
 
 1. The same sweep on gfx1200 (`hip-experimental`).
 2. The m cut's b = 1 result: A/B one gemm per slab against the one batched
    call in `df_exchange` itself, on both cards.
+3. Does a multi-threaded pack close the gap to pinned? The partial
+   four-thread run says mostly, at b ≥ 32. What is missing: its nocc 128
+   half, a sweep over the thread count, and a pack pool that lives across
+   batches (this bench starts its threads at every pack) to remove the
+   ~1 ms per batch.
