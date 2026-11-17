@@ -280,6 +280,7 @@ dependencies = [
  "fb-core-thread-pool",
  "fb-core-wwr",
  "fb-test-support",
+ "log",
  "proptest",
  "wwr-sys",
 ]

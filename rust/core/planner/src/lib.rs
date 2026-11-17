@@ -48,6 +48,16 @@
 //!   [`Partition`] onto a root, and partials summed onto one.
 //!
 //! [`Bufs::iteration`]: fb_core_arena::Bufs::iteration
+//! - [`Adaptive`]: a part of the plan whose width the planner picks, a
+//!   batch, declared by `width_max` and `bytes(width)`. [`Dag::width`]
+//!   asks for it before the part's tasks are added, and
+//!   [`Dag::plan_within`] plans a DAG declared by a closure against each
+//!   worker's device room, bisecting each part's bytes once, by
+//!   [`widest`], in the room the schedule leaves at its position
+//!   (`docs/memory.md`, "Adaptive widths: one planner routine"). The width
+//!   is a dimension of the plan, on its text's `width` lines and logged at
+//!   `debug`, at `warn` when narrowed below its floor; `run` never reads
+//!   free memory.
 //! - [`Plan`] ([`Dag::plan`]): each worker's device and host tables and
 //!   the plan's one heap table laid out, and each task's dependencies
 //!   derived, all pure. A task runs after
@@ -148,8 +158,9 @@
 //! reads only rows of its own worker; a row crosses between workers by a
 //! collective alone, whose parts the caller places on every worker, and no
 //! edge between workers is priced. A partition is the caller's tasks over
-//! a [`Partition`]'s ranges, not a declaration the planner slices. No
-//! adaptive widths, no sub-DAG with
+//! a [`Partition`]'s ranges, not a declaration the planner slices. An
+//! adaptive width is bisected against a worker's device room alone, the
+//! pinned rows that grow with it admitted after; no sub-DAG with
 //! dimensions of its own, and of loops in a loop's body only a counted
 //! loop in a decision loop's. Every
 //! dependency is a row: an ordering with no buffer behind it has no way to
@@ -172,12 +183,16 @@ mod partition;
 mod task;
 #[cfg(test)]
 mod tests;
+mod width;
+#[cfg(test)]
+mod width_tests;
 
 pub use dag::{Dag, Plan};
 pub use graph::Graph;
 pub use instance::Instance;
 pub use partition::Partition;
 pub use task::{CpuTask, Decision, GpuTask};
+pub use width::{Adaptive, widest};
 
 /// The bytes of device memory each worker's BLAS handle is handed as its
 /// workspace ([`Dag::blas_workspace`]): 32 MiB, cuBLAS's own default on
