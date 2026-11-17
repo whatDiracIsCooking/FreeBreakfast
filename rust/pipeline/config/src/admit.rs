@@ -19,11 +19,13 @@ pub const DEVICE_RESERVE: usize = 256 << 20;
 /// The largest per-thread stack of any kernel the tree launches, bytes:
 /// the C++ `kKernelStackBytes`, `potential_hessian<3,3>`'s 16,912, which
 /// [`admit_plan`]'s stack term is asked for
-/// ([`fb_core_wwr::runtime::stack_growth`]). It bounds the Rust kernels
-/// because each is a fork of a C++ tree kernel (`docs/gpu_layer.md`,
-/// "What the port changes"), and the C++ ctest `core_kernel_stack_bound`
-/// holds every one of those to it; nothing reads the bound off the Rust
-/// libraries themselves.
+/// ([`fb_core_wwr::runtime::stack_growth`]). It bounds the Rust forks of
+/// C++ tree kernels (`docs/gpu_layer.md`, "What the port changes"), which
+/// the C++ ctest `core_kernel_stack_bound` holds to it, and the rust-only
+/// conventional ERI units FelizJueves emits, whose largest frame is 3,856
+/// bytes (`eri_2222` and the dense `eri_dj_2222` / `eri_dk_2222` in the
+/// low-stack form, `sm_86` ptxas, 0 spill); nothing reads the bound off the
+/// Rust libraries themselves.
 pub const KERNEL_STACK_BYTES: usize = 16_912;
 
 /// Admit `planned` against `memory`'s caps, as the binary does after

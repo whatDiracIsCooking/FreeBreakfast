@@ -515,13 +515,14 @@ and the diff reviewed.
 ### Determinism and placements
 
 The programming model promises that a planned DAG gives the same answer
-under every placement: bitwise where every reduce is ordered, and within a
-declared tolerance where one is not. That promise is a test here:
+under every placement, within a tolerance its analysis fixes; bitwise
+across worker counts is not promised, even where every reduce is ordered.
+That promise is a test here:
 
 - **One worker against many.** At tier 4 the many are streams on one card;
-  at tier 5 they are cards. An ordered reduce compares bitwise, and an
-  unordered one at its declared tolerance, and nowhere else is a tolerance
-  used to absorb a placement.
+  at tier 5 they are cards. The comparison is at the bar the task's
+  analysis fixes (the dense J and K: `2 n_cart² ε` of the result's scale,
+  a GEMV row's `n_cart²` terms each side), never one loosened to fit.
 - **Seeds are fixed and printed.** A test that draws random shapes or data
   seeds its generator from a constant, or from a value it prints on failure.
 - **Atomics do not loosen a bar.** A result that varies run to run because a

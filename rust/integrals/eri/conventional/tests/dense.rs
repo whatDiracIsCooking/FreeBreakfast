@@ -13,13 +13,17 @@
 //! rather than `n_pp = 325`, `n_cart² ε` of the sum's scale at worst,
 //! 1.4e-13. Beside it, J and K exactly symmetric and no element NaN.
 //!
-//! **Across workers, bitwise.** Every element of `M_J` and `M_K` is its
-//! ordered quartet's one store whatever the block it lies in, D is
-//! broadcast exactly, each worker's GEMV forms its rows' entries from
-//! those rows alone, and the gathers are exact, so J and K on two and on
-//! four workers are one worker's bits (`docs/programming_model.md`,
-//! "Two kinds of distribution"). Four workers over water's twelve shells
-//! leave none empty; the split's evenness is not what is tested.
+//! **Across workers, a tolerance by analysis: `max |Δ| <= 2 n_cart² ε max
+//! |one worker's|`.** D is broadcast exactly and the gathers are exact, so
+//! what can differ between worker counts is each entry's row product: a
+//! GEMV row of `n_cart² = 625` terms carries a relative error of about
+//! `n_cart² ε` of its scale, on each side of the comparison, so twice that,
+//! 2.8e-13 (the spherical transform and the symmetrization after it are
+//! the same operations on both sides, each a combination of a few
+//! elements, inside it). Bitwise across worker counts is not promised
+//! (`docs/testing.md`, "Determinism and placements"). Four workers over
+//! water's twelve shells leave none empty; the split's evenness is not
+//! what is tested.
 
 mod common;
 
@@ -34,6 +38,14 @@ use fb_integrals_eri_conventional::{add_dense, add_dense_jk};
 
 /// The bar's fraction of `max |ref|`.
 const REL_TOL: f64 = 1e-10;
+
+/// Water's Cartesian AO count in cc-pVDZ: 3 s, 2 p and 1 d on O, 2 s and 1
+/// p on each H.
+const N_CART: usize = 25;
+
+/// The across-workers bar's fraction of one worker's `max |·|`: twice a
+/// GEMV row's `n_cart² ε` (module docs).
+const WORKERS_REL_TOL: f64 = 2.0 * (N_CART * N_CART) as f64 * f64::EPSILON;
 
 /// CPU: an input written into a pinned row.
 struct Stage {
@@ -191,8 +203,8 @@ fn h2o_cc_pvdz_on_one_device_matches_pyscf() {
 }
 
 /// Water in cc-pVDZ on two workers, and on four where four devices are
-/// visible: each against PySCF's, and bitwise one worker's, compared in
-/// this one process. Needs two GPUs.
+/// visible: each against PySCF's, and one worker's J and K within
+/// `2 n_cart² ε` of their scale (module docs). Needs two GPUs.
 #[test]
 #[ignore = "tier 5: needs two GPUs"]
 fn tier5_h2o_cc_pvdz_across_devices_is_one_devices() {
@@ -206,9 +218,20 @@ fn tier5_h2o_cc_pvdz_across_devices_is_one_devices() {
         println!("{workers} workers over the rows {split:?}");
         check(&got, workers);
         for (what, (g, o)) in ["J", "K"].iter().zip(got.iter().zip(&one)) {
+            let scale = o.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+            let miss = g.iter().zip(o).fold(0.0_f64, |m, (a, b)| {
+                if (a - b).abs() > m || (a - b).is_nan() {
+                    (a - b).abs()
+                } else {
+                    m
+                }
+            });
+            println!(
+                "{workers} workers: max |Δ{what}| against one worker's = {miss:e} of max {scale:e}"
+            );
             assert!(
-                g.iter().zip(o).all(|(a, b)| a.to_bits() == b.to_bits()),
-                "{what} on {workers} workers is not one worker's bits"
+                !miss.is_nan() && miss <= WORKERS_REL_TOL * scale,
+                "{workers} workers: max |Δ{what}| = {miss:e} > {WORKERS_REL_TOL:e} · {scale:e}"
             );
         }
     }

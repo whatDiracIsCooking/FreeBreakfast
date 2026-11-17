@@ -65,9 +65,10 @@
 //! `vec(K)` back onto worker 0, and worker 0 transforms them to the
 //! spherical AOs and symmetrizes them. Every element of the blocks is its
 //! ordered quartet's one store, the broadcast and the gathers are exact
-//! and each entry's sum is its row's alone, so J and K are the same bits on
-//! one worker or several: an ordered partition
-//! (`docs/programming_model.md`, "Two kinds of distribution"). The price
+//! and each entry's sum is its row's alone: an ordered partition
+//! (`docs/programming_model.md`, "Two kinds of distribution"), held one
+//! worker against several to `2 n_cart² ε` of the result's scale, not
+//! bitwise (`docs/testing.md`, "Determinism and placements"). The price
 //! against the packed tensors is memory, about 8× theirs, and the build's
 //! work, every unique integral computed by each of its orderings in both
 //! layouts.

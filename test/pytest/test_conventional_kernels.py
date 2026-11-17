@@ -21,10 +21,11 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[2]
 _TOOL = _ROOT / "tools" / "emit" / "conventional_kernels.py"
 # Each directory, and the units the tool writes there: the packed 21
-# classes through (dd|dd), their header and eri_kperm; the dense 81 ordered
+# classes through (dd|dd), their header, eri_kperm and eri_task_threads.h
+# (both forms' threads per task); the dense 81 ordered
 # classes in each of two layouts and each layout's header.
 _DIRS = {
-    Path("eri/conventional/kernels"): 21 + 1 + 1,
+    Path("eri/conventional/kernels"): 21 + 1 + 1 + 1,
     Path("eri/conventional/dense/kernels"): 2 * (81 + 1),
 }
 

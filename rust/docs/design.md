@@ -120,8 +120,9 @@ free memory is clippy's `disallowed_methods` outside the sites
 **Answers.** Every task is placeable on any worker of any topology, so the
 question is not whether several GPUs are allowed but whether this task's own
 work can be sliced: along which axis, recombined by which reduce, in which
-order. Ordered gives a bitwise result at every worker count; unordered
-declares a tolerance the acceptance rule fixes by analysis. Most tasks
+order. Ordered fixes the combination order; either kind is held, one
+worker against many, to a tolerance the acceptance rule fixes by
+analysis, and bitwise across worker counts is not promised. Most tasks
 declare no partition, and parallelism across independent sub-DAGs, the
 displacements of a Hessian, the roots of a state average, the fragments of
 an expansion, costs the task nothing and is the orchestrator's by placement
@@ -133,8 +134,8 @@ reduce's kind and order on the edge
 ([`programming_model.md`](programming_model.md), "An edge declares").
 
 **Checks.** One worker against many: streams on one card at tier 4, cards
-at tier 5, bitwise for an ordered reduce and at the declared tolerance for an
-unordered one ([`testing.md`](testing.md), "Determinism and placements").
+at tier 5, at a tolerance fixed by analysis, ordered reduce or unordered
+([`testing.md`](testing.md), "Determinism and placements").
 
 ## What it depends on, and what depends on it
 

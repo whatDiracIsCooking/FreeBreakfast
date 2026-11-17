@@ -83,9 +83,10 @@ const PAIR_FIELDS: usize = FB_CONVENTIONAL_PAIR_FIELDS as usize;
 /// The fields of one task.
 const TASK_FIELDS: usize = FB_CONVENTIONAL_TASK_FIELDS as usize;
 /// About the tasks of one launch, and of one ket class's task table: a bra
-/// batch is `max(1, TASKS_PER_LAUNCH / n_kpair)` pairs. 2^16 threads are
-/// 512 blocks of four warps, a few waves of a card at these kernels'
-/// occupancy, and a table of half a MiB.
+/// batch is `max(1, TASKS_PER_LAUNCH / n_kpair)` pairs. 2^16 tasks are
+/// 512 blocks of four warps at one thread a task (the s and p classes), up
+/// to 6 times that from a d shell (the low-stack form's `n_a` threads a
+/// task), a few waves of a card, and a table of half a MiB.
 const TASKS_PER_LAUNCH: usize = 1 << 16;
 
 /// A worker's row blocks of the dense matrices, [`add_dense_tasks`]'

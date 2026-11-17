@@ -194,9 +194,9 @@ pub fn add_dense(
 /// `eri.blocks.len()` GPU workers. Each entry of a piece is its row's
 /// products summed in an order `n_cart²` alone fixes ([`dense_row_dot`]),
 /// not the BLAS's GEMV, whose order may follow the call's shape, and the
-/// gathers are exact, so J and K are the same bits on any number of
-/// workers (`docs/programming_model.md`, "Two kinds of distribution": an
-/// ordered reduce).
+/// gathers are exact (`docs/programming_model.md`, "Two kinds of
+/// distribution": an ordered reduce). J and K on several workers are held
+/// to one worker's within `2 n_cart² ε` of their scale, not bitwise.
 ///
 /// # Panics
 /// If `density` is not a row of worker 0's table ([`Dag::add_gpu`]).
