@@ -24,9 +24,11 @@
 //! [`Calculation::Guess`]: the initial-guess density D of
 //! [`fb_pipeline_guess`], SAD or loaded as [`GuessStep`] says, then
 //! `write d.npy` on the CPU ([`add_write_host_npy`]): D is a host row, so
-//! it needs no download. [`Calculation::Rhf`]: the DF-RHF of
+//! it needs no download. [`Calculation::Rhf`]: the RHF of
 //! [`fb_pipeline_scf::add_scf`], ROHF at a multiplicity above 1, over
-//! [`fb_pipeline_eri::add_df_eri`]'s fitted integrals, from that guess,
+//! [`fb_pipeline_eri::add_eri`]'s two-electron integrals (fitted, or a
+//! closed shell's conventional tensors, as `[eri] mode` says), from that
+//! guess,
 //! then the write nodes of `c.npy` and
 //! `d.npy` and of `scf.json`, a stream download of ε and a CPU write of it
 //! beside the last build's energy, residual and iteration count.
@@ -108,8 +110,9 @@
 //! | `[guess] type`, `GuessStep::type`, `GuessType::Sad` | [`GuessStep::kind`], [`GuessKind::Sad`] |
 //! | `[guess] from`, `Load<GuessStep>`, `GuessStep::load` | [`GuessStep::from`], [`fb_pipeline_guess::add_loaded_guess`], its file's header checked at planning |
 //! | `[guess] from` with another key: `loads 'from' a file, so takes no option` | the same refusal, `InvalidConfig`, from [`GuessStep::check`] |
-//! | `[eri] mode`, `EriStep::mode`, `EriMode` | [`EriStep::mode`], [`EriMode::DensityFitting`] alone and required: integral-direct is not ported |
-//! | `[eri] aux_basis`, a fitting set's name or a path joined to the input directory, `<basis>-acCD-6-6` when empty | [`EriStep::aux_basis`], a compiled-in name alone and required, never joined, refused by [`read_config`] when not carried |
+//! | `[eri] mode`, `EriStep::mode`, `EriMode` | [`EriStep::mode`], required: [`EriMode::DensityFitting`], or [`EriMode::Conventional`], which the C++ does not have; integral-direct is not ported |
+//! | nothing: the C++ tree stores no four-index tensor | `[eri] mode = "conventional"`, the closed-shell RHF over the packed tensors (`fb_integrals_eri_conventional`), Rust only; an open shell refused at planning |
+//! | `[eri] aux_basis`, a fitting set's name or a path joined to the input directory, `<basis>-acCD-6-6` when empty | [`EriStep::aux_basis`], a compiled-in name alone, never joined, required under `"density_fitting"` and refused under `"conventional"` by [`read_config`] ([`EriStep::check`]), as is one not carried |
 //! | `[eri]` beside an SCF, the integral-direct default when absent | required beside [`Calculation::Rhf`], refused beside every other, by its row of tables |
 //! | `[scf]`, `ScfStep` and its keys | [`Config::scf`], [`fb_pipeline_scf::ScfStep`] itself, its range checked by [`read_config`] |
 //! | the guess rescaled by `N / Σ Z` for an ion | ported in [`fb_pipeline_scf::add_scf`] |
@@ -143,6 +146,8 @@
 //! [`EriStep::mode`]: fb_pipeline_eri::EriStep::mode
 //! [`EriStep::aux_basis`]: fb_pipeline_eri::EriStep::aux_basis
 //! [`EriMode::DensityFitting`]: fb_pipeline_eri::EriMode::DensityFitting
+//! [`EriMode::Conventional`]: fb_pipeline_eri::EriMode::Conventional
+//! [`EriStep::check`]: fb_pipeline_eri::EriStep::check
 //! [`Plan`]: fb_core_planner::Plan
 //! [`LocalizationStep`]: fb_localization_pipek_mezey::LocalizationStep
 //! [`add_pm_localize`]: fb_localization_pipek_mezey::add_pm_localize

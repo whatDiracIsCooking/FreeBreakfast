@@ -49,6 +49,7 @@ members = [
     "integrals/eri/density_fitting/fit",
     "integrals/eri/density_fitting/jk",
     "integrals/eri/density_fitting/three_center",
+    "integrals/eri/conventional",
     "pipeline/eri",
     "localization/sys",
     "localization/pipek_mezey",
@@ -105,6 +106,7 @@ fb-integrals-eri-density-fitting-metric = { path = "integrals/eri/density_fittin
 fb-integrals-eri-density-fitting-fit = { path = "integrals/eri/density_fitting/fit" }
 fb-integrals-eri-density-fitting-jk = { path = "integrals/eri/density_fitting/jk" }
 fb-integrals-eri-density-fitting-three-center = { path = "integrals/eri/density_fitting/three_center" }
+fb-integrals-eri-conventional = { path = "integrals/eri/conventional" }
 fb-pipeline-eri = { path = "pipeline/eri" }
 fb-localization-sys = { path = "localization/sys" }
 fb-localization-pipek-mezey = { path = "localization/pipek_mezey" }

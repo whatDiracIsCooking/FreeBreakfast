@@ -29,6 +29,7 @@
 //! | `kThreeCenterBraFields`, the packed bra records' segment count | nothing: the bra records cross as a class view, a field per pointer |
 //! | `wwrErrorInvalidValue` for a refusal | [`FB_LAUNCH_INVALID_ARGUMENT`] (a count, a null pointer, a short workspace) or [`FB_LAUNCH_UNSUPPORTED`] (no kernel for the class) |
 //! | nothing: the C++ tree compiles its kernels into the binary | [`check_library`], the library's [`fb_integrals_abi_version`] and [`fb_integrals_backend`] against the bindings' |
+//! | nothing: the C++ tree has no conventional mode | [`fb_conventional_eri_class`], [`fb_conventional_exchange`], [`fb_conventional_pack`] and [`fb_conventional_unpack`], rust/'s own launchers over FelizJueves's `eri/full_eri` units (`eri<la, lb, lc, ld>`, `eri_kperm`), and [`FB_CONVENTIONAL_MAX_MOMENTUM`], [`FB_CONVENTIONAL_MAX_AO`], [`FB_CONVENTIONAL_PAIR_FIELDS`], [`FB_CONVENTIONAL_TASK_FIELDS`]; the safe path is [`add_conventional_tasks`], [`pack`] and [`unpack`] |
 //! | the other one-electron families (the dipole, the mixed overlap, the derivatives), J, K, density fitting past the metric and (mn\|P), and the rest | not forked yet |
 //!
 //! **The safe layer.** What a caller uses (`docs/gpu_layer.md`, "The safe
@@ -68,6 +69,17 @@
 //!   tables and the aux table, and the records are held to the tables by
 //!   an always-on contract.
 //!
+//! - [`add_conventional_tasks`], the three tasks of the packed ERI and its
+//!   exchange-ordered gather over a basis's [`ClassRows`] and the
+//!   [`RecordTables`] they were formed from: the pairs, the tasks and the
+//!   pair index staged on the CPU and uploaded, one
+//!   [`fb_conventional_eri_class`] per quartet class, both sides' fields
+//!   read in place ([`Fields::CONVENTIONAL`]), then
+//!   [`fb_conventional_exchange`], each into an output row; and [`pack`]
+//!   and [`unpack`], the density packed for the GEMVs and their results
+//!   unpacked, over [`DeviceSlice`](fb_core_wwr::device_slice::DeviceSlice)s
+//!   whose lengths are checked in every build.
+//!
 //! A class kernel writes at AO offsets held in device memory, so
 //! [`ClassRows`] is a type only [`add_record_tasks`] makes; its doc comment
 //! has why a launcher may trust it.
@@ -77,12 +89,14 @@
 #[rustfmt::skip]
 mod bindings;
 mod classes;
+mod conventional;
 mod metric;
 mod records;
 mod three_center;
 
 pub use bindings::*;
 pub use classes::{kinetic_class, overlap_class, potential_en_class};
+pub use conventional::{add_conventional_tasks, pack, packed_pairs, unpack};
 pub use metric::{AuxTable, add_metric_tasks};
 pub use records::{
     ClassPairs, ClassRows, Fields, MixedClassRows, RecordTables, ShellTable,

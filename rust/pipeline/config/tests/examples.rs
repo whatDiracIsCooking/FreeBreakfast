@@ -484,6 +484,52 @@ fn rhf_example() {
     );
 }
 
+/// The example RHF over the conventional integrals through the binary:
+/// exit 0, its `scf.json` energy within the DF-RHF's bar of PySCF's exact
+/// RHF of the same water and basis (`fb-pipeline-scf`'s
+/// `tests/data/scf_h2o_cc-pvdz_conventional.npy`; its `tests/scf.rs` has
+/// the bar's analysis), which the fitted energy misses by 2.1e-5 hartree;
+/// `c.npy` and `d.npy` square; and its `timing.json` the timing record,
+/// the tensors' tasks and the body's `conventional jk` among it. Needs a
+/// GPU.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn conventional_example() {
+    let cwd = workdir("example_conventional");
+    let config = example("conventional.toml");
+    let out = free_breakfast(&cwd, &config);
+    assert_eq!(out.status.code(), Some(0), "the example exits 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("completed: 0 errors"), "{stdout}");
+
+    let dir = cwd.join("conventional");
+    let (energy, iterations) = scf_json(&dir);
+    let e_ref = fb_io_npy::read_npy(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../scf/tests/data/scf_h2o_cc-pvdz_conventional.npy"),
+    )
+    .unwrap()
+    .data[0];
+    let miss = (energy - e_ref).abs();
+    println!("E = {energy:.12} against {e_ref:.12}, |dE| = {miss:e}, {iterations} iterations");
+    assert!(miss <= ENERGY_BAR, "|dE| = {miss:e} over {ENERGY_BAR:e}");
+    for m in ["c.npy", "d.npy"] {
+        let a = fb_io_npy::read_npy(&dir.join(m)).unwrap();
+        assert_eq!(a.shape, [24, 24], "{m}: water's cc-pVDZ AOs");
+    }
+    check_timing(
+        &config,
+        &dir.join("timing.json"),
+        &[
+            "conventional eri",
+            "exchange gather",
+            "conventional jk",
+            "converged",
+            "write scf.json",
+        ],
+    );
+}
+
 /// The example DF-ROHF through the binary, the water cation's doublet:
 /// exit 0, its `scf.json` energy within the DF-RHF's bar of PySCF's DF-ROHF
 /// energy and every orbital energy within `fb-pipeline-scf`'s 1e-6 hartree

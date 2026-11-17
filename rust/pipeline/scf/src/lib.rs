@@ -9,11 +9,12 @@
 //! shell" paragraph the ROHF.
 //!
 //! [`add_scf`] is the step: the guess's factor before the loop, the body
-//! (J and K over the fitted B, F, E and the residual, DIIS, the Roothaan
+//! (J and K over the fitted B, or over the conventional integrals' stored
+//! tensors for a closed shell, F, E and the residual, DIIS, the Roothaan
 //! step, the density), the decision, and the converged F's orbitals after
 //! it; its doc has each task, and what an open shell changes. [`ScfStep`]
 //! holds the C++ step's options the loop reads. [`Run`] is the whole run
-//! for the tests: a molecule, a basis and a fitting set planned once, from
+//! for the tests: a molecule, a basis and an `[eri]` step planned once, from
 //! the SAD guess, returning an [`ScfOutput`] and the timing record.
 //!
 //! The Roothaan step at a fixed operator, `F C = S C ε` solved through the
@@ -54,7 +55,8 @@
 //!   in one pinned row for the loop's decision.
 //!
 //! J and K are input rows: the density-fitted build is
-//! `fb_integrals_eri_density_fitting_jk`'s.
+//! `fb_integrals_eri_density_fitting_jk`'s, the conventional one
+//! `fb_integrals_eri_conventional`'s.
 //!
 //! | C++ | Here |
 //! |---|---|
@@ -82,6 +84,7 @@
 //! | `ScfStep::run`, `scf_loop` with a `DfFockBuilder` | [`add_scf`], the loop a planned sub-DAG and its decision a CPU node |
 //! | `ScfStep`'s `max_iterations`, `energy_tolerance`, `commutator_tolerance`, `diis_history`, an option out of range `InvalidConfig` | [`ScfStep`], checked at planning |
 //! | `fock_rebuild_interval`, `tau_j`, incremental builds, `DirectFockBuilder` | not ported: every DF build is full, and the direct ERIs are not ported |
+//! | nothing: the C++ tree has no conventional mode | [`add_scf`] over `fb_pipeline_eri::Eri::Conventional`, Rust only: each build's J and K one `conventional jk` of the carried D (`fb_integrals_eri_conventional::add_conventional_jk`), no rest's K and no `guess exchange`, since K over the stored tensors is of D itself; closed shell only, an open shell `Unsupported` at planning |
 //! | `molden`, the converged orbitals written | not ported |
 //! | `guess_exchange`: `syevd(D)`, `C̃ = V (Λ/2)^(1/2)` over the eigenvalues above 1e-12 of the largest, `df_exchange` over `n_alpha` columns at a time, summed | `syevd` on the guess, `download guess w host` and `guess check` (the floor, 1e-12 of the largest eigenvalue, read on the CPU), `guess factor` (that floor applied on the device by `fb_recipes_sys::inverse_sqrt`), the largest `nocc` columns the carried factor, the other `n - nocc` one K before the loop that `guess exchange` adds to the first iteration's and then zeroes |
 //! | a loaded guess that is not PSD: its negative part left out, with a warning | left out, and the same warning from `guess check`, a CPU node reading the eigenvalues `download guess w host` copies to a pinned row |

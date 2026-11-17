@@ -13,7 +13,7 @@ basis = "cc-pvdz"      # a compiled-in name, or a BSE JSON path relative to this
 type = "sad"           # the default; or from = "d.npy", a run's D read back
 
 [eri]                  # required: no default
-mode = "density_fitting"      # the only mode
+mode = "density_fitting"      # or "conventional" (conventional.toml)
 aux_basis = "cc-pvdz-jkfit"   # a compiled-in fitting set
 
 [scf]                  # every key optional; these are the defaults

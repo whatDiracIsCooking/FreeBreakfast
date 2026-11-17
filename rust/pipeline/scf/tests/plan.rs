@@ -5,8 +5,9 @@
 //! device: the nuclei, S and H over one staging of U, X and the step. And
 //! one SCF iteration's dense nodes as a loop body, with the occupations
 //! and their refusals. And the whole DF-RHF run's plan for water in
-//! cc-pVDZ over cc-pVDZ-JKFIT, and the DF-ROHF run's for its cation, with
-//! the refusals planning passes on. Planning touches no
+//! cc-pVDZ over cc-pVDZ-JKFIT, the RHF run's over the conventional
+//! integrals, and the DF-ROHF run's for its cation, with the refusals
+//! planning passes on. Planning touches no
 //! device, but the records' layout asks the kernel library for the sort's
 //! workspace, so the library must be built.
 
@@ -23,6 +24,7 @@ use fb_core_error_handling::{Error, ErrorKind, Result, Status};
 use fb_core_planner::{Dag, Decision, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_molecule::Molecule;
+use fb_pipeline_eri::{EriMode, EriStep};
 use fb_pipeline_scf::{Run, ScfStep, add_density, add_fock, occupied_orbitals};
 use fb_test_support::golden;
 
@@ -67,9 +69,13 @@ fn water(charge: i32, multiplicity: i32) -> Molecule {
 
 /// Water's DF-RHF planned by [`Run`] with `step`.
 fn scf_run(step: &ScfStep) -> Result<Run> {
-    Run::new(&water(0, 1), "cc-pvdz", "cc-pvdz-jkfit", step, |_| {
-        Ok(LWORK)
-    })
+    Run::new(
+        &water(0, 1),
+        "cc-pvdz",
+        &EriStep::density_fitting("cc-pvdz-jkfit"),
+        step,
+        |_| Ok(LWORK),
+    )
 }
 
 /// The whole DF-RHF run of water in cc-pVDZ over cc-pVDZ-JKFIT, at the
@@ -90,21 +96,90 @@ fn scf_plan_golden() {
     );
 }
 
+/// The conventional integrals' stored tensors.
+fn conventional() -> EriStep {
+    EriStep {
+        mode: EriMode::Conventional,
+        aux_basis: None,
+    }
+}
+
+/// The whole RHF run of water in cc-pVDZ over the conventional integrals:
+/// the setup, the tensors' three tasks (`conventional tables`,
+/// `conventional eri`, `exchange gather`) in place of B's, the guess's
+/// factor with no rest's K, and the body's `conventional jk` in place of
+/// `df coulomb` and `df exchange`, with no `guess exchange`. The plan text,
+/// both tensors' 325² doubles in the arena among it, is the committed
+/// golden.
+#[test]
+fn conventional_scf_plan_golden() {
+    let run = Run::new(
+        &water(0, 1),
+        "cc-pvdz",
+        &conventional(),
+        &ScfStep::default(),
+        |_| Ok(LWORK),
+    )
+    .expect("water plans");
+    golden(
+        env!("CARGO_MANIFEST_DIR"),
+        "plan_scf_h2o_cc-pvdz_conventional.txt",
+        &text(run.planned()),
+    );
+}
+
+/// An open shell over the conventional integrals, water's cation, is
+/// `Unsupported` at planning, naming the multiplicity: K over the packed
+/// tensor folds `D_ls` and `D_sl` together, and the open-shell loop's K is
+/// a factor's, which this build does not take.
+#[test]
+fn an_open_shell_over_the_conventional_integrals_is_unsupported() {
+    let err = Run::new(
+        &water(1, 2),
+        "sto-3g",
+        &conventional(),
+        &ScfStep::default(),
+        |_| Ok(LWORK),
+    )
+    .err()
+    .expect("refused");
+    assert_eq!(err.kind, ErrorKind::Unsupported, "{}", err.message);
+    assert!(
+        err.message.contains("multiplicity 2") && err.message.contains("conventional"),
+        "{}",
+        err.message
+    );
+}
+
 /// A basis that is neither carried nor a file, a fitting set that is not
 /// carried, and `lwork`'s own error are each the run's error, before the
 /// loop is planned; `lwork` is asked at the number of spherical AOs.
 #[test]
 fn a_refused_input_is_an_error() {
     let step = ScfStep::default();
-    let plan = |basis: &str, aux: &str| Run::new(&water(0, 1), basis, aux, &step, |_| Ok(LWORK));
+    let plan = |basis: &str, aux: &str| {
+        Run::new(
+            &water(0, 1),
+            basis,
+            &EriStep::density_fitting(aux),
+            &step,
+            |_| Ok(LWORK),
+        )
+    };
     assert!(plan("no-such-basis", "cc-pvdz-jkfit").is_err());
     let err = plan("cc-pvdz", "no-such-jkfit").err().expect("refused");
     assert_eq!(err.kind, ErrorKind::InvalidConfig);
     let mut asked = None;
-    let err = Run::new(&water(0, 1), "sto-3g", "cc-pvdz-jkfit", &step, |n| {
-        asked = Some(n);
-        Err(Error::gpu("no device"))
-    })
+    let err = Run::new(
+        &water(0, 1),
+        "sto-3g",
+        &EriStep::density_fitting("cc-pvdz-jkfit"),
+        &step,
+        |n| {
+            asked = Some(n);
+            Err(Error::gpu("no device"))
+        },
+    )
     .err()
     .expect("lwork's error is the run's");
     assert_eq!(err.kind, ErrorKind::GpuRuntime);
@@ -285,7 +360,7 @@ fn rohf_plan_golden() {
     let run = Run::new(
         &water(1, 2),
         "cc-pvdz",
-        "cc-pvdz-jkfit",
+        &EriStep::density_fitting("cc-pvdz-jkfit"),
         &ScfStep::default(),
         |_| Ok(LWORK),
     )
@@ -303,9 +378,13 @@ fn rohf_plan_golden() {
 #[test]
 fn an_open_shell_planning_cannot_hold_is_refused() {
     let step = ScfStep::default();
-    let err = Run::new(&water(0, 9), "sto-3g", "cc-pvdz-jkfit", &step, |_| {
-        Ok(LWORK)
-    })
+    let err = Run::new(
+        &water(0, 9),
+        "sto-3g",
+        &EriStep::density_fitting("cc-pvdz-jkfit"),
+        &step,
+        |_| Ok(LWORK),
+    )
     .err()
     .expect("nine alpha electrons in seven orbitals");
     assert_eq!(err.kind, ErrorKind::InvalidConfig, "{}", err.message);
@@ -320,9 +399,13 @@ fn an_open_shell_planning_cannot_hold_is_refused() {
 fn no_beta_electron_plans_without_a_beta_exchange() {
     let step = ScfStep::default();
     let exchanges = |charge: i32| {
-        let run = Run::new(&water(charge, 2), "sto-3g", "cc-pvdz-jkfit", &step, |_| {
-            Ok(LWORK)
-        })
+        let run = Run::new(
+            &water(charge, 2),
+            "sto-3g",
+            &EriStep::density_fitting("cc-pvdz-jkfit"),
+            &step,
+            |_| Ok(LWORK),
+        )
         .expect("the doublet plans");
         text(run.planned())
             .lines()

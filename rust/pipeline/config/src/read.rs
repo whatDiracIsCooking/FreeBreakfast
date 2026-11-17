@@ -32,7 +32,8 @@ use crate::{Calculation, Config, MemoryCaps};
 ///   (`calculation = "rhf" needs the [eri] table: it has no default`), as
 ///   each [`Calculation`]'s doc says which it reads; then each table's own
 ///   check: a `[guess]` with both `type` and `from` ([`GuessStep::check`]),
-///   an `[eri] aux_basis` that is not a compiled-in fitting set
+///   an `[eri] aux_basis` that is not a compiled-in fitting set, missing
+///   under `mode = "density_fitting"` or given under `"conventional"`
 ///   ([`EriStep::check`]), an `[scf]` option out of range
 ///   ([`ScfStep::check`]), a `[localization]` `max_sweeps` of 0 or a
 ///   tolerance out of range ([`LocalizationStep::check`]); then a
