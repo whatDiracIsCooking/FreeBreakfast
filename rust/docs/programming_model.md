@@ -555,8 +555,19 @@ the orchestrator prices it by where the two ends landed:
 
 The single-GPU case is the degenerate one: broadcast is a pointer, reduce is
 an in-place accumulate, and the workers are streams. One DAG description
-serves every row, which is the point of wanting all of them. The transport
-behind the lower rows is an orchestrator detail, decided later and not here.
+serves every row, which is the point of wanting all of them.
+
+**Between the GPUs of one node the transport is the vendor's collectives
+library**, NCCL on CUDA and RCCL on HIP, through WarpWraps' C ABI and its
+safe wrapper, `fb_core_wwr::ccl`. A run is one process holding all its
+devices, so its communicators are one clique, made at once over the
+devices (`Comm::init_all`), a rank per device, and each rank driven by
+the thread of the GPU worker on its device. A broadcast, a reduce, a
+gather of equal pieces and a point-to-point send are each one call per
+rank, enqueued on that rank's stream like any launch, so the row's bytes
+move on the devices with no host copy and no host wait; the library picks
+NVLink, PCIe peer access or a host bounce from the topology. The row
+across nodes is still open ("Open questions").
 
 **A GPU worker is one card, one thread, one block per kind, and several
 streams, its lanes.** A GPU node is placed on a lane of its worker
@@ -985,9 +996,11 @@ itself, split it there.
 - **The schedule search.** Finding an order whose peak fits is a scheduling
   problem that is hard in general. A plan order from the config, improved
   greedily, is probably enough for the DAGs this tree has. When is it not?
-- **Transport.** NCCL, MPI, or something else moves the lower rows of the
-  worker table. Nothing in the model depends on the choice, and nothing here
-  decides it.
+- **Transport across nodes.** The collectives library moves the node row
+  of the worker table ("Workers are a hierarchy"); the nodes row needs a
+  process per node and a clique made from a shared id
+  (`wwr_ccl_comm_init_rank_scalable`), or MPI beside it. Nothing in the
+  model depends on the choice, and nothing here decides it.
 - **Pinned blocks and NUMA.** On a multi-socket node, pinned pages on the
   GPU's own socket copy faster than pages across the interconnect. A pinned
   block is allocated on its worker's thread, so pinning that thread to the

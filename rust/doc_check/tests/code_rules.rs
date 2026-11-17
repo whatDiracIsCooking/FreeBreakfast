@@ -61,6 +61,11 @@ const ERROR_LOGS: &[(&str, usize, &str)] = &[
         "a handle's `Drop`, through `gpu_log_error_at` (docs/diagnostics.md, \"`Drop` cannot fail\")",
     ),
     (
+        "core/wwr/src/ccl.rs",
+        1,
+        "a communicator's `Drop`, through `gpu_log_error_at` (docs/diagnostics.md, \"`Drop` cannot fail\")",
+    ),
+    (
         "core/wwr/src/blas.rs",
         1,
         "the BLAS handle's `Drop`, whose drain failed, through `gpu_log_error_at` (docs/diagnostics.md, \"`Drop` cannot fail\")",

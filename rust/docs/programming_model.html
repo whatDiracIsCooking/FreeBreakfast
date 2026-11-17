@@ -91,7 +91,7 @@ svg .fh{fill:currentColor}
 </head>
 <body>
 <div class="wrap">
-<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#the-pipeline-is-already-an-instance">The pipeline is already an instance</a></li><li class="l2"><a href="#three-owners">Three owners</a></li><li class="l3"><a href="#a-task-declares">A task declares</a></li><li class="l3"><a href="#an-edge-declares">An edge declares</a></li><li class="l3"><a href="#the-orchestrator-derives">The orchestrator derives</a></li><li class="l3"><a href="#a-builder-adds-tasks">A builder adds tasks</a></li><li class="l2"><a href="#memory-layouts-and-arenas">Memory: layouts and arenas</a></li><li class="l3"><a href="#the-arena-is-a-table-and-a-block">The arena is a table and a block</a></li><li class="l3"><a href="#blocks-plans-and-the-process">Blocks, plans and the process</a></li><li class="l3"><a href="#memory-kinds">Memory kinds</a></li><li class="l2"><a href="#plan-once-run-many">Plan once, run many</a></li><li class="l2"><a href="#two-kinds-of-distribution">Two kinds of distribution</a></li><li class="l2"><a href="#workers-are-a-hierarchy">Workers are a hierarchy</a></li><li class="l3"><a href="#forks-inside-a-task">Forks inside a task</a></li><li class="l3"><a href="#cpu-workers">CPU workers</a></li><li class="l3"><a href="#capabilities-are-enforced-by-lints">Capabilities are enforced by lints</a></li><li class="l2"><a href="#reproducibility-across-placements">Reproducibility across placements</a></li><li class="l2"><a href="#example-the-coulomb-build-under-two-placements">Example: the Coulomb build under two placements</a></li><li class="l2"><a href="#granularity">Granularity</a></li><li class="l2"><a href="#open-questions">Open questions</a></li></ol><div class="sib"><div class="kicker">See also</div><ol><li><a href="memory.html">memory</a></li></ol></div></nav>
+<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#the-pipeline-is-already-an-instance">The pipeline is already an instance</a></li><li class="l2"><a href="#three-owners">Three owners</a></li><li class="l3"><a href="#a-task-declares">A task declares</a></li><li class="l3"><a href="#an-edge-declares">An edge declares</a></li><li class="l3"><a href="#the-orchestrator-derives">The orchestrator derives</a></li><li class="l3"><a href="#a-builder-adds-tasks">A builder adds tasks</a></li><li class="l2"><a href="#memory-layouts-and-arenas">Memory: layouts and arenas</a></li><li class="l3"><a href="#the-arena-is-a-table-and-a-block">The arena is a table and a block</a></li><li class="l3"><a href="#blocks-plans-and-the-process">Blocks, plans and the process</a></li><li class="l3"><a href="#memory-kinds">Memory kinds</a></li><li class="l2"><a href="#plan-once-run-many">Plan once, run many</a></li><li class="l2"><a href="#two-kinds-of-distribution">Two kinds of distribution</a></li><li class="l2"><a href="#workers-are-a-hierarchy">Workers are a hierarchy</a></li><li class="l3"><a href="#the-runs-devices">The run's devices</a></li><li class="l3"><a href="#forks-inside-a-task">Forks inside a task</a></li><li class="l3"><a href="#cpu-workers">CPU workers</a></li><li class="l3"><a href="#capabilities-are-enforced-by-lints">Capabilities are enforced by lints</a></li><li class="l2"><a href="#reproducibility-across-placements">Reproducibility across placements</a></li><li class="l2"><a href="#example-the-coulomb-build-under-two-placements">Example: the Coulomb build under two placements</a></li><li class="l2"><a href="#granularity">Granularity</a></li><li class="l2"><a href="#open-questions">Open questions</a></li></ol><div class="sib"><div class="kicker">See also</div><ol><li><a href="memory.html">memory</a></li></ol></div></nav>
 <main>
 <h1><span class="pre">Rust rebuild</span>Programming model</h1>
 <p>We design a feature as a DAG of tasks before we write it as code. A node is a
@@ -449,7 +449,7 @@ removes.</p>
 <tbody>
 <tr>
 <td><strong>Process</strong></td>
-<td>The running binary: one config, one logger, the devices, the worker budget</td>
+<td>The running binary: one config, one logger, the devices (<code>num_gpus</code> of them, &quot;The run's devices&quot;), the worker budget</td>
 <td>One</td>
 <td><code>main</code> to exit</td>
 </tr>
@@ -791,8 +791,18 @@ the orchestrator prices it by where the two ends landed:</p>
 </table></div>
 <p>The single-GPU case is the degenerate one: broadcast is a pointer, reduce is
 an in-place accumulate, and the workers are streams. One DAG description
-serves every row, which is the point of wanting all of them. The transport
-behind the lower rows is an orchestrator detail, decided later and not here.</p>
+serves every row, which is the point of wanting all of them.</p>
+<p><strong>Between the GPUs of one node the transport is the vendor's collectives
+library</strong>, NCCL on CUDA and RCCL on HIP, through WarpWraps' C ABI and its
+safe wrapper, <code>fb_core_wwr::ccl</code>. A run is one process holding all its
+devices, so its communicators are one clique, made at once over the
+devices (<code>Comm::init_all</code>), a rank per device, and each rank driven by
+the thread of the GPU worker on its device. A broadcast, a reduce, a
+gather of equal pieces and a point-to-point send are each one call per
+rank, enqueued on that rank's stream like any launch, so the row's bytes
+move on the devices with no host copy and no host wait; the library picks
+NVLink, PCIe peer access or a host bounce from the topology. The row
+across nodes is still open (&quot;Open questions&quot;).</p>
 <p><strong>A GPU worker is one card, one thread, one block per kind, and several
 streams, its lanes.</strong> A GPU node is placed on a lane of its worker
 (<code>fb_core_thread_pool::LaneId</code>), and the worker's tables and blocks are its
@@ -852,6 +862,32 @@ through the handoffs, rather than exploiting only the paths the DAG
 already has. Giving a reuse up for concurrency when the cap leaves room is
 admission's search, and not built (<a href="memory.html"><code>memory.md</code></a>, &quot;Open
 questions&quot;).</p>
+<h3 id="the-runs-devices">The run's devices</h3>
+<p><strong>A run holds <code>num_gpus</code> devices, <code>0..num_gpus</code>.</strong> The config's top-level
+<code>num_gpus</code> (<code>fb_pipeline_config::Config::num_gpus</code>, default 1) is how many
+devices the process holds for the run, devices <code>0</code> to <code>num_gpus - 1</code> in
+that order, its device list. 0 is refused as the file is read, before any
+device is touched, and a count above the devices the runtime sees is
+refused, naming both numbers, before the plan is made; at 1 the runtime
+is not asked, so a config without the key runs as it did before the key
+existed. GPU worker <code>w</code> is on the list's device <code>w</code>.</p>
+<p><strong>Work does not spread yet.</strong> A count above 1 is accepted and changes
+nothing: the planner places every GPU worker as it does on one device, so
+a plan's workers are where they are at 1, and the instance makes blocks,
+streams and handles for the plan's workers alone (<code>Instance::instantiate</code>
+takes the devices its tables need and leaves the rest). A further device
+holds nothing, and a run's plan, its <code>plan.txt</code> and <code>plan.dot</code>, and its
+products are those of one device. Placing workers over the list is the
+next step, and the worker table's &quot;GPUs on one node&quot; row prices its
+edges.</p>
+<p><strong>One lane is privileged: lane 0 of the worker on the list's first
+device.</strong> Its <code>DeviceStream</code> says so (<code>DeviceStream::is_privileged</code>), set
+when the <code>Device</code> backend makes the run's streams and false on every other
+lane, and on a stream made outside a backend (<code>DeviceStream::new</code>), which
+is no run's. It is the lane that will own the run's run-wide work, the
+host I/O and the reductions every device's partials meet in, once work
+spreads; on one device it is the lane every one-lane plan already runs on.
+Nothing reads it yet.</p>
 <h3 id="forks-inside-a-task">Forks inside a task</h3>
 <p>A lane is the planner's: nodes are placed on it, the executor orders the
 edges between lanes, and it costs a stream, library handles and a
@@ -1254,9 +1290,11 @@ does a sizing node pay for its extra host round trip?</li>
 <li><strong>The schedule search.</strong> Finding an order whose peak fits is a scheduling
 problem that is hard in general. A plan order from the config, improved
 greedily, is probably enough for the DAGs this tree has. When is it not?</li>
-<li><strong>Transport.</strong> NCCL, MPI, or something else moves the lower rows of the
-worker table. Nothing in the model depends on the choice, and nothing here
-decides it.</li>
+<li><strong>Transport across nodes.</strong> The collectives library moves the node row
+of the worker table (&quot;Workers are a hierarchy&quot;); the nodes row needs a
+process per node and a clique made from a shared id
+(<code>wwr_ccl_comm_init_rank_scalable</code>), or MPI beside it. Nothing in the
+model depends on the choice, and nothing here decides it.</li>
 <li><strong>Pinned blocks and NUMA.</strong> On a multi-socket node, pinned pages on the
 GPU's own socket copy faster than pages across the interconnect. A pinned
 block is allocated on its worker's thread, so pinning that thread to the

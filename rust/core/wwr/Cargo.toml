@@ -16,6 +16,7 @@ test-support = []
 contracts.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-log.workspace = true
-# BLAS and the dense solver for the handles in `blas` and `solver`, beside
+# BLAS and the dense solver for the handles in `blas` and `solver`, and the
+# collectives for `ccl`, beside
 # the runtime.
-wwr-sys = { workspace = true, features = ["blas", "solver"] }
+wwr-sys = { workspace = true, features = ["blas", "solver", "ccl"] }

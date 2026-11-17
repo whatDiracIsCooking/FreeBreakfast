@@ -8,6 +8,10 @@
 //! - [`blas`]: wwr's `src/extension/blas`, the BLAS status as an error code,
 //!   the BLAS handle bound to a [`Stream`](runtime::Stream), and the typed
 //!   calls through it ([`blas::gemm`]).
+//! - [`ccl`]: wwr's `src/extension/ccl`, the collectives' status as an
+//!   error code, the communicator ([`ccl::Comm`], one rank of a clique
+//!   over the run's devices) and the typed collectives through it
+//!   ([`ccl::broadcast_send`], [`ccl::all_gather`], ...).
 //! - [`device_slice`]: no wwr counterpart. Device memory with its length,
 //!   which a safe library call takes and checks in place of a raw pointer.
 //! - [`copy`]: wwr's `src/extension/memory_buffer` `:copy`, a run of
@@ -31,6 +35,7 @@
 //!   why).
 
 pub mod blas;
+pub mod ccl;
 pub mod common;
 pub mod copy;
 pub mod device_slice;
