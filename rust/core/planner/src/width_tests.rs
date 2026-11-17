@@ -15,6 +15,8 @@ use fb_test_support::golden;
 struct Columns {
     column: usize,
     copies: usize,
+    /// Pinned copies of each column, a staging window.
+    pinned: usize,
     max: usize,
     floor: usize,
     pow2: bool,
@@ -25,6 +27,7 @@ impl Columns {
         Columns {
             column,
             copies: 1,
+            pinned: 0,
             max,
             floor: 2,
             pow2: false,
@@ -41,6 +44,10 @@ impl Adaptive for Columns {
         self.copies * self.column * width
     }
 
+    fn pinned_bytes(&self, width: usize) -> usize {
+        self.pinned * self.column * width
+    }
+
     fn warn_below(&self) -> usize {
         self.floor
     }
@@ -50,9 +57,11 @@ impl Adaptive for Columns {
     }
 }
 
-/// A part whose bytes at width `w` are `table[w - 1]`.
+/// A part whose device bytes at width `w` are `table[w - 1]`, and its
+/// pinned bytes `pinned[w - 1]`, or none if `pinned` is empty.
 struct Tabled {
     table: Vec<usize>,
+    pinned: Vec<usize>,
     pow2: bool,
 }
 
@@ -65,16 +74,20 @@ impl Adaptive for Tabled {
         self.table[width - 1]
     }
 
+    fn pinned_bytes(&self, width: usize) -> usize {
+        self.pinned.get(width - 1).copied().unwrap_or(0)
+    }
+
     fn power_of_two(&self) -> bool {
         self.pow2
     }
 }
 
-/// The width a linear scan finds: the largest whose bytes fit, 1 if none,
-/// rounded as [`widest`] rounds.
-fn scan(part: &impl Adaptive, room: usize) -> usize {
+/// The width a linear scan finds: the largest whose bytes of both kinds
+/// fit, 1 if none, rounded as [`widest`] rounds.
+fn scan(part: &impl Adaptive, room: Room) -> usize {
     let width = (1..=part.width_max())
-        .filter(|&w| part.bytes(w) <= room)
+        .filter(|&w| part.bytes(w) <= room.device && part.pinned_bytes(w) <= room.pinned)
         .max()
         .unwrap_or(1);
     if part.power_of_two() {
@@ -85,26 +98,32 @@ fn scan(part: &impl Adaptive, room: usize) -> usize {
 }
 
 proptest! {
-    /// Random monotone bytes, from random steps: the bisected width is the
-    /// linear scan's, in rooms below, among and above the bytes.
+    /// Random monotone bytes of both kinds, from random steps: the
+    /// bisected width is the linear scan's, in rooms below, among and
+    /// above the bytes, with either kind the one that binds.
     #[test]
     fn bisection_equals_a_linear_scan(
-        base in 0usize..1 << 20,
-        steps in prop::collection::vec(0usize..1 << 12, 1..200),
-        room in 0usize..1 << 21,
+        base in (0usize..1 << 20, 0usize..1 << 20),
+        steps in prop::collection::vec((0usize..1 << 12, 0usize..1 << 12), 1..200),
+        room in (0usize..1 << 21, 0usize..1 << 21),
         pow2 in any::<bool>(),
     ) {
-        let table: Vec<usize> = steps
-            .iter()
-            .scan(base, |at, &s| {
-                *at += s;
-                Some(*at)
-            })
-            .collect();
-        let part = Tabled { table, pow2 };
+        let sums = |base: usize, step: fn(&(usize, usize)) -> usize| -> Vec<usize> {
+            steps
+                .iter()
+                .scan(base, |at, s| {
+                    *at += step(s);
+                    Some(*at)
+                })
+                .collect()
+        };
+        let part = Tabled { table: sums(base.0, |s| s.0), pinned: sums(base.1, |s| s.1), pow2 };
+        let room = Room { device: room.0, pinned: room.1 };
         prop_assert_eq!(widest(&part, room), scan(&part, room));
-        for &bytes in &part.table {
-            prop_assert_eq!(widest(&part, bytes), scan(&part, bytes));
+        for (&device, &pinned) in part.table.iter().zip(&part.pinned) {
+            for room in [Room { device, ..room }, Room { pinned, ..room }] {
+                prop_assert_eq!(widest(&part, room), scan(&part, room));
+            }
         }
     }
 }
@@ -115,10 +134,15 @@ proptest! {
 fn a_non_monotone_bytes_is_caught() {
     let part = Tabled {
         table: vec![10, 50, 20, 60, 70, 80, 90, 100],
+        pinned: Vec::new(),
         pow2: false,
     };
-    assert_eq!(scan(&part, 30), 3);
-    assert_eq!(widest(&part, 30), 1);
+    let room = Room {
+        device: 30,
+        pinned: 0,
+    };
+    assert_eq!(scan(&part, room), 3);
+    assert_eq!(widest(&part, room), 1);
 }
 
 /// Every line logged at `warn` and `debug`, in order.
@@ -185,6 +209,16 @@ fn between(dag: &mut Test, width: impl FnOnce(&mut Test) -> usize) -> usize {
     width
 }
 
+/// A room of `bytes` on the device, and no pinned bytes, for every worker.
+fn device(bytes: usize) -> impl FnMut(usize) -> fb_core_error_handling::Result<Room> {
+    move |_| {
+        Ok(Room {
+            device: bytes,
+            pinned: 0,
+        })
+    }
+}
+
 /// `between` planned at a fixed width, admitted against `room` or not.
 fn admitted(width: usize, room: usize) -> bool {
     let mut dag = Dag::new();
@@ -203,9 +237,10 @@ fn the_width_is_the_largest_admission_accepts() {
         ..Columns::new(8 * COLUMN, 64)
     };
     let room = 2 * 8 * N + 20 * 8 * COLUMN + 100;
-    let (planned, width) = Dag::plan_within(&[room], |dag| {
-        between(dag, |dag| dag.width("between", 0, &part))
-    });
+    let (planned, width) = Dag::plan_within(device(room), |dag| {
+        Ok(between(dag, |dag| dag.width("between", 0, &part)))
+    })
+    .unwrap();
     assert_eq!(width, 20);
     assert!(admit(planned.device_table(0), room, "gpu0").is_ok());
     assert!(admitted(width, room));
@@ -235,11 +270,6 @@ fn no_room_is_the_natural_width() {
     let lines = logged("natural");
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!(lines[0].0, log::Level::Debug);
-    // A worker past the rooms given has none either.
-    let (_, width) = Test::plan_within(&[], |dag| {
-        between(dag, |dag| dag.width("past the rooms", 0, &part))
-    });
-    assert_eq!(width, 64);
 }
 
 /// The total a counted loop over batches cuts into `width`-column batches.
@@ -273,9 +303,10 @@ fn a_counted_loop_takes_its_trips_from_the_width() {
         ..Columns::new(8 * COLUMN, 64)
     };
     let room = 8 * N + 2 * 20 * 8 * COLUMN;
-    let (planned, width) = Dag::plan_within(&[room], |dag| {
-        batched(dag, |dag| dag.width("batched", 0, &part))
-    });
+    let (planned, width) = Dag::plan_within(device(room), |dag| {
+        Ok(batched(dag, |dag| dag.width("batched", 0, &part)))
+    })
+    .unwrap();
     assert_eq!(width, 16);
     let text = planned.to_string();
     assert!(text.contains("63 trips, depth 2"), "{text}");
@@ -313,12 +344,13 @@ fn a_later_part_takes_the_remainder() {
     keep_logs();
     let (first, second) = (Columns::new(8 * COLUMN, 8), Columns::new(8 * COLUMN, 64));
     let room = 8 * N + 8 * 8 * COLUMN + 12 * 8 * COLUMN;
-    let (planned, widths) = Dag::plan_within(&[room], |dag| {
-        two(dag, |dag, i| match i {
+    let (planned, widths) = Dag::plan_within(device(room), |dag| {
+        Ok(two(dag, |dag, i| match i {
             0 => dag.width("first", 0, &first),
             _ => dag.width("second", 0, &second),
-        })
-    });
+        }))
+    })
+    .unwrap();
     assert_eq!(widths, (8, 12));
     assert!(admit(planned.device_table(0), room, "gpu0").is_ok());
     let fits = |width0, width1| {
@@ -328,4 +360,100 @@ fn a_later_part_takes_the_remainder() {
     };
     assert!(!fits(8, 13));
     assert!(!fits(9, 12));
+}
+
+/// One adaptive task staging `width` columns through a pinned window of
+/// two copies, beside a fixed pinned worker row of `N` doubles, and holding
+/// them on the device. Returns the width.
+fn staged(dag: &mut Test, width: impl FnOnce(&mut Test) -> usize) -> usize {
+    use Decl::*;
+    let _ = dag.host_worker_row::<f64>(0, "fixed", N);
+    let width = width(dag);
+    dag.add_gpu(
+        "part",
+        0,
+        Declares(vec![
+            Staged("window", 2 * COLUMN * width),
+            Scratch("batch", COLUMN * width),
+            Out("Y", N),
+        ]),
+    );
+    width
+}
+
+/// The pinned room binds a part whose device room does not: the width is
+/// the largest whose window the pinned cap admits, and the next is
+/// refused by it, the device block admitted either way.
+#[test]
+fn a_pinned_window_takes_the_pinned_room() {
+    let part = Columns {
+        pinned: 2,
+        ..Columns::new(8 * COLUMN, 64)
+    };
+    let room = Room {
+        device: 1 << 20,
+        pinned: 8 * N + 2 * 12 * 8 * COLUMN + 100,
+    };
+    let (planned, width) = Dag::plan_within(
+        |_| Ok(room),
+        |dag| Ok(staged(dag, |dag| dag.width("staged", 0, &part))),
+    )
+    .unwrap();
+    assert_eq!(width, 12);
+    let line = format!(
+        "width staged: 12 of 64, worker 0 at node 0, {} bytes and {} pinned in a room of ",
+        12 * 8 * COLUMN,
+        2 * 12 * 8 * COLUMN,
+    );
+    let text = planned.to_string();
+    assert!(text.contains(&line), "{text}");
+    assert!(
+        text.contains(&format!(" and {} pinned\n", room.pinned - 8 * N)),
+        "{text}"
+    );
+    let fits = |width| {
+        let mut dag = Dag::new();
+        staged(&mut dag, |_| width);
+        let planned: Plan<'_, PinnedStandIn, ()> = dag.plan();
+        assert!(admit(planned.device_table(0), room.device, "gpu0").is_ok());
+        admit(planned.host_table(0), room.pinned, "gpu0").is_ok()
+    };
+    assert!(fits(width));
+    assert!(!fits(width + 1));
+}
+
+/// A room is asked once for each worker holding a part, after the first
+/// declaration; a DAG with no part asks for none, and an error from
+/// either closure is returned at once.
+#[test]
+fn rooms_are_asked_once_and_only_when_a_part_is_measured() {
+    let part = Columns::new(8 * COLUMN, 64);
+    let asked = std::cell::Cell::new(0);
+    let room = |_| {
+        asked.set(asked.get() + 1);
+        Ok(Room {
+            device: 1 << 20,
+            pinned: 0,
+        })
+    };
+    let mut runs = 0;
+    Dag::plan_within(room, |dag: &mut Test| {
+        runs += 1;
+        Ok(two(dag, |dag, i| dag.width(["p0", "p1"][i], 0, &part)))
+    })
+    .unwrap();
+    assert_eq!((runs, asked.get()), (3, 1));
+    asked.set(0);
+    Dag::plan_within(room, |dag: &mut Test| Ok(between(dag, |_| 4))).unwrap();
+    assert_eq!(asked.get(), 0);
+    let refused = Dag::plan_within(room, |_: &mut Test| {
+        Err::<(), _>(fb_core_error_handling::Error::config("refused".to_owned()))
+    });
+    assert!(refused.is_err());
+    assert_eq!(asked.get(), 0);
+    let unread = Dag::plan_within(
+        |_| Err(fb_core_error_handling::Error::config("no card".to_owned())),
+        |dag: &mut Test| Ok(between(dag, |dag| dag.width("part", 0, &part))),
+    );
+    assert!(unread.is_err_and(|e| e.message.contains("no card")));
 }

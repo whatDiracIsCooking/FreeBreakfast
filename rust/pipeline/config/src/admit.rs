@@ -3,7 +3,8 @@
 
 use fb_core_arena::{admit, admit_host};
 use fb_core_error_handling::{Error, Result, Status};
-use fb_core_planner::Plan;
+use fb_core_planner::{Plan, Room};
+use fb_core_thread_pool::DeviceStream;
 
 use crate::MemoryCaps;
 
@@ -28,6 +29,78 @@ pub const DEVICE_RESERVE: usize = 256 << 20;
 /// Rust libraries themselves.
 pub const KERNEL_STACK_BYTES: usize = 16_912;
 
+/// One reading of a GPU worker's card at planning, in bytes: the one
+/// [`plan`] sizes the adaptive widths from and [`admit_plan`] admits the
+/// device block by, so the two cannot disagree (`docs/memory.md`,
+/// "Admission", "Adaptive widths: one planner routine"). The binary reads
+/// each worker's card once, when planning or admission first asks for it.
+///
+/// [`plan`]: crate::plan
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Card {
+    /// The card's free memory, read once the worker's stream and handles
+    /// exist ([`fb_core_arena::device_memory`]).
+    pub free: usize,
+    /// The card's total memory.
+    pub total: usize,
+    /// What the kernels' stack can still take, read after the free memory
+    /// ([`fb_core_wwr::runtime::stack_growth`] for [`KERNEL_STACK_BYTES`]).
+    pub stack: usize,
+}
+
+impl Card {
+    /// Read device `device`'s card, its stream and handles made for the
+    /// reading, so the reserve holds them; the run's own are made with
+    /// its backend. Touches the device.
+    ///
+    /// # Errors
+    /// [`fb_core_arena::device_memory`]'s or
+    /// [`fb_core_wwr::runtime::stack_growth`]'s error.
+    pub fn read(device: i32) -> Result<Card> {
+        let _worker = DeviceStream::new(device);
+        let (free, total) = fb_core_arena::device_memory(device)?;
+        let stack = fb_core_wwr::runtime::stack_growth(device, KERNEL_STACK_BYTES)?;
+        Ok(Card { free, total, stack })
+    }
+
+    /// The device's reserve: the card's total less its free memory, at
+    /// least [`DEVICE_RESERVE`].
+    pub fn reserve(&self) -> usize {
+        self.total.saturating_sub(self.free).max(DEVICE_RESERVE)
+    }
+
+    /// The worker's room under `memory`'s caps: on the device, the smaller
+    /// of [`MemoryCaps::max_device_mem_per_gpu`] and the card's total, less
+    /// the reserve and the stack, what [`admit_plan`] admits the device
+    /// block against; pinned, [`MemoryCaps::max_pinned_mem_per_gpu`], what
+    /// it admits the pinned block against.
+    ///
+    /// ```
+    /// use fb_pipeline_config::{Card, DEVICE_RESERVE, MemoryCaps};
+    ///
+    /// let gib = 1usize << 30;
+    /// let card = Card { free: 40 * gib, total: 48 * gib, stack: gib };
+    /// let caps = MemoryCaps::default();
+    /// assert_eq!(card.reserve(), 8 * gib);
+    /// assert_eq!(card.room(&caps).device, 0);
+    /// let caps = MemoryCaps { max_device_mem_per_gpu: 1 << 50, ..caps };
+    /// assert_eq!(card.room(&caps).device, 39 * gib);
+    /// assert_eq!(card.room(&caps).pinned, 2 * gib);
+    /// let idle = Card { free: 48 * gib, ..card };
+    /// assert_eq!(idle.reserve(), DEVICE_RESERVE);
+    /// ```
+    pub fn room(&self, memory: &MemoryCaps) -> Room {
+        Room {
+            device: memory
+                .max_device_mem_per_gpu
+                .min(self.total)
+                .saturating_sub(self.reserve())
+                .saturating_sub(self.stack),
+            pinned: memory.max_pinned_mem_per_gpu,
+        }
+    }
+}
+
 /// Admit `planned` against `memory`'s caps, as the binary does after
 /// [`plan`] and before it makes the blocks (`docs/memory.md`,
 /// "Admission"). In order:
@@ -37,19 +110,17 @@ pub const KERNEL_STACK_BYTES: usize = 16_912;
 ///    ([`fb_core_arena::host_available`]: `MemAvailable` within the
 ///    cgroup's limit), since pinned memory is not pageable (the C++
 ///    `check_pinned_node`).
-/// 2. Each worker's device table, [`admit`]ted against the smaller of
-///    [`MemoryCaps::max_device_mem_per_gpu`] and its card's total memory,
-///    less the reserve and the stack: `block + reserve + stack <= cap`.
-///    `device_memory(worker)` is one reading of the card, `(free, total)`
-///    in bytes, made once the worker's handles exist; the reserve is
-///    `total - free`, at least [`DEVICE_RESERVE`]. So a cap past the card
-///    admits its free memory, and a card another process holds part of
-///    shows that part in the reserve, as a smaller cap. `stack_growth(worker)`
-///    is what the kernels' stack can still take, in bytes, read after it.
-///    Each is asked only of a worker whose device table holds a row, so a
-///    plan with none touches no device.
+/// 2. Each worker's device table, [`admit`]ted against its
+///    [`Card::room`]: the smaller of [`MemoryCaps::max_device_mem_per_gpu`]
+///    and its card's total memory, less the reserve and the stack,
+///    `block + reserve + stack <= cap`. `card(worker)` is the worker's one
+///    reading of its card, the one [`plan`] sized the widths from. So a
+///    cap past the card admits its free memory, and a card another
+///    process holds part of shows that part in the reserve, as a smaller
+///    cap. It is asked only of a worker whose device table holds a row,
+///    so a plan with none touches no device.
 /// 3. Each worker's pinned table, against
-///    [`MemoryCaps::max_pinned_mem_per_gpu`].
+///    [`MemoryCaps::max_pinned_mem_per_gpu`], the pinned room.
 /// 4. The plan's heap table, against [`MemoryCaps::max_host_mem`].
 /// 5. The node again, by its blocks: every worker's pinned block and the
 ///    heap block together against `host_available`
@@ -61,7 +132,7 @@ pub const KERNEL_STACK_BYTES: usize = 16_912;
 /// # Errors
 /// - `InvalidConfig`, naming the key, the workers and the available
 ///   memory: the pinned caps together past it.
-/// - `device_memory`'s or `stack_growth`'s error.
+/// - `card`'s error.
 /// - [`admit`]'s refusal, `Allocation`, naming the worker (`gpu<w>`), the
 ///   kind, the bytes over, every row over the cap alone and the rows live
 ///   at the peak; then the cap's terms: the key, and for a device block
@@ -74,8 +145,7 @@ pub const KERNEL_STACK_BYTES: usize = 16_912;
 pub fn admit_plan(
     planned: &Plan<'_>,
     memory: &MemoryCaps,
-    device_memory: impl Fn(usize) -> Result<(usize, usize)>,
-    stack_growth: impl Fn(usize) -> Result<usize>,
+    mut card: impl FnMut(usize) -> Result<Card>,
     host_available: usize,
 ) -> Status {
     let workers = planned.n_workers();
@@ -98,10 +168,10 @@ pub fn admit_plan(
             "no device block".to_owned()
         } else {
             let cap = memory.max_device_mem_per_gpu;
-            let (free, total) = device_memory(w)?;
-            let reserve = total.saturating_sub(free).max(DEVICE_RESERVE);
-            let stack = stack_growth(w)?;
-            let room = cap.min(total).saturating_sub(reserve).saturating_sub(stack);
+            let card = card(w)?;
+            let Card { free, total, stack } = card;
+            let reserve = card.reserve();
+            let room = card.room(memory).device;
             admit(device, room, &worker).map_err(|mut e| {
                 e.message = format!(
                     "{}; the cap is the smaller of [memory] max_device_mem_per_gpu = {cap} bytes \

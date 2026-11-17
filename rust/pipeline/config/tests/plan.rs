@@ -20,13 +20,21 @@ use fb_core_arena::{Bufs, Heap, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, Plan};
 use fb_localization_pipek_mezey::{LocalizationMode, LocalizationStep, PmExponent};
-use fb_pipeline_config::{Calculation, DEVICE_RESERVE, MemoryCaps, admit_plan, plan, read_config};
+use fb_pipeline_config::{
+    Calculation, Card, DEVICE_RESERVE, MemoryCaps, admit_plan, plan, read_config,
+};
 use fb_pipeline_guess::{GuessKind, GuessStep};
 use fb_pipeline_scf::ScfStep;
 use fb_test_support::golden;
 
 /// The syevd work the DF-RHF's plan is laid out with.
 const LWORK: usize = 1234;
+
+/// The card reader the example plans are given: no example holds an
+/// adaptive part, so none reads a card.
+fn no_card(_: usize) -> fb_core_error_handling::Result<Card> {
+    panic!("a card read by a plan with no adaptive part")
+}
 
 /// The examples, by file name.
 const EXAMPLES: [&str; 9] = [
@@ -53,7 +61,7 @@ fn plan_text(file: &str, calculation: Calculation, golden_name: &str) {
     assert_eq!(config.calculation, calculation);
     // The table's text ends an empty handoffs line in a space, which the
     // trailing-whitespace hook strips from the committed file.
-    let text: String = plan(&config, |_| Ok(LWORK))
+    let text: String = plan(&config, |_| Ok(LWORK), no_card)
         .unwrap()
         .to_string()
         .lines()
@@ -397,9 +405,11 @@ fn scf_refusals() {
 fn an_open_shell_is_refused_before_lwork() {
     let (dir, config) = read_text("rhf_open_shell", RHF);
     std::fs::write(dir.join("m.xyz"), "1\nH atom\nH 0 0 0\n").unwrap();
-    let Err(error) = plan(&config.unwrap(), |_| {
-        panic!("lwork asked of a refused config")
-    }) else {
+    let Err(error) = plan(
+        &config.unwrap(),
+        |_| panic!("lwork asked of a refused config"),
+        no_card,
+    ) else {
         panic!("one electron is planned");
     };
     assert_eq!(error.kind, ErrorKind::InvalidConfig, "{error}");
@@ -507,7 +517,11 @@ fn ibo_is_refused_at_planning_before_lwork() {
         mode: LocalizationMode::Ibo,
         ..LocalizationStep::default()
     });
-    let Err(error) = plan(&config, |_| panic!("lwork asked of a refused config")) else {
+    let Err(error) = plan(
+        &config,
+        |_| panic!("lwork asked of a refused config"),
+        no_card,
+    ) else {
         panic!("IBO is planned");
     };
     assert_eq!(error.kind, ErrorKind::Unsupported, "{error}");
@@ -758,15 +772,15 @@ fn rows(device: usize, pinned: usize) -> Plan<'static> {
 /// they set.
 const NODE: usize = 1 << 50;
 
-/// A card of a TiB with all of it free: its measured reserve is 0, so the
-/// reserve is the floor, [`DEVICE_RESERVE`].
-fn tib(_: usize) -> fb_core_error_handling::Result<(usize, usize)> {
-    Ok((1 << 40, 1 << 40))
-}
-
-/// No kernel stack left to take.
-fn no_stack(_: usize) -> fb_core_error_handling::Result<usize> {
-    Ok(0)
+/// A card of a TiB with all of it free and no kernel stack left to take:
+/// its measured reserve is 0, so the reserve is the floor,
+/// [`DEVICE_RESERVE`].
+fn tib(_: usize) -> fb_core_error_handling::Result<Card> {
+    Ok(Card {
+        free: 1 << 40,
+        total: 1 << 40,
+        stack: 0,
+    })
 }
 
 /// A plan with no key is admitted against the default caps: a device block
@@ -777,8 +791,8 @@ fn no_stack(_: usize) -> fb_core_error_handling::Result<usize> {
 fn no_key_is_the_default_cap() {
     let caps = MemoryCaps::default();
     let device = 8 * GIB - DEVICE_RESERVE;
-    admit_plan(&rows(device, 2 * GIB), &caps, tib, no_stack, NODE).unwrap();
-    let error = admit_plan(&rows(device + 1, 1), &caps, tib, no_stack, NODE).unwrap_err();
+    admit_plan(&rows(device, 2 * GIB), &caps, tib, NODE).unwrap();
+    let error = admit_plan(&rows(device + 1, 1), &caps, tib, NODE).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Allocation, "{error}");
     for named in [
         "gpu0: the device block",
@@ -788,7 +802,7 @@ fn no_key_is_the_default_cap() {
     ] {
         assert!(error.message.contains(named), "{named}: {error}");
     }
-    let error = admit_plan(&rows(1, 2 * GIB + 1), &caps, tib, no_stack, NODE).unwrap_err();
+    let error = admit_plan(&rows(1, 2 * GIB + 1), &caps, tib, NODE).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Allocation, "{error}");
     for named in [
         "gpu0: the pinned block",
@@ -806,7 +820,7 @@ fn no_key_is_the_default_cap() {
 #[test]
 fn admission_is_bounded_by_the_cards_free_memory() {
     let config = read_config(&examples().join("overlap.toml")).unwrap();
-    let planned = plan(&config, |_| Ok(LWORK)).unwrap();
+    let planned = plan(&config, |_| Ok(LWORK), no_card).unwrap();
     let block = planned.device_table(0).total();
     assert!(block > 0, "the overlap has device rows");
     let stack: usize = 64 << 20;
@@ -818,11 +832,10 @@ fn admission_is_bounded_by_the_cards_free_memory() {
         },
     ] {
         let total = caps.max_device_mem_per_gpu.min(1 << 40);
-        let card = |free: usize| move |_| Ok((free, total));
-        let stack_of = |_| Ok(stack);
-        admit_plan(&planned, &caps, card(block + stack), stack_of, NODE).unwrap();
+        let card = |free: usize| move |_| Ok(Card { free, total, stack });
+        admit_plan(&planned, &caps, card(block + stack), NODE).unwrap();
         let free = block + stack - 1;
-        let error = admit_plan(&planned, &caps, card(free), stack_of, NODE).unwrap_err();
+        let error = admit_plan(&planned, &caps, card(free), NODE).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Allocation, "{error}");
         let named = format!("its {free} bytes free at planning");
         assert!(error.message.contains(&named), "{error}");
@@ -842,15 +855,22 @@ fn the_reserve_and_the_stack_enter_the_sum() {
     let total = 16 * GIB;
     let (reserve, stack) = (GIB, 512 << 20);
     let block = 8 * GIB - reserve - stack;
-    let card = |held: usize| move |_| Ok((total - held, total));
-    let stack_of = |bytes: usize| move |_| Ok(bytes);
-    admit_plan(&rows(block, 1), &caps, card(reserve), stack_of(stack), NODE).unwrap();
+    let card = |held: usize, stack: usize| {
+        move |_| {
+            Ok(Card {
+                free: total - held,
+                total,
+                stack,
+            })
+        }
+    };
+    admit_plan(&rows(block, 1), &caps, card(reserve, stack), NODE).unwrap();
     for (planned, held, stack) in [
         (rows(block + 1, 1), reserve, stack),
         (rows(block, 1), reserve + 1, stack),
         (rows(block, 1), reserve, stack + 1),
     ] {
-        let error = admit_plan(&planned, &caps, card(held), stack_of(stack), NODE).unwrap_err();
+        let error = admit_plan(&planned, &caps, card(held, stack), NODE).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Allocation, "{error}");
         for named in [
             "1 over its cap".to_owned(),
@@ -865,56 +885,37 @@ fn the_reserve_and_the_stack_enter_the_sum() {
     }
     // A reserve measured at 1 MiB is the floor's.
     let block = 8 * GIB - DEVICE_RESERVE - stack;
-    admit_plan(&rows(block, 1), &caps, card(1 << 20), stack_of(stack), NODE).unwrap();
-    let error = admit_plan(
-        &rows(block + 1, 1),
-        &caps,
-        card(1 << 20),
-        stack_of(stack),
-        NODE,
-    )
-    .unwrap_err();
+    admit_plan(&rows(block, 1), &caps, card(1 << 20, stack), NODE).unwrap();
+    let error = admit_plan(&rows(block + 1, 1), &caps, card(1 << 20, stack), NODE).unwrap_err();
     let named = format!("the reserve of {DEVICE_RESERVE} bytes");
     assert!(error.message.contains(&named), "{named}: {error}");
 }
 
 /// Every table is admitted, and the card is read once per worker with a
-/// device block, its memory and then its stack, never for a plan without
-/// one: the guess computes on the CPU, and its admission touches no device.
+/// device block, never for a plan without one: the guess computes on the
+/// CPU, and its admission touches no device.
 #[test]
 fn admission_reads_the_card_only_for_a_device_block() {
     let caps = MemoryCaps::default();
     let config = read_config(&examples().join("guess.toml")).unwrap();
-    let guess = plan(&config, |_| Ok(LWORK)).unwrap();
+    let guess = plan(&config, |_| Ok(LWORK), no_card).unwrap();
     assert_eq!(
         guess.device_table(0).total(),
         0,
         "the guess has no device rows"
     );
     assert!(guess.host_table(0).total() > 0, "the guess has pinned rows");
-    admit_plan(
-        &guess,
-        &caps,
-        |_| panic!("a memory read"),
-        |_| panic!("a stack read"),
-        NODE,
-    )
-    .unwrap();
+    admit_plan(&guess, &caps, |_| panic!("a card read"), NODE).unwrap();
     let config = read_config(&examples().join("overlap.toml")).unwrap();
-    let overlap = plan(&config, |_| Ok(LWORK)).unwrap();
+    let overlap = plan(&config, |_| Ok(LWORK), no_card).unwrap();
     let asked = Cell::new(0);
-    let memory = |w| {
-        assert_eq!((w, asked.get()), (0, 0), "the one worker, its memory first");
+    let card = |w| {
+        assert_eq!((w, asked.get()), (0, 0), "the one worker, read once");
         asked.set(1);
         tib(w)
     };
-    let stack = |w| {
-        assert_eq!((w, asked.get()), (0, 1), "the one worker, its stack second");
-        asked.set(2);
-        no_stack(w)
-    };
-    admit_plan(&overlap, &caps, memory, stack, NODE).unwrap();
-    assert_eq!(asked.get(), 2, "each read once");
+    admit_plan(&overlap, &caps, card, NODE).unwrap();
+    assert_eq!(asked.get(), 1, "read once");
 }
 
 /// The workers' pinned caps together must fit the node's `MemAvailable`
@@ -926,15 +927,8 @@ fn admission_reads_the_card_only_for_a_device_block() {
 fn pinned_caps_fit_the_node() {
     let caps = MemoryCaps::default();
     let planned = rows(1, 1);
-    admit_plan(&planned, &caps, tib, no_stack, 2 * GIB).unwrap();
-    let error = admit_plan(
-        &planned,
-        &caps,
-        |_| panic!("a memory read"),
-        |_| panic!("a stack read"),
-        2 * GIB - 1,
-    )
-    .unwrap_err();
+    admit_plan(&planned, &caps, tib, 2 * GIB).unwrap();
+    let error = admit_plan(&planned, &caps, |_| panic!("a card read"), 2 * GIB - 1).unwrap_err();
     assert_eq!(error.kind, ErrorKind::InvalidConfig, "{error}");
     for named in [
         "1 GPU workers, each allowed [memory] max_pinned_mem_per_gpu = 2147483648 bytes",
@@ -978,8 +972,8 @@ fn heap_is_admitted_against_max_host_mem() {
         max_host_mem: 4096,
         ..MemoryCaps::default()
     };
-    admit_plan(&rows_and_heap(1, 1, 4096), &caps, tib, no_stack, NODE).unwrap();
-    let error = admit_plan(&rows_and_heap(1, 1, 4097), &caps, tib, no_stack, NODE).unwrap_err();
+    admit_plan(&rows_and_heap(1, 1, 4096), &caps, tib, NODE).unwrap();
+    let error = admit_plan(&rows_and_heap(1, 1, 4097), &caps, tib, NODE).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Allocation, "{error}");
     for named in [
         "plan: the heap block needs 4097 bytes, 1 over its cap of 4096",
@@ -989,9 +983,9 @@ fn heap_is_admitted_against_max_host_mem() {
         assert!(error.message.contains(named), "{named}: {error}");
     }
     let config = read_config(&examples().join("rhf.toml")).unwrap();
-    let rhf = plan(&config, |_| Ok(LWORK)).unwrap();
+    let rhf = plan(&config, |_| Ok(LWORK), no_card).unwrap();
     assert_eq!(rhf.heap_table().n_rows(), 1, "the SCF's last build");
-    admit_plan(&rhf, &MemoryCaps::default(), tib, no_stack, NODE).unwrap();
+    admit_plan(&rhf, &MemoryCaps::default(), tib, NODE).unwrap();
 }
 
 /// The node's pinned blocks and the heap block are admitted together
@@ -1004,8 +998,8 @@ fn admission_counts_pinned_and_heap_together() {
     let planned = rows_and_heap(1, GIB, GIB + 256);
     let sum = planned.host_table(0).total() + planned.heap_table().total();
     assert_eq!(sum, 2 * GIB + 256);
-    admit_plan(&planned, &caps, tib, no_stack, sum).unwrap();
-    let error = admit_plan(&planned, &caps, tib, no_stack, sum - 1).unwrap_err();
+    admit_plan(&planned, &caps, tib, sum).unwrap();
+    let error = admit_plan(&planned, &caps, tib, sum - 1).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Allocation, "{error}");
     for named in [
         "node: the host blocks need 2147483904 bytes, 1 over the 2147483903 bytes available",

@@ -15,7 +15,7 @@ use fb_pipeline_scf::{add_scf, occupied_orbitals};
 use fb_recipes_orthogonalize::{ORTHOGONALIZE_EIGENVALUE_FLOOR, add_orthogonalize};
 
 use crate::localize::add_localization;
-use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write};
+use crate::{Calculation, Card, Config, add_write_host_npy, add_write_npy, read, write};
 
 /// Plan the run `config` asks for, on GPU worker 0: the geometry read, the
 /// basis resolved, normalized and placed on it, then the calculation's
@@ -25,8 +25,14 @@ use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write}
 /// ([`syevd_lwork`](fb_recipes_diagonalize::syevd_lwork) on a solver handle
 /// there); it is asked once, by [`Calculation::Rhf`] and
 /// [`Calculation::Localization`] alone, after every
-/// refusal planning can make of the config. Touches no device unless
-/// `lwork` does; the output directory need not exist until the plan runs.
+/// refusal planning can make of the config. `card(worker)` is GPU worker
+/// `worker`'s one reading of its card ([`Card::read`] on its device), the
+/// one [`admit_plan`] admits by: the plan is declared through
+/// [`Dag::plan_within`], each adaptive part's width bisected in the
+/// worker's [`Card::room`] under [`Config::memory`], and `card` is asked
+/// only of a worker holding a part, after every refusal. Touches no device
+/// unless `lwork` or `card` does; the output directory need not exist
+/// until the plan runs.
 ///
 /// For [`Calculation::Overlap`]: the records ([`add_records`]) and
 /// [`add_overlap`] over them, then [`add_write_npy`] of S to
@@ -65,7 +71,7 @@ use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write}
 /// ([`occupied_orbitals`]) and an option out of range
 /// ([`ScfStep::check`]), each `InvalidConfig`; for
 /// [`Calculation::Localization`], [`LocalizationStep::check`]'s refusals;
-/// `lwork`'s error;
+/// `lwork`'s and `card`'s errors;
 /// [`EriStep::check`]'s refusals, an open shell or a basis past the
 /// kernels over the conventional integrals (`Unsupported`, [`add_eri`],
 /// [`add_scf`]),
@@ -78,25 +84,54 @@ use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write}
 /// [`ScfStep::check`]: fb_pipeline_scf::ScfStep::check
 /// [`LocalizationStep::check`]: fb_localization_pipek_mezey::LocalizationStep::check
 /// [`add_pm_localize`]: fb_localization_pipek_mezey::add_pm_localize
-pub fn plan(config: &Config, lwork: impl FnOnce(usize) -> Result<usize>) -> Result<Plan<'static>> {
+/// [`admit_plan`]: crate::admit_plan
+pub fn plan(
+    config: &Config,
+    mut lwork: impl FnMut(usize) -> Result<usize>,
+    mut card: impl FnMut(usize) -> Result<Card>,
+) -> Result<Plan<'static>> {
     let step = &config.molecule;
     let molecule = fb_io_xyz::read_xyz(&step.xyz, step.charge, step.multiplicity)
         .map_err(|e| keyed(e, "[molecule] xyz"))?;
     let basis = fb_io_basis::resolve_basis(&config.basis_set.basis)
         .and_then(|stamp| stamp.primitive_normalized().place(&molecule))
         .map_err(|e| keyed(e, "[basis_set] basis"))?;
+    // The declaration runs once per adaptive part and once more; lwork is
+    // asked in the first, and a refusal ends planning there.
+    let mut asked = None;
+    let mut once = |n| match asked {
+        Some(asked) => Ok(asked),
+        None => Ok(*asked.insert(lwork(n)?)),
+    };
+    let (planned, ()) = Dag::plan_within(
+        |w| Ok(card(w)?.room(&config.memory)),
+        |dag| declare(dag, config, &molecule, &basis, &mut once),
+    )?;
+    Ok(planned)
+}
+
+/// Declare the run `config` asks for into `dag`, as [`plan`]'s doc has it.
+///
+/// # Errors
+/// As [`plan`]'s.
+fn declare(
+    dag: &mut Dag<'static>,
+    config: &Config,
+    molecule: &Molecule,
+    basis: &fb_basis::BasisSet,
+    lwork: &mut impl FnMut(usize) -> Result<usize>,
+) -> Result<()> {
     let n = basis.nao_sphe() as usize;
-    let mut dag = Dag::new();
     match config.calculation {
         Calculation::Overlap => {
             dag.blas_workspace(0);
-            let classes = add_records(&mut dag, 0, &basis)?;
-            let s = add_overlap(&mut dag, 0, &basis, &classes, &mut None);
-            add_write_npy(&mut dag, 0, s, [n, n], config.output.join("overlap.npy"));
+            let classes = add_records(dag, 0, basis)?;
+            let s = add_overlap(dag, 0, basis, &classes, &mut None);
+            add_write_npy(dag, 0, s, [n, n], config.output.join("overlap.npy"));
         }
         Calculation::Guess => {
-            let d = add_guess(&mut dag, config, &basis, &molecule)?;
-            add_write_host_npy(&mut dag, 0, d, [n, n], config.output.join("d.npy"));
+            let d = add_guess(dag, config, basis, molecule)?;
+            add_write_host_npy(dag, 0, d, [n, n], config.output.join("d.npy"));
         }
         Calculation::Rhf | Calculation::Localization => {
             let localization = (config.calculation == Calculation::Localization)
@@ -105,11 +140,11 @@ pub fn plan(config: &Config, lwork: impl FnOnce(usize) -> Result<usize>) -> Resu
             if let Some(step) = &localization {
                 step.check()?;
             }
-            let rhf = plan_rhf(&mut dag, config, &molecule, &basis, lwork)?;
-            add_write_npy(&mut dag, 0, rhf.c, [n, n], config.output.join("c.npy"));
-            add_write_npy(&mut dag, 0, rhf.d, [n, n], config.output.join("d.npy"));
+            let rhf = plan_rhf(dag, config, molecule, basis, lwork)?;
+            add_write_npy(dag, 0, rhf.c, [n, n], config.output.join("c.npy"));
+            add_write_npy(dag, 0, rhf.d, [n, n], config.output.join("d.npy"));
             write::add_write_scf_json(
-                &mut dag,
+                dag,
                 0,
                 rhf.scalars,
                 rhf.eps,
@@ -126,22 +161,22 @@ pub fn plan(config: &Config, lwork: impl FnOnce(usize) -> Result<usize>) -> Resu
                 };
                 let n_occ = rhf.occupied[0];
                 let (info, c_local) = add_localization(
-                    &mut dag,
+                    dag,
                     0,
                     &options,
-                    &basis,
+                    basis,
                     rhf.occupied,
                     [rhf.s, rhf.c, rhf.eps],
                 )?;
                 add_write_npy(
-                    &mut dag,
+                    dag,
                     0,
                     c_local,
                     [n, n_occ],
                     config.output.join("c_local.npy"),
                 );
                 write::add_write_localization_json(
-                    &mut dag,
+                    dag,
                     0,
                     info,
                     config.output.join("localization.json"),
@@ -149,7 +184,7 @@ pub fn plan(config: &Config, lwork: impl FnOnce(usize) -> Result<usize>) -> Resu
             }
         }
     }
-    Ok(dag.plan())
+    Ok(())
 }
 
 /// What [`plan_rhf`] leaves for the calculations that read an RHF: device
@@ -182,7 +217,7 @@ fn plan_rhf(
     config: &Config,
     molecule: &Molecule,
     basis: &fb_basis::BasisSet,
-    lwork: impl FnOnce(usize) -> Result<usize>,
+    lwork: &mut impl FnMut(usize) -> Result<usize>,
 ) -> Result<Rhf> {
     // read_config refuses this config by the same table; a Config built in
     // code reaches it here.
