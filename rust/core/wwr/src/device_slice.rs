@@ -122,6 +122,65 @@ unsafe impl<T> DeviceSliceMut<T> for DevicePart<'_, T> {
     }
 }
 
+/// Part of a [`DeviceSlice`], to read: a run of its elements, borrowed
+/// shared from it, as `&slice[a..b]` borrows from a slice. Made by
+/// [`split_at`], and split again the same way.
+///
+/// What it is for is a matrix whose blocks of rows separate library calls
+/// read, each a call of its own because the library indexes an operand in
+/// 32 bits: a block of rows of a matrix too large for one call
+/// (`fb_integrals_eri_conventional`'s dense GEMVs).
+pub struct DeviceView<'a, T> {
+    ptr: *const T,
+    len: usize,
+    marker: std::marker::PhantomData<&'a [T]>,
+}
+
+/// `slice` cut at element `mid` into two parts to read, `[0, mid)` and
+/// `[mid, len)`, as `<[T]>::split_at`.
+///
+/// ```
+/// use fb_core_wwr::device_slice::{DeviceSlice, split_at};
+///
+/// /// The rows from `first` of a row-major matrix of `cols` columns.
+/// fn rows_from(a: &impl DeviceSlice<f64>, cols: usize, first: usize) -> usize {
+///     let (_head, tail) = split_at(a, cols * first);
+///     tail.len()
+/// }
+/// ```
+#[requires(le!(mid, slice.len()), "mid is within the slice")]
+#[track_caller]
+pub fn split_at<T>(
+    slice: &impl DeviceSlice<T>,
+    mid: usize,
+) -> (DeviceView<'_, T>, DeviceView<'_, T>) {
+    let len = slice.len();
+    let ptr = slice.as_ptr();
+    let part = |ptr, len| DeviceView {
+        ptr,
+        len,
+        marker: std::marker::PhantomData,
+    };
+    // `wrapping_add`, as in split_at_mut.
+    (part(ptr, mid), part(ptr.wrapping_add(mid), len - mid))
+}
+
+// SAFETY: a part is `len` elements inside the slice it was cut from, which
+// promised `DeviceSlice` over all of them (`split_at`'s `mid <= len`), and
+// that slice is borrowed shared for `'a`, so nothing writes it through its
+// own `as_mut_ptr`, which needs it exclusively, while the part lives. The
+// slice's promise lasts until the work enqueued during its borrow has
+// finished, and the part's borrow lies inside it.
+unsafe impl<T> DeviceSlice<T> for DeviceView<'_, T> {
+    fn as_ptr(&self) -> *const T {
+        self.ptr
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +222,26 @@ mod tests {
         assert_eq!((empty.len(), all.len()), (0, 10));
         let (all, empty) = split_at_mut(&mut slice, 10);
         assert_eq!((all.len(), empty.len(), at(&empty)), (10, 0, 10));
+    }
+
+    /// The read parts tile the slice as the written ones do.
+    #[test]
+    fn the_read_parts_tile_the_slice() {
+        let slice = Fake(vec![0.0; 10]);
+        let base = slice.as_ptr() as usize;
+        let at = |p: &DeviceView<'_, f64>| (p.as_ptr() as usize - base) / 8;
+        let (head, tail) = split_at(&slice, 4);
+        assert_eq!((at(&head), head.len(), at(&tail), tail.len()), (0, 4, 4, 6));
+        let (a, b) = split_at(&tail, 6);
+        assert_eq!((at(&a), a.len(), at(&b), b.len()), (4, 6, 10, 0));
+    }
+
+    /// A read cut past the end panics, as a written one does.
+    #[test]
+    #[should_panic(expected = "Pre-condition of split_at violated: mid is within the slice")]
+    fn a_read_cut_past_the_end_panics() {
+        let slice = Fake(vec![0.0; 10]);
+        let _ = split_at(&slice, 11);
     }
 
     /// A cut past the end panics: a part would claim memory the slice never

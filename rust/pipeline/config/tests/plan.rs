@@ -29,7 +29,7 @@ use fb_test_support::golden;
 const LWORK: usize = 1234;
 
 /// The examples, by file name.
-const EXAMPLES: [&str; 7] = [
+const EXAMPLES: [&str; 9] = [
     "overlap.toml",
     "guess.toml",
     "rhf.toml",
@@ -37,6 +37,8 @@ const EXAMPLES: [&str; 7] = [
     "memory.toml",
     "localization.toml",
     "two_gpus.toml",
+    "conventional.toml",
+    "conventional_dense.toml",
 ];
 
 /// `rust/examples/`.
@@ -94,6 +96,31 @@ fn plan_golden_rhf() {
 #[test]
 fn plan_golden_rohf() {
     plan_text("rohf.toml", Calculation::Rhf, "plan_rohf.txt");
+}
+
+/// The conventional example: the RHF over the packed tensors, their three
+/// tasks in place of B's and the body's `conventional jk`, and the RHF's
+/// write nodes.
+#[test]
+fn plan_golden_conventional() {
+    plan_text(
+        "conventional.toml",
+        Calculation::Rhf,
+        "plan_conventional.txt",
+    );
+}
+
+/// The dense conventional example on two GPU workers: the setup on worker
+/// 0, each worker's records and row blocks, the body's J and K spanning
+/// both (`dense density`, the broadcast, a `dense jk` per worker, the two
+/// gathers, `dense spherical`), and the RHF's write nodes.
+#[test]
+fn plan_golden_conventional_dense() {
+    plan_text(
+        "conventional_dense.toml",
+        Calculation::Rhf,
+        "plan_conventional_dense.txt",
+    );
 }
 
 /// The localization example: the DF-RHF's plan and its writes, then the

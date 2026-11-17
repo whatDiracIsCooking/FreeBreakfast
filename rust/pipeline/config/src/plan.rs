@@ -35,7 +35,8 @@ use crate::{Calculation, Config, add_write_host_npy, add_write_npy, read, write}
 /// [`add_write_host_npy`] of D to `d.npy`. For [`Calculation::Rhf`]: the
 /// nuclei ([`add_nuclei`]), the records, S, H ([`add_core_hamiltonian`])
 /// and the two-electron integrals ([`add_eri`]: fitted, or the
-/// conventional tensors, by `[eri] mode`) over one staging of the
+/// conventional tensors, by `[eri] mode`, the dense storage's row blocks
+/// over GPU workers `0..num_gpus`) over one staging of the
 /// orbital basis's spherical transform, that guess uploaded ([`add_guess_upload`]),
 /// `X = S^(-1/2)` ([`add_orthogonalize`], at the default floor) and the
 /// loop ([`add_scf`]); then [`add_write_npy`] of C to `c.npy` and of D to
@@ -200,7 +201,8 @@ fn plan_rhf(
     let classes = add_records(dag, 0, basis)?;
     let s = add_overlap(dag, 0, basis, &classes, &mut u);
     let h = add_core_hamiltonian(dag, 0, basis, &classes, nuclei, &mut u)?;
-    let eri = add_eri(dag, 0, molecule, basis, &classes, &mut u, eri).map_err(|e| {
+    let gpus = config.num_gpus.get();
+    let eri = add_eri(dag, 0, gpus, molecule, basis, &classes, &mut u, eri).map_err(|e| {
         match e.kind {
             // check's own carry their key; add_df_eri's name the set.
             ErrorKind::InvalidConfig if !e.message.starts_with("[eri]") => {

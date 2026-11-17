@@ -15,6 +15,13 @@
 //! alternative to, beside the C++ `IntegralDirect` and `DensityFitting`
 //! that each name how J and K are formed.
 //!
+//! With **`storage = "dense"`** ([`add_dense`]), `"conventional"` stores
+//! the tensor unpacked instead, as the two dense matrices
+//! `M_J[(m,n), (l,s)] = (mn|ls)` and `M_K[(m,n), (l,s)] = (ml|ns)`, cut
+//! by rows over the run's GPUs (`num_gpus`), each card its rows, so the
+//! cap is the cards' memory, which admission holds each to: each build's
+//! J and K then a broadcast of D, a product per card and a gather.
+//!
 //! **`"density_fitting"`** ([`add_df_eri`]): the fitted factor
 //!
 //! ```text
@@ -63,7 +70,7 @@
 //! |---|---|
 //! | `EriStep::run`, returning the mode's product | [`add_eri`], returning an [`Eri`] |
 //! | `EriStep::run` with `mode = DensityFitting`, `DensityFitted` | [`add_df_eri`], returning [`DensityFitted`] |
-//! | nothing: the C++ tree stores no four-index tensor | `mode = "conventional"`, [`EriMode::Conventional`]: [`add_conventional`], [`Eri::Conventional`] (Rust only) |
+//! | nothing: the C++ tree stores no four-index tensor | `mode = "conventional"`, [`EriMode::Conventional`]: [`add_conventional`], [`Eri::Conventional`]; with `storage = "dense"` ([`EriStorage::Dense`]), [`add_dense`], [`Eri::Dense`], over the run's GPUs (Rust only) |
 //! | `[eri] mode`, `aux_basis`, `EriStep`'s options read by `src/pipeline/config` | [`EriStep`], [`EriMode`]: the config's `[eri]` table, deserialized by `fb-pipeline-config`, its keys checked against the mode by [`EriStep::check`] |
 //! | `EriMode::IntegralDirect`, J's and K's pair classes | not ported |
 //! | `default_aux_basis`, `<name>-acCD-6-6` when `aux_basis` is empty | not ported: the aux basis is always named |
@@ -77,11 +84,12 @@
 
 #![forbid(unsafe_code)]
 
+use contracts::debug_requires;
 use fb_basis::BasisSet;
 use fb_core_arena::{Device, RowId};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::Dag;
-use fb_integrals_eri_conventional::{Conventional, add_conventional};
+use fb_integrals_eri_conventional::{Conventional, Dense, add_conventional, add_dense};
 use fb_integrals_eri_density_fitting_fit::add_density_fit;
 use fb_integrals_eri_density_fitting_metric::add_metric;
 use fb_integrals_eri_density_fitting_three_center::add_three_center;
@@ -104,6 +112,7 @@ use serde::Deserialize;
 /// ```text
 /// [eri]
 /// mode = "conventional"
+/// storage = "dense"   # or "packed", the default
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -118,6 +127,31 @@ pub struct EriStep {
     /// `<basis>-acCD-6-6` is not ported), and refused by
     /// `"conventional"`, which fits nothing ([`EriStep::check`]).
     pub aux_basis: Option<String>,
+    /// `storage`: how `"conventional"` stores the tensor
+    /// ([`EriStorage`]): `"packed"` by AO pair on GPU worker 0, the
+    /// default, or `"dense"`, unpacked and unsymmetrized, its rows spread
+    /// over the run's GPUs (`num_gpus`). Refused by `"density_fitting"`,
+    /// which stores no four-index tensor ([`EriStep::check`]).
+    #[serde(default)]
+    pub storage: Option<EriStorage>,
+}
+
+/// `[eri] storage`: how `mode = "conventional"` stores the four-index
+/// tensor. Both are exact and give the same J and K to rounding; they
+/// differ in what is stored where.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EriStorage {
+    /// `"packed"`: `ERI_pp` and its exchange-ordered gather, `n_pp²`
+    /// doubles each, `n_pp = n_cart (n_cart + 1) / 2`, on GPU worker 0, at
+    /// most 150 Cartesian AOs ([`add_conventional`]). The default.
+    Packed,
+    /// `"dense"`: `M_J` and `M_K`, `n_cart⁴` doubles each, with no
+    /// symmetry, cut by rows over GPU workers `0..num_gpus` at shell
+    /// boundaries, each worker its rows, admission sizing each card
+    /// ([`add_dense`]); J and K by a broadcast of D, a product per worker
+    /// and a gather of the pieces. No AO cap beyond the cards' memory.
+    Dense,
 }
 
 impl EriStep {
@@ -127,6 +161,7 @@ impl EriStep {
         EriStep {
             mode: EriMode::DensityFitting,
             aux_basis: Some(aux_basis.to_owned()),
+            storage: None,
         }
     }
 
@@ -136,9 +171,15 @@ impl EriStep {
     ///
     /// # Errors
     /// `InvalidConfig`, naming the key: under `"density_fitting"`, no
-    /// `aux_basis` or one that is not a compiled-in fitting set; under
-    /// `"conventional"`, an `aux_basis` at all.
+    /// `aux_basis` or one that is not a compiled-in fitting set, or a
+    /// `storage` at all; under `"conventional"`, an `aux_basis` at all.
     pub fn check(&self) -> Status {
+        if let (EriMode::DensityFitting, Some(storage)) = (self.mode, self.storage) {
+            return Err(Error::config(format!(
+                "[eri] storage: {storage:?} given, but mode = \"density_fitting\" stores no \
+                 four-index tensor"
+            )));
+        }
         match (self.mode, &self.aux_basis) {
             (EriMode::DensityFitting, None) => Err(Error::config(
                 "[eri] aux_basis: mode = \"density_fitting\" needs a fitting set",
@@ -177,29 +218,45 @@ pub enum Eri {
     DensityFitted(DensityFitted),
     /// `"conventional"`'s packed tensors ([`add_conventional`]).
     Conventional(Conventional),
+    /// `"conventional"`'s dense row blocks, `storage = "dense"`
+    /// ([`add_dense`]).
+    Dense(Dense),
 }
 
 /// Add the two-electron integrals `step` asks for, of `basis` placed over
-/// `molecule`, to `dag` on GPU worker `worker`, and return them: by
-/// `step.mode`, [`add_df_eri`] over `step.aux_basis` or
-/// [`add_conventional`].
+/// `molecule`, to `dag`, and return them: by `step.mode`, [`add_df_eri`]
+/// over `step.aux_basis` or [`add_conventional`] on GPU worker `worker`,
+/// or, for `storage = "dense"`, [`add_dense`] over GPU workers
+/// `0..gpus`, U on worker 0, which `worker` must then be.
 ///
 /// `classes` and `u` are as [`add_df_eri`] takes them, the records of
-/// `basis` and the plan's slot for its U.
+/// `basis` and the plan's slot for its U; the dense storage forms records
+/// of its own on each worker.
 ///
 /// # Errors
 /// [`EriStep::check`]'s refusals, at planning, before anything is added;
-/// then the mode's: [`add_df_eri`]'s, or [`add_conventional`]'s, led by
-/// `add_eri: ` (a kernel library that is not the one the bindings describe,
-/// `GpuRuntime`; a shell above d or a basis past 150 Cartesian AOs,
-/// `Unsupported`).
+/// then the mode's: [`add_df_eri`]'s, or [`add_conventional`]'s or
+/// [`add_dense`]'s, led by `add_eri: ` (a kernel library that is not the
+/// one the bindings describe, `GpuRuntime`; a shell above d, a packed
+/// basis past 150 Cartesian AOs, or a dense one whose `n_cart²` passes
+/// the kernels' index, `Unsupported`).
 ///
 /// # Panics
 /// As [`add_df_eri`].
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the step's inputs, as the C++ step's"
+)]
+#[debug_requires(
+    step.storage != Some(EriStorage::Dense) || worker == 0,
+    "the dense storage's J and K are worker 0's"
+)]
+#[debug_requires(gpus > 0, "at least one GPU worker")]
 #[track_caller]
 pub fn add_eri(
     dag: &mut Dag<'_>,
     worker: usize,
+    gpus: usize,
     molecule: &Molecule,
     basis: &BasisSet,
     classes: &[ClassRows],
@@ -207,16 +264,20 @@ pub fn add_eri(
     step: &EriStep,
 ) -> Result<Eri> {
     step.check()?;
-    match (step.mode, &step.aux_basis) {
-        (EriMode::DensityFitting, Some(aux)) => {
+    let led = |mut e: fb_core_error_handling::Error| {
+        e.message = format!("add_eri: {}", e.message);
+        e
+    };
+    match (step.mode, &step.aux_basis, step.storage) {
+        (EriMode::DensityFitting, Some(aux), _) => {
             add_df_eri(dag, worker, molecule, basis, classes, u, aux).map(Eri::DensityFitted)
+        }
+        (_, _, Some(EriStorage::Dense)) => {
+            add_dense(dag, gpus, basis, u).map(Eri::Dense).map_err(led)
         }
         _ => add_conventional(dag, worker, basis, classes, u)
             .map(Eri::Conventional)
-            .map_err(|mut e| {
-                e.message = format!("add_eri: {}", e.message);
-                e
-            }),
+            .map_err(led),
     }
 }
 

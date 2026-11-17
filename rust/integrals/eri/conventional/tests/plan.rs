@@ -123,3 +123,55 @@ fn a_basis_past_150_cartesian_aos_is_unsupported() {
     );
     assert_eq!(dag.len(), before, "a refusal adds nothing");
 }
+
+/// The dense storage of water over two GPU workers, its plan text a
+/// committed golden: each worker's mixed records, `dense tables` and
+/// `dense eri`, and U on worker 0. The rows are cut at a shell boundary,
+/// O's three s and one p shell (9 AOs, 225 rows) on worker 0, the rest
+/// (16 AOs, 400 rows) on worker 1, and each worker's `M_J` and `M_K` are
+/// rows of its own table, `rows · n_cart²` doubles, so admission sees each
+/// card's share.
+#[test]
+fn dense_plan_golden() {
+    let basis = water();
+    let mut dag = Dag::new();
+    dag.blas_workspace(0);
+    let eri = fb_integrals_eri_conventional::add_dense(&mut dag, 2, &basis, &mut None)
+        .expect("water plans");
+    assert_eq!((eri.split.range(0), eri.split.range(1)), (0..225, 225..625));
+    let planned = dag.plan();
+    assert_eq!(planned.n_workers(), 2);
+    for w in 0..2 {
+        let blocks = eri.blocks[w].as_ref().expect("both workers hold rows");
+        let table = planned.device_table(w);
+        let rows = eri.split.range(w).len();
+        assert_eq!(table.len(blocks.j), rows * 625, "worker {w}'s M_J");
+        assert_eq!(table.len(blocks.k), rows * 625, "worker {w}'s M_K");
+        assert!(table.total() >= 2 * 8 * rows * 625, "both blocks live");
+    }
+    let text: String = planned
+        .to_string()
+        .lines()
+        .map(|l| format!("{}\n", l.trim_end()))
+        .collect();
+    golden(
+        env!("CARGO_MANIFEST_DIR"),
+        "plan_h2o_cc-pvdz_dense_2.txt",
+        &text,
+    );
+}
+
+/// The dense storage refuses an f shell at planning as the packed does,
+/// adding nothing; it has no AO cap of its own.
+#[test]
+fn the_dense_storage_refuses_a_shell_above_d() {
+    let basis = common::basis_on(&common::data("h2o.xyz"), "cc-pvtz");
+    let mut dag = Dag::new();
+    let err = fb_integrals_eri_conventional::add_dense(&mut dag, 2, &basis, &mut None).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Unsupported, "{err}");
+    assert!(
+        err.message.contains("has momentum 3") && err.message.contains("through l = 2"),
+        "{err}"
+    );
+    assert_eq!(dag.len(), 0, "a refusal adds nothing");
+}

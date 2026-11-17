@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Regenerate rust/'s conventional-ERI kernels under
-rust/integrals/kernels/eri/conventional/kernels/.
+rust/integrals/kernels/eri/conventional/kernels/ (packed) and
+rust/integrals/kernels/eri/conventional/dense/kernels/ (dense).
 
-The kernels are FelizJueves's packed full ERI (deps/FelizJueves,
-`eri/full_eri/`), emitted here and committed, so a build never runs Python.
+The kernels are FelizJueves's full ERI (deps/FelizJueves, `eri/full_eri/`),
+packed and dense, emitted here and committed, so a build never runs Python.
 Run this after bumping that submodule:
 
     tools/emit/conventional_kernels.py
@@ -31,7 +32,19 @@ width):
   the packed ERI once, one thread per packed column. No class, so one plain
   kernel; its launcher declares it.
 
-FelizJueves's third, `eri_jgemv`, is not emitted: J and K are the BLAS's
+And the dense ERI, into `eri/conventional/dense/kernels/`
+(`eri/full_eri/kernel_dense.py`, `Target.ERI_DENSE`, FelizJueves's
+`--dense-eri-l 2`): a row block of `M_J[(m,n), (l,s)] = (mn|ls)` or of
+`M_K[(m,n), (l,s)] = (ml|ns)`, each dense `n_ao^2 x n_ao^2` with
+`(m, n) -> m n_ao + n`, one thread per ORDERED shell quartet task, plain
+stores, no symmetry. Every ordered class `(la lb|lc ld)`, each `l` at most
+MAX_L: 81 classes in each of the two layouts, `eri_dj<la, lb, lc, ld>` and
+`eri_dk<la, lb, lc, ld>`, each layout a template of its own whose header
+(`eri_dj.h`, `eri_dk.h`) declares the primary, every class and the
+[la][lb][lc][ld] table. The record and pair parameters are the packed
+kernel's; `m0 n_row n_col` (the local row block) replace `n_pp` and `pidx`.
+
+FelizJueves's third packed kernel, `eri_jgemv`, is not emitted: J and K are the BLAS's
 `gemv` over the two symmetric matrices (`fb_core_wwr::blas::gemv`), what the
 tree already wraps.
 
@@ -56,6 +69,12 @@ sys.path.insert(0, str(ROOT / "deps/FelizJueves/src"))
 
 from felizjueves.emit import gpu  # noqa: E402
 from felizjueves.emit.gpu import Specialization  # noqa: E402
+from felizjueves.eri.full_eri.kernel_dense import (  # noqa: E402
+    LAYOUTS as DENSE_LAYOUTS,
+)
+from felizjueves.eri.full_eri.kernel_dense import (  # noqa: E402
+    build_dense_kernel,
+)
 from felizjueves.eri.full_eri.kernel_eri import build_eri_kernel  # noqa: E402
 from felizjueves.eri.full_eri.kernel_kperm import (  # noqa: E402
     build_kperm_kernel,
@@ -71,8 +90,9 @@ MAX_L = 2
 # takes one.
 ARCH = "sm_86"
 
-# Relative to the output root.
+# Relative to the output root: the packed units, and the dense ones.
 OUT = Path("eri/conventional/kernels")
+DENSE_OUT = Path("eri/conventional/dense/kernels")
 
 # The record vectors (module docstring).
 AXES = {
@@ -91,6 +111,13 @@ def eri_classes() -> list[tuple[int, int, int, int]]:
     return [(*x, *y) for i, x in enumerate(pcs) for y in pcs[i:]]
 
 
+def dense_classes() -> list[tuple[int, int, int, int]]:
+    """FelizJueves's `emit.__main__.dense_eri_classes(MAX_L)`, spelled here:
+    every ordered quartet class."""
+    ls = range(MAX_L + 1)
+    return [(la, lb, lc, ld) for la in ls for lb in ls for lc in ls for ld in ls]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -99,7 +126,8 @@ def main() -> int:
         default=ROOT / "rust/integrals/kernels",
         help="the directory written in place of rust/integrals/kernels/ (default: it)",
     )
-    out = parser.parse_args().out_root.resolve() / OUT
+    root = parser.parse_args().out_root.resolve()
+    out = root / OUT
     out.mkdir(parents=True, exist_ok=True)
     arch = by_name(ARCH)
     classes = eri_classes()
@@ -111,6 +139,16 @@ def main() -> int:
     write(out / spec.header, gpu.emit_template(kernel, arch, spec, classes))
     kperm = build_kperm_kernel()
     write(out / f"{kperm.name}.cu", gpu.emit(kperm, arch))
+
+    dense_out = root / DENSE_OUT
+    dense_out.mkdir(parents=True, exist_ok=True)
+    dense = dense_classes()
+    for layout in DENSE_LAYOUTS:
+        for cls in dense:
+            kernel = split_axes(build_dense_kernel(cls, layout), AXES)
+            spec = Specialization(f"eri_d{layout}", cls)
+            write(dense_out / f"{kernel.name}.cu", gpu.emit(kernel, arch, spec))
+        write(dense_out / spec.header, gpu.emit_template(kernel, arch, spec, dense))
     return 0
 
 

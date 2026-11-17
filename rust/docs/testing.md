@@ -374,6 +374,13 @@ every case that calls it is named here, which `fb-doc-check`'s
   a clique made per run;
   `tier5_a_partitioned_product_in_a_loop_across_devices` is its family's
   representative.
+- `fb-pipeline-scf`'s `gly5_sto3g_on_one_card`,
+  `tier5_gly5_631g_on_two_cards`, `tier5_gly5_sto3g_across_cards` and
+  `tier5_gly10_sto3g_across_cards`, the RHF over the dense conventional
+  ERI for glycine chains of 122 to 237 AOs (3.5 to 50 GB of `M_J` and
+  `M_K`) on one to four cards against PySCF's exact RHF;
+  `water_dense_converges_to_pyscf` and `tier5_water_dense_across_cards`
+  are its family's representatives.
 
 libtest has no skipped state, so a returned case counts as passed; the
 gate's line, not the count, is what says it did not run. `#[ignore]` is

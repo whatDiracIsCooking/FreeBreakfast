@@ -530,6 +530,52 @@ fn conventional_example() {
     );
 }
 
+/// The dense conventional example through the binary, on two devices:
+/// exit 0, its `scf.json` energy within the same bar of PySCF's exact RHF
+/// as the packed example's, `c.npy` and `d.npy` square, and its
+/// `timing.json` the timing record, each worker's `dense eri` and the
+/// body's broadcast, `dense jk` and gathers among it. Needs two GPUs.
+#[test]
+#[ignore = "tier 5: needs two GPUs"]
+fn tier5_conventional_dense_example() {
+    let cwd = workdir("example_conventional_dense");
+    let config = example("conventional_dense.toml");
+    let out = free_breakfast(&cwd, &config);
+    assert_eq!(out.status.code(), Some(0), "the example exits 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("completed: 0 errors"), "{stdout}");
+
+    let dir = cwd.join("conventional_dense");
+    let (energy, iterations) = scf_json(&dir);
+    let e_ref = fb_io_npy::read_npy(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../scf/tests/data/scf_h2o_cc-pvdz_conventional.npy"),
+    )
+    .unwrap()
+    .data[0];
+    let miss = (energy - e_ref).abs();
+    println!("E = {energy:.12} against {e_ref:.12}, |dE| = {miss:e}, {iterations} iterations");
+    assert!(miss <= ENERGY_BAR, "|dE| = {miss:e} over {ENERGY_BAR:e}");
+    for m in ["c.npy", "d.npy"] {
+        let a = fb_io_npy::read_npy(&dir.join(m)).unwrap();
+        assert_eq!(a.shape, [24, 24], "{m}: water's cc-pVDZ AOs");
+    }
+    check_timing(
+        &config,
+        &dir.join("timing.json"),
+        &[
+            "dense eri",
+            "broadcast D cartesian",
+            "dense jk",
+            "gather J cartesian",
+            "gather K cartesian",
+            "dense spherical",
+            "converged",
+            "write scf.json",
+        ],
+    );
+}
+
 /// The example DF-ROHF through the binary, the water cation's doublet:
 /// exit 0, its `scf.json` energy within the DF-RHF's bar of PySCF's DF-ROHF
 /// energy and every orbital energy within `fb-pipeline-scf`'s 1e-6 hartree

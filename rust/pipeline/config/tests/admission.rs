@@ -11,7 +11,9 @@
 use fb_core_error_handling::ErrorKind;
 use fb_core_planner::{Dag, Plan};
 use fb_core_thread_pool::DeviceStream;
-use fb_pipeline_config::{DEVICE_RESERVE, KERNEL_STACK_BYTES, MemoryCaps, admit_plan};
+use fb_pipeline_config::{
+    DEVICE_RESERVE, KERNEL_STACK_BYTES, MemoryCaps, admit_plan, plan, read_config,
+};
 
 /// A plan of one device worker row of `bytes`.
 fn device_row(bytes: usize) -> Plan<'static> {
@@ -74,4 +76,72 @@ fn a_cap_past_the_card_is_bounded_by_it() {
     );
     let _ = bytes_after(&error.message, "the kernels' stack of ");
     admit_plan(&device_row(1 << 20), &caps, card, stack, usize::MAX).unwrap();
+}
+
+/// Ten glycines in STO-3G over the dense conventional ERI on one card
+/// (`num_gpus = 1`): `M_J` and `M_K` are 50.5 GB together, 237 Cartesian
+/// AOs to the fourth twice, refused at planning by the binary's admission,
+/// `Allocation`, naming the blocks, on every card of this tree's (the
+/// A6000's 47.4 GiB the largest, which with its reserve and the kernels'
+/// stack holds less); on two cards each holds half, admitted. The cap is
+/// raised past the cards, as a run of it would raise it
+/// (`[memory] max_device_mem_per_gpu`), so the card bounds the block.
+/// Nothing is allocated. Needs two GPUs for the second half, which it
+/// skips with a line on one.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn the_dense_eri_of_ten_glycines_is_refused_on_one_card() {
+    let gly10 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../scf/tests/data/gly10.xyz")
+        .canonicalize()
+        .unwrap();
+    let card = |w: usize| {
+        let _worker = DeviceStream::new(w as i32);
+        fb_core_arena::device_memory(w as i32)
+    };
+    let stack = |w: usize| fb_core_wwr::runtime::stack_growth(w as i32, KERNEL_STACK_BYTES);
+    let lwork = |n| {
+        fb_recipes_diagonalize::syevd_lwork(
+            &fb_core_wwr::solver::SolverHandle::new(std::rc::Rc::new(
+                fb_core_wwr::runtime::Stream::new(0),
+            )),
+            n,
+        )
+    };
+    let gpus = [1, 2];
+    for n in gpus {
+        if n > fb_core_wwr::runtime::device_count().unwrap() {
+            println!("num_gpus = {n}: skipped, not visible");
+            continue;
+        }
+        let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("gly10_{n}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let text = format!(
+            "calculation = \"rhf\"\nnum_gpus = {n}\n[molecule]\nxyz = \"{}\"\n\
+             [basis_set]\nbasis = \"sto-3g\"\n[eri]\nmode = \"conventional\"\n\
+             storage = \"dense\"\n",
+            gly10.display()
+        );
+        std::fs::write(&path, text).unwrap();
+        let config = read_config(&path).unwrap();
+        let planned = plan(&config, lwork).unwrap();
+        assert_eq!(planned.n_workers(), n);
+        // A cap past every card, so the card is what bounds the block: the
+        // default's 8 GiB alone would refuse either count.
+        let caps = MemoryCaps {
+            max_device_mem_per_gpu: 1 << 62,
+            ..config.memory
+        };
+        let admitted = admit_plan(&planned, &caps, card, stack, usize::MAX);
+        if n == 1 {
+            let error = admitted.unwrap_err();
+            println!("num_gpus = 1: {error}");
+            assert_eq!(error.kind, ErrorKind::Allocation, "{error}");
+            assert!(error.message.contains("M_J"), "{error}");
+        } else {
+            admitted.unwrap();
+            println!("num_gpus = {n}: admitted");
+        }
+    }
 }

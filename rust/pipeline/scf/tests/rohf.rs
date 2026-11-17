@@ -141,10 +141,11 @@ fn converges_to_pyscf(name: &str) -> fb_pipeline_scf::ScfOutput {
         case["basis"].as_str().unwrap(),
         &EriStep::density_fitting(case["aux_basis"].as_str().unwrap()),
         &step,
+        1,
         |n| syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n),
     )
     .expect("the case plans");
-    let (record, out) = run.run(0);
+    let (record, out) = run.run(&[0]);
     record.result.unwrap();
     let out = out.expect("a converged run brings its products back");
     let count = |key: &str| case[key].as_u64().unwrap() as usize;

@@ -43,10 +43,12 @@ pub struct Config {
     /// An integer of at least 1, so 0 is refused when the file is read,
     /// before any device is touched; one above the devices the runtime
     /// sees is refused by the binary before planning, and at 1 the runtime
-    /// is not asked. A value above 1 is
-    /// accepted but does not yet spread work: the plan's GPU workers are
-    /// where they are at 1, all on device 0, and the further devices hold
-    /// nothing. Default 1.
+    /// is not asked. Above 1 it spreads the work that splits over the
+    /// devices, worker `w` on device `w`: today `[eri] storage = "dense"`'s
+    /// row blocks of the conventional ERI and their products
+    /// ([`fb_pipeline_eri::EriStorage::Dense`]); every other task is
+    /// worker 0's, so a run without the dense storage plans one worker and
+    /// the further devices hold nothing. Default 1.
     #[serde(default = "default_num_gpus")]
     pub num_gpus: NonZeroUsize,
     /// `[molecule]`: the geometry. Required.

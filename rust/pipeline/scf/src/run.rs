@@ -57,8 +57,8 @@ pub struct ScfOutput {
 /// the nodes that bring the products to the host, `download epsilon`,
 /// `download C` and `download D` (the planner's copy nodes,
 /// [`Dag::download`]) and `collect` (CPU: the pinned rows copied out). [`Run::planned`] is the plan, its arena sizes among it,
-/// with no device; [`Run::run`] lays the arena out on a device and runs it
-/// on one stream.
+/// with no device; [`Run::run`] lays the arena out on a device per GPU
+/// worker and runs it.
 pub struct Run {
     planned: Plan<'static>,
     n_ao: usize,
@@ -71,7 +71,10 @@ impl Run {
     /// path ([`fb_io_basis::resolve_basis`]), over the two-electron
     /// integrals `eri` asks for (a compiled-in fitting set,
     /// [`EriStep::density_fitting`], or the conventional tensors), with the
-    /// options `step`. `lwork` maps the number of
+    /// options `step`, over `gpus` GPU workers: the dense conventional
+    /// storage's row blocks are cut over them ([`add_eri`]), and every
+    /// other task is worker 0's, so any other `[eri]` plans one worker
+    /// whatever `gpus`. `lwork` maps the number of
     /// spherical AOs `n` to syevd's work at `n` on the device the plan will
     /// run on, [`syevd_lwork`](fb_recipes_diagonalize::syevd_lwork) on a
     /// solver handle there; every eigensolve is at `n` or under, so it is
@@ -89,6 +92,7 @@ impl Run {
         basis: &str,
         eri: &EriStep,
         step: &ScfStep,
+        gpus: usize,
         lwork: impl FnOnce(usize) -> Result<usize>,
     ) -> Result<Run> {
         let (n_alpha, n_beta) = occupied_orbitals(molecule)?;
@@ -113,7 +117,7 @@ impl Run {
             s,
             ORTHOGONALIZE_EIGENVALUE_FLOOR,
         )?;
-        let eri = add_eri(&mut dag, 0, molecule, &basis, &classes, &mut u, eri)?;
+        let eri = add_eri(&mut dag, 0, gpus, molecule, &basis, &classes, &mut u, eri)?;
         let guess = add_sad_guess(&mut dag, 0, &basis, molecule.atoms())?;
         let guess = add_guess_upload(&mut dag, 0, &basis, guess);
         let (scalars, [eps, c, d]) = add_scf(
@@ -161,11 +165,12 @@ impl Run {
         self.n_ao
     }
 
-    /// Lay the arena out on `device` and run the plan once, on one stream.
-    /// Returns the run's [`Record`], its result and every task's times, and
-    /// the products, `None` unless the result is `Ok`.
-    pub fn run(self, device: i32) -> (Record, Option<ScfOutput>) {
-        let mut instance = self.planned.instantiate(&[device]);
+    /// Lay the arena out on `devices`, GPU worker `w` on `devices[w]`, and
+    /// run the plan once. Returns the run's [`Record`], its result and
+    /// every task's times, and the products, `None` unless the result is
+    /// `Ok`.
+    pub fn run(self, devices: &[i32]) -> (Record, Option<ScfOutput>) {
+        let mut instance = self.planned.instantiate(devices);
         let mut backend = instance.backend();
         let record = instance.run(&mut backend, 1);
         let mut out = None;
