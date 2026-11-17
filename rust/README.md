@@ -1462,3 +1462,18 @@ them, 39 orderings with none), 822 orderings implied by other paths left
 out. On the RTX 3080 (CUDA), the `default` preset: `devtools/test.py pr
 --only cargo` passed at 8c23f12b, tiers 1 to 3 373 tests, tier 4 271, none
 skipped, the examples' 16 among them. Not run on the gfx1200.
+
+2026-11-17, the conventional ERI (`[eri] mode = "conventional"`,
+`fb-integrals-eri-conventional`, `rust/examples/conventional.toml`) over
+FelizJueves's packed full ERI at 5af6614, its first run on a card: J and K
+of the SAD guess against PySCF's exact `get_jk` (bar 1e-10 of max) within
+5.6e-15 (H₂ STO-3G 4.5e-15 and 1.1e-15, H₂ cc-pVDZ 5.6e-15 and 3.6e-15,
+water STO-3G 1.8e-15 and 1.1e-15, water cc-pVDZ 3.7e-15 and 1.5e-15, J
+and K), and water's RHF in cc-pVDZ within 1.7e-13 hartree of PySCF's exact
+RHF (bar 1e-9), 11 iterations, through the binary within 2.1e-13. After
+the FelizJueves bump every unit both trees carry, emitted again, is byte
+for byte the same. On the RTX 3080 (CUDA), the `default` preset:
+`devtools/test.py pr --only cargo` passed at 471159fa, tiers 1 to 3 374
+tests, tier 4 445, none skipped. Not compiled for HIP: the cross-backend
+check could not run on this host (no `hipconfig`, no docker). Not run on
+the gfx1200.
