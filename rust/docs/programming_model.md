@@ -906,7 +906,8 @@ list is in two tiers:
 - **Bindings:** `fb-integrals-sys`, `fb-localization-sys`, `fb-recipes-sys`.
 
 The core crates hold the wrappers: `fb-core-wwr` over the `wwr-sys`
-bindings, the arena over the raw allocation and copy bindings, the two
+bindings (and the `statvfs` of `/dev/shm` a collectives' system error
+reports), the arena over the raw allocation and copy bindings, the two
 `libc` calls in `core::log`, and the one `unsafe impl Sync` in
 `core::thread_pool`, on `run`'s private wrapper of the backend it shares
 with its workers, which rests on a run borrowing the backend exclusively

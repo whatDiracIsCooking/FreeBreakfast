@@ -212,7 +212,7 @@ impl GpuTask for Gather {
             let (mut at, _) = split_at_mut(&mut rest, own.len());
             d2d(&mut at, &device.get(self.piece), stream)?;
         }
-        ccl::group(|| {
+        ccl::group(comm, || {
             for w in (0..self.split.parts()).filter(|&w| w != self.root) {
                 let range = self.split.range(w);
                 if range.is_empty() {

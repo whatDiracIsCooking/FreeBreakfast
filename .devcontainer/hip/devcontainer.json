@@ -63,12 +63,16 @@
   // seccomp=unconfined is ROCm's documented requirement: some HSA queue and
   // signal paths use syscalls docker's default profile blocks, and the failure
   // is an opaque HSA_STATUS_ERROR_OUT_OF_RESOURCES rather than EPERM.
+  // --shm-size=1g: the collectives library's shared-memory transport between
+  // cards with no peer path needs more than docker's 64 MiB /dev/shm. See
+  // ../cuda/ for the whole story, and why not --ipc=host.
   "runArgs": [
     "--device=/dev/kfd",
     "--device=/dev/dri",
     "--group-add", "${localEnv:FREE_BREAKFAST_RENDER_GID:109}",        // EDIT: fallback gid
     "--group-add", "${localEnv:FREE_BREAKFAST_VIDEO_GID:44}",          // EDIT: fallback gid
-    "--security-opt", "seccomp=unconfined"
+    "--security-opt", "seccomp=unconfined",
+    "--shm-size=1g"
   ],
 
   // CLAUDE CODE IS NOT A FEATURE HERE, deliberately. The

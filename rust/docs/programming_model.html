@@ -878,7 +878,10 @@ existed. GPU worker <code>w</code> is on the list's device <code>w</code>.</p>
 <p><strong>Work spreads where a builder names the workers.</strong> Placement is the
 builder's: it names each task's worker, so a builder that spreads names
 workers <code>0..num_gpus</code>, one per device, and one that does not puts every
-task on worker 0, as every calculation of the binary still does. The
+task on worker 0, as every calculation of the binary does but one: the RHF
+over <code>[eri] storage = &quot;dense&quot;</code>, whose builder
+(<code>fb_integrals_eri_conventional::add_dense</code>) cuts the dense ERI's rows
+over the workers and gathers each build's J and K onto worker 0. The
 instance makes each worker's blocks on its device and the backend its
 lanes' streams, handles and fork streams there
 (<code>Plan::instantiate(&amp;devices)</code>, <code>Instance::backend</code>), for the plan's
@@ -1163,7 +1166,8 @@ list is in two tiers:</p>
 <li><strong>Bindings:</strong> <code>fb-integrals-sys</code>, <code>fb-localization-sys</code>, <code>fb-recipes-sys</code>.</li>
 </ul>
 <p>The core crates hold the wrappers: <code>fb-core-wwr</code> over the <code>wwr-sys</code>
-bindings, the arena over the raw allocation and copy bindings, the two
+bindings (and the <code>statvfs</code> of <code>/dev/shm</code> a collectives' system error
+reports), the arena over the raw allocation and copy bindings, the two
 <code>libc</code> calls in <code>core::log</code>, and the one <code>unsafe impl Sync</code> in
 <code>core::thread_pool</code>, on <code>run</code>'s private wrapper of the backend it shares
 with its workers, which rests on a run borrowing the backend exclusively
