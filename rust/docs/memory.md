@@ -105,7 +105,10 @@ iteration `k`'s range is the given one moved on by `k` of its lengths, so
 a row cut into ranges streams through a counted loop as one call, range
 `k` in trip `k`, its window and device row the body's and held once per
 iteration in flight; the heap row a download writes is one its loop
-carries, written by its one user in the body.
+carries, written by its one user in the body. A range that runs past the
+row's end is clamped to it, the window and the device row keeping their
+full length, so the last of `total.div_ceil(len)` trips moves the
+`total - k len` elements left.
 A task never writes such a copy by hand; a copy inside a task's larger
 work, a solver's `info` flag down beside its launch, stays the task's.
 On one card the copy node is the transport; between cards, placement's
@@ -388,7 +391,10 @@ its bytes too, `pinned_bytes(width)`, monotone as `bytes` is.
 `Room`, its device and pinned bytes, and a closure that declares the DAG,
 asking `Dag::width` for each part's width just before adding its tasks; the
 part's position is the next task's, and a counted loop over its batches
-takes `total.div_ceil(width)` trips. The declaration is run once per part
+takes `total.div_ceil(width)` trips, the last one ragged when `width`
+does not divide `total`: `Dag::upload_heap` clamps that trip's range to
+the heap row's end, and the batch task reads the
+`width.min(total - k width)` it holds from its iteration `k`. The declaration is run once per part
 and once more, and stops at its first error: in run `k` the parts before
 part `k` have their widths and the rest are at 1, and part `k`'s fixed
 bytes of each kind are that kind's table's `live_at` its position, a loop's

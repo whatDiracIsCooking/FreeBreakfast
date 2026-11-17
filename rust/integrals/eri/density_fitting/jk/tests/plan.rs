@@ -105,8 +105,8 @@ fn an_empty_factor_is_refused() {
     let _ = add_df_exchange(&mut dag, 0, NAO, NAUX, 0, b, c);
 }
 
-/// The streamed pass's fitting set: two full batches of 64 and a short
-/// one of 22 at the widest batch.
+/// The streamed pass's fitting set: two full batches of 64 and a ragged
+/// last one of 22 at the widest batch.
 const NAUX_STREAMED: usize = 150;
 
 /// CPU: the packed B's heap row, declared and never filled.
@@ -173,9 +173,9 @@ fn streamed(room: Option<Room>) -> (Plan<'static>, String) {
     (planned, width)
 }
 
-/// The pass at the widest batch: `df jk pack`, the ring of two full
-/// batches (stage, upload on lane 1, `df jk batch`), the short batch's
-/// loop of one trip, and `df jk finish`; the region two copies of a
+/// The pass at the widest batch: `df jk pack`, the ring of three
+/// batches, the last ragged (stage, upload on lane 1, `df jk batch`), and
+/// `df jk finish`; the region two copies of a
 /// batch's rows, and no device row of B whole, `naux · nao²` doubles, or
 /// of its packed `naux · n_columns`.
 #[test]

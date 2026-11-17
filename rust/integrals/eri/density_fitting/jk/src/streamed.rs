@@ -9,6 +9,7 @@ use fb_core_planner::{Adaptive, Dag, GpuTask};
 use fb_core_thread_pool::{DeviceStream, LaneId};
 use fb_core_wwr::blas::{gemm_strided_batched, gemv, syrk};
 use fb_core_wwr::copy::d2d;
+use fb_core_wwr::device_slice::{split_at, split_at_mut};
 use fb_core_wwr::memset;
 use fb_integrals_eri_density_fitting_pair_map::Packing;
 use fb_integrals_sys::PackedTables;
@@ -27,7 +28,7 @@ pub const BATCH_MAX: usize = 64;
 /// ([`Adaptive::warn_below`]): 32, where the measured cost starts to grow.
 const BATCH_WARN_BELOW: usize = 32;
 
-/// The full batches' ring: two copies of a batch's rows, so batch `k + 1`'s
+/// The batches' ring: two copies of a batch's rows, so batch `k + 1`'s
 /// upload runs under batch `k`'s contractions.
 const DEPTH: usize = 2;
 
@@ -79,11 +80,14 @@ pub enum Contraction {
 ///   `w_c D_mn` per column ([`PackedTables::pack`]), and every accumulator
 ///   zeroed: a packed J of `n_columns` doubles per J (`"J packed <i>"`),
 ///   K's lower triangle of `nao²` per K (`"K lower <i>"`).
-/// - **The full batches**, `naux / width` of `width` aux functions, a
-///   counted loop of ring depth 2 (`docs/memory.md`, "Nested plans"), each
-///   trip `stage B batch` (CPU) copying its range of the heap row into
-///   its pinned window, `upload B batch` (lane 1) copying the window up,
-///   and **`df jk batch`** (stream, lane 0) contracting it: for each J,
+/// - **The batches**, `naux.div_ceil(width)` of `width` aux functions, the
+///   last the `naux - k width` left when `width` does not divide `naux`,
+///   a counted loop of ring depth 2 (`docs/memory.md`, "Nested plans"),
+///   each trip `stage B batch` (CPU) copying its range of the heap row
+///   into its pinned window, the last range clamped to the row's end
+///   ([`Dag::upload_heap`]), `upload B batch` (lane 1) copying the window
+///   up, and **`df jk batch`** (stream, lane 0) contracting the trip's
+///   functions, from its iteration: for each J,
 ///   `γ = B_bᵀ dp` and `J_p += B_b γ` by two gemvs over the packed batch
 ///   (`γ` the scratch `"gamma"`); for any K, the batch gathered once into
 ///   `width` square matrices ([`PackedTables::gather`], the scratch
@@ -91,11 +95,6 @@ pub enum Contraction {
 ///   (the scratch `"X"`) and `K += 2 X Xᵀ` by one syrk into the lower
 ///   triangle, X the `nao × (width · nocc)` matrix the `X_q` make side by
 ///   side.
-/// - **The last, short batch**, the `naux mod width` functions left, if
-///   any: the same three tasks as a counted loop of one trip (`B last
-///   batch`), since a heap range's upload picks its range from its trip,
-///   which inside the SCF's decision loop is the trip's and not the
-///   iteration's (#1712: `Dag::upload_heap` has no ragged last trip).
 /// - **`df jk finish`** (stream, lane 0): each packed J unpacked
 ///   ([`PackedTables::gather`] of one), each K's lower triangle copied out
 ///   and mirrored onto the upper ([`symmetrize_from`]).
@@ -103,10 +102,9 @@ pub enum Contraction {
 /// The batch's width is an adaptive part (`fb_core_planner::Adaptive`,
 /// `docs/memory.md`, "Adaptive widths: one planner routine"), `df jk
 /// batch`: at most [`BATCH_MAX`], rounded down to a power of two, logged
-/// at `warn` below 32. Its bytes are the full batches' ring, its two
-/// copies of a batch's device rows and of its pinned window; the short batch and the finish's
-/// outputs follow the ring, smaller than it but at a width of a few
-/// functions, and admission counts them. Under [`Dag::plan_within`] the
+/// at `warn` below 32. Its bytes are the batches' ring, its two copies of
+/// a batch's device rows and of its pinned window; the finish's outputs
+/// follow the ring, and admission counts them. Under [`Dag::plan_within`] the
 /// width is the widest that fits the room; under [`Dag::plan`],
 /// [`BATCH_MAX`]. No device row holds B whole.
 ///
@@ -124,8 +122,8 @@ pub enum Contraction {
 /// # Panics
 /// If an exchange's `naux · nocc` does not fit an `i32`, the BLAS's
 /// integer, naming it; or a row is of another worker's table
-/// ([`Dag::add_gpu`]); and when the plan runs, if `b` is shorter than
-/// `naux · n_columns` ([`Dag::upload_heap`]).
+/// ([`Dag::add_gpu`]); and when the plan runs, if `b` ends before the
+/// last batch's range starts ([`Dag::upload_heap`]).
 #[debug_requires(naux > 0, "a fitting set of at least one function")]
 #[debug_requires(!set.is_empty(), "a pass has a contraction")]
 #[debug_requires(
@@ -188,32 +186,27 @@ pub fn add_streamed_jk(
     );
 
     let width = dag.width("df jk batch", worker, &Batch { shape, naux });
-    let copy = LaneId { worker, lane: 1 };
-    let (full, last) = (naux / width, naux % width);
-    let batches = |dag: &mut Dag<'_>, start: usize, functions: usize, trips, depth, name| {
-        let body = dag.len();
-        let range = start * shape.n_columns..(start + functions) * shape.n_columns;
-        let batch = dag.upload_heap(copy, b, range, name);
-        dag.add_gpu(
-            "df jk batch",
-            worker,
-            Contract {
-                shape,
-                tables,
-                width: functions,
-                batch,
-                set: set.to_vec(),
-                acc: acc.clone(),
-            },
-        );
-        dag.add_counted(body, trips, depth);
-    };
-    if full > 0 {
-        batches(dag, 0, width, full, DEPTH, "B batch");
-    }
-    if last > 0 {
-        batches(dag, full * width, last, 1, 1, "B last batch");
-    }
+    let body = dag.len();
+    let batch = dag.upload_heap(
+        LaneId { worker, lane: 1 },
+        b,
+        0..width * shape.n_columns,
+        "B batch",
+    );
+    dag.add_gpu(
+        "df jk batch",
+        worker,
+        Contract {
+            shape,
+            tables,
+            naux,
+            width,
+            batch,
+            set: set.to_vec(),
+            acc: acc.clone(),
+        },
+    );
+    dag.add_counted(body, naux.div_ceil(width), DEPTH);
 
     Ok(dag.add_gpu("df jk finish", worker, Finish { shape, tables, acc }))
 }
@@ -248,7 +241,7 @@ impl Shape {
     }
 }
 
-/// The batch's adaptive part: the full batches' ring at a width.
+/// The batch's adaptive part: the batches' ring at a width.
 struct Batch {
     shape: Shape,
     naux: usize,
@@ -377,13 +370,18 @@ fn dims(shape: &Shape, set: &[Contraction]) -> Vec<(&'static str, usize)> {
     ]
 }
 
-/// GPU: one batch of aux functions contracted into every accumulator.
+/// GPU: one batch of aux functions contracted into every accumulator,
+/// trip `k` of the batches' loop functions `k width ..`, `width` of them
+/// or the `naux - k width` left in the last.
 struct Contract {
     shape: Shape,
     tables: PackedTables,
-    /// The batch's aux functions.
+    /// The fitting set's functions.
+    naux: usize,
+    /// A full batch's aux functions.
     width: usize,
-    /// The uploaded batch, `width · n_columns` doubles, pair-fastest.
+    /// The uploaded batch, `width · n_columns` doubles, pair-fastest, of
+    /// which the trip's functions are the head.
     batch: RowId<Device, f64>,
     set: Vec<Contraction>,
     acc: Vec<Acc>,
@@ -438,12 +436,16 @@ impl GpuTask for Contract {
         _: &CopyOnly<'_, Pinned>,
         worker: &DeviceStream,
     ) -> Status {
-        let batch = device.get(self.batch);
         let Shape { nao, n_columns, .. } = self.shape;
+        // The trip's functions: the upload clamped the last range to the
+        // heap row's end, and left the rest of the device row stale.
+        let count = self.width.min(self.naux - device.iteration() * self.width);
+        let batch = device.get(self.batch);
+        let (batch, _) = split_at(&batch, count * n_columns);
         // add_streamed_jk checked that nao, n_columns, naux and naux · nocc
         // fit an i32, and the batch is at most naux functions; the handle is
         // the worker's, bound to its stream, so every call runs in order.
-        let (nao_i, columns, functions) = (nao as i32, n_columns as i32, self.width as i32);
+        let (nao_i, columns, functions) = (nao as i32, n_columns as i32, count as i32);
         // Each scratch row asked of the view once: it keeps a row's flag
         // until it drops.
         let mut gamma = scratch.gamma.map(|g| device.take_mut(g));
@@ -451,8 +453,9 @@ impl GpuTask for Contract {
             .slab_x
             .map(|(slab, x)| (device.take_mut(slab), device.take_mut(x)));
         if let Some((slab, _)) = &mut slab_x {
+            let (mut slab, _) = split_at_mut(slab, count * nao * nao);
             self.tables
-                .gather(worker, device, self.width, &batch, slab)?;
+                .gather(worker, device, count, &batch, &mut slab)?;
         }
         for (c, a) in self.set.iter().zip(&self.acc) {
             match (*c, *a, &mut gamma, &mut slab_x) {
