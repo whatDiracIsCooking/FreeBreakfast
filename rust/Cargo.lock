@@ -406,6 +406,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fb-integrals-eri-density-fitting-pair-map"
+version = "0.1.0"
+dependencies = [
+ "contracts",
+ "fb-basis",
+ "fb-core-types",
+ "fb-integrals-mmd",
+ "fb-integrals-sys",
+ "fb-test-support",
+ "proptest",
+]
+
+[[package]]
 name = "fb-integrals-eri-density-fitting-three-center"
 version = "0.1.0"
 dependencies = [
