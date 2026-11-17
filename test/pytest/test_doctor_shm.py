@@ -75,6 +75,8 @@ def _gpu_section(tmp_path: Path, cards: int, shm_kib: int | None) -> str:
             **env,
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "DOCTOR_GPU_VENDORS": "nvidia",
+            # No card nodes: the pin check (test_gpu_device_pins.py) stays out.
+            "NVIDIA_DEV_ROOT": str(tmp_path / "no-dev"),
         },
         capture_output=True,
         text=True,

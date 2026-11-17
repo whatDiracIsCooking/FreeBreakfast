@@ -347,6 +347,77 @@ if [ -n "${DOCTOR_GPU_VENDORS// /}" ]; then
         else
           note "no nvidia device -- the \`native\` CUDA presets cannot configure here"
         fi
+
+        # IS EVERY CARD PINNED? A card a container reaches only through
+        # --gpus all is granted by the nvidia hook at start, and the grant
+        # drops on the next device-cgroup regeneration (a daemon-reload, a
+        # driver reload, `docker update`): the node stays, open() says EPERM,
+        # NVML says "Unknown Error". A --device= path survives it, and
+        # devtools/devcontainer.sh adds one per host card (#190, #1702). Two
+        # halves, one per side, each skipping itself where it cannot look:
+        #
+        #   - every /dev/nvidia<N> here must open read-write. Inside a
+        #     container this catches a card already dropped; on the host it
+        #     passes, since the host has no device cgroup to lose.
+        #   - with docker on PATH (the host), every NVIDIA container of this
+        #     worktree must list every host card in HostConfig.Devices. This
+        #     names a card BEFORE it drops: the container cannot see its own
+        #     HostConfig, so only the host can.
+        #
+        # NVIDIA_DEV_ROOT (lib.sh) stands in for /dev, for the tests.
+        mapfile -t nv_nodes < <(nvidia_card_nodes)
+        if [ "${#nv_nodes[@]}" -gt 0 ]; then
+          nv_closed=()
+          for nv_node in "${nv_nodes[@]}"; do
+            # `<>` is open(O_RDWR), what the driver does; a subshell, so the
+            # descriptor closes with it.
+            ( : 3<>"$nv_node" ) 2>/dev/null || nv_closed+=("/dev/${nv_node##*/}")
+          done
+          if [ "${#nv_closed[@]}" -gt 0 ]; then
+            warn "nvidia: ${nv_closed[*]} present but cannot be opened read-write -- the card's device-cgroup grant is gone"
+            note "a card not pinned with --device= drops on a daemon-reload; NVML then says \"Unknown Error\""
+            note "fix, on the host: devtools/devcontainer.sh rebuild (it pins every card)"
+          else
+            ok "nvidia: all ${#nv_nodes[@]} card node(s) open read-write"
+          fi
+
+          if command -v docker >/dev/null 2>&1; then
+            nv_ids=$(docker ps -q --filter "label=devcontainer.local_folder=$TOP" 2>/dev/null || true)
+            while read -r nv_id; do
+              [ -n "$nv_id" ] || continue
+              # Line 1: how many --gpus requests; line 2: the config file
+              # label; then one HostConfig.Devices path per line.
+              nv_info=$(docker inspect "$nv_id" --format \
+                '{{len .HostConfig.DeviceRequests}}{{println}}{{index .Config.Labels "devcontainer.config_file"}}{{println}}{{range .HostConfig.Devices}}{{println .PathOnHost}}{{end}}' \
+                2>/dev/null) || continue
+              nv_requests=$(sed -n 1p <<<"$nv_info" | tr -cd '0-9')
+              # The variant is the config's directory name; a container with
+              # no such label (made by hand) gets no flag in the fix.
+              nv_variant=$(sed -n 2p <<<"$nv_info")
+              case $nv_variant in
+                */devcontainer.json) nv_variant=$(basename "$(dirname "$nv_variant")") ;;
+                *) nv_variant= ;;
+              esac
+              nv_devices=$(sed -n '3,$p' <<<"$nv_info")
+              # Not an NVIDIA container (the hip variant): nothing to pin.
+              if [ "${nv_requests:-0}" = 0 ] &&
+                 ! grep -qx '/dev/nvidiactl' <<<"$nv_devices"; then
+                continue
+              fi
+              nv_unpinned=()
+              for nv_node in "${nv_nodes[@]}"; do
+                grep -qx "/dev/${nv_node##*/}" <<<"$nv_devices" ||
+                  nv_unpinned+=("/dev/${nv_node##*/}")
+              done
+              if [ "${#nv_unpinned[@]}" -gt 0 ]; then
+                warn "container ${nv_variant:-?} (${nv_id:0:12}) does not pin ${nv_unpinned[*]} -- dropped on the next cgroup regeneration"
+                note "fix: devtools/devcontainer.sh ${nv_variant:+--$nv_variant }rebuild (it pins every card)"
+              else
+                ok "container ${nv_variant:-?} (${nv_id:0:12}) pins all ${#nv_nodes[@]} card(s) in HostConfig.Devices"
+              fi
+            done <<<"$nv_ids"
+          fi
+        fi
         ;;
       amd)
         # /sys/class/kfd is amdkfd's own topology, the same source rocminfo
@@ -467,7 +538,8 @@ fi
 # signature). nvidia's DKMS is the same construction and can fail the same way.
 #
 # This is the HOST-side counterpart to the NVIDIA --device= lines in
-# .devcontainer/{cuda,combined}/. Those stop a live card dropping out of a
+# .devcontainer/{cuda,combined}/ (and the ones devcontainer.sh adds for every
+# further card, which the `gpu devices` section above checks). Those stop a live card dropping out of a
 # long-running container (a cgroup grant systemd erases on daemon-reload), and
 # the AMD half never needed them because ../hip/ always named /dev/kfd and
 # /dev/dri explicitly. What is left over is this, and it cannot be made

@@ -17,8 +17,9 @@
 # WHAT IT CHECKS, in the order a fresh VM fails them:
 #
 #   1. the card: present, compute >= 8.0 (WarpWraps' sm_80 floor, which a V100
-#      or an RTX 6000 is under), and exactly one -- the devcontainer passes
-#      /dev/nvidia0 alone and lib.sh's GPU lock is one card per backend.
+#      or an RTX 6000 is under), and exactly one -- the devcontainer pins
+#      every card, but lib.sh's GPU lock (one whole card per run) admits
+#      device 0 of each backend alone, so the C++ gates use one card.
 #   2. the driver's CUDA ceiling against docker/Dockerfile.cuda's CUDA_VERSION.
 #      Below it the container refuses to start, and the fix is a host driver,
 #      which this does not install: that is a reboot, and the vendor image's
@@ -84,7 +85,7 @@ for card in "${cards[@]}"; do
   say "card: $name (compute $cap)"
 done
 [ "${#cards[@]}" -eq 1 ] ||
-  warn "${#cards[@]} GPUs -- the devcontainer passes /dev/nvidia0 only, and the GPU lock is one card per backend"
+  warn "${#cards[@]} GPUs -- the devcontainer pins them all, but the GPU lock admits device 0 alone, so the C++ gates use one"
 
 # --- 2. the driver's CUDA ceiling ------------------------------------------
 ceiling=$(cuda_driver_ceiling)

@@ -286,6 +286,75 @@ shm_mib() {
   df -Pk "${1:-/dev/shm}" 2>/dev/null | awk 'NR == 2 && $2 ~ /^[0-9]+$/ { print int($2 / 1024) }'
 }
 
+# --- NVIDIA card pins --------------------------------------------------------
+#
+# Every NVIDIA card must reach a container as a --device= path, not only
+# through --gpus all: the nvidia hook's grant for a card that is not pinned
+# drops on the next device-cgroup regeneration (a systemd daemon-reload, a
+# driver reload, `docker update`), and the card then fails open() with EPERM
+# while its node stays visible. .devcontainer/cuda/devcontainer.json has the
+# whole mechanism (PR #190, #1702). The json cannot list every card, because
+# a --device= naming a missing node makes `docker run` fail, so
+# devtools/devcontainer.sh adds the host's cards at creation time and
+# doctor.sh checks the result.
+
+# The NVIDIA card nodes under $1 (default $NVIDIA_DEV_ROOT, else /dev), one
+# path per line, in card order: /dev/nvidia<N> and nothing else -- not
+# nvidiactl, nvidia-uvm, nvidia-modeset or nvidia-caps. `sort -V` so nvidia10
+# follows nvidia9. NVIDIA_DEV_ROOT is a test seam: the fast-tier tests point
+# both devcontainer.sh and doctor.sh at a directory of stand-in nodes with it.
+nvidia_card_nodes() {
+  local root=${1:-${NVIDIA_DEV_ROOT:-/dev}} n idx
+  for n in "$root"/nvidia[0-9]*; do
+    [ -e "$n" ] || continue
+    idx=${n##*/nvidia}
+    case $idx in *[!0-9]*) continue ;; esac
+    echo "$n"
+  done | sort -V
+}
+
+# The --device= arguments a devcontainer config still needs on this host: one
+# `--device=/dev/nvidia<N>` per card node under $2 (as nvidia_card_nodes) the
+# config $1 does not already pass. Nothing for a config that does not pass
+# --device=/dev/nvidiactl (the hip variant: no NVIDIA plumbing to extend), and
+# nothing on a host with no NVIDIA card, so neither can fail.
+nvidia_pin_args() {
+  local cfg=$1 root=${2:-} n
+  grep -q -- '"--device=/dev/nvidiactl"' "$cfg" 2>/dev/null || return 0
+  while read -r n; do
+    [ -n "$n" ] || continue
+    grep -q -- "\"--device=/dev/${n##*/}\"" "$cfg" && continue
+    echo "--device=/dev/${n##*/}"
+  done < <(nvidia_card_nodes "$root")
+}
+
+# Write config $1 to $2 with each argument after $3 added to its runArgs, one
+# line each, in the indentation of the line they follow: the config's last
+# `"--device=/dev/nvidia<N>",` line, or its --device=/dev/nvidiactl line when
+# it pins no card. A text edit rather than a JSON round trip, so the copy keeps
+# every comment and `${localEnv:...}` exactly as written. Fails, writing
+# nothing useful, when the config has neither line.
+nvidia_pin_override() {
+  local cfg=$1 out=$2
+  shift 2
+  awk -v pins="$*" '
+    NR == FNR {
+      if ($0 ~ /^[[:space:]]*"--device=\/dev\/nvidia[0-9]+",/) card = FNR
+      else if (!ctl && $0 ~ /^[[:space:]]*"--device=\/dev\/nvidiactl",/) ctl = FNR
+      next
+    }
+    FNR == 1 { at = card ? card : ctl }
+    { print }
+    at && FNR == at {
+      match($0, /^[[:space:]]*/)
+      ind = substr($0, 1, RLENGTH)
+      n = split(pins, p, " ")
+      for (i = 1; i <= n; i++) print ind "\"" p[i] "\","
+    }
+    END { exit !at }
+  ' "$cfg" "$cfg" >"$out"
+}
+
 # Whether dotted version $1 is at least $2.
 version_ge() {
   [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$2" ]
