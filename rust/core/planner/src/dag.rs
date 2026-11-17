@@ -7,6 +7,7 @@ use std::ops::ControlFlow;
 
 use super::BLAS_WORKSPACE_BYTES;
 use super::task::{CpuTask, Decision, GpuTask};
+use super::width::{Part, Within};
 use contracts::debug_requires;
 use fb_core_arena::{
     Bufs, CopyOnly, Device, Element, Heap, Pinned, RowId, StagingKind, Table, TableBuilder,
@@ -96,7 +97,7 @@ impl<H: StagingKind, S> Node<'_, H, S> {
 /// fork streams, the most any of its GPU tasks forks onto
 /// ([`GpuTask::forks`]); and its BLAS workspace rows, each with its lane,
 /// once declared.
-struct Worker<H> {
+pub(super) struct Worker<H> {
     device: TableBuilder<Device>,
     host: TableBuilder<H>,
     lanes: usize,
@@ -134,6 +135,11 @@ pub struct Dag<'a, H: StagingKind = Pinned, S = DeviceStream> {
     loops: Vec<Loop>,
     /// Each collective, in plan order.
     collectives: Vec<Collective>,
+    /// Each adaptive part, in plan order ([`Dag::width`]).
+    pub(super) parts: Vec<Part>,
+    /// What [`Dag::plan_within`] carries from one declaration to the
+    /// next; `None` for a DAG planned by [`Dag::plan`] alone.
+    pub(super) within: Option<Within>,
 }
 
 /// A collective of a [`Dag`]: its parts' positions, consecutive from
@@ -176,6 +182,8 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
             nodes: Vec::new(),
             loops: Vec::new(),
             collectives: Vec::new(),
+            parts: Vec::new(),
+            within: None,
         }
     }
 
@@ -494,12 +502,24 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
     /// of its body, and each part of a collective after the worker's part
     /// of the collective before (`docs/programming_model.md`,
     /// "Collectives"). Pure: no device. The rows a loop carries are held to
-    /// the tables' contracts ([`TableBuilder::build`]).
+    /// the tables' contracts ([`TableBuilder::build`]). Each adaptive
+    /// part's width ([`Dag::width`]) is logged at `debug`, or at `warn`
+    /// when narrowed below its floor ([`Adaptive::warn_below`]).
+    ///
+    /// [`Adaptive::warn_below`]: super::Adaptive::warn_below
     #[debug_requires(
         self.collectives.iter().all(|c| c.ranks == self.workers.len()),
         "a collective spans every GPU worker of the plan"
     )]
-    pub fn plan(mut self) -> Plan<'a, H, S> {
+    pub fn plan(self) -> Plan<'a, H, S> {
+        let planned = self.lay_out();
+        planned.log_widths();
+        planned
+    }
+
+    /// [`Dag::plan`] without its log: what [`Dag::plan_within`] measures
+    /// a declaration by.
+    pub(super) fn lay_out(mut self) -> Plan<'a, H, S> {
         for w in &mut self.workers {
             // Lane 0 has its handles whatever its tasks say; a lane above
             // it, only if a task on it uses them.
@@ -604,10 +624,11 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
             loops: self.loops,
             collectives: self.collectives,
             ranks,
+            parts: self.parts,
         }
     }
 
-    fn worker(&mut self, worker: usize) -> &mut Worker<H> {
+    pub(super) fn worker(&mut self, worker: usize) -> &mut Worker<H> {
         while self.workers.len() <= worker {
             self.workers.push(Worker {
                 device: TableBuilder::new(),
@@ -630,8 +651,9 @@ impl<'a, H: StagingKind, S> Dag<'a, H, S> {
 /// Its text ([`fmt::Display`]) is the plan's golden: each task's worker,
 /// lane and dependencies, each loop's span and bound on its decision's
 /// line and each counted loop's span, trips and depth on its body's last,
-/// and each collective's span on each of its parts' lines,
-/// then every non-empty table, a loop's region and body in it: each
+/// and each collective's span on each of its parts' lines, then each
+/// adaptive part's width, with its worker, position, bytes and room
+/// ([`Dag::width`]), then every non-empty table, a loop's region and body in it: each
 /// worker's, then the heap's. A GPU
 /// task's lane reads `stream` on a worker of one lane and `stream<l>` on a
 /// worker of several; any other task's, `cpu`. Its [`graph`](Plan::graph)
@@ -658,6 +680,8 @@ pub struct Plan<'a, H: StagingKind = Pinned, S = DeviceStream> {
     /// The ranks of the clique its collectives need, one per GPU worker;
     /// 0 for a plan with none.
     pub(super) ranks: usize,
+    /// Each adaptive part, with its width, in plan order.
+    pub(super) parts: Vec<Part>,
 }
 
 impl<H: StagingKind, S> Plan<'_, H, S> {
@@ -767,6 +791,9 @@ impl<H: StagingKind, S> fmt::Display for Plan<'_, H, S> {
                 }
             }
             writeln!(f)?;
+        }
+        for part in &self.parts {
+            writeln!(f, "{part}")?;
         }
         for (w, (device, host)) in self.tables.iter().enumerate() {
             if device.n_rows() > 0 {

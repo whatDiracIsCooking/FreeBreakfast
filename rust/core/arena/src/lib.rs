@@ -91,8 +91,9 @@
 //! [`reads`](Table::reads) and [`handoffs`](Table::handoffs) into a plan's
 //! dependencies, is `fb_core_planner`'s. A block is
 //! allocated on the thread that makes it, not its worker's: a block lives
-//! for the plan, and the run's threads only for one run. Adaptive
-//! widths are not built; the reserve, the default caps and which tables go
+//! for the plan, and the run's threads only for one run. An adaptive
+//! width is the planner's (`fb_core_planner::Dag::plan_within`), measured
+//! here by [`Table::live_at`]; the reserve, the default caps and which tables go
 //! into the node's host sum are admission's caller's
 //! (`fb_pipeline_config::admit_plan`).
 

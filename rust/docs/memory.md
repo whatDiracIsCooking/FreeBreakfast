@@ -371,6 +371,28 @@ adaptive layouts ([`programming_model.md`](programming_model.md), "Open
 questions"); the single pass is the model until a plan shows it is not
 enough.
 
+**The Rust shape.** A layout is called as its task is added, before the
+lifetimes of the rows live at its position are known, so the widths are
+chosen by planning the DAG's declaration more than once. A part's two
+functions are a type's `Adaptive` implementation (`fb_core_planner`),
+with a floor below which a narrowed width is a `warn` (2 by default, so a
+width of 1 is; the streamed J/K batch's is 32) and whether the width is
+rounded down to a power of two, which keeps the fit since `bytes` is
+monotone. `Dag::plan_within(rooms, build)` takes each worker's device room
+and a closure that declares the DAG, asking `Dag::width` for each part's
+width just before adding its tasks; the part's position is the next task's,
+and a counted loop over its batches takes `total.div_ceil(width)` trips.
+The closure is run once per part and once more: in run `k` the parts
+before part `k` have their widths and the rest are at 1, and part `k`'s
+fixed bytes are the device table's `live_at` its position, a loop's region
+whole, less `bytes(1)`; its room is the worker's less those, bisected once
+by `widest`. The last run is the plan, its text carrying a `width` line per
+part. The room is the device table's alone: a pinned window that grows with
+the width is admitted after, and a part inside a decision loop's body is
+measured against that body's region whole, which may leave room the pass
+does not find. A DAG planned by `Dag::plan` with no rooms gives each part
+its `width_max`.
+
 ## Sizes the dimensions do not fix
 
 The C++ tree has both of the model's answers, so neither has to be argued

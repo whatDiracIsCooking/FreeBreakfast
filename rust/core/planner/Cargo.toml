@@ -26,6 +26,7 @@ fb-core-arena.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-thread-pool.workspace = true
 fb-core-wwr = { workspace = true, optional = true }
+log.workspace = true
 wwr-sys = { workspace = true, optional = true }
 
 [dev-dependencies]
