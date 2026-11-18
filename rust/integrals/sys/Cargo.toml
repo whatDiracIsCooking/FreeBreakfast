@@ -22,3 +22,4 @@ wwr-sys = { workspace = true, features = ["blas"] }
 
 [dev-dependencies]
 fb-core-wwr = { workspace = true, features = ["test-support"] }
+fb-io-npy.workspace = true
