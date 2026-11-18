@@ -22,8 +22,8 @@
 //! | `kPairBoundMaxMomentum`, `kRecordBoundMaxMomentum`, the overlap, kinetic and nuclear-attraction launchers' `kMaxL` | [`FB_PAIR_BOUND_MAX_MOMENTUM`], [`FB_RECORD_BOUND_MAX_MOMENTUM`], [`FB_OVERLAP_MAX_MOMENTUM`], [`FB_KINETIC_MAX_MOMENTUM`], [`FB_POTENTIAL_EN_MAX_MOMENTUM`] |
 //! | `metric_class` (`src/integrals/eri/density_fitting/metric`) | [`fb_metric_class`], the records and pairs as field segments, as there; the safe path is [`add_metric_tasks`] over an [`AuxTable`] |
 //! | `metric`'s host staging: one record per aux primitive, the pairs P <= Q per class, swapped to the lower momentum first | [`AuxTable::push_shell`] and the `metric tables` task of [`add_metric_tasks`] |
-//! | `three_center_class(stream, la, lb, lp, n_bra_rec, bra, …)`, `three_center_symmetrize` (`.../three_center`) | [`fb_three_center_class`]`(stream, cls, lp, …)`, the bra fields a class's [`fb_primitive_pair_class_view`] rather than one packed buffer; [`fb_three_center_symmetrize`]`(stream, n_ao, n_aux, input, output)`, overlapping arrays refused |
-//! | `three_center`'s host staging: `mmd`'s records copied back and regrouped by shell pair, the aux records, the cells, U and U_aux in one upload; the launches, the three spherical GEMMs and the average | [`add_three_center_tasks`]: `three-center tables` and `three-center`, the records read in place, nothing copied back or regrouped, the cells formed at planning from the [`RecordTables`] the records came from, U and U_aux read from the caller's device rows (the plan's `upload U` rows) rather than staged again |
+//! | `three_center_class(stream, la, lb, lp, n_bra_rec, bra, …)`, `three_center_symmetrize` (`.../three_center`) | [`fb_three_center_class`]`(stream, cls, lp, …)`, the bra fields a class's [`fb_primitive_pair_class_view`] rather than one packed buffer; [`fb_three_center_symmetrize`]`(stream, n_ao, n_aux, input, output)`, overlapping arrays refused. Raw bindings with no safe path: the square tensor is not built (#1721); the square kernels stay only as the packed kernels' bitwise witness (`three_center_packed`'s test) |
+//! | `three_center`'s host staging: `mmd`'s records copied back and regrouped by shell pair, the aux records, the cells, U and U_aux in one upload; the launches, the three spherical GEMMs and the average | nothing: (mn\|P) is built packed, a batch of kept shell pairs at a time ([`add_packed_three_center_tasks`]) |
 //! | nothing: the C++ (mn\|P) is square | [`fb_three_center_packed_class`], rust/'s own launcher over FelizJueves's packed `peri3<la, lb, lP>` units, each cell's block at its destination column, and [`FB_THREE_CENTER_PACKED_CELL_FIELDS`]; the safe path is [`add_packed_three_center_tasks`] |
 //! | `kMetricMaxMomentum`, `kThreeCenterMaxMomentum`, `kThreeCenterAuxMaxMomentum` | [`FB_METRIC_MAX_MOMENTUM`], [`FB_THREE_CENTER_MAX_MOMENTUM`], [`FB_THREE_CENTER_AUX_MAX_MOMENTUM`] |
 //! | `kMetricRecordFields`, `kMetricPairFields`, `kThreeCenterAuxFields`, `kThreeCenterCellFields` | [`FB_METRIC_RECORD_FIELDS`], [`FB_METRIC_PAIR_FIELDS`], [`FB_THREE_CENTER_AUX_FIELDS`], [`FB_THREE_CENTER_CELL_FIELDS`], for a safe layer to size its segments by |
@@ -59,18 +59,6 @@
 //!   ([`fb_metric_class`]) into an output row. The pairs are formed here
 //!   from the table and held in the tasks' own rows, so no device table a
 //!   caller could fill reaches the launch.
-//!
-//! - [`add_three_center_tasks`], the two tasks of (mn\|P) over a
-//!   basis's [`ClassRows`], the [`RecordTables`] they were formed from, an
-//!   [`AuxTable`] and the device rows of U and U_aux: the aux records and
-//!   the cells staged on the CPU and uploaded, then one
-//!   [`fb_three_center_class`] per class, its bra fields read in place
-//!   ([`Fields::THREE_CENTER`]),
-//!   into a Cartesian scratch row, the spherical GEMMs
-//!   (`fb_core_wwr::blas`) and [`fb_three_center_symmetrize`] into an
-//!   output row. Every cell index is formed at planning from the checked
-//!   tables and the aux table, and the records are held to the tables by
-//!   an always-on contract.
 //!
 //! - [`add_packed_three_center_tasks`], the two tasks of the Cartesian
 //!   (mn\|P) of a batch of shell pairs, packed: each pair's block in
@@ -120,7 +108,6 @@ mod dense;
 mod metric;
 mod packed;
 mod records;
-mod three_center;
 mod three_center_packed;
 
 pub use bindings::*;
@@ -133,7 +120,6 @@ pub use records::{
     ClassPairs, ClassRows, Fields, MixedClassRows, RecordTables, ShellTable,
     add_mixed_record_tasks, add_record_tasks,
 };
-pub use three_center::add_three_center_tasks;
 pub use three_center_packed::add_packed_three_center_tasks;
 
 use fb_core_error_handling::Status;

@@ -1,6 +1,6 @@
 [package]
 name = "fb-integrals-eri-density-fitting-jk"
-description = "integrals/eri/density_fitting/jk: closed-shell J = Bᵀ (B vec(D)) and one-factor K = 2 Xᵀ X, X_m = B_m C, over the fitted factor B, as tasks, resident or streamed from a packed B in a heap row"
+description = "integrals/eri/density_fitting/jk: closed-shell J and one-factor K (D = 2 C Cᵀ) over the fitted factor B, every J and K of a set from one pass streamed in aux batches from a packed B in a heap row"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

@@ -3,14 +3,14 @@
 //! spherical packing of one s, p, d and f basis on three centres (22
 //! functions), two symmetric densities D₁, D₂ and two factors C₁ (22 × 5),
 //! C₂ (22 × 3), all from fixed seeds, and [`add_streamed_jk`]'s J and K
-//! against the resident [`add_df_coulomb`] and [`add_df_exchange`] over
-//! the same B unpacked to the square, its dropped pairs' columns zero.
+//! against a host reference over the same B unpacked to the square, its
+//! dropped pairs' columns zero: `J_mn = Σ_Q B_Q,mn (Σ_ls B_Q,ls D_ls)` and
+//! `K = 2 Σ_Q (B_Q C)(B_Q C)ᵀ`, plain sums in index order.
 //!
-//! **The bar, by analysis, one run.** The two compute the same sums,
-//! `Σ_Q B_Q,mn (Σ_ls B_Q,ls D_ls)` and `2 Σ_Q (B_Q C)(B_Q C)ᵀ`, in another
-//! order: the streamed one cuts Q into batches and adds a batch's partial
-//! sums into the accumulator, and sums J over packed columns with
-//! weights of 2 where the resident one adds `(m, n)` and `(n, m)`. Each
+//! **The bar, by analysis, one run.** The two compute the same sums in
+//! another order: the streamed one cuts Q into batches and adds a batch's
+//! partial sums into the accumulator, and sums J over packed columns with
+//! weights of 2 where the host adds `(m, n)` and `(n, m)`. Each
 //! element is a dot product of at most `naux nao² ≈ 7·10⁴` terms of mixed
 //! sign, whose forward error in either order is at most `γ_k Σ|terms|`
 //! (Higham, *Accuracy and Stability of Numerical Algorithms*, 2nd ed.,
@@ -32,9 +32,7 @@ use fb_core_arena::{Bufs, Heap, Layout, Pinned, RowId};
 use fb_core_error_handling::{Result, Status};
 use fb_core_planner::{CpuTask, Dag, Decision, Plan, Room};
 use fb_core_types::Double3;
-use fb_integrals_eri_density_fitting_jk::{
-    Contraction, add_df_coulomb, add_df_exchange, add_streamed_jk,
-};
+use fb_integrals_eri_density_fitting_jk::{Contraction, add_streamed_jk};
 use fb_integrals_eri_density_fitting_pair_map::{Packing, PairMap};
 use fb_integrals_mmd::record_tables;
 use fb_integrals_sys::add_packed_tables;
@@ -99,7 +97,7 @@ struct Inputs {
     packing: Packing,
     /// B packed, `column + n_columns Q`.
     packed: Vec<f64>,
-    /// B square, the resident layout `Q + naux (n + nao m)`, a dropped
+    /// B square, the square layout `Q + naux (n + nao m)`, a dropped
     /// pair's elements zero.
     square: Vec<f64>,
     d: [Vec<f64>; 2],
@@ -211,13 +209,13 @@ impl Decision for Times {
 
 /// What a run returns: the batch width it was planned at, and each
 /// result, `nao²` doubles: the one pass's J₁, K₁, J₂, K₂, then the two
-/// passes' J₁, K₁ and J₂, K₂, then the resident tasks' J₁, K₁, J₂, K₂.
+/// passes' J₁, K₁ and J₂, K₂.
 struct Ran {
     width: usize,
     results: Vec<Vec<f64>>,
 }
 
-/// Plan the passes and the resident tasks over `inp` on device 0 in a
+/// Plan the passes over `inp` on device 0 in a
 /// device room of `room` bytes, the pinned room unbounded (none:
 /// [`Dag::plan`], the widest batch), the passes in a decision loop of
 /// `iterations` iterations when that is above 0, the results collected
@@ -240,7 +238,6 @@ fn plan(
             let staged = dag.add_cpu(format!("stage {name}"), 0, Stage { name, data });
             dag.upload(0, staged, name, len)
         };
-        let square = up("B square", &inp.square);
         let d = [up("D1", &inp.d[0]), up("D2", &inp.d[1])];
         let c = [up("C1", &inp.c[0]), up("C2", &inp.c[1])];
         let set = |i: usize| {
@@ -261,10 +258,6 @@ fn plan(
         }
         if iterations > 0 {
             dag.add_loop("again", 0, body, iterations, Times(iterations));
-        }
-        for i in 0..2 {
-            rows.push(add_df_coulomb(dag, 0, nao, NAUX, square, d[i]));
-            rows.push(add_df_exchange(dag, 0, nao, NAUX, NOCC[i], square, c[i]).unwrap());
         }
 
         let named = rows
@@ -315,18 +308,52 @@ fn run(inp: &Inputs, room: Option<usize>, iterations: usize) -> Ran {
     let mut backend = instance.backend();
     instance.run(&mut backend, 1).result.unwrap();
     let results = std::mem::take(&mut *out.lock().unwrap());
-    assert_eq!(results.len(), 12, "the collect did not run");
+    assert_eq!(results.len(), 8, "the collect did not run");
     Ran { width, results }
 }
 
-/// Every streamed J and K within `BAR · max |ref|` of the resident one,
-/// each J and K exactly symmetric, and, if `bitwise`, the one pass bitwise
-/// the two.
-fn check(ran: &Ran, nao: usize, bitwise: bool) {
+/// The host's J and K of the density `d` and the factor `c` (`nocc`
+/// columns) over the square B of `inp`: `J_mn = Σ_Q B_Q,mn γ_Q`,
+/// `γ_Q = Σ_ls B_Q,ls D_ls`, and `K = 2 Σ_Q X_Q X_Qᵀ`, `X_Q = B_Q C`, each
+/// sum in index order.
+fn reference(inp: &Inputs, d: &[f64], c: &[f64], nocc: usize) -> [Vec<f64>; 2] {
+    let nao = inp.packing.nao();
+    let b = |q: usize, mn: usize| inp.square[q + NAUX * mn];
+    let mut j = vec![0.0; nao * nao];
+    let mut k = vec![0.0; nao * nao];
+    let mut x = vec![0.0; nao * nocc];
+    for q in 0..NAUX {
+        let gamma: f64 = (0..nao * nao).map(|ls| b(q, ls) * d[ls]).sum();
+        for (mn, jmn) in j.iter_mut().enumerate() {
+            *jmn += b(q, mn) * gamma;
+        }
+        for m in 0..nao {
+            for i in 0..nocc {
+                x[m + nao * i] = (0..nao).map(|l| b(q, l + nao * m) * c[l + nao * i]).sum();
+            }
+        }
+        for m in 0..nao {
+            for n in 0..nao {
+                let xx: f64 = (0..nocc).map(|i| x[m + nao * i] * x[n + nao * i]).sum();
+                k[n + nao * m] += 2.0 * xx;
+            }
+        }
+    }
+    [j, k]
+}
+
+/// Every streamed J and K within `BAR · max |ref|` of the host's
+/// ([`reference`]), each J and K exactly symmetric, and, if `bitwise`, the
+/// one pass bitwise the two.
+fn check(inp: &Inputs, ran: &Ran, bitwise: bool) {
+    let nao = inp.packing.nao();
     let r = &ran.results;
     let names = ["J1", "K1", "J2", "K2"];
+    let refs: Vec<Vec<f64>> = (0..2)
+        .flat_map(|i| reference(inp, &inp.d[i], &inp.c[i], NOCC[i]))
+        .collect();
     for (i, name) in names.iter().enumerate() {
-        let (got, want) = (&r[i], &r[8 + i]);
+        let (got, want) = (&r[i], &refs[i]);
         let max = want.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
         let mut miss = 0.0_f64;
         for (g, w) in got.iter().zip(want) {
@@ -366,7 +393,7 @@ fn check(ran: &Ran, nao: usize, bitwise: bool) {
 
 /// Every pair kept, at the widest batch (two full batches of 64 in the
 /// ring and the ragged last one of 22): J and K within the bar of the
-/// resident tasks', exactly symmetric, the one pass bitwise the two.
+/// host's, exactly symmetric, the one pass bitwise the two.
 /// Catches a batch read at the wrong offset of the heap row, a packed
 /// weight or a diagonal block counted twice, the gather's slab read in
 /// the wrong order by the batched gemm, an accumulator overwritten rather
@@ -375,25 +402,24 @@ fn check(ran: &Ran, nao: usize, bitwise: bool) {
 /// not. Needs a GPU.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
-fn every_pair_kept_is_the_resident_within_the_bar() {
+fn every_pair_kept_is_the_hosts_within_the_bar() {
     let map = map(false);
     let inp = inputs(map.sphe());
     let ran = run(&inp, None, 0);
     assert_eq!(ran.width, 64);
-    check(&ran, inp.packing.nao(), true);
+    check(&inp, &ran, true);
 }
 
-/// A screened map, a diagonal pair dropped among others: J and K those of
-/// the resident tasks over B with the dropped pairs' columns zero, at the
-/// bar. Catches a dropped pair's elements left as the slab's previous
+/// A screened map, a diagonal pair dropped among others: J and K the
+/// host's over B with the dropped pairs' columns zero, at the bar. Catches a dropped pair's elements left as the slab's previous
 /// batch's or J unpacked over a pair it does not hold. Needs a GPU.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
-fn a_screened_map_is_the_resident_with_dropped_pairs_zero() {
+fn a_screened_map_is_the_hosts_with_dropped_pairs_zero() {
     let map = map(true);
     let inp = inputs(map.sphe());
     let ran = run(&inp, None, 0);
-    check(&ran, inp.packing.nao(), true);
+    check(&inp, &ran, true);
 }
 
 /// The screened map planned in a room that narrows the one pass's batch
@@ -409,7 +435,7 @@ fn a_narrowed_batch_meets_the_same_bar() {
     assert_eq!(ran.width, 16);
     // The two passes' parts are bisected on their own, to widths of their
     // own, so they sum in other batches: the bar alone.
-    check(&ran, inp.packing.nao(), false);
+    check(&inp, &ran, false);
 }
 
 /// The largest room in which [`plan`]'s one pass is narrowed below 32,
@@ -444,7 +470,7 @@ fn a_pass_in_a_decision_loop_is_the_same_every_iteration() {
     let inp = inputs(map.sphe());
     let top = run(&inp, None, 0);
     let looped = run(&inp, None, 3);
-    check(&looped, inp.packing.nao(), true);
+    check(&inp, &looped, true);
     for (i, (a, b)) in top.results.iter().zip(&looped.results).enumerate() {
         assert!(
             a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()),

@@ -1,14 +1,11 @@
-//! J's and K's plans at the fixtures' shape, naux = 23, nao = 7, nocc = 3
-//! (tier 3): `df coulomb` after B's and D's producers, γ its scratch of
-//! `naux` doubles and J an output of `nao²`; `df exchange` after B's and
-//! C's, X its scratch of `naux · nocc · nao` doubles and K an output of
-//! `nao²`. Each plan text, the worker's device table among it, is a
-//! committed golden under `tests/golden/`, `FB_BLESS=1` rewriting it
-//! (`docs/testing.md`, "Performance"). The streamed pass's plan, one J and
-//! one K over a packed B of naux = 150 in a heap row, is a golden too, and
-//! narrowed below a batch of 32 it logs a `warn`. Planning touches no
-//! device; K's does load `libfb_recipes_kernels.so`, and the streamed
-//! pass `libfb_integrals_kernels.so` too, whose load checks it runs.
+//! The streamed pass's plan (tier 3), one J and one K over a packed B of
+//! naux = 150 in a heap row: its text, the worker's device table among it,
+//! is the committed golden `tests/golden/plan_streamed_naux150_nao9_nocc3.txt`,
+//! `FB_BLESS=1` rewriting it (`docs/testing.md`, "Performance"); narrowed
+//! below a batch of 32 it logs a `warn`; a fitting set of one batch is one
+//! trip; a factor of no columns is refused. Planning touches no device; it
+//! does load `libfb_recipes_kernels.so` and `libfb_integrals_kernels.so`,
+//! whose load checks it runs.
 
 use fb_basis::{BasisSet, Shell};
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId};
@@ -16,18 +13,12 @@ use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask, Plan, Room};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_types::Double3;
-use fb_integrals_eri_density_fitting_jk::{
-    Contraction, add_df_coulomb, add_df_exchange, add_streamed_jk,
-};
+use fb_integrals_eri_density_fitting_jk::{Contraction, add_streamed_jk};
 use fb_integrals_eri_density_fitting_pair_map::{Packing, PairMap};
 use fb_integrals_mmd::record_tables;
 use fb_integrals_sys::add_packed_tables;
 use fb_test_support::golden;
 
-/// The fitting set's size.
-const NAUX: usize = 23;
-/// The orbital basis's size.
-const NAO: usize = 7;
 /// C's columns.
 const NOCC: usize = 3;
 
@@ -55,12 +46,6 @@ impl GpuTask for Input {
     }
 }
 
-/// B's producer and one density's (`name`, `len` doubles), on worker 0.
-fn inputs(dag: &mut Dag<'_>, name: &'static str, len: usize) -> [RowId<Device, f64>; 2] {
-    [("B", NAUX * NAO * NAO), (name, len)]
-        .map(|(name, len)| dag.add_gpu(name, 0, Input { name, len }))
-}
-
 /// `planned`'s text, each line's trailing whitespace stripped (an empty
 /// handoffs line ends in a space, which the trailing-whitespace hook strips
 /// from the committed file), compared with the golden `file`.
@@ -71,38 +56,6 @@ fn plan_golden(planned: &Plan<'_>, file: &str) {
         .map(|l| format!("{}\n", l.trim_end()))
         .collect();
     golden(env!("CARGO_MANIFEST_DIR"), file, &text);
-}
-
-#[test]
-fn coulomb_plan_golden() {
-    let mut dag = Dag::new();
-    let [b, d] = inputs(&mut dag, "D", NAO * NAO);
-    let j = add_df_coulomb(&mut dag, 0, NAO, NAUX, b, d);
-    let planned = dag.plan();
-    assert_eq!(planned.device_table(0).len(j), NAO * NAO);
-    assert_eq!(planned.predecessors(2), [0, 1]);
-    plan_golden(&planned, "plan_coulomb_naux23_nao7.txt");
-}
-
-#[test]
-fn exchange_plan_golden() {
-    let mut dag = Dag::new();
-    let [b, c] = inputs(&mut dag, "C", NAO * NOCC);
-    let k = add_df_exchange(&mut dag, 0, NAO, NAUX, NOCC, b, c).unwrap();
-    let planned = dag.plan();
-    assert_eq!(planned.device_table(0).len(k), NAO * NAO);
-    assert_eq!(planned.predecessors(2), [0, 1]);
-    plan_golden(&planned, "plan_exchange_naux23_nao7_nocc3.txt");
-}
-
-/// A factor of no columns is refused at planning.
-#[test]
-#[cfg(debug_assertions)] // the contract is compiled out of release
-#[should_panic(expected = "a factor of at least one column")]
-fn an_empty_factor_is_refused() {
-    let mut dag = Dag::new();
-    let [b, c] = inputs(&mut dag, "C", NAO);
-    let _ = add_df_exchange(&mut dag, 0, NAO, NAUX, 0, b, c);
 }
 
 /// The streamed pass's fitting set: two full batches of 64 and a ragged
@@ -253,4 +206,27 @@ fn a_narrowed_streamed_plan_warns() {
     });
     assert!((1..=16).contains(&width_of(&width)), "{width}");
     assert_eq!(warned, 1, "{width}");
+}
+
+/// A factor of no columns is refused at planning.
+#[test]
+#[cfg(debug_assertions)] // the contract is compiled out of release
+#[should_panic(expected = "every factor has a column")]
+fn an_empty_factor_is_refused() {
+    let packing = packing();
+    let (nao, nc) = (packing.nao(), packing.n_columns());
+    let mut dag = Dag::new();
+    let b = dag.add_cpu("source", 0, HeapB(NAUX_STREAMED * nc));
+    let p = packing.clone();
+    let tables = add_packed_tables(&mut dag, 0, nao, nc, move |r, c, w| p.write_tables(r, c, w));
+    let c = dag.add_gpu(
+        "C",
+        0,
+        Input {
+            name: "C",
+            len: nao,
+        },
+    );
+    let set = [Contraction::Exchange { c, nocc: 0 }];
+    let _ = add_streamed_jk(&mut dag, 0, &packing, tables, NAUX_STREAMED, b, &set);
 }

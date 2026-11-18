@@ -1,5 +1,6 @@
-//! Each fixture run once on a card (tier 4, device 0) against PySCF's
-//! `int3c2e` over the same documents, written by `tests/data/reference.py`
+//! Each fixture's packed (mn|P), every pair kept as one batch, run once on
+//! a card (tier 4, device 0) against PySCF's `int3c2e` over the same
+//! documents, written by `tests/data/reference.py`
 //! with the tree's basis digits, its CODATA 2018 bohr and its
 //! unrenormalized contractions (`D_m D_n D_P`), so the comparison measures
 //! the integrals and nothing else.
@@ -9,13 +10,13 @@
 //! FelizJueves's own against libcint, three_center.md "Tolerances"):
 //! `max |Δ| <= 1e-12 max |(mn|P)_ref|`, one run. Its analysis: each element
 //! is a sum over a few primitive triples, the Hermite recursion and the
-//! Boys tower each near an ulp, then three GEMMs over at most 28 Cartesian
-//! functions per shell block and the exact average; the C++ tree measured
-//! 1.6e-14 of max through (ff|i), two decades inside it. The issue states
-//! 1e-10; this is the tighter, cited one.
-//!
-//! And the average's promise, exactly: `(mn|P)` and `(nm|P)` carry the same
-//! bits.
+//! Boys tower each near an ulp, then the per-class spherical GEMMs over at
+//! most 28 Cartesian functions per shell block; the C++ tree measured
+//! 1.6e-14 of max through (ff|i), two decades inside it. Every packed
+//! column is compared, a diagonal block's upper columns included, each
+//! with the reference's `(m, n)`. The square path's exact (m, n) average,
+//! and its bitwise symmetry, went with it (#1721): each pair's `(m, n)` is
+//! computed once here.
 
 mod common;
 
@@ -30,10 +31,9 @@ fn fast_tests() -> bool {
     std::env::var("FREE_BREAKFAST_FAST_TESTS").is_ok_and(|v| !v.is_empty() && !v.starts_with('0'))
 }
 
-/// One fixture planned, run once on device 0, compared with PySCF's
-/// tensor against the bar and checked exactly symmetric in (m, n); its
-/// largest error and its task times are printed, and every miss named
-/// before the test fails.
+/// One fixture planned, run once on device 0, every packed column compared
+/// with PySCF's tensor against the bar; its largest error and its task
+/// times are printed.
 fn check(stem: &str, basis: &BasisSet, aux: &BasisSet) {
     let fixture = common::plan(basis, aux);
     let (n, n_aux) = (fixture.n_ao, fixture.n_aux);
@@ -51,41 +51,48 @@ fn check(stem: &str, basis: &BasisSet, aux: &BasisSet) {
 
     let want = fb_io_npy::read_npy(&common::data(&format!("{stem}.npy"))).unwrap();
     assert_eq!(want.shape, [n_aux, n, n], "{stem}: the function counts");
-    assert_eq!(got.len(), n * n * n_aux, "{stem}: (mn|P) downloaded");
+    let blocks = fixture.map.sphe().blocks();
+    assert_eq!(
+        got.len(),
+        n_aux * fixture.map.sphe().n_columns(),
+        "{stem}: (mn|P) downloaded"
+    );
     let scale = want.data.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-    let worst = got
-        .iter()
-        .zip(&want.data)
-        .fold(0.0_f64, |m, (g, w)| m.max((g - w).abs()));
+    // Element (P, column) of the packed tensor at P + n_aux · column,
+    // against the reference's (P, k + n m), every column of every block.
+    let mut worst = 0.0_f64;
+    for block in blocks {
+        for a in 0..block.n[0] {
+            for b in 0..block.n[1] {
+                let column = block.column + a * block.n[1] + b;
+                let (m, k) = (block.ao[0] + a, block.ao[1] + b);
+                for p in 0..n_aux {
+                    let d = (got[p + n_aux * column] - want.data[p + n_aux * (k + n * m)]).abs();
+                    // Not f64::max, which would drop a NaN.
+                    if d.is_nan() || d > worst {
+                        worst = d;
+                    }
+                }
+            }
+        }
+    }
     println!(
         "{stem}: nao {n}, naux {n_aux}, max |(mn|P)| {scale:.6}, max |Δ| / max |(mn|P)| = {:e}, \
          bar {BAR:e}",
         worst / scale
     );
-    let mut misses = Vec::new();
-    if worst > BAR * scale {
-        misses.push(format!("max |Δ| = {worst:e} > {:e}", BAR * scale));
-    }
-    let at = |p: usize, a: usize, b: usize| got[p + n_aux * (b + n * a)];
-    let asymmetric = (0..n)
-        .flat_map(|m| (m + 1..n).map(move |k| (m, k)))
-        .flat_map(|(m, k)| (0..n_aux).map(move |p| (p, m, k)))
-        .filter(|&(p, m, k)| at(p, m, k).to_bits() != at(p, k, m).to_bits())
-        .count();
-    if asymmetric > 0 {
-        misses.push(format!(
-            "{asymmetric} elements (mn|P), (nm|P) differ in their bits"
-        ));
-    }
-    assert!(misses.is_empty(), "{stem} failed:\n{}", misses.join("\n"));
+    assert!(
+        !worst.is_nan() && worst <= BAR * scale,
+        "{stem}: max |Δ| = {worst:e} > {:e}",
+        BAR * scale
+    );
 }
 
 /// Water in cc-pVDZ / cc-pVDZ-JKFIT, every class through (dd|f), against
-/// PySCF, and exactly (m, n)-symmetric: the family's representative. Needs
-/// a GPU.
+/// PySCF: the family's representative. Needs a GPU.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
-fn water_matches_pyscf_and_is_exactly_symmetric() {
+fn water_matches_pyscf() {
     let (basis, aux) = common::water();
     check("h2o_cc-pvdz_cc-pvdz-jkfit", &basis, &aux);
 }

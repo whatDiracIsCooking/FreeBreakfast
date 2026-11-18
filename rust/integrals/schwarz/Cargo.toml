@@ -20,8 +20,8 @@ fb-io-xyz.workspace = true
 fb-core-arena.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-planner.workspace = true
-fb-core-thread-pool = { workspace = true, features = ["device"] }
-fb-integrals-eri-density-fitting-fit.workspace = true
 fb-integrals-eri-density-fitting-metric.workspace = true
+fb-integrals-eri-density-fitting-pair-map.workspace = true
 fb-integrals-eri-density-fitting-three-center.workspace = true
 fb-integrals-mmd.workspace = true
+fb-recipes-cholesky.workspace = true
