@@ -2821,8 +2821,9 @@ std::vector<double> water_sc_coordinates() {
 // their footprints, PC's at the run's kept ranks. No pair of SC's
 // coordinates populates an empty perturber in both, so none is taken again:
 // SC's is held to its footprint without the pair (pairs false), and the
-// footprint with it is past that. Slow-gated: the Hessians take a few
-// seconds a run.
+// footprint with it is past that. The water has no degenerate inactive pair,
+// so PC's is held to its footprint without that step (degenerate false).
+// Slow-gated: the Hessians take a few seconds a run.
 TEST_F(Nevpt2ReaderFootprint, ScPcNevpt2Hessians) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
@@ -2898,21 +2899,23 @@ TEST_F(Nevpt2ReaderFootprint, ScPcNevpt2Hessians) {
   }
   const std::array<std::array<std::int64_t, 8>, 1> ranks{dropped};
   const std::int32_t n_x = 3 * static_cast<std::int32_t>(basis.natoms());
-  expect_nevpt2_least_footprint(fb::hessian::df_pc_nevpt2_footprint(basis, aux, ncore, ncas, nalpha,
-                                                                    nalpha, n_x, 0, lwork, ranks),
-                                kNevpt2HessianLive, [&](fb::DeviceResources &res) {
-                                  auto got =
-                                      fb::hessian::df_pc_nevpt2(res, molecule, basis, classes, aux,
-                                                                h, s.fit().b, l, sol, ncore, ncas);
-                                  ASSERT_TRUE(got) << got.error().message;
-                                });
+  expect_nevpt2_least_footprint(
+      fb::hessian::df_pc_nevpt2_footprint(basis, aux, ncore, ncas, nalpha, nalpha, n_x, 0, lwork,
+                                          ranks, false),
+      kNevpt2HessianLive, [&](fb::DeviceResources &res) {
+        auto got = fb::hessian::df_pc_nevpt2(res, molecule, basis, classes, aux, h, s.fit().b, l,
+                                             sol, ncore, ncas);
+        ASSERT_TRUE(got) << got.error().message;
+        EXPECT_TRUE(got->degenerate_pairs.empty()); // no pair taken by its off-diagonal f
+      });
 }
 
 // df_qd_nevpt2_tangents over the water's SA-2 CAS(4,4), then the SC- and
 // PC-QD-NEVPT2 Hessians of state 1, SC's in water_sc_coordinates and PC's in
 // the Cartesian ones, each at its least and held to its footprint, PC's at
 // the run's kept ranks. No pair is taken again, so each is held to its
-// footprint without one, and the footprint with it is past that.
+// footprint without one, and the footprint with it is past that; PC's
+// without the degenerate pairs' step too, the water having none.
 // Slow-gated: the Hessians take seconds a run.
 TEST_F(Nevpt2ReaderFootprint, QdNevpt2Hessians) {
   FBF_REQUIRE_GPU();
@@ -3015,13 +3018,14 @@ TEST_F(Nevpt2ReaderFootprint, QdNevpt2Hessians) {
   const std::vector<std::array<std::int64_t, 8>> dropped = s.qd_dropped();
   const std::int32_t n_x = 3 * static_cast<std::int32_t>(basis.natoms());
   expect_nevpt2_least_footprint(
-      fb::hessian::df_qd_pc_nevpt2_footprint(basis, aux, ncore, ncas, nalpha, nalpha, nroots,
-                                             rotating, n_x, 0, lwork,
-                                             fb::hessian::QdNevpt2Form::state, dropped, false),
+      fb::hessian::df_qd_pc_nevpt2_footprint(
+          basis, aux, ncore, ncas, nalpha, nalpha, nroots, rotating, n_x, 0, lwork,
+          fb::hessian::QdNevpt2Form::state, dropped, false, false),
       kNevpt2HessianLive, [&](fb::DeviceResources &res) {
         auto got = fb::hessian::df_qd_pc_nevpt2(res, molecule, basis, classes, aux, h, s.fit().b, l,
                                                 sol, ncore, ncas, kState);
         ASSERT_TRUE(got) << got.error().message;
+        EXPECT_TRUE(got->degenerate_pairs.empty()); // no pair taken by its off-diagonal f
       });
 }
 
@@ -3145,9 +3149,11 @@ TEST(StepFootprint, AnalyticScNevpt2Hessians) {
 // The PC and PC-QD-NEVPT2 [hessian] steps over the water in cc-pVDZ, the
 // single state and state 1 of the two-root average (the Nevpt2ReaderFootprint
 // references' CASSCFs): PC's classes are counted at the rank that holds the
-// most, so the run keeps fewer, and QD's product a refused direction takes
-// with its partner never runs; the slack is the library footprints'
-// difference at the run's ranks (the references' own) without that product.
+// most, so the run keeps fewer, QD's product a refused direction takes
+// with its partner never runs, and neither does the degenerate pairs' step
+// (the water has none: ScPcNevpt2Hessians and QdNevpt2Hessians check the
+// runs' degenerate_pairs); the slack is the library footprints' difference
+// at the run's ranks (the references' own) without that product or step.
 // Slow-gated.
 TEST_F(Nevpt2ReaderFootprint, AnalyticPcNevpt2HessianSteps) {
   FBF_REQUIRE_GPU();
@@ -3170,12 +3176,14 @@ TEST_F(Nevpt2ReaderFootprint, AnalyticPcNevpt2HessianSteps) {
       ASSERT_TRUE(e) << e.error().message;
       ranks.push_back(e->dropped);
     }
-    const auto at = [&](std::span<const std::array<std::int64_t, 8>> dropped, const bool pairs) {
+    // @p taken: the product QD's refused direction takes with its partner,
+    // and the degenerate pairs' step.
+    const auto at = [&](std::span<const std::array<std::int64_t, 8>> dropped, const bool taken) {
       return qd ? fb::hessian::df_qd_pc_nevpt2_footprint(
                       *dims.basis, *dims.aux, ncore, ncas, 2, 2, 2, false, k, 0, dims.syevd_lwork,
-                      fb::hessian::QdNevpt2Form::state, dropped, pairs)
+                      fb::hessian::QdNevpt2Form::state, dropped, taken, taken)
                 : fb::hessian::df_pc_nevpt2_footprint(*dims.basis, *dims.aux, ncore, ncas, 2, 2, k,
-                                                      0, dims.syevd_lwork, dropped);
+                                                      0, dims.syevd_lwork, dropped, taken);
     };
     const std::string tables =
         std::format("[casscf]\nncas = 4\nnelecas = 4\nnroots = {}\nconv_tol = 1e-8\n"
@@ -3186,9 +3194,10 @@ TEST_F(Nevpt2ReaderFootprint, AnalyticPcNevpt2HessianSteps) {
         kWaterXyz, "cc-pvdz", tables, kCasscfChainLive + 2 + 128,
         peak_gap(at({}, true), at(ranks, false)),
         "PC's kept ranks are the data's: the footprint counts each class at the rank that holds "
-        "the most, the run keeps fewer; and with QD no direction is refused, so none is taken "
-        "again with its partner (the library footprints' difference at the run's ranks, without "
-        "that product)");
+        "the most, the run keeps fewer; with QD no direction is refused, so none is taken "
+        "again with its partner; and no inactive pair is degenerate, so the turned bases' step "
+        "never runs (the library footprints' difference at the run's ranks, without that product "
+        "or step)");
   }
 }
 

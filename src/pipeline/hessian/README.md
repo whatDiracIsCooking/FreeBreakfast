@@ -870,9 +870,10 @@ step's are a full set): `hessian::df_sc_nevpt2_footprint` or
 state's `hessian::df_qd_sc_nevpt2_footprint` or `df_qd_pc_nevpt2_footprint`.
 Each is at its least (the products' chunk, W^x's chunk and the tangents'
 parts, the class walks' and RDMs' tiles), and counts what the data may or
-may not take: PC's classes at the rank that holds the most, and the
+may not take: PC's classes at the rank that holds the most, the
 products a pair of coordinates takes again (SC's two directions with their
-partners, PC-QD's refused direction with its own). A configuration the
+partners, PC-QD's refused direction with its own), and PC's step over its
+degenerate inactive pairs. A configuration the
 step refuses before anything runs (a QD state outside the average, a state
 average without QD, a frozen core) has an empty footprint.
 

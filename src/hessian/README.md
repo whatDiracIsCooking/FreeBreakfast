@@ -2030,7 +2030,10 @@ again only when both coordinates populate an empty perturber, which the
 dimensions do not say, so it is counted; `pairs = false` leaves it out, for
 a test that knows none is. `df_pc_nevpt2_footprint` is the same over
 `pc_gradient_footprint` and `pc_hessian_product_footprint`, no pair, its
-classes at `dropped` (empty: the rank that holds the most).
+classes at `dropped` (empty: the rank that holds the most). It counts the
+degenerate pairs' step too (the turned bases beside one more product), which
+runs only where an inactive pair is within PC's reach; `degenerate = false`
+leaves it out, for a test whose run reports no such pair (#1556).
 
 ### Tests
 
@@ -2839,7 +2842,8 @@ products, E_ρ's share, the z terms, `qd_zeta_footprint`,
 Term (ii)'s several-W gradient is bounded by n (n − 1) / 2 times one
 trace-zero W's, exact at two roots. `df_qd_pc_nevpt2_footprint` is the same
 over PC's pieces at `dropped`, `pairs` a refused direction taken again with
-its partner.
+its partner, `degenerate` the degenerate pairs' step as
+`df_pc_nevpt2_footprint`'s.
 
 ### Tests
 

@@ -882,7 +882,8 @@ MemoryFootprint df_pc_nevpt2_footprint(const BasisSet &basis, const BasisSet &au
                                        const int32_t nalpha, const int32_t nbeta, const int32_t k,
                                        const int32_t batch,
                                        const std::span<const size_t> syevd_lwork,
-                                       const std::span<const std::array<int64_t, 8>> dropped) {
+                                       const std::span<const std::array<int64_t, 8>> dropped,
+                                       const bool degenerate) {
   const size_t nao = basis.nao_sphe();
   if (basis.natoms() == 0 || aux.natoms() != basis.natoms() || aux.nao_sphe() == 0 || ncore < 0 ||
       ncas < 1 || static_cast<size_t>(ncore) + static_cast<size_t>(ncas) > nao || nalpha < 0 ||
@@ -905,7 +906,7 @@ MemoryFootprint df_pc_nevpt2_footprint(const BasisSet &basis, const BasisSet &au
         f.device.scratch += nevpt2::pc_matrix_store_bytes(ncore, ncas, nmo - ncore - ncas);
         return f;
       },
-      false, false, true);
+      false, false, degenerate);
 }
 
 } // namespace free_breakfast::hessian
