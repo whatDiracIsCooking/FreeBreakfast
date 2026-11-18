@@ -8,11 +8,18 @@ so a build never runs Python. Run this after bumping that submodule:
     tools/emit/df_kernels.py
 
 `--out-root DIR` writes the same tree under DIR instead of src/integrals/,
-each file at its path relative to src/integrals/, so `--out-root
-rust/integrals/kernels` writes rust/'s copies in place (rust/README.md,
-"Build and test"). The default writes src/integrals/ exactly as before. The
-limits are read from src/'s bridge headers whatever the root: they are the
-tree's, and the rust/ copy carries none.
+each file at its path relative to src/integrals/. `--family NAME`, which
+may be repeated, writes only the families named; the default writes both.
+rust/ carries `metric` alone (its (mn|P) is the packed `peri3`,
+tools/emit/packed_three_center_kernels.py's, and the square `eri3` left it
+in #1725), so
+
+    tools/emit/df_kernels.py --out-root rust/integrals/kernels --family metric
+
+writes rust/'s copies in place (rust/README.md, "Build and test"). The
+default writes src/integrals/ exactly as before. The limits are read from
+src/'s bridge headers whatever the root: they are the tree's, and the rust/
+copy carries none.
 
 Two families, one per FelizJueves target, each its module's own directory:
 
@@ -155,10 +162,21 @@ def main() -> int:
         default=ROOT / "src/integrals",
         help="the directory written in place of src/integrals/ (default: it)",
     )
-    root = parser.parse_args().out_root.resolve()
+    parser.add_argument(
+        "--family",
+        action="append",
+        choices=list(FAMILIES),
+        help="write only this family, repeatable (default: every family); "
+        "rust/integrals/kernels carries metric alone",
+    )
+    args = parser.parse_args()
+    root = args.out_root.resolve()
+    wanted = args.family or list(FAMILIES)
     check_limits()
     arch = by_name(ARCH)
     for family, (directory, classes_of, build) in FAMILIES.items():
+        if family not in wanted:
+            continue
         out = root / OUT / directory / "kernels"
         out.mkdir(parents=True, exist_ok=True)
         classes = classes_of()

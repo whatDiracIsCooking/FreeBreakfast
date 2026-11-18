@@ -619,6 +619,7 @@ dependencies = [
  "fb-core-planner",
  "fb-core-thread-pool",
  "fb-core-wwr",
+ "fb-io-npy",
  "fb-kernel-abi",
  "wwr-sys",
 ]

@@ -1,5 +1,6 @@
-//! The forked density-fitting wrappers, the metric's and the three-center
-//! integrals', through `fb-integrals-sys` alone (tier 4 and their refusals).
+//! The forked density-fitting wrappers, the metric's and the packed
+//! three-center integrals', through `fb-integrals-sys` alone (tier 4 and
+//! their refusals).
 //!
 //! One hand-written s class through each, against its closed form. With
 //! `F0(x) = (1/2) sqrt(pi / x) erf(sqrt(x))`, the aux records' weights
@@ -12,8 +13,8 @@
 //! The bar, `1e-12` relative, covers the kernel's Boys evaluation and the
 //! reference's `erf` (libm's), each near an ulp, and the tens of flops on
 //! each side, with two decades of margin, as `core_hamiltonian.rs`'s nuclear
-//! attraction does. The symmetrization is exact: a sum and an exact halving,
-//! so it is compared bit for bit.
+//! attraction does. Every class of the packed launcher is held to libcint
+//! by `packed_witness.rs`.
 
 use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::runtime::Stream;
@@ -21,9 +22,9 @@ use fb_core_wwr::runtime::tests::DeviceBytes;
 use fb_integrals_sys::{
     FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, FB_LAUNCH_UNSUPPORTED, FB_METRIC_MAX_MOMENTUM,
     FB_METRIC_PAIR_FIELDS, FB_METRIC_RECORD_FIELDS, FB_THREE_CENTER_AUX_FIELDS,
-    FB_THREE_CENTER_AUX_MAX_MOMENTUM, FB_THREE_CENTER_CELL_FIELDS, FB_THREE_CENTER_MAX_MOMENTUM,
-    fb_metric_class, fb_primitive_pair_class_view, fb_three_center_class,
-    fb_three_center_packed_class, fb_three_center_symmetrize,
+    FB_THREE_CENTER_AUX_MAX_MOMENTUM, FB_THREE_CENTER_MAX_MOMENTUM,
+    FB_THREE_CENTER_PACKED_CELL_FIELDS, fb_metric_class, fb_primitive_pair_class_view,
+    fb_three_center_packed_class,
 };
 use std::f64::consts::PI;
 use std::ptr::{NonNull, null, null_mut};
@@ -34,7 +35,7 @@ unsafe extern "C" {
     safe fn erf(x: f64) -> f64;
 }
 
-/// A class view of `n_rec` records with the three-center launcher's eleven
+/// A class view of `n_rec` records with the packed three-center launcher's eleven
 /// bra fields, in its order (ζ, P, P − A, P − B, `s`), and every other
 /// pointer null.
 fn bra_view(la: i32, lb: i32, n_rec: i32, f: [*const f64; 11]) -> fb_primitive_pair_class_view {
@@ -155,9 +156,9 @@ fn one_ss_aux_pair_is_the_closed_form_metric() {
 }
 
 /// Needs a GPU. One (ss|s) cell, A at the origin, B at (1.5, 0, 0) and the
-/// aux C at (1.125, 0.5, 0.25), AOs 0 and 1 against aux function 0 of a
-/// 2 x 2 x 1 tensor, through `fb_three_center_class`: both (m, n) mirror
-/// positions the closed form within 1e-12 relative, the diagonal untouched.
+/// aux C at (1.125, 0.5, 0.25), its block one column of one aux function,
+/// through `fb_three_center_packed_class`: the closed form within 1e-12
+/// relative.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn one_ss_s_cell_is_the_closed_form_three_center() {
@@ -192,10 +193,10 @@ fn one_ss_s_cell_is_the_closed_form_three_center() {
     ];
     let aux = [c[0], c[1], c[2], gamma, c_c * (PI / gamma).powf(1.5)];
     assert_eq!(aux.len(), FB_THREE_CENTER_AUX_FIELDS as usize);
-    // One cell: bra records [0, 1), aux records [0, 1), at AOs 0 and 1 and
-    // aux function 0.
-    let cells = [0_i32, 1, 0, 1, 0, 1, 0];
-    assert_eq!(cells.len(), FB_THREE_CENTER_CELL_FIELDS as usize);
+    // One cell: bra records [0, 1), aux records [0, 1), at destination 0,
+    // not a shell's pair with itself.
+    let cells = [0_i32, 1, 0, 1, 0, 0];
+    assert_eq!(cells.len(), FB_THREE_CENTER_PACKED_CELL_FIELDS as usize);
 
     let stream = Stream::new(0);
     let d_bra = bra.map(|v| DeviceBytes::upload(&[v], &stream));
@@ -207,14 +208,14 @@ fn one_ss_s_cell_is_the_closed_form_three_center() {
     );
     let d_aux = DeviceBytes::upload(&aux, &stream);
     let d_cells = DeviceBytes::upload(&cells, &stream);
-    let (n_ao, n_aux) = (2, 1);
-    let d_eri3 = DeviceBytes::upload(&[0.0_f64; 4], &stream);
+    let (n_col, n_aux) = (1, 1);
+    let d_eri3 = DeviceBytes::upload(&[0.0_f64], &stream);
     // SAFETY: each bra field is one record on the device and the aux its
     // field count of one-element segments, the cell names record 0 of each
-    // and offsets within n_ao and n_aux, the tensor n_ao x n_ao x n_aux;
+    // and its one-element block at destination 0, the tensor n_col x n_aux;
     // none overlap.
     let status = unsafe {
-        fb_three_center_class(
+        fb_three_center_packed_class(
             stream.stream(),
             &view,
             0,
@@ -222,54 +223,18 @@ fn one_ss_s_cell_is_the_closed_form_three_center() {
             d_aux.0.cast(),
             1,
             d_cells.0.cast(),
-            n_ao,
+            n_col,
             n_aux,
             d_eri3.0.cast(),
         )
     };
     assert_eq!(status, FB_LAUNCH_SUCCESS);
-    check_mirrors(&read_f64(&d_eri3, &stream), expected, 1e-12);
-}
-
-/// Needs a GPU. A 3 x 3 x 2 tensor of distinct values through
-/// `fb_three_center_symmetrize`: every element half of itself plus half of
-/// its (m, n) mirror, bit for bit.
-#[test]
-#[ignore = "tier 4: needs a GPU"]
-fn symmetrize_averages_each_element_with_its_mirror() {
-    let (n_ao, n_aux) = (3_usize, 2_usize);
-    let input: Vec<f64> = (0..n_ao * n_ao * n_aux)
-        .map(|i| 1.0 + 0.375 * i as f64)
-        .collect();
-    let at = |m: usize, n: usize, p: usize| (m * n_ao + n) * n_aux + p;
-    let stream = Stream::new(0);
-    let d_in = DeviceBytes::upload(&input, &stream);
-    let d_out = DeviceBytes::upload(&vec![0.0_f64; input.len()], &stream);
-    // SAFETY: both arrays are n_ao * n_ao * n_aux doubles on the device, and
-    // they do not overlap.
-    let status = unsafe {
-        fb_three_center_symmetrize(
-            stream.stream(),
-            n_ao as i32,
-            n_aux as i32,
-            d_in.0.cast(),
-            d_out.0.cast(),
-        )
-    };
-    assert_eq!(status, FB_LAUNCH_SUCCESS);
-    let got = read_f64(&d_out, &stream);
-    for m in 0..n_ao {
-        for n in 0..n_ao {
-            for p in 0..n_aux {
-                let want = 0.5 * (input[at(m, n, p)] + input[at(n, m, p)]);
-                assert_eq!(
-                    got[at(m, n, p)].to_bits(),
-                    want.to_bits(),
-                    "({m}, {n}, {p})"
-                );
-            }
-        }
-    }
+    let got = read_f64(&d_eri3, &stream)[0];
+    let rel = ((got - expected) / expected).abs();
+    assert!(
+        rel <= 1e-12,
+        "{got:e}, the closed form {expected:e}: {rel:e} relative"
+    );
 }
 
 /// Every class outside the metric's table is FB_LAUNCH_UNSUPPORTED, and a
@@ -327,124 +292,6 @@ fn metric_refuses_before_launching() {
         metric(0, 0, 1, d, 1, i, 1, null_mut()),
         FB_LAUNCH_INVALID_ARGUMENT
     );
-}
-
-/// Every class outside the three-center table is FB_LAUNCH_UNSUPPORTED, and
-/// a null array (the view or one of its bra fields among them), a count not
-/// positive or a tensor past an int32's index is FB_LAUNCH_INVALID_ARGUMENT;
-/// the symmetrization refuses the same counts and arrays, and an input and
-/// output that overlap. No device is touched.
-#[test]
-fn three_center_wrappers_refuse_before_launching() {
-    let d = NonNull::<f64>::dangling().as_ptr();
-    let i = NonNull::<i32>::dangling().as_ptr();
-    let (max, aux_max) = (
-        FB_THREE_CENTER_MAX_MOMENTUM,
-        FB_THREE_CENTER_AUX_MAX_MOMENTUM,
-    );
-    // SAFETY: every call below is refused before it reads a device pointer.
-    let eri3 = |l: [i32; 3], counts: [i32; 5], bra: *const f64, aux, cells, out| unsafe {
-        let [n_bra, n_aux_rec, n_cell, n_ao, n_aux] = counts;
-        let view = bra_view(l[0], l[1], n_bra, [bra; 11]);
-        fb_three_center_class(
-            null_mut(),
-            &view,
-            l[2],
-            n_aux_rec,
-            aux,
-            n_cell,
-            cells,
-            n_ao,
-            n_aux,
-            out,
-        )
-    };
-    let ones = [1; 5];
-    for l in [
-        [1, 0, 0],
-        [0, max + 1, 0],
-        [max + 1, max + 1, 0],
-        [0, 0, aux_max + 1],
-        [0, 0, -1],
-        [-1, 0, 0],
-    ] {
-        assert_eq!(eri3(l, ones, d, d, i, d), FB_LAUNCH_UNSUPPORTED, "{l:?}");
-    }
-    for slot in 0..5 {
-        let mut counts = ones;
-        counts[slot] = 0;
-        assert_eq!(
-            eri3([0; 3], counts, d, d, i, d),
-            FB_LAUNCH_INVALID_ARGUMENT,
-            "{counts:?}"
-        );
-    }
-    // 1024 * 1024 * 2048 = 2^31, one past an int32.
-    assert_eq!(
-        eri3([0; 3], [1, 1, 1, 1024, 2048], d, d, i, d),
-        FB_LAUNCH_INVALID_ARGUMENT
-    );
-    assert_eq!(
-        eri3([0; 3], ones, null(), d, i, d),
-        FB_LAUNCH_INVALID_ARGUMENT
-    );
-    // Each bra field alone null, and no view at all.
-    for f in 0..11 {
-        let mut fields = [d.cast_const(); 11];
-        fields[f] = null();
-        let view = bra_view(0, 0, 1, fields);
-        // SAFETY: as above.
-        let status = unsafe { fb_three_center_class(null_mut(), &view, 0, 1, d, 1, i, 1, 1, d) };
-        assert_eq!(status, FB_LAUNCH_INVALID_ARGUMENT, "bra field {f} null");
-    }
-    // SAFETY: as above.
-    let status = unsafe { fb_three_center_class(null_mut(), null(), 0, 1, d, 1, i, 1, 1, d) };
-    assert_eq!(status, FB_LAUNCH_INVALID_ARGUMENT, "a null view");
-    assert_eq!(
-        eri3([0; 3], ones, d, null(), i, d),
-        FB_LAUNCH_INVALID_ARGUMENT
-    );
-    assert_eq!(
-        eri3([0; 3], ones, d, d, null(), d),
-        FB_LAUNCH_INVALID_ARGUMENT
-    );
-    assert_eq!(
-        eri3([0; 3], ones, d, d, i, null_mut()),
-        FB_LAUNCH_INVALID_ARGUMENT
-    );
-
-    // SAFETY: as above.
-    let symmetrize = |n_ao, n_aux, input, output| unsafe {
-        fb_three_center_symmetrize(null_mut(), n_ao, n_aux, input, output)
-    };
-    // Two 2 x 2 x 1 tensors in one host array, never read: the refusals look
-    // at the addresses alone.
-    let mut buf = [0.0_f64; 8];
-    let base = buf.as_mut_ptr();
-    for (n_ao, n_aux) in [(0, 1), (1, 0), (1024, 2048)] {
-        assert_eq!(
-            symmetrize(n_ao, n_aux, base.cast_const(), base.wrapping_add(4)),
-            FB_LAUNCH_INVALID_ARGUMENT,
-            "({n_ao}, {n_aux})"
-        );
-    }
-    assert_eq!(symmetrize(2, 1, null(), base), FB_LAUNCH_INVALID_ARGUMENT);
-    assert_eq!(
-        symmetrize(2, 1, base.cast_const(), null_mut()),
-        FB_LAUNCH_INVALID_ARGUMENT
-    );
-    for shift in [0, 1, 3] {
-        assert_eq!(
-            symmetrize(2, 1, base.cast_const(), base.wrapping_add(shift)),
-            FB_LAUNCH_INVALID_ARGUMENT,
-            "output {shift} past input"
-        );
-        assert_eq!(
-            symmetrize(2, 1, base.wrapping_add(shift).cast_const(), base),
-            FB_LAUNCH_INVALID_ARGUMENT,
-            "input {shift} past output"
-        );
-    }
 }
 
 /// The packed launcher's refusals: every class outside the table is

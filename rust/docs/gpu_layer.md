@@ -126,7 +126,7 @@ reaches (`FB_RECIPES_ABI_VERSION` is 6, bumped as the inverse square root,
 the symmetrization, the Cholesky diagonal tile and the DIIS solve joined the
 merge sort, then as the inverse square root took its floor's factor from the
 device;
-`FB_INTEGRALS_ABI_VERSION` is 9, bumped as the kinetic and
+`FB_INTEGRALS_ABI_VERSION` is 10, bumped as the kinetic and
 nuclear-attraction wrappers with `fb_nuclei_view`, then density fitting's
 metric and three-center launchers, joined the overlap, then as the records'
 order left (`fb_mmd_order` and its query removed, `fb_mmd_records` taking
@@ -134,7 +134,8 @@ no permutation), then as `fb_three_center_class` took a class view for its
 bra records instead of a packed buffer, then as the conventional ERI's
 launchers joined, then as the dense conventional ERI's, then as density
 fitting's pack and gather over the packed shell-pair map, then as the
-packed three-center launcher;
+packed three-center launcher, then as the square three-center launchers,
+their cell field count and the symmetrization left;
 `FB_LOCALIZATION_ABI_VERSION` is 1, the Pipek-Mezey launchers; `fb-doc-check`'s
 `doc_lists.rs` holds these numbers to the headers). The bump is held:
 `devtools/rust-bindings.py` records in each module's bindings, beside the
@@ -629,14 +630,13 @@ symmetrization, the Cholesky diagonal tile and the DIIS solve:
 `fb_merge_sort*`, `fb_inverse_sqrt`, `fb_symmetrize`, `fb_mirror_triangle`,
 `fb_cholesky_diagonal` and `fb_diis_solve`) and `libfb_integrals_kernels.so` (the
 primitive-pair records, the overlap, the kinetic energy, the nuclear
-attraction, density fitting's metric, three-center integrals, their
-symmetrization and their packed form, and the conventional ERI's packed tensor, its exchange
+attraction, density fitting's metric and packed three-center integrals,
+and the conventional ERI's packed tensor, its exchange
 gather and the packing around its GEMVs, and the dense conventional ERI's
 row blocks and their products, and density fitting's pack and gather over
 the packed shell-pair map: `fb_mmd_*`,
 `fb_ordered_pair_bound`, `fb_overlap_class`, `fb_kinetic_class`,
-`fb_potential_en_class`, `fb_metric_class`, `fb_three_center_class`,
-`fb_three_center_symmetrize`, `fb_three_center_packed_class`,
+`fb_potential_en_class`, `fb_metric_class`, `fb_three_center_packed_class`,
 `fb_conventional_eri_class`,
 `fb_conventional_exchange`, `fb_conventional_pack`,
 `fb_conventional_unpack`, `fb_dense_eri_class`, `fb_dense_row_dot`,
