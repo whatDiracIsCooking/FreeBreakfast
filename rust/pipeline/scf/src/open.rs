@@ -68,7 +68,7 @@ pub(crate) fn add_spin_densities(
 /// ‖e‖_F                                         scalars[1]
 /// ```
 ///
-/// `ka` and `kb` are `df_exchange` of the alpha and beta factors, whose
+/// `ka` and `kb` are the streamed K of the alpha and beta factors, whose
 /// `D = 2 C Cᵀ` convention makes each twice the spin density's K, so
 /// `Ka/2 = K(Da)`; `d = da + db`. The tasks added are:
 ///

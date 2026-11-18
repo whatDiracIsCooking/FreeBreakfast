@@ -15,7 +15,7 @@ use fb_core_wwr::copy;
 use fb_core_wwr::device_slice::split_at_mut;
 use fb_core_wwr::memset;
 use fb_integrals_eri_conventional::{add_conventional_jk, add_dense_jk};
-use fb_integrals_eri_density_fitting_jk::{add_df_coulomb, add_df_exchange};
+use fb_integrals_eri_density_fitting_jk::{Contraction, add_streamed_jk};
 use fb_molecule::{Molecule, nuclear_repulsion_energy};
 use fb_pipeline_eri::Eri;
 use fb_recipes_diagonalize::add_diagonalize;
@@ -121,8 +121,10 @@ impl ScfStep {
 /// `fb_pipeline_guess::add_guess_upload`'s row); the loop carries D in it,
 /// so it holds the last iteration's density after the run, unless it is
 /// rescaled (below). `eri` is the two-electron integrals of the same basis
-/// (`fb_pipeline_eri::add_eri`): the density-fitted B, whose J and K this
-/// doc names below (`df coulomb`, `df exchange`), or the conventional
+/// (`fb_pipeline_eri::add_eri`): the density-fitted packed B on the host,
+/// whose J and K are one streamed pass over it per build
+/// ([`add_streamed_jk`]: `df jk pack`, the aux batches, `df jk finish`),
+/// or the conventional
 /// tensors, over which each build is one `conventional jk` of the carried
 /// D ([`add_conventional_jk`]), closed shell only; or the dense row blocks
 /// over the run's GPU workers, over which each build is
@@ -153,7 +155,7 @@ impl ScfStep {
 /// about its minimal basis, above `nocc`, but the loop's factor row is
 /// `n × nocc`, the width of every later K. So C̃'s `nocc` columns of the
 /// largest eigenvalues become the carried factor `"C occ"`, and the other
-/// `n - nocc` the row `"C rest"`, whose K ([`add_df_exchange`], once) the
+/// `n - nocc` the row `"C rest"`, whose K (a streamed pass, once) the
 /// first iteration adds to its own: the C++ takes the same factor `nocc`
 /// columns at a time and sums their K. Then `diis history` ([`add_diis`],
 /// the rings of `"DIIS F"`), and **`energy before`** (CPU): the decision's
@@ -161,8 +163,8 @@ impl ScfStep {
 /// heap, since it is host state no copy engine meets (`docs/memory.md`,
 /// "The three kinds").
 ///
-/// **The body**, one iteration: `df coulomb` (J of D) and `df exchange` (K
-/// of the factor); **`guess exchange`** (stream), when `nocc < n`: K plus
+/// **The body**, one iteration: one streamed pass ([`add_streamed_jk`]),
+/// J of D and K of the factor; **`guess exchange`** (stream), when `nocc < n`: K plus
 /// the rest's K into `"K of D"`, then the rest's K zeroed, so only the first
 /// iteration has it; [`add_fock`]'s `fock`, `residual` and `energy and
 /// norm`; `diis push` ([`Diis::add_push`]) of (F, e); [`add_solve_fock`] on
@@ -185,11 +187,12 @@ impl ScfStep {
 /// `n_alpha`. Before the loop, C̃'s last `n_alpha` columns are the carried
 /// alpha factor `"C a"` and the rest `"C a rest"`, its last `n_beta` the
 /// carried beta factor `"C b"` and the rest `"C b rest"`, each rest's K
-/// built once; **`spin densities`** (stream), `Da = Db = D/2` into the
+/// built once, both by one streamed pass; **`spin densities`**
+/// (stream), `Da = Db = D/2` into the
 /// carried `"Da"` and `"Db"`; and **`identity`** (CPU) with its upload,
-/// `"I"`. In the body, a second `df exchange`, of `"C b"`, each K with its
+/// `"I"`. In the body, a second K in the pass, of `"C b"`, each K with its
 /// rest's added by a `guess exchange` (`"Ka of D"`, `"Kb of D"`). With no
-/// beta electron (H, H₂⁺) there is no `"C b"` and no second `df exchange`:
+/// beta electron (H, H₂⁺) there is no `"C b"` and no second K:
 /// the beta `guess exchange` copies the rest's K alone, the guess's
 /// `Db = D/2`, into the first build's Kb, and every later Kb is 0, as
 /// `open density` zeroes Db, the C++ `K(Db) = 0`. Then in
@@ -219,13 +222,13 @@ impl ScfStep {
 /// the `n` orbitals; `Unsupported` for an open shell over the conventional
 /// integrals.
 /// Then the kernel library's load check
-/// ([`add_diis`], [`add_df_exchange`]), as `GpuRuntime`; `dag` may hold
+/// ([`add_diis`], [`add_streamed_jk`]), as `GpuRuntime`; `dag` may hold
 /// some of the tasks after it. At run time, the tasks' errors, and
 /// `MaxIterationsExceeded` when the loop has not converged in
 /// `max_iterations` builds.
 ///
 /// # Panics
-/// As [`add_df_exchange`]; or as [`Dag::add_gpu`], if a row is of another
+/// As [`add_streamed_jk`]; or as [`Dag::add_gpu`], if a row is of another
 /// worker's table.
 #[allow(
     clippy::too_many_arguments,
@@ -293,24 +296,40 @@ pub fn add_scf(
             n_beta: open.then_some(n_beta),
         },
     );
-    // The rests' K, the density-fitted plan's alone: K over the stored
-    // tensors is of D itself.
+    // The rests' K, the density-fitted plan's alone (K over the stored
+    // tensors is of D itself): one streamed pass over B for both.
     let df = match eri {
-        Eri::DensityFitted(df) => Some((df.b, df.aux.nao_sphe() as usize)),
+        Eri::DensityFitted(df) => Some(df),
         Eri::Conventional(_) | Eri::Dense(_) => None,
     };
-    let rest_k = match (factor.rest, df) {
-        (Some(rest), Some((b, naux))) => {
-            Some(add_df_exchange(dag, worker, n, naux, n - nocc, b, rest)?)
+    let (rest_k, beta) = match df {
+        Some(df) => {
+            let rests: Vec<Contraction> = [(factor.rest, n - nocc), (factor.beta_rest, n - n_beta)]
+                .into_iter()
+                .filter_map(|(rest, nocc)| rest.map(|c| Contraction::Exchange { c, nocc }))
+                .collect();
+            let mut ks = if rests.is_empty() {
+                Vec::new()
+            } else {
+                add_streamed_jk(
+                    dag,
+                    worker,
+                    df.map.sphe(),
+                    df.tables,
+                    df.aux.nao_sphe() as usize,
+                    df.b,
+                    &rests,
+                )?
+            }
+            .into_iter();
+            let rest_k = factor.rest.and_then(|_| ks.next());
+            let beta = factor
+                .beta_rest
+                .and_then(|_| ks.next())
+                .map(|k| (factor.cb, k));
+            (rest_k, beta)
         }
-        _ => None,
-    };
-    let beta = match (factor.beta_rest, df) {
-        (Some(rest), Some((b, naux))) => Some((
-            factor.cb,
-            add_df_exchange(dag, worker, n, naux, n - n_beta, b, rest)?,
-        )),
-        _ => None,
+        None => (None, None),
     };
     let spin = open.then(|| add_spin_densities(dag, worker, n, guess));
     let diis = add_diis(dag, worker, "DIIS F", n * n, step.diis_history)?;
@@ -318,14 +337,35 @@ pub fn add_scf(
 
     // The body: one iteration.
     let body = dag.len();
+    // A density-fitted plan's J, K and an open shell's beta K: one
+    // streamed pass over B.
+    let mut kb = None;
     let (j, mut k) = match eri {
         Eri::DensityFitted(df) => {
-            let naux = df.aux.nao_sphe() as usize;
-            let j = add_df_coulomb(dag, worker, n, naux, df.b, guess);
-            (
-                j,
-                add_df_exchange(dag, worker, n, naux, nocc, df.b, factor.c_occ)?,
-            )
+            let mut set = vec![
+                Contraction::Coulomb(guess),
+                Contraction::Exchange {
+                    c: factor.c_occ,
+                    nocc,
+                },
+            ];
+            if let Some(cb) = factor.cb {
+                set.push(Contraction::Exchange {
+                    c: cb,
+                    nocc: n_beta,
+                });
+            }
+            let jk = add_streamed_jk(
+                dag,
+                worker,
+                df.map.sphe(),
+                df.tables,
+                df.aux.nao_sphe() as usize,
+                df.b,
+                &set,
+            )?;
+            kb = jk.get(2).copied();
+            (jk[0], jk[1])
         }
         Eri::Conventional(c) => add_conventional_jk(dag, worker, c, guess),
         Eri::Dense(d) => add_dense_jk(dag, d, guess),
@@ -345,12 +385,6 @@ pub fn add_scf(
             // No beta electron, no beta factor: Kb is the rest's alone.
             // Only a density-fitted plan reaches here (an open shell over
             // the conventional integrals is refused above).
-            let kb = match (cb, df) {
-                (Some(cb), Some((b, naux))) => {
-                    Some(add_df_exchange(dag, worker, n, naux, n_beta, b, cb)?)
-                }
-                _ => None,
-            };
             let kb = dag.add_gpu(
                 "guess exchange",
                 worker,

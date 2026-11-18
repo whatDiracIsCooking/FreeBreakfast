@@ -376,10 +376,11 @@ checks that no two rows sharing bytes are live at once.</p>
 <p><strong>An alias is free of synchronization.</strong> The ERI step is the case. Issue
 1153 found the DF chain's packing broken because B was allocated while the
 metric pair's frees were still pending on the stream, and the pool took new
-chunks; the fix was a host synchronize before B. Under the table B's row
-starts after the copy into <code>l</code> that is the pair's last read, on the same
-stream, so B takes the pair's bytes with no wait at all. The step's README
-calls that sync a departure from the no-wait ideal; here it is gone.</p>
+chunks; the fix was a host synchronize before B. Under the table a row
+starts after the last read of the bytes it takes, on the same stream, so
+it takes them with no wait at all: L after M's last read, each batch of
+the streamed build after the last batch's. The step's README calls that
+sync a departure from the no-wait ideal; here it is gone.</p>
 <figure><div class="scroll">
 <svg viewBox="0 0 680 196" role="img" aria-label="The ERI step's B and the metric pair. In the C++ tree a host synchronize sits between the pair's last read and B so the pool can reuse the pair's bytes. Under the table, B's row starts right after the copy into l on the same stream and takes the pair's offsets with no wait.">
 <text class="t" x="170" y="18" text-anchor="middle">C++: a host sync before B</text>
@@ -404,23 +405,26 @@ calls that sync a departure from the no-wait ideal; here it is gone.</p>
 <p><strong>No row is modified in place.</strong> A task writes only the rows it produces,
 and a loop's last user the row it carries (&quot;Nested plans&quot;); a row it reads
 is read-only to it. The C++ fit overwrites the metric with L and the
-tensor with B, so here the Cholesky copies M into L and the fit copies
-(mn|P) into B, and while each runs both are live. A read-write row, a task
-that takes a row and hands it on under a new name, was weighed and
-declined (#1536), because it never lowers a peak. On the ERI step's water
-fixture (cc-pVDZ, cc-pVDZ-JKFIT, <code>nao</code> 24, <code>naux</code> 116), with each row
-padded to the alignment and beside the 32 MiB BLAS workspace, the
-three-center task holds 2,133,248 bytes; the Cholesky 783,104, 675,328
-with L in M's bytes; and the fit 1,176,832, 642,304 with B in the
-tensor's. The plan's peak is 35,687,088 bytes at the three-center task
-either way. The order is structural: the three-center task holds the
-Cartesian tensor, its half-transformed copy and the spherical output at
-once, three tensor-sized rows, and the fit two and L, whose <code>naux²</code> is
-less than <code>naux · nao²</code> whenever <code>naux &lt; nao²</code>. The question is worth
-reopening only when the three-center task stops being the peak, a
-transform in place or in auxiliary blocks; the row to build then is
-<code>Layout::write</code> with its loop contract relaxed to &quot;no later user&quot;, not a
-new kind.</p>
+tensor with B, so here the Cholesky copies M into L and each batch's fit
+writes an output of its own, and while each runs both are live. A
+read-write row, a task that takes a row and hands it on under a new name,
+was weighed and declined (#1536), because it never lowers a peak. The DF
+step no longer holds B on the device at all: B is a heap row, built a
+batch of kept shell pairs at a time (<code>add_packed_b</code>) and streamed back in
+aux batches by every J and K (<code>add_streamed_jk</code>), so the device holds L,
+the records and one batch's ring. On the ERI step's water fixture
+(cc-pVDZ, cc-pVDZ-JKFIT, <code>nao</code> 24, <code>naux</code> 116, threshold 0, every class in
+one batch), with each row padded to the alignment and beside the 32 MiB
+BLAS workspace, the plan's peak is 34,185,856 bytes at the metric's
+spherical transform, where the resident chain's was 35,687,088 at the
+three-center task, which held the Cartesian tensor, its half-transformed
+copy and the spherical output at once, three <code>naux · nao²</code> rows. Nothing
+of the step is <code>naux · nao²</code> or <code>naux · n_columns</code> on the device now; the
+peak grows with <code>naux²</code> (M, L) and with the batch, which admission
+narrows to the room (&quot;Adaptive widths: one planner routine&quot;). The
+question is worth reopening only when a transform in place would lower
+the metric's peak; the row to build then is <code>Layout::write</code> with its
+loop contract relaxed to &quot;no later user&quot;, not a new kind.</p>
 <h2 id="admission">Admission</h2>
 <p>Per worker and per kind, the block must fit:</p>
 <div class="table"><table>
@@ -554,9 +558,9 @@ kind and the bytes over; then every row, and every loop's region, larger
 than the cap on its own, which no order could fit, live at the peak or not;
 then the instant of the peak and every row live at it, which is the C++
 message, the step that reaches the peak, with its rows. The peak alone
-would miss a row the peak does not hold: the DF step's peak is the
-three-center task, before B is live, so a cap short of B would name only
-the integrals' rows.</p>
+would miss a row the peak does not hold: a row live only before or after
+the peak, under a cap short of it, would go unnamed, the resident DF
+step's B under its three-center peak the case that found it.</p>
 <figure><div class="scroll">
 <svg viewBox="0 0 680 172" role="img" aria-label="The admission search: start from the config's plan order with siblings concurrent; while the peak is over the cap, serialize the widest concurrency, then narrow each adaptive task in schedule order to its least; refuse only when the serial plan at every task's least still does not fit. Any step that fits admits.">
 <defs>
@@ -749,8 +753,10 @@ parent reserved at the bound. The region is the bound; what the sizing
 node saves is not memory but the launches over the pruned classes.</li>
 </ul>
 <p>The ERI's own check, B's and L's bytes against the budget before B is
-allocated, is admission's: B's row is in the table before the first launch,
-and a B that does not fit is refused at planning with its bytes named.</p>
+allocated, is admission's: L's row and the build's and the streamed
+pass's rings are in the device table before the first launch, B's heap row
+in the heap block, and a fitting set that does not fit is refused at
+planning with its bytes named.</p>
 <h2 id="nested-plans">Nested plans</h2>
 <p>A sub-DAG has a table and no block; its rows are laid out in the region its
 parent's schedule leaves free while it runs
@@ -1086,7 +1092,7 @@ something it can declare or ask for. A GPU task is handed no heap view.</p>
 </tr>
 <tr>
 <td>Admission refuses what does not fit</td>
-<td>A cap one byte under the peak refused naming the rows live at it; a cap under a row refused naming that row, the DF step's B not live at its peak among them; one byte over admitted, as the C++ nested cases pin the room to the byte</td>
+<td>A cap one byte under the peak refused naming the rows live at it; a cap under a row refused naming that row, live at the peak or not; one byte over admitted, as the C++ nested cases pin the room to the byte</td>
 <td>3</td>
 </tr>
 <tr>

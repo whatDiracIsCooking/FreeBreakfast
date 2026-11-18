@@ -247,18 +247,22 @@ fn memory_example() {
 
 /// The timing record `timing` read back, parsed as the timing record's
 /// type: every task of `config`'s plan timed, in rank order and then
-/// iteration; a loop's body node and decision once per iteration, 0 to its
-/// loop's count; every other node once; each of `named` among them. Beside
+/// outer iteration and iteration; a loop's body node and decision once per
+/// iteration, 0 to its loop's count, a counted loop's node once per trip
+/// (and per iteration of a decision loop it lies in); every other node
+/// once; each of `named` among them. Beside
 /// it, the plan the binary wrote: `plan.txt` naming the plan's task count,
 /// and `plan.dot` and `timing.dot` declaring every task, the second with
 /// the run's wall time and every task's time on it. Returns the record.
 /// The plan is laid out at a stand-in syevd work: the tasks do not depend
-/// on it.
+/// on it. A density-fitted plan's widths are read off the card, as the
+/// binary reads them; at these small examples every width is its widest on
+/// any card, so the tasks are the binary's.
 fn check_timing(config: &Path, timing: &Path, named: &[&str]) -> Record {
     let planned = fb_pipeline_config::plan(
         &fb_pipeline_config::read_config(config).unwrap(),
         |_| Ok(1),
-        |_| panic!("a card read by a plan with no adaptive part"),
+        |w| fb_pipeline_config::Card::read(i32::try_from(w).unwrap()),
     )
     .unwrap();
     let dir = timing.parent().unwrap();
@@ -284,34 +288,59 @@ fn check_timing(config: &Path, timing: &Path, named: &[&str]) -> Record {
     let text = std::fs::read_to_string(timing).unwrap();
     let record: Record = serde_json::from_str(&text).expect("timing.json parses");
     record.result.as_ref().unwrap();
-    let mut entries = std::collections::BTreeMap::<usize, Vec<Option<usize>>>::new();
+    // Each counted loop's nodes and trips, from the plan's text: its last
+    // node's line closes it (`closes counted loop a-b, N trips`).
+    let mut trips = std::collections::BTreeMap::<usize, usize>::new();
+    for line in planned.to_string().lines() {
+        let Some((_, rest)) = line.split_once("closes counted loop ") else {
+            continue;
+        };
+        let (span, rest) = rest.split_once(", ").unwrap();
+        let (first, last) = span.split_once('-').unwrap();
+        let n: usize = rest.split_once(' ').unwrap().0.parse().unwrap();
+        for node in first.parse::<usize>().unwrap()..=last.parse().unwrap() {
+            trips.insert(node, n);
+        }
+    }
+    type Entry = (Option<usize>, Option<usize>);
+    let mut entries = std::collections::BTreeMap::<usize, Vec<Entry>>::new();
     let mut previous = None;
     for task in &record.tasks {
-        let at = (task.node.index(), task.iteration);
+        let at = (task.node.index(), task.outer, task.iteration);
         assert!(
             previous < Some(at),
-            "{}: in rank and iteration order",
+            "{}: in rank, outer iteration and iteration order",
             task.name
         );
         previous = Some(at);
-        entries.entry(at.0).or_default().push(task.iteration);
+        entries
+            .entry(at.0)
+            .or_default()
+            .push((task.outer, task.iteration));
     }
     assert_eq!(entries.len(), planned.len(), "every task timed");
-    for (node, iterations) in &entries {
-        if iterations[0].is_some() {
-            // A loop is a contiguous run of nodes ending at its decision, so
-            // a body node's loop is the first decision at or after it.
-            let count = record
-                .iterations
-                .iter()
-                .find(|(decision, _)| decision.index() >= *node)
-                .map(|(_, &count)| count)
-                .expect("an iterated node is in a loop");
-            let want: Vec<_> = (0..count).map(Some).collect();
-            assert_eq!(iterations, &want, "node {node}: one entry per iteration");
-        } else {
-            assert_eq!(iterations, &[None], "node {node}: one entry");
-        }
+    // A decision loop is a contiguous run of nodes ending at its decision,
+    // so a body node's loop is the first decision at or after it.
+    let count = |node: usize| {
+        record
+            .iterations
+            .iter()
+            .find(|(decision, _)| decision.index() >= node)
+            .map(|(_, &count)| count)
+            .expect("an iterated node is in a loop")
+    };
+    for (node, got) in &entries {
+        let want: Vec<Entry> = match (trips.get(node), got[0]) {
+            // A counted loop's node, once per trip, and per iteration of
+            // the decision loop it lies in.
+            (Some(&n), (Some(_), _)) => (0..count(*node))
+                .flat_map(|o| (0..n).map(move |t| (Some(o), Some(t))))
+                .collect(),
+            (Some(&n), (None, _)) => (0..n).map(|t| (None, Some(t))).collect(),
+            (None, (_, Some(_))) => (0..count(*node)).map(|i| (None, Some(i))).collect(),
+            (None, (_, None)) => vec![(None, None)],
+        };
+        assert_eq!(got, &want, "node {node}: one entry per iteration and trip");
     }
     let names: Vec<&str> = record.tasks.iter().map(|t| t.name.as_str()).collect();
     for n in named {
@@ -785,7 +814,8 @@ fn failed(name: &str, config: &str, xyz: &str, kind: ErrorKind, named: &[&str]) 
 fn rhf_config(extra: &str) -> String {
     format!(
         "calculation = \"rhf\"\n[molecule]\nxyz = \"m.xyz\"\n[basis_set]\nbasis = \"sto-3g\"\n\
-         [eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n{extra}"
+         [eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n\
+         schwarz_threshold = 0.0\n{extra}"
     )
 }
 
@@ -955,7 +985,7 @@ fn a_multiplicity_of_the_wrong_parity_is_refused() {
         "refused_wrong_parity",
         "calculation = \"rhf\"\n[molecule]\nxyz = \"water.xyz\"\ncharge = 1\n\
          [basis_set]\nbasis = \"sto-3g\"\n[eri]\nmode = \"density_fitting\"\n\
-         aux_basis = \"cc-pvdz-jkfit\"\n",
+         aux_basis = \"cc-pvdz-jkfit\"\nschwarz_threshold = 0.0\n",
         ErrorKind::InvalidConfig,
         &["9 electrons", "multiplicity 1"],
     );

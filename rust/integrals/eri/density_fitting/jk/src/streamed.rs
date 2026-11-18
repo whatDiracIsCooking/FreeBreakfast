@@ -82,8 +82,8 @@ pub enum Contraction {
 ///   K's lower triangle of `nao²` per K (`"K lower <i>"`).
 /// - **The batches**, `naux.div_ceil(width)` of `width` aux functions, the
 ///   last the `naux - k width` left when `width` does not divide `naux`,
-///   a counted loop of ring depth 2 (`docs/memory.md`, "Nested plans"),
-///   each trip `stage B batch` (CPU) copying its range of the heap row
+///   a counted loop of ring depth 2, or 1 when there is one batch
+///   (`docs/memory.md`, "Nested plans"), each trip `stage B batch` (CPU) copying its range of the heap row
 ///   into its pinned window, the last range clamped to the row's end
 ///   ([`Dag::upload_heap`]), `upload B batch` (lane 1) copying the window
 ///   up, and **`df jk batch`** (stream, lane 0) contracting the trip's
@@ -206,7 +206,10 @@ pub fn add_streamed_jk(
             acc: acc.clone(),
         },
     );
-    dag.add_counted(body, naux.div_ceil(width), DEPTH);
+    // A fitting set of one batch or less is one trip, whose ring is one
+    // copy: a counted loop's depth is at most its trips.
+    let trips = naux.div_ceil(width);
+    dag.add_counted(body, trips, DEPTH.min(trips));
 
     Ok(dag.add_gpu("df jk finish", worker, Finish { shape, tables, acc }))
 }

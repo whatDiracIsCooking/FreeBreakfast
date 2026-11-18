@@ -73,6 +73,7 @@ fn dense() -> EriStep {
     EriStep {
         mode: EriMode::Conventional,
         aux_basis: None,
+        schwarz_threshold: None,
         storage: Some(EriStorage::Dense),
     }
 }
