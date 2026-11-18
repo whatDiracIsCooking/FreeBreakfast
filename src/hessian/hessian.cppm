@@ -1165,14 +1165,16 @@ df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
 
 /// @brief What @ref df_pc_nevpt2 holds: @ref df_sc_nevpt2_footprint over PC's
 /// gradient (@c nevpt2::pc_gradient_footprint) and product
-/// (@c nevpt2::pc_hessian_product_footprint), no pair taken again.
+/// (@c nevpt2::pc_hessian_product_footprint), no pair taken again, and the
+/// degenerate pairs' step: a turned basis beside one more product (unless
+/// @p degenerate is false, for a caller that knows the run takes no inactive
+/// pair by its off-diagonal f: PcNevpt2Terms::degenerate_pairs empty).
 /// @p dropped is theirs: the state's PcClassEnergies::dropped, or empty for
 /// the rank that holds the most.
-[[nodiscard]] MemoryFootprint
-df_pc_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas,
-                       int32_t nalpha, int32_t nbeta, int32_t k, int32_t batch,
-                       std::span<const size_t> syevd_lwork,
-                       std::span<const std::array<int64_t, 8>> dropped = {});
+[[nodiscard]] MemoryFootprint df_pc_nevpt2_footprint(
+    const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas, int32_t nalpha,
+    int32_t nbeta, int32_t k, int32_t batch, std::span<const size_t> syevd_lwork,
+    std::span<const std::array<int64_t, 8>> dropped = {}, bool degenerate = true);
 
 /// @brief A state-averaged DF-CASSCF root's analytic nuclear Hessian and its
 /// terms (docs/hessian/hessian.tex eq. sa), each 3 n_atom x 3 n_atom,
@@ -1957,7 +1959,8 @@ df_qd_sc_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux, int32_t nc
 /// @brief @ref df_qd_sc_nevpt2_footprint over PC's pieces (@ref df_qd_pc_nevpt2
 /// and @ref df_qd_pc_nevpt2_crossing): qd_pc_energy's H_eff, qd_pc_gradient's
 /// W form with its passes, qd_pc_hessian_product, PC's term (ii); @p pairs a
-/// direction the product refuses taken again with its partner. @p dropped as
+/// direction the product refuses taken again with its partner; @p degenerate
+/// the degenerate pairs' step, as @ref df_pc_nevpt2_footprint's. @p dropped as
 /// theirs: per state, its diagonal PcClassEnergies::dropped, or empty for
 /// the rank that holds the most.
 [[nodiscard]] MemoryFootprint
@@ -1965,7 +1968,8 @@ df_qd_pc_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux, int32_t nc
                           int32_t nalpha, int32_t nbeta, int32_t nroots, bool rotating, int32_t k,
                           int32_t batch, std::span<const size_t> syevd_lwork,
                           QdNevpt2Form form = QdNevpt2Form::state,
-                          std::span<const std::array<int64_t, 8>> dropped = {}, bool pairs = true);
+                          std::span<const std::array<int64_t, 8>> dropped = {}, bool pairs = true,
+                          bool degenerate = true);
 
 /// @brief The closed-shell DF-RHF nuclear Hessian and every term of it, each
 /// 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}

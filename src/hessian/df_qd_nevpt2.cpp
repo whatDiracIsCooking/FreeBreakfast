@@ -1409,14 +1409,14 @@ Result<QdPcNevpt2Terms> df_qd_pc_nevpt2_crossing(
 // The footprint of qd_nevpt2_terms in @p form, SC's or with @p pc PC's at
 // @p dropped (per state, or empty for the most), @p pairs counting the
 // products a pair of coordinates takes again (SC's pair, PC's refused
-// direction with its partner).
+// direction with its partner), @p degenerate PC's degenerate-pair step.
 MemoryFootprint qd_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
                                     const int32_t ncas, const int32_t nalpha, const int32_t nbeta,
                                     const int32_t nroots, const bool rotating, const int32_t k,
                                     const int32_t batch, const std::span<const size_t> syevd_lwork,
                                     const QdNevpt2Form form, const bool pc,
                                     const std::span<const std::array<int64_t, 8>> dropped,
-                                    const bool pairs) {
+                                    const bool pairs, const bool degenerate) {
   const size_t nao = basis.nao_sphe();
   if (basis.natoms() == 0 || aux.natoms() != basis.natoms() || aux.nao_sphe() == 0 || ncore < 0 ||
       ncas < 1 || static_cast<size_t>(ncore) + static_cast<size_t>(ncas) > nao || nalpha < 1 ||
@@ -1543,7 +1543,7 @@ MemoryFootprint qd_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux, 
   } else if (pairs) {
     l.run(product(1, 1));
   }
-  if (pc) {
+  if (pc && degenerate) {
     // 4b. PC's degenerate pairs: z, the direction and U, the turned C, h_bar
     // turned back; the zero B and c directions, the turn's work and Lambda
     // turned back; the paired column; beside one product.
@@ -1624,18 +1624,17 @@ MemoryFootprint df_qd_sc_nevpt2_footprint(const BasisSet &basis, const BasisSet 
                                           const std::span<const size_t> syevd_lwork,
                                           const QdNevpt2Form form, const bool pairs) {
   return qd_nevpt2_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots, rotating, k, batch,
-                             syevd_lwork, form, false, {}, pairs);
+                             syevd_lwork, form, false, {}, pairs, false);
 }
 
-MemoryFootprint
-df_qd_pc_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
-                          const int32_t ncas, const int32_t nalpha, const int32_t nbeta,
-                          const int32_t nroots, const bool rotating, const int32_t k,
-                          const int32_t batch, const std::span<const size_t> syevd_lwork,
-                          const QdNevpt2Form form,
-                          const std::span<const std::array<int64_t, 8>> dropped, const bool pairs) {
+MemoryFootprint df_qd_pc_nevpt2_footprint(
+    const BasisSet &basis, const BasisSet &aux, const int32_t ncore, const int32_t ncas,
+    const int32_t nalpha, const int32_t nbeta, const int32_t nroots, const bool rotating,
+    const int32_t k, const int32_t batch, const std::span<const size_t> syevd_lwork,
+    const QdNevpt2Form form, const std::span<const std::array<int64_t, 8>> dropped,
+    const bool pairs, const bool degenerate) {
   return qd_nevpt2_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots, rotating, k, batch,
-                             syevd_lwork, form, true, dropped, pairs);
+                             syevd_lwork, form, true, dropped, pairs, degenerate);
 }
 
 } // namespace free_breakfast::hessian
