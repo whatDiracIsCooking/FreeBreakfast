@@ -143,12 +143,13 @@ fn live_bound(rows: &[Row]) -> usize {
 
 /// One table of a committed golden, as its text gives it: the block's
 /// total, the rows outside any loop's body, and each loop's region with
-/// its body's rows.
+/// its body's rows and, for a region inside another loop's body (a counted
+/// loop in a decision loop's: `in loop a-b's body`), that loop's span.
 struct GoldenTable {
     name: String,
     total: usize,
     rows: Vec<Row>,
-    regions: Vec<(Row, usize, Vec<Row>)>,
+    regions: Vec<(Row, usize, Vec<Row>, Option<String>)>,
 }
 
 /// Every table in a golden's text: a `table:` line, then its row lines
@@ -186,8 +187,16 @@ fn golden_tables(file: &str, text: &str) -> Vec<GoldenTable> {
                 .iter()
                 .position(|&w| w == "copies")
                 .map_or(1, |at| words[at - 1].parse().expect("a region's copies"));
-            t.regions
-                .push((row(bytes, DEVICE_ALIGNMENT, life), copies, Vec::new()));
+            let parent = line
+                .split_once("in loop ")
+                .and_then(|(_, rest)| rest.split_once("'s body"))
+                .map(|(span, _)| span.to_owned());
+            t.regions.push((
+                row(bytes, DEVICE_ALIGNMENT, life),
+                copies,
+                Vec::new(),
+                parent,
+            ));
         } else if let [_, bytes, "task" | "edge" | "worker", life, ..] = words[..] {
             let Ok(bytes) = bytes.parse() else { continue };
             let life = match life.split_once('-') {
@@ -199,7 +208,7 @@ fn golden_tables(file: &str, text: &str) -> Vec<GoldenTable> {
             };
             let r = row(bytes, DEVICE_ALIGNMENT, life);
             match t.regions.last_mut() {
-                Some((_, _, body)) => body.push(r),
+                Some((_, _, body, _)) => body.push(r),
                 None => t.rows.push(r),
             }
         }
@@ -247,21 +256,38 @@ fn goldens_are_within_the_bound() {
             .display()
             .to_string();
         let text = std::fs::read_to_string(path).expect("a golden");
-        for t in golden_tables(&file, &text) {
+        for mut t in golden_tables(&file, &text) {
+            // A region inside another loop's body is one row of that body,
+            // not of the table's.
+            let span = |r: &Row| match r.life {
+                Life::Span { first, last } => format!("{first}-{last}"),
+                Life::Plan => String::new(),
+            };
+            let nested: Vec<(String, Row)> = t
+                .regions
+                .iter()
+                .filter_map(|(r, _, _, p)| p.clone().map(|p| (p, *r)))
+                .collect();
+            for (p, r) in nested {
+                let outer = t.regions.iter_mut().find(|(o, ..)| span(o) == p);
+                outer.expect("a nested region's loop").2.push(r);
+            }
             let mut parent = t.rows.clone();
             let mut check = |name: String, total: usize, bound: usize, tables: usize| {
                 if total as f64 > BOUND * bound as f64 + (tables * ALIGNMENT_ALLOWANCE) as f64 {
                     over.push(format!("{name}: {total} bytes, bound {bound}"));
                 }
             };
-            for (i, (region, copies, body)) in t.regions.iter().enumerate() {
+            for (i, (region, copies, body, inside)) in t.regions.iter().enumerate() {
                 check(
                     format!("{} loop {i}", t.name),
                     region.bytes,
                     copies * live_bound(body),
                     *copies,
                 );
-                parent.push(*region);
+                if inside.is_none() {
+                    parent.push(*region);
+                }
             }
             check(t.name.clone(), t.total, live_bound(&parent), 1);
             seen.push(t.name);
