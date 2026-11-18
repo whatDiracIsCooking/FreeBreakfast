@@ -15,4 +15,3 @@ basis = "cc-pvdz"
 [eri]                  # required: no default
 mode = "density_fitting"
 aux_basis = "cc-pvdz-jkfit"
-schwarz_threshold = 0.0      # required: a shell pair whose every sqrt((mn|mn)) is below it is dropped; 0 keeps all

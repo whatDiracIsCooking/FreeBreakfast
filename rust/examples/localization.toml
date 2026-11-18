@@ -14,7 +14,6 @@ basis = "cc-pvdz"
 [eri]                  # required: no default
 mode = "density_fitting"
 aux_basis = "cc-pvdz-jkfit"
-schwarz_threshold = 0.0      # required: a shell pair whose every sqrt((mn|mn)) is below it is dropped; 0 keeps all
 
 [localization]         # every key optional; these are the defaults
 mode = "pipek_mezey"          # the only mode ported; "ibo" is refused

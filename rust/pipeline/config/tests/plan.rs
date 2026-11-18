@@ -286,9 +286,8 @@ fn guess_refusals() {
 }
 
 /// What `[eri]` refuses, each `InvalidConfig` naming the key or table: the
-/// C++ default mode, which is not ported; a missing `aux_basis` or
-/// `schwarz_threshold` under `density_fitting`, which have no default, or
-/// a negative threshold; an `aux_basis` or a `schwarz_threshold` under
+/// C++ default mode, which is not ported; a missing `aux_basis` under
+/// `density_fitting`, which has no default, or a negative threshold; an `aux_basis` or a `schwarz_threshold` under
 /// `conventional`, which fits and screens nothing; an unknown key; a well-formed table
 /// beside a calculation other than `rhf`; its absence beside `rhf`; and a
 /// fitting set that is not compiled in.
@@ -304,11 +303,6 @@ fn eri_refusals() {
             "eri_no_aux_basis",
             RHF.replace("aux_basis = \"cc-pvdz-jkfit\"\n", ""),
             "[eri] aux_basis: mode = \"density_fitting\" needs a fitting set",
-        ),
-        (
-            "eri_no_schwarz_threshold",
-            RHF.replace("schwarz_threshold = 0.0\n", ""),
-            "[eri] schwarz_threshold: mode = \"density_fitting\" needs a screen",
         ),
         (
             "eri_negative_schwarz_threshold",
@@ -357,6 +351,21 @@ fn eri_refusals() {
         assert!(error.message.contains(named), "{name}: {error}");
         assert!(error.message.contains("config.toml"), "{name}: {error}");
     }
+}
+
+/// `[eri] schwarz_threshold` is optional under `density_fitting`: a
+/// config without it reads, leaving the key absent for
+/// `fb_pipeline_eri::add_eri` to take its default, and plans.
+#[test]
+fn schwarz_threshold_is_optional() {
+    let (dir, config) = read_text(
+        "eri_no_schwarz_threshold",
+        &RHF.replace("schwarz_threshold = 0.0\n", ""),
+    );
+    std::fs::copy(examples().join("water.xyz"), dir.join("m.xyz")).unwrap();
+    let config = config.expect("a config without the key reads");
+    assert_eq!(config.eri.as_ref().unwrap().schwarz_threshold, None);
+    plan(&config, |_| Ok(LWORK), tib).expect("a config without the key plans");
 }
 
 /// The `[eri]` table of [`RHF`].

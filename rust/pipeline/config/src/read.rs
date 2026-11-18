@@ -34,8 +34,8 @@ use crate::{Calculation, Config, MemoryCaps};
 ///   check: a `[guess]` with both `type` and `from` ([`GuessStep::check`]),
 ///   an `[eri] aux_basis` that is not a compiled-in fitting set, missing
 ///   under `mode = "density_fitting"` or given under `"conventional"`, and
-///   an `[eri] schwarz_threshold` the same way or negative
-///   ([`EriStep::check`]), an `[scf]` option out of range
+///   an `[eri] schwarz_threshold` given under `"conventional"`, or negative
+///   or not a number ([`EriStep::check`]), an `[scf]` option out of range
 ///   ([`ScfStep::check`]), a `[localization]` `max_sweeps` of 0 or a
 ///   tolerance out of range ([`LocalizationStep::check`]); then a
 ///   `[memory]` key under its floor, its default, naming the value.
