@@ -1,7 +1,8 @@
-//! The fit's plan at the fixture's shape, naux = 41 and nao = 5 (tier 3):
-//! `cholesky` after the metric's producer, `cholesky check` after it, and
-//! `density fit` after the tensor's producer, `cholesky` and the check, L
-//! and B outputs of `naux²` and `naux · nao²` doubles. The plan text, each
+//! The fit's plan at the fixture's shape, naux = 41 and 25 columns (tier
+//! 3): [`add_cholesky`] then [`add_batch_fit`], `cholesky` after the
+//! metric's producer, `cholesky check` after it, and `density fit` after
+//! the tensor's producer, `cholesky` and the check, L and B outputs of
+//! `naux²` and `naux · 25` doubles. The plan text, each
 //! worker's device and pinned table among it, is the committed golden
 //! `tests/golden/plan_naux41_nao5.txt`, `FB_BLESS=1` rewriting it
 //! (`docs/testing.md`, "Performance"). Planning touches no device; it does
@@ -12,7 +13,7 @@ use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
-use fb_integrals_eri_density_fitting_fit::{add_batch_fit, add_density_fit};
+use fb_integrals_eri_density_fitting_fit::add_batch_fit;
 use fb_recipes_cholesky::add_cholesky;
 use fb_test_support::golden;
 
@@ -70,7 +71,11 @@ fn inputs(dag: &mut Dag<'_>) -> (RowId<Device, f64>, RowId<Device, f64>) {
 fn plan_golden() {
     let mut dag = Dag::new();
     let (metric, tensor) = inputs(&mut dag);
-    let (b, l) = add_density_fit(&mut dag, 0, NAO, NAUX, metric, tensor).unwrap();
+    let factor = add_cholesky(&mut dag, 0, "L", NAUX, metric).unwrap();
+    let (b, l) = (
+        add_batch_fit(&mut dag, 0, NAUX, NAO * NAO, factor, tensor),
+        factor.0,
+    );
     let planned = dag.plan();
     assert_eq!(planned.device_table(0).len(b), NAUX * NAO * NAO);
     assert_eq!(planned.device_table(0).len(l), NAUX * NAUX);
@@ -91,14 +96,15 @@ fn plan_golden() {
     golden(env!("CARGO_MANIFEST_DIR"), "plan_naux41_nao5.txt", &text);
 }
 
-/// An empty orbital basis is refused at planning.
+/// An empty batch is refused at planning.
 #[test]
 #[cfg(debug_assertions)] // the contract is compiled out of release
-#[should_panic(expected = "an orbital basis of at least one function")]
-fn an_empty_orbital_basis_is_refused() {
+#[should_panic(expected = "a batch of at least one column")]
+fn an_empty_batch_is_refused() {
     let mut dag = Dag::new();
     let (metric, tensor) = inputs(&mut dag);
-    let _ = add_density_fit(&mut dag, 0, 0, NAUX, metric, tensor);
+    let factor = add_cholesky(&mut dag, 0, "L", NAUX, metric).unwrap();
+    let _ = add_batch_fit(&mut dag, 0, NAUX, 0, factor, tensor);
 }
 
 /// Two batches fitted against one factor: one `cholesky` and one check,

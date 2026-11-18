@@ -10,108 +10,61 @@
 //! is the reference design; its README has the layout and why the factor is
 //! the tree's own blocked Cholesky and not `potrf`.
 //!
-//! [`add_density_fit`] adds, for a metric row M and a tensor row (P|mn):
+//! [`add_batch_fit`] adds, for a factor `(L, checked)` that
+//! [`add_cholesky`] made once over the metric M (**`cholesky`** on the
+//! stream and **`cholesky check`** on the CPU, a metric that is not
+//! positive definite failing the run with `Numerical`, naming the 1-based
+//! leading minor) and a tensor row of `columns` columns:
 //!
-//! - [`add_cholesky`]'s two tasks over M: **`cholesky`** on the stream, L
-//!   an output row, and **`cholesky check`** on the CPU, a metric that is not
-//!   positive definite failing the run with `Numerical`, naming the 1-based
-//!   leading minor.
-//! - **`density fit`**, on the stream: (P|mn) copied into the output row B,
-//!   then `B ← L⁻¹ B` by one [`trsm`] over L's lower triangle. It reads the
-//!   check's `checked` row beside L, so it runs after the check and only
-//!   when the check passed: on a failed factorization it, and every reader
-//!   of B, is skipped.
+//! - **`density fit`**, on the stream: the tensor copied into the output
+//!   row B, then `B ← L⁻¹ B` by one [`trsm`] over L's lower triangle. It
+//!   reads the check's `checked` row beside L, so it runs after the check
+//!   and only when the check passed: on a failed factorization it, and
+//!   every reader of B, is skipped.
 //!
-//! [`add_batch_fit`] is that last task alone, over any `columns` columns
-//! of a tensor against an L [`add_cholesky`] made once: the fit of a
-//! packed batch of shell pairs, whose columns are solved apart from every
-//! other batch's, so a B built batch by batch is the one-batch B column
-//! for column. [`add_density_fit`] is [`add_cholesky`], then it over the
-//! square tensor's `nao²` columns.
+//! The columns are a packed batch of shell pairs'
+//! (`fb_integrals_eri_density_fitting_three_center::add_packed_three_center`),
+//! each solved apart from every other batch's, so a B built batch by batch
+//! (`add_packed_b`) is the one-batch B column for column.
 //!
-//! **The layout** is the C++ one. The tensor and B are `naux` × `nao²`,
-//! column-major at leading dimension `naux`: element `(P, n + nao m)` at
-//! `P + naux (n + nao m)`, so P is fastest, then n, then m. B's `[Q][n][m]`
-//! is what J (a gemv over `vec(D)`) and K (the `naux` × `nao` block `B_m`
-//! at `naux · nao · m`) read. (mn|P) is symmetric in m and n, so which of
-//! the two is slower is the producer's choice, and the fit keeps it.
+//! **The layout** keeps the C++ one's aux index fastest: the tensor and B
+//! are `naux` × `columns`, column-major at leading dimension `naux`,
+//! element `(P, c)` at `P + naux · c`. The C++ B is the square
+//! `naux` × `nao²`; here a batch's columns are its kept pairs' spherical
+//! ones, and the build loop transposes each batch into B's pair-fastest
+//! heap row.
 //!
 //! **Not in place.** The C++ call overwrites the metric with L and the
 //! tensor with B. A task writes only its own rows, so L and B are output
 //! rows of their own, each filled by a device copy first; the metric's and
 //! the tensor's rows end at their last read, and the assigner gives their
-//! bytes to whatever starts after. The extra row costs no peak: the
-//! three-center task before the fit holds more (`docs/memory.md`,
-//! "Lifetimes", which has the bytes measured).
+//! bytes to whatever starts after (`docs/memory.md`, "Lifetimes").
 //!
 //! | C++ | Here |
 //! |---|---|
-//! | `density_fit(res, nao, naux, metric, b)`, the metric overwritten by L and `b` by B | [`add_density_fit`], returning B's and L's own output rows |
+//! | `density_fit(res, nao, naux, metric, b)`, the metric overwritten by L and the square `b` by B | [`add_cholesky`] once, then [`add_batch_fit`] per batch of kept pairs, each returning its own output row; no square fit (#1721) |
 //! | `cholesky(res, naux, metric)` and its flag, read by one stream sync | [`add_cholesky`]'s `cholesky` and `cholesky check`, the sync the edge between them |
 //! | the trsm queued after the sync | the `density fit` task, which reads `checked` and so runs after the check |
-//! | `wwr::trsm<double, int32_t>(…, LEFT, LOWER, N, NON_UNIT, naux, nao², 1, metric, naux, b, naux)` | [`trsm`], the same modes, on the stream worker's handle |
-//! | `nao == 0` or `naux == 0`: an empty success; a negative count: `InvalidConfig` | refused at planning: both counts are at least 1 |
-//! | `nao²` past `int32_t`: `InvalidConfig` | an always-on contract, since the BLAS's column count is an `i32` |
+//! | `wwr::trsm<double, int32_t>(…, LEFT, LOWER, N, NON_UNIT, naux, nao², 1, metric, naux, b, naux)` | [`trsm`], the same modes over the batch's `columns`, on the stream worker's handle |
+//! | `nao == 0` or `naux == 0`: an empty success; a negative count: `InvalidConfig` | contracts: both counts are at least 1 |
+//! | `nao²` past `int32_t`: `InvalidConfig` | an always-on contract on `columns`, since the BLAS's column count is an `i32` |
 //! | `ScopedDeviceIndex` for the call | nothing: a stream worker's tasks run on its device |
 //! | `lindep > 0`, the fit over M's eigenmodes above it (#630) | not ported: no basis the tree carries needs it, and the C++ Eri step never sets it |
 //! | `density_fit_footprint(…)`, nothing on the Cholesky path | the tasks' layouts: L, B, and the factor's scratch, read off the plan's table |
 //!
 //! [`trsm`]: fb_core_wwr::blas::trsm
+//! [`add_cholesky`]: fb_recipes_cholesky::add_cholesky
 
 #![forbid(unsafe_code)]
 
 use contracts::debug_requires;
 use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2d};
-use fb_core_error_handling::{Result, Status};
+use fb_core_error_handling::Status;
 use fb_core_log::fits_i32;
 use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::trsm;
-use fb_recipes_cholesky::add_cholesky;
 use wwr_sys::{wwr_blas_diag_type, wwr_blas_fill_mode, wwr_blas_operation, wwr_blas_side_mode};
-
-/// Add the density-fitting factor of the `naux` × `naux` Coulomb metric
-/// `metric` and the `naux` × `nao²` three-center tensor `tensor` to `dag`
-/// on GPU worker `worker`, and return `(B, L)`: B = L⁻¹ (P|mn), an output
-/// row of `naux · nao²` doubles named `"B"`, in the tensor's layout; and L,
-/// with M = L Lᵀ, an output row of `naux²` doubles named `"L"`, column-major,
-/// L in its lower triangle and M's strict upper triangle above it.
-///
-/// `metric` is an earlier task's output of `naux²` doubles, column-major,
-/// of which only the lower triangle is read; `tensor` one of `naux · nao²`
-/// doubles, column-major at leading dimension `naux` (P fastest, then n,
-/// then m). Both are left as they were. The tasks added are
-/// [`add_cholesky`]'s over `metric`, then `density fit` (stream), which
-/// reads L and the check's `checked` row, so a metric that is not positive
-/// definite fails the run with the check's `Numerical`, naming the leading
-/// minor, and neither `density fit` nor any reader of B runs.
-///
-/// # Errors
-/// As [`add_cholesky`]: a `GpuRuntime` error if the loaded
-/// `libfb_recipes_kernels.so` is not the one the bindings describe, before
-/// anything is added.
-///
-/// # Panics
-/// If a row is of another worker's table ([`Dag::add_gpu`]).
-#[debug_requires(naux > 0, "a fitting set of at least one function")]
-#[debug_requires(nao > 0, "an orbital basis of at least one function")]
-#[requires(fits_i32!(naux), "naux fits the BLAS's i32")]
-#[requires(fits_i32!(nao.checked_mul(nao)), "nao² fits the BLAS's i32")]
-#[track_caller]
-pub fn add_density_fit(
-    dag: &mut Dag<'_>,
-    worker: usize,
-    nao: usize,
-    naux: usize,
-    metric: RowId<Device, f64>,
-    tensor: RowId<Device, f64>,
-) -> Result<(RowId<Device, f64>, RowId<Device, f64>)> {
-    let factor = add_cholesky(dag, worker, "L", naux, metric)?;
-    Ok((
-        add_batch_fit(dag, worker, naux, nao * nao, factor, tensor),
-        factor.0,
-    ))
-}
 
 /// Add the fit of `columns` columns of a three-center tensor, `tensor`,
 /// against a metric's factor L, to `dag` on GPU worker `worker`, and
@@ -122,14 +75,15 @@ pub fn add_density_fit(
 /// column-major at leading dimension `naux`, element `(P, c)` at
 /// `P + naux · c`, left as it was: a packed batch of shell pairs'
 /// spherical columns
-/// (`fb_integrals_eri_density_fitting_three_center::add_packed_three_center`'s),
-/// or the square tensor's `nao²` ([`add_density_fit`]'s). Each column is
+/// (`fb_integrals_eri_density_fitting_three_center::add_packed_three_center`'s).
+/// Each column is
 /// solved alone, so a batch's B is its columns of the whole tensor's. B
 /// keeps the aux index fastest; a packed B's heap row is pair-fastest
 /// (`fb_integrals_eri_density_fitting_pair_map`'s crate doc), so a
 /// batch's `(Q, c)` goes to `first + c + n_columns · Q` there, `first` the
 /// batch's first column: that copy is a transpose, the build loop's.
-/// `factor` is [`add_cholesky`]'s `(L, checked)` over the `naux` × `naux`
+/// `factor` is [`add_cholesky`](fb_recipes_cholesky::add_cholesky)'s
+/// `(L, checked)` over the `naux` × `naux`
 /// metric, added once for every batch fitted against it. The task added
 /// is `density fit` (stream), which reads `tensor`, L and `checked`, so it
 /// runs after the check and only when the check passed.

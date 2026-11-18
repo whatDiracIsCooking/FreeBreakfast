@@ -1,9 +1,9 @@
-//! Water's plan (tier 3): the plan text, each worker's device and pinned
-//! table among it with the arena's size, is a committed golden,
-//! `FB_BLESS=1` rewriting it (`docs/testing.md`, "Performance"); admission
-//! of its device table; and the refusals planning makes of a basis, and of
-//! records handed in with other tables. The packed build's plan over two
-//! batches is a golden of its own.
+//! Water's packed build over two batches (tier 3): the plan text, each
+//! worker's device and pinned table among it with the arena's size, is a
+//! committed golden, `FB_BLESS=1` rewriting it (`docs/testing.md`,
+//! "Performance"); admission of a one-batch plan's device table; U's
+//! slots; and the refusals planning makes of a basis, and of records
+//! handed in with other tables.
 //! Planning touches no device, but the load check reads the kernel library,
 //! so it must be built.
 
@@ -13,30 +13,10 @@ use fb_basis::{BasisSet, Shell};
 use fb_core_error_handling::ErrorKind;
 use fb_core_planner::Dag;
 use fb_integrals_eri_density_fitting_pair_map::PairMap;
-use fb_integrals_eri_density_fitting_three_center::{add_packed_three_center, add_three_center};
+use fb_integrals_eri_density_fitting_three_center::add_packed_three_center;
 use fb_integrals_mmd::record_tables;
-use fb_integrals_sys::{AuxTable, add_three_center_tasks};
-use fb_recipes_matrix_ao::add_harmonics;
+use fb_integrals_sys::{AuxTable, add_packed_three_center_tasks};
 use fb_test_support::golden;
-
-#[test]
-fn plan_golden() {
-    let (basis, aux) = common::water();
-    let fixture = common::plan(&basis, &aux);
-    // The table's text ends an empty handoffs line in a space, which the
-    // trailing-whitespace hook strips from the committed file.
-    let text: String = fixture
-        .planned
-        .to_string()
-        .lines()
-        .map(|l| format!("{}\n", l.trim_end()))
-        .collect();
-    golden(
-        env!("CARGO_MANIFEST_DIR"),
-        "plan_h2o_cc-pvdz_cc-pvdz-jkfit.txt",
-        &text,
-    );
-}
 
 /// Water's packed build over two batches of its kept pairs, the second
 /// starting mid-class, planned after the records: per batch, `packed
@@ -81,24 +61,24 @@ fn packed_plan_golden() {
     );
 }
 
-/// Both tensors are rows of the plan's device table at planning: the
-/// Cartesian one (`nao_cart² naux_cart` doubles) and (mn|P)
-/// (`nao² naux`), so a budget one byte short of the two is refused by
-/// admission as `Allocation`, naming each with its bytes, and the table's
-/// own total is admitted.
+/// Both of a batch's tensors are rows of the plan's device table at
+/// planning: the Cartesian batch (`n_col_cart · naux_cart` doubles) and
+/// its spherical transform (`naux · n_col`), each named `(mn|P) packed`,
+/// so a budget one byte short of the two is refused by admission as
+/// `Allocation`, naming each with its bytes, and the table's own total is
+/// admitted.
 #[test]
 fn admission_refuses_a_budget_short_of_the_two_tensors() {
     let (basis, aux) = common::water();
     let fixture = common::plan(&basis, &aux);
     let table = fixture.planned.device_table(0);
-    let (n_cart, n_aux_cart) = (basis.nao_cart() as usize, aux.nao_cart() as usize);
-    let cartesian = 8 * n_cart * n_cart * n_aux_cart;
-    let spherical = 8 * fixture.n_ao * fixture.n_ao * fixture.n_aux;
+    let cartesian = 8 * fixture.map.cart().n_columns() * aux.nao_cart() as usize;
+    let spherical = 8 * fixture.map.sphe().n_columns() * fixture.n_aux;
     let err = fb_core_arena::admit(table, cartesian + spherical - 1, "gpu0").unwrap_err();
     assert_eq!(err.kind, ErrorKind::Allocation, "{err}");
     for named in [
-        format!("(mn|P) cartesian ({cartesian} B)"),
-        format!("(mn|P) ({spherical} B)"),
+        format!("(mn|P) packed ({cartesian} B)"),
+        format!("(mn|P) packed ({spherical} B)"),
     ] {
         assert!(err.message.contains(&named), "{named} not in: {err}");
     }
@@ -106,9 +86,8 @@ fn admission_refuses_a_budget_short_of_the_two_tensors() {
 }
 
 /// An orbital shell past f and an aux shell past i are refused at planning
-/// as `Unsupported`, naming the shell, before anything is added, by the
-/// square and the packed build alike: the launcher would refuse their
-/// classes only at run time.
+/// as `Unsupported`, naming the shell, before anything is added: the
+/// launcher would refuse their classes only at run time.
 #[test]
 fn a_shell_past_the_kernels_is_unsupported_at_planning() {
     let shell = |l| Shell::zipped(l, &[1.0], &[1.0], Default::default());
@@ -127,10 +106,6 @@ fn a_shell_past_the_kernels_is_unsupported_at_planning() {
     ] {
         let mut dag = Dag::new();
         let classes = fb_integrals_mmd::add_records(&mut dag, 0, &basis).unwrap();
-        let err = add_three_center(&mut dag, 0, &basis, &classes, &aux, &mut None, &mut None)
-            .unwrap_err();
-        assert_eq!(err.kind, ErrorKind::Unsupported, "{err}");
-        assert!(err.message.contains(named), "{err}");
         let map = PairMap::new(&record_tables(&basis), None, 0.0);
         let all = 0..map.pairs().len();
         let err = add_packed_three_center(
@@ -159,10 +134,16 @@ fn u_and_u_aux_are_read_from_the_slots() {
     let (basis, aux) = common::water();
     let mut dag = Dag::new();
     let classes = fb_integrals_mmd::add_records(&mut dag, 0, &basis).unwrap();
+    let map = PairMap::new(&record_tables(&basis), None, 0.0);
     let (mut u, mut u_aux) = (None, None);
-    add_three_center(&mut dag, 0, &basis, &classes, &aux, &mut u, &mut u_aux).unwrap();
+    let mut build = |u: &mut Option<_>, u_aux: &mut Option<_>| {
+        let all = 0..map.pairs().len();
+        add_packed_three_center(&mut dag, 0, &basis, &classes, &aux, &map, all, 1, u, u_aux)
+            .unwrap();
+    };
+    build(&mut u, &mut u_aux);
     assert!(u.is_some() && u_aux.is_some(), "both slots are filled");
-    add_three_center(&mut dag, 0, &basis, &classes, &aux, &mut u, &mut u_aux).unwrap();
+    build(&mut u, &mut u_aux);
     let planned = dag.plan();
     let names: Vec<String> = planned
         .to_string()
@@ -179,18 +160,20 @@ fn u_and_u_aux_are_read_from_the_slots() {
         .collect();
     assert_eq!(uploads.len(), 2, "one upload per basis: {names:?}");
     let last = names.len() - 1;
-    assert_eq!(names[last], "three-center", "{names:?}");
-    // The second build adds `three-center tables` and `three-center` alone.
-    assert_eq!(names[last - 1], "three-center tables", "{names:?}");
+    // The second build adds `packed three-center tables`, `packed
+    // three-center` and `spherical transform` alone.
+    assert_eq!(names[last], "spherical transform", "{names:?}");
+    assert_eq!(names[last - 1], "packed three-center", "{names:?}");
+    assert_eq!(names[last - 2], "packed three-center tables", "{names:?}");
     assert!(
-        uploads.iter().all(|&t| t < last - 1),
+        uploads.iter().all(|&t| t < last - 2),
         "the second build adds no harmonics: {names:?}"
     );
     let reads = planned.device_table(0).reads();
     for t in uploads {
         assert!(
             reads.contains(&(t, last)),
-            "the second build reads upload {t}'s row"
+            "the second build's transform reads upload {t}'s row"
         );
     }
 }
@@ -200,7 +183,8 @@ fn u_and_u_aux_are_read_from_the_slots() {
 /// tables, and index the records' rows and the Cartesian tensor.
 #[test]
 #[should_panic(
-    expected = "Pre-condition of add_three_center_tasks violated: classes are the records of tables"
+    expected = "Pre-condition of add_packed_three_center_tasks violated: classes are the records \
+                of tables"
 )]
 fn records_of_other_tables_are_refused() {
     let (basis, aux) = common::water();
@@ -208,12 +192,7 @@ fn records_of_other_tables_are_refused() {
     let classes = fb_integrals_mmd::add_records(&mut dag, 0, &basis).unwrap();
     let mut table = AuxTable::new(1);
     table.push_shell(0, [0.0; 3], 0, [(1.0, 1.0)]);
-    let u = [
-        add_harmonics(&mut dag, 0, &basis, &mut None),
-        add_harmonics(&mut dag, 0, &aux, &mut None),
-    ];
-    let n_sph = [basis.nao_sphe() as usize, 1];
     // The aux basis's tables, of other classes than the records'.
     let other = fb_integrals_mmd::record_tables(&aux);
-    add_three_center_tasks(&mut dag, 0, &classes, &other, &table, u, n_sph);
+    add_packed_three_center_tasks(&mut dag, 0, &classes, &other, &table, &[0], 1);
 }

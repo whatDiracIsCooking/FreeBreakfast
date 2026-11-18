@@ -1,8 +1,9 @@
 //! The fit on a card (tier 4, device 0), one run per case, on the committed
 //! fixtures `tests/data/*.npy` (written by `tests/data/inputs.py`, which
 //! says how each is built): the metric and the tensor are staged, uploaded,
-//! fitted by [`add_density_fit`], and B and L brought back by a task after
-//! the fit.
+//! factored by [`add_cholesky`] and fitted by [`add_batch_fit`] over the
+//! tensor's `nao²` columns, and B and L brought back by a task after the
+//! fit.
 //!
 //! **The bar, by analysis, one run.** The triangular solve is backward
 //! stable column by column: each computed column x of B satisfies
@@ -28,7 +29,8 @@ use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_
 use fb_core_error_handling::{ErrorKind, Status};
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::{DeviceStream, Record};
-use fb_integrals_eri_density_fitting_fit::add_density_fit;
+use fb_integrals_eri_density_fitting_fit::add_batch_fit;
+use fb_recipes_cholesky::add_cholesky;
 
 /// The tensor's orbital count: b is naux × nao².
 const NAO: usize = 5;
@@ -178,7 +180,11 @@ fn fit(naux: usize, m: Vec<f64>, b: Vec<f64>) -> (Record, Fitted) {
             len: b_len,
         },
     );
-    let (b, l) = add_density_fit(&mut dag, 0, NAO, naux, metric, tensor).unwrap();
+    let factor = add_cholesky(&mut dag, 0, "L", naux, metric).unwrap();
+    let (b, l) = (
+        add_batch_fit(&mut dag, 0, naux, NAO * NAO, factor, tensor),
+        factor.0,
+    );
     let rows = dag.add_gpu(
         "download",
         0,

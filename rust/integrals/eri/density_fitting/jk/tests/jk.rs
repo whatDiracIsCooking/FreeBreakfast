@@ -2,8 +2,11 @@
 //! fixtures `tests/data/*.npy` (written by `tests/data/inputs.py`, which
 //! says how each is built): a random fitted factor B of naux = 23 by
 //! nao² = 7², each `B_Q` symmetric, an occupied factor C of 7 × 3, and
-//! `D = 2 C Cᵀ`. They are staged, uploaded, J or K built by its task, and
-//! the result brought back by a task after it.
+//! `D = 2 C Cᵀ`. B is packed over the spherical packing of an s and two p
+//! shells (7 functions, every pair kept), losslessly since each `B_Q` is
+//! symmetric, and written into a heap row; D and C are staged and uploaded;
+//! J and K are built by one streamed pass ([`add_streamed_jk`]), and
+//! brought back by a task after it.
 //!
 //! **The bar, by analysis, one run.** Each element of J and K is a sum of
 //! `naux nao²` products of B, B and D (or C, C) evaluated in two stages,
@@ -19,14 +22,35 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use fb_basis::{BasisSet, Shell};
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
-use fb_integrals_eri_density_fitting_jk::{add_df_coulomb, add_df_exchange};
+use fb_core_types::Double3;
+use fb_integrals_eri_density_fitting_jk::{Contraction, add_streamed_jk};
+use fb_integrals_eri_density_fitting_pair_map::{Packing, PairMap};
+use fb_integrals_mmd::record_tables;
+use fb_integrals_sys::add_packed_tables;
 
 /// The bar's multiple of `naux nao ε max |ref|`.
 const MARGIN: f64 = 100.0;
+
+/// CPU: the packed B written into a heap row.
+struct Source(Vec<f64>);
+
+impl CpuTask for Source {
+    type Rows = RowId<Heap, f64>;
+
+    fn layout(&self, _: &mut Layout<'_, Pinned>, heap: &mut Layout<'_, Heap>) -> Self::Rows {
+        heap.output("B", self.0.len())
+    }
+
+    fn run(&self, row: &Self::Rows, _: &Bufs<'_, Pinned>, heap: &Bufs<'_, Heap>) -> Status {
+        heap.take_mut(*row).copy_from_slice(&self.0);
+        Ok(())
+    }
+}
 
 /// CPU: one input written into a pinned row.
 struct Stage {
@@ -153,41 +177,87 @@ fn fixtures() -> Fixtures {
     }
 }
 
-/// Upload `inputs` (each a name and its data) on device 0, add what `build`
-/// adds over their rows, download its `len`-double result after it, run
-/// the plan once and return that result.
-fn run(
-    inputs: Vec<(&'static str, Vec<f64>)>,
-    len: usize,
-    build: impl FnOnce(&mut Dag<'_>, &[RowId<Device, f64>]) -> RowId<Device, f64>,
-) -> Vec<f64> {
+/// The spherical packing of an s and two p shells, 7 functions, every
+/// pair kept: the fixtures' `nao`.
+fn packing() -> Packing {
+    let at = |z| Double3 { x: 0.0, y: 0.0, z };
+    let basis = BasisSet::new(vec![
+        Shell::zipped(0, &[1.0], &[1.0], at(0.0)),
+        Shell::zipped(1, &[0.7], &[1.0], at(0.0)),
+        Shell::zipped(1, &[0.5], &[1.0], at(1.5)),
+    ]);
+    PairMap::new(&record_tables(&basis), None, 0.0)
+        .sphe()
+        .clone()
+}
+
+/// The fixtures' B packed over `packing` into B's heap layout, element
+/// `(column, Q)` at `column + n_columns Q`: each `B_Q` is symmetric, so
+/// the pack keeps every element.
+fn packed(f: &Fixtures, packing: &Packing) -> Vec<f64> {
+    let (nao, nc) = (f.nao, packing.n_columns());
+    let mut out = vec![0.0; f.naux * nc];
+    let mut bq = vec![0.0; nao * nao];
+    for (q, column) in out.chunks_mut(nc).enumerate() {
+        for (mn, v) in bq.iter_mut().enumerate() {
+            *v = f.b[q + f.naux * mn];
+        }
+        packing.pack(&bq, column);
+    }
+    out
+}
+
+/// J of the fixtures' D and K of their C by one streamed pass over their
+/// B, packed into a heap row, on device 0, run once: `[J, K]`, `nao²`
+/// doubles each.
+fn run(f: &Fixtures) -> [Vec<f64>; 2] {
+    let packing = packing();
+    let (nao, nc) = (packing.nao(), packing.n_columns());
+    assert_eq!(nao, f.nao, "the packing is the fixtures'");
     let mut dag = Dag::new();
     dag.blas_workspace(0);
-    let rows: Vec<RowId<Device, f64>> = inputs
-        .into_iter()
-        .map(|(name, data)| {
-            let len = data.len();
-            let staged = dag.add_cpu(format!("stage {name}"), 0, Stage { name, data });
-            dag.add_gpu(format!("upload {name}"), 0, Upload { name, staged, len })
-        })
-        .collect();
-    let result = build(&mut dag, &rows);
-    let down = dag.add_gpu("download", 0, Download { row: result, len });
-    let out = Arc::new(Mutex::new(Vec::new()));
-    dag.add_cpu(
-        "collect",
-        0,
-        Collect {
-            row: down,
-            out: Arc::clone(&out),
-        },
-    );
+    let b = dag.add_cpu("source", 0, Source(packed(f, &packing)));
+    let p = packing.clone();
+    let tables = add_packed_tables(&mut dag, 0, nao, nc, move |r, c, w| p.write_tables(r, c, w));
+    let mut upload = |name: &'static str, data: &[f64]| {
+        let (len, data) = (data.len(), data.to_vec());
+        let staged = dag.add_cpu(format!("stage {name}"), 0, Stage { name, data });
+        dag.add_gpu(format!("upload {name}"), 0, Upload { name, staged, len })
+    };
+    let (d, c) = (upload("D", &f.d), upload("C", &f.c));
+    let set = [
+        Contraction::Coulomb(d),
+        Contraction::Exchange { c, nocc: f.nocc },
+    ];
+    let jk = add_streamed_jk(&mut dag, 0, &packing, tables, f.naux, b, &set).unwrap();
+    let outs: [_; 2] = [jk[0], jk[1]].map(|row| {
+        let down = dag.add_gpu(
+            "download",
+            0,
+            Download {
+                row,
+                len: nao * nao,
+            },
+        );
+        let out = Arc::new(Mutex::new(Vec::new()));
+        dag.add_cpu(
+            "collect",
+            0,
+            Collect {
+                row: down,
+                out: Arc::clone(&out),
+            },
+        );
+        out
+    });
     let mut instance = dag.plan().instantiate(&[0]);
     let mut backend = instance.backend();
     instance.run(&mut backend, 1).result.unwrap();
-    let got = std::mem::take(&mut *out.lock().unwrap());
-    assert_eq!(got.len(), len, "the download did not run");
-    got
+    outs.map(|out| {
+        let got = std::mem::take(&mut *out.lock().unwrap());
+        assert_eq!(got.len(), nao * nao, "the download did not run");
+        got
+    })
 }
 
 /// `max |got - want|`, a NaN anywhere its result, and the bar
@@ -206,16 +276,19 @@ fn miss_and_bar(got: &[f64], want: &[f64], naux: usize, nao: usize) -> (f64, f64
     (miss, bar)
 }
 
-/// J of the committed D over the committed B on device 0, one run: within
-/// `100 naux nao ε max |J|` of the host's `Bᵀ (B vec(D))`. Catches a gemv
-/// with the wrong op, count or leading dimension, J and γ swapped, or D
-/// read transposed against B's pair order. Needs a GPU.
+/// J of the committed D over the committed B on device 0, one streamed
+/// pass: within `100 naux nao ε max |J|` of the host's `Bᵀ (B vec(D))`.
+/// Catches a gemv with the wrong op, count or leading dimension, D packed
+/// against other weights than B's columns, or J unpacked off its pairs.
+/// Needs a GPU.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn coulomb_is_the_hosts_within_the_products_rounding() {
+    let f = fixtures();
     let Fixtures {
         nao, naux, b, d, ..
-    } = fixtures();
+    } = &f;
+    let (nao, naux) = (*nao, *naux);
     let pairs = nao * nao;
     let gamma: Vec<f64> = (0..naux)
         .map(|q| (0..pairs).map(|p| b[q + naux * p] * d[p]).sum())
@@ -224,9 +297,7 @@ fn coulomb_is_the_hosts_within_the_products_rounding() {
         .map(|p| (0..naux).map(|q| b[q + naux * p] * gamma[q]).sum())
         .collect();
 
-    let j = run(vec![("B", b), ("D", d)], pairs, |dag, rows| {
-        add_df_coulomb(dag, 0, nao, naux, rows[0], rows[1])
-    });
+    let [j, _] = run(&f);
     let (miss, bar) = miss_and_bar(&j, &want, naux, nao);
     println!("naux {naux}, nao {nao}: max |ΔJ| = {miss:e} (bar {bar:e})");
     assert!(
@@ -236,22 +307,24 @@ fn coulomb_is_the_hosts_within_the_products_rounding() {
 }
 
 /// K of `D = 2 C Cᵀ` from the committed C over the committed B on device 0,
-/// one run: within `100 naux nao ε max |K|` of the host's `Σ_Q B_Q D B_Q`,
-/// and `(m, n)` and `(n, m)` the same bits. Catches a batch at the wrong
-/// stride (a `B_m` that is not B's block m), C not shared by the batch, a
+/// one streamed pass: within `100 naux nao ε max |K|` of the host's
+/// `Σ_Q B_Q D B_Q`, and `(m, n)` and `(n, m)` the same bits. Catches the
+/// gather's slab at the wrong stride, C not shared by the batched gemm, a
 /// syrk with the wrong op, scale or triangle, and a missing or reversed
 /// mirror. Needs a GPU.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn exchange_is_the_hosts_within_the_products_rounding_and_exactly_symmetric() {
+    let f = fixtures();
     let Fixtures {
         nao,
         naux,
         nocc,
         b,
-        c,
         d,
-    } = fixtures();
+        ..
+    } = &f;
+    let (nao, naux, nocc) = (*nao, *naux, *nocc);
     // B_Q's (l, m) is B's (Q, l + nao m).
     let bq = |q: usize, l: usize, m: usize| b[q + naux * (l + nao * m)];
     let mut want = vec![0.0; nao * nao];
@@ -271,9 +344,7 @@ fn exchange_is_the_hosts_within_the_products_rounding_and_exactly_symmetric() {
         }
     }
 
-    let k = run(vec![("B", b), ("C", c)], nao * nao, |dag, rows| {
-        add_df_exchange(dag, 0, nao, naux, nocc, rows[0], rows[1]).unwrap()
-    });
+    let [_, k] = run(&f);
     let (miss, bar) = miss_and_bar(&k, &want, naux, nao);
     println!("naux {naux}, nao {nao}, nocc {nocc}: max |ΔK| = {miss:e} (bar {bar:e})");
     assert!(

@@ -14,7 +14,7 @@
 //!   place from its records rows ([`Fields::THREE_CENTER`]), into the
 //!   packed tensor, its output.
 //!
-//! A cell is the square path's (`add_three_center_tasks`): a shell pair's
+//! A cell is the deleted square path's (#1721): a shell pair's
 //! record range, its prefix in its class, and an aux shell's, with its
 //! destination in place of the three AO offsets, the pair's first column
 //! times the aux count plus the aux shell's offset, and whether the pair is
@@ -143,9 +143,9 @@ impl Staging {
 /// kept pairs (`fb_integrals_eri_density_fitting_pair_map`) has that
 /// map's Cartesian columns, each relative to the range's first, and every
 /// element is bitwise the square tensor's `(m, n, P)`
-/// ([`add_three_center_tasks`](crate::add_three_center_tasks)' Cartesian
-/// tensor, before its transform): the same kernels' arithmetic, only the
-/// stores moved.
+/// ([`fb_three_center_class`](crate::fb_three_center_class)'s Cartesian
+/// tensor, which this module's test builds as the witness): the same
+/// kernels' arithmetic, only the stores moved.
 ///
 /// Every batch has the first's classes, pair for pair, so its columns
 /// and its launches are the first's: the rows and the launches are

@@ -3,8 +3,9 @@
 //! (orbitals to d, aux to f), and the C++ tree's hand-built `df_high_aux`
 //! (one shell per l on two skew centres, orbitals to f, aux to i, so every
 //! one of the kernels' 70 classes); and the plan they run: the records
-//! ([`fb_integrals_mmd::add_records`]), [`add_three_center`], and two tasks
-//! that bring (mn|P) to the host ([`download`], which the packed binary
+//! ([`fb_integrals_mmd::add_records`]), [`add_packed_three_center`] over
+//! every pair of the basis's map as one batch, and two tasks that bring
+//! the packed (mn|P) to the host ([`download`], which the packed binary
 //! adds after each of its products too).
 
 use std::path::PathBuf;
@@ -16,7 +17,9 @@ use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask, Plan};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_types::Double3;
-use fb_integrals_eri_density_fitting_three_center::add_three_center;
+use fb_integrals_eri_density_fitting_pair_map::PairMap;
+use fb_integrals_eri_density_fitting_three_center::add_packed_three_center;
+use fb_integrals_mmd::record_tables;
 
 /// A file of `tests/data/`.
 pub fn data(file: &str) -> PathBuf {
@@ -89,24 +92,34 @@ pub struct Fixture {
     pub planned: Plan<'static>,
     pub n_ao: usize,
     pub n_aux: usize,
+    /// The basis's map, every pair kept: the packed columns' blocks.
+    pub map: PairMap,
+    /// The packed (mn|P), `n_aux` × the map's spherical columns, element
+    /// `(P, c)` at `P + n_aux c`, after the run.
     pub out: Arc<Mutex<Vec<f64>>>,
 }
 
-/// The plan over `basis` and `aux`: the records, (mn|P)'s tasks, then
-/// `download` (stream: (mn|P) copied into a pinned row) and `collect`
-/// (CPU: the pinned row copied into `out`).
+/// The plan over `basis` and `aux`: the records, the packed (mn|P) of
+/// every pair as one batch ([`add_packed_three_center`]), then `download`
+/// (stream: (mn|P) copied into a pinned row) and `collect` (CPU: the
+/// pinned row copied into `out`).
 #[allow(dead_code, reason = "the packed binary plans its own")]
 pub fn plan(basis: &BasisSet, aux: &BasisSet) -> Fixture {
     let mut dag = Dag::new();
     let classes = fb_integrals_mmd::add_records(&mut dag, 0, basis).expect("the library loads");
-    let b = add_three_center(&mut dag, 0, basis, &classes, aux, &mut None, &mut None)
-        .expect("the kernels cover both");
+    let map = PairMap::new(&record_tables(basis), None, 0.0);
+    let all = 0..map.pairs().len();
+    let b = add_packed_three_center(
+        &mut dag, 0, basis, &classes, aux, &map, all, 1, &mut None, &mut None,
+    )
+    .expect("the kernels cover both");
     let (n_ao, n_aux) = (basis.nao_sphe() as usize, aux.nao_sphe() as usize);
-    let out = download(&mut dag, b, n_ao * n_ao * n_aux);
+    let out = download(&mut dag, b, n_aux * map.sphe().n_columns());
     Fixture {
         planned: dag.plan(),
         n_ao,
         n_aux,
+        map,
         out,
     }
 }

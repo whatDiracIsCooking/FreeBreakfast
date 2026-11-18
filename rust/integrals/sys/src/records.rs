@@ -25,7 +25,7 @@
 //! the order is not forked, and each shell pair's records stay one
 //! contiguous run, `[rec_begin[p], rec_begin[p + 1])` of its class, known
 //! at planning: what the three-center integrals' cells take
-//! ([`add_three_center_tasks`](crate::add_three_center_tasks)).
+//! ([`add_packed_three_center_tasks`](crate::add_packed_three_center_tasks)).
 //!
 //! Forming the tables from a basis, the sweep, is `fb-integrals-mmd`'s;
 //! this module trusts none of it, and checks every index the kernels
@@ -391,9 +391,10 @@ const I_OFF_B: usize = 17;
 /// class to a launcher:
 /// [`overlap_class`](crate::overlap_class),
 /// [`kinetic_class`](crate::kinetic_class) or
-/// [`potential_en_class`](crate::potential_en_class); the three-center
-/// task ([`add_three_center_tasks`](crate::add_three_center_tasks)) reads
-/// its bra fields in place the same way.
+/// [`potential_en_class`](crate::potential_en_class); the packed
+/// three-center task
+/// ([`add_packed_three_center_tasks`](crate::add_packed_three_center_tasks))
+/// reads its bra fields in place the same way.
 ///
 /// The fields are the C++ `PrimitivePairClass`'s (its README's design has
 /// each one), in enumeration order: shell pair, then bra primitive, then

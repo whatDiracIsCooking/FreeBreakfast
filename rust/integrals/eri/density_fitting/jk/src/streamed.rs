@@ -68,11 +68,8 @@ pub enum Contraction {
 /// [`fb_integrals_sys::add_packed_tables`] once, outside any loop the pass
 /// is in. Every input is left as it was. With
 /// `(mn|ls) ≈ Σ_Q B_Q,mn B_Q,ls`, a dropped shell pair's columns of B are
-/// zero, so J and K are the resident [`add_df_coulomb`] and
-/// [`add_df_exchange`] over B square with those columns zeroed.
-///
-/// [`add_df_coulomb`]: crate::add_df_coulomb
-/// [`add_df_exchange`]: crate::add_df_exchange
+/// zero, so J and K are `Σ_Q B_Q (Σ_ls B_Q,ls D_ls)` and
+/// `2 Σ_Q (B_Q C)(B_Q C)ᵀ` over B square with those columns zeroed.
 ///
 /// **The tasks**, in plan order:
 ///

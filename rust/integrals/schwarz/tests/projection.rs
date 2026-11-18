@@ -4,9 +4,11 @@
 //! Cartesian `sqrt((mn|mn))` is below the threshold has columns of B below
 //! it too.
 //!
-//! B is the device's own: the three-center integrals
-//! (`fb_integrals_eri_density_fitting_three_center`), the metric and the
-//! fit, as the DF step builds them, over the spherical functions. Those are
+//! B is the device's own, packed with every pair kept as the DF step
+//! builds it (`fb_integrals_eri_density_fitting_three_center::add_packed_b`
+//! over the metric's Cholesky factor, into a heap row), over the spherical
+//! functions; the bound is on each column, so the packed B serves as the
+//! square one did. Those are
 //! fixed combinations of the Cartesian ones, `|μν) = Σ_mn U_mμ U_nν |mn)`
 //! (U, [`fb_basis::spherical_transform_matrix`]), so the statement
 //! through U is, by the triangle inequality in the Coulomb norm,
@@ -28,13 +30,13 @@
 use std::sync::{Arc, Mutex};
 
 use fb_basis::BasisSet;
-use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p};
+use fb_core_arena::{Bufs, Heap, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
-use fb_core_planner::{CpuTask, Dag, GpuTask};
-use fb_core_thread_pool::DeviceStream;
-use fb_integrals_eri_density_fitting_fit::add_density_fit;
+use fb_core_planner::{CpuTask, Dag};
 use fb_integrals_eri_density_fitting_metric::add_metric;
-use fb_integrals_eri_density_fitting_three_center::add_three_center;
+use fb_integrals_eri_density_fitting_pair_map::PairMap;
+use fb_integrals_eri_density_fitting_three_center::add_packed_b;
+use fb_recipes_cholesky::add_cholesky;
 
 /// The bar on `Σ_Q B² / bound² - 1`.
 const BAR: f64 = 1e-10;
@@ -56,35 +58,28 @@ fn water() -> (BasisSet, BasisSet) {
     (basis, aux)
 }
 
-/// B of `basis` fitted over `aux` on device 0, one run, on the host:
-/// `naux · nao²` doubles, element `(Q, n + nao m)` at `Q + naux (n + nao m)`.
-fn fitted(basis: &BasisSet, aux: &BasisSet) -> Vec<f64> {
-    let (nao, naux) = (basis.nao_sphe() as usize, aux.nao_sphe() as usize);
+/// B of `basis` fitted over `aux` on device 0, packed over `map`, one
+/// run, brought back from its heap row: `naux · n_columns` doubles,
+/// element `(column, Q)` at `column + n_columns Q`.
+fn fitted(basis: &BasisSet, aux: &BasisSet, map: &PairMap) -> Vec<f64> {
+    let naux = aux.nao_sphe() as usize;
     let mut dag = Dag::new();
     dag.blas_workspace(0);
     let classes = fb_integrals_mmd::add_records(&mut dag, 0, basis).expect("the library loads");
     let mut u_aux = None;
-    let tensor = add_three_center(&mut dag, 0, basis, &classes, aux, &mut None, &mut u_aux)
-        .expect("the kernels cover both sets");
     let metric = add_metric(&mut dag, 0, aux, &mut u_aux).expect("the kernels cover the aux set");
-    let (b, _) =
-        add_density_fit(&mut dag, 0, nao, naux, metric, tensor).expect("the library loads");
-    let len = naux * nao * nao;
-    let pinned = dag.add_gpu("download", 0, Download { b, len });
+    let factor = add_cholesky(&mut dag, 0, "L", naux, metric).expect("the library loads");
+    let b = add_packed_b(
+        &mut dag, 0, basis, &classes, aux, map, factor, &mut None, &mut u_aux,
+    )
+    .expect("the kernels cover both sets");
     let out = Arc::new(Mutex::new(Vec::new()));
-    dag.add_cpu(
-        "collect",
-        0,
-        Collect {
-            pinned,
-            out: Arc::clone(&out),
-        },
-    );
+    dag.add_cpu("keep B", 0, Keep(b, Arc::clone(&out)));
     let mut instance = dag.plan().instantiate(&[0]);
     let mut backend = instance.backend();
     instance.run(&mut backend, 1).result.unwrap();
     let got = std::mem::take(&mut *out.lock().unwrap());
-    assert_eq!(got.len(), len, "B downloaded");
+    assert_eq!(got.len(), naux * map.sphe().n_columns(), "B kept");
     got
 }
 
@@ -98,16 +93,19 @@ fn fitted(basis: &BasisSet, aux: &BasisSet) -> Vec<f64> {
 #[ignore = "tier 4: needs a GPU"]
 fn device_b_is_within_the_host_diagonal() {
     let (basis, aux) = water();
-    let b = fitted(&basis, &aux);
+    let tables = fb_integrals_mmd::record_tables(&basis);
+    let map = PairMap::new(&tables, None, 0.0);
+    let b = fitted(&basis, &aux, &map);
     let (nc, ns, naux) = (
         basis.nao_cart() as usize,
         basis.nao_sphe() as usize,
         aux.nao_sphe() as usize,
     );
+    let n_columns = map.sphe().n_columns();
+    let sphe = map.sphe().blocks();
     let mut u = vec![0.0; nc * ns];
     fb_basis::spherical_transform_matrix(&basis, &mut u);
 
-    let tables = fb_integrals_mmd::record_tables(&basis);
     let pairs: Vec<(u32, u32)> = tables
         .classes()
         .iter()
@@ -117,7 +115,8 @@ fn device_b_is_within_the_host_diagonal() {
 
     let shells = basis.shells();
     let (mut at, mut worst, mut tightest, mut misses) = (0, f64::MIN, f64::MAX, Vec::new());
-    for &(a, c) in &pairs {
+    // Every pair kept, so the map's pair p is the tables' pair p.
+    for (p, &(a, c)) in pairs.iter().enumerate() {
         let (sa, sc) = (&shells[a as usize], &shells[c as usize]);
         let (na, nb) = (
             sa.function_count_cart() as usize,
@@ -142,8 +141,8 @@ fn device_b_is_within_the_host_diagonal() {
                             (u[ca + m + nc * mu] * u[cc + n + nc * nu]).abs() * block[m * nb + n];
                     }
                 }
-                let col = &b[naux * (nu + ns * mu)..][..naux];
-                let norm2: f64 = col.iter().map(|v| v * v).sum();
+                let column = sphe[p].column + (mu - pa) * sphe[p].n[1] + (nu - pc);
+                let norm2: f64 = (0..naux).map(|k| b[column + n_columns * k].powi(2)).sum();
                 let ratio = norm2 / (bound * bound) - 1.0;
                 worst = worst.max(ratio);
                 tightest = tightest.min(ratio.abs());
@@ -170,47 +169,18 @@ fn device_b_is_within_the_host_diagonal() {
     );
 }
 
-/// GPU: B, `len` doubles, copied into a pinned row on the stream.
-struct Download {
-    b: RowId<Device, f64>,
-    len: usize,
-}
+/// CPU: the heap row of B copied out, after the build's last write.
+struct Keep(RowId<Heap, f64>, Arc<Mutex<Vec<f64>>>);
 
-impl GpuTask for Download {
-    type Rows = RowId<Pinned, f64>;
-
-    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        device.read(self.b);
-        host.output("B host", self.len)
-    }
-
-    fn run(
-        &self,
-        pinned: &Self::Rows,
-        device: &Bufs<'_, Device>,
-        host: &CopyOnly<'_, Pinned>,
-        stream: &DeviceStream,
-    ) -> Status {
-        memcpy_d2p(host, *pinned, device.get(self.b), stream)
-    }
-}
-
-/// CPU: the pinned copy read out, after the executor waited for the
-/// download.
-struct Collect {
-    pinned: RowId<Pinned, f64>,
-    out: Arc<Mutex<Vec<f64>>>,
-}
-
-impl CpuTask for Collect {
+impl CpuTask for Keep {
     type Rows = ();
 
-    fn layout(&self, host: &mut Layout<'_, Pinned>, _: &mut Layout<'_, Heap>) {
-        host.read(self.pinned);
+    fn layout(&self, _: &mut Layout<'_, Pinned>, heap: &mut Layout<'_, Heap>) {
+        heap.read(self.0);
     }
 
-    fn run(&self, _: &(), host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
-        *self.out.lock().unwrap_or_else(|e| e.into_inner()) = host.get(self.pinned).to_vec();
+    fn run(&self, _: &(), _: &Bufs<'_, Pinned>, heap: &Bufs<'_, Heap>) -> Status {
+        *self.1.lock().unwrap_or_else(|e| e.into_inner()) = heap.get(self.0).to_vec();
         Ok(())
     }
 }
