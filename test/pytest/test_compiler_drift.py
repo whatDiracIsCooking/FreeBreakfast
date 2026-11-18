@@ -1,8 +1,9 @@
 """A build tree configured by a C++ compiler that is gone or has changed
 (#1333): lib.sh's build_tree_compiler_drift, test.py's fresh reconfigure,
-build.sh's, and doctor's warning. The trees are faked -- a CMakeCache.txt and
-a CMakeFiles/<ver>/CMakeCXXCompiler.cmake -- and the compiler is a script that
-reports a version, so nothing here needs CMake or clang.
+build.sh's and cross-backend-check.sh's, and doctor's warning. The trees are
+faked -- a CMakeCache.txt and a CMakeFiles/<ver>/CMakeCXXCompiler.cmake --
+and the compiler is a script that reports a version, so nothing here needs
+CMake or clang.
 """
 
 from __future__ import annotations
@@ -190,6 +191,50 @@ def test_build_sh_reconfigures_a_drifted_tree_fresh(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "build: compiler changed (" in proc.stdout
     assert calls.read_text().splitlines()[0] == "--preset default --fresh"
+
+
+@pytest.mark.parametrize("stale", [True, False])
+def test_cross_backend_check_reconfigures_a_drifted_tree_fresh(
+    tmp_path: Path, stale: bool
+) -> None:
+    """cross-backend-check.sh over its own tree (#1556): the root tree is
+    drifted or sound, rust/'s under it is sound. A stub cmake records each
+    call."""
+    cxx = _compiler(tmp_path, "23.1.6")
+    tree = _tree(tmp_path, cxx, "20.1.8" if stale else "23.1.6")
+    rust = tmp_path / "rust"
+    rust.mkdir()
+    _tree(rust, cxx, "23.1.6").rename(tree / "rust")
+    for cache in (tree / "CMakeCache.txt", tree / "rust" / "CMakeCache.txt"):
+        with cache.open("a") as f:
+            f.write("FREE_BREAKFAST_GPU_BACKEND:STRING=HIP\n")
+    bin_dir = tmp_path / "stub"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls"
+    (bin_dir / "cmake").write_text(f'#!/bin/sh\necho "$*" >> {calls}\n')
+    (bin_dir / "cmake").chmod(0o755)
+    env = {k: v for k, v in _env().items() if not k.startswith("CROSS_CHECK_")}
+    proc = subprocess.run(
+        [str(_ROOT / "devtools" / "cross-backend-check.sh"), "--native"],
+        cwd=_ROOT,
+        env={
+            **env,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "CROSS_CHECK_PRESET": "hip",
+            "CROSS_CHECK_BUILD_DIR": str(tree),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    configures = [c for c in calls.read_text().splitlines() if "--preset" in c]
+    assert len(configures) == 2, configures
+    assert configures[0].endswith(" --fresh") == stale
+    assert not configures[1].endswith(" --fresh")
+    line = f"cross-backend-check: compiler changed ({cxx} 20.1.8 -> {cxx} 23.1.6)"
+    assert (line in proc.stdout) == stale
+    assert proc.stdout.count("reconfiguring with --fresh") == stale
 
 
 # --- doctor ----------------------------------------------------------------------
