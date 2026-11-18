@@ -373,6 +373,10 @@ every case that calls it is named here, which `fb-doc-check`'s
   benzene's DF-RHF at the default `[eri] schwarz_threshold` against 0, two
   full SCF runs; `schwarz_threshold_is_optional` (plan-level) stands in for
   it at the gates.
+- `fb-pipeline-config`'s `the_default_threshold_keeps_gly5s_energy`, the
+  same comparison for five glycines, where the default drops a sizeable
+  share of the shell pairs; `schwarz_threshold_is_optional` stands in for
+  it at the gates.
 - `fb-core-planner`'s `tier5_every_split_is_bitwise_one_workers`, the
   partitioned product on one, two and four workers against one another,
   a clique made per run;
