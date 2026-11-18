@@ -1,4 +1,4 @@
-plan: 92 tasks, GPU workers: 1
+plan: 143 tasks, GPU workers: 1
  task  worker  lane    name: after
     0       0  cpu     nuclei
     1       0  stream0  upload nuclei z: after 0
@@ -17,316 +17,431 @@ plan: 92 tasks, GPU workers: 1
    14       0  stream0  upload rec_begin: after 3
    15       0  stream0  mmd records (0,0): after 4 5 6 7 8 9 10 11 12 13 14
    16       0  stream1  mmd records (0,1): after 4 5 6 7 8 9 10 11 12 13 14 15
-   17       0  stream2  mmd records (0,2): after 4 5 6 7 8 9 10 11 12 13 14 16
+   17       0  stream2  mmd records (0,2): after 4 5 6 7 8 9 10 11 12 13 14 15 16
    18       0  stream3  mmd records (1,1): after 4 5 6 7 8 9 10 11 12 13 14 15 16 17
-   19       0  stream4  mmd records (1,2): after 4 5 6 7 8 9 10 11 12 13 14 17 18
+   19       0  stream4  mmd records (1,2): after 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18
    20       0  stream5  mmd records (2,2): after 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19
    21       0  stream0  overlap: after 15 16 17 18 19 20
    22       0  cpu     harmonics: after 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14
-   23       0  stream0  upload U: after 16 22
-   24       0  stream0  spherical transform: after 15 16 18 20 21 23
+   23       0  stream0  upload U: after 5 6 15 16 17 18 19 20 22
+   24       0  stream0  spherical transform: after 15 16 21 23
    25       0  stream0  core hamiltonian: after 1 2 15 16 17 18 19 20 21 24
-   26       0  stream0  spherical transform: after 15 16 17 18 19 20 21 23 25
-   27       0  cpu     harmonics: after 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 22 23
-   28       0  stream0  upload U: after 27
-   29       0  cpu     three-center tables: after 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 22 23 27 28
-   30       0  stream0  three-center: after 1 2 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 23 24 25 26 28 29
-   31       0  cpu     metric tables: after 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30
-   32       0  stream0  metric: after 1 2 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 24 25 26 30 31
-   33       0  stream0  spherical transform: after 28 30 32
-   34       0  stream0  metric average: after 1 2 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 24 25 26 30 32 33
-   35       0  stream0  cholesky: after 0 2 3 5 22 23 27 28 29 30 31 32 33 34
-   36       0  cpu     cholesky check: after 0 1 3 5 22 23 27 28 29 30 31 32 35
-   37       0  stream0  density fit: after 1 2 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 24 25 26 30 32 33 34 35 36
-   38       0  cpu     baked stamp O: after 0 1 2 3 5 6 12 14 22 23 27 28 29 30 31 32 35 36 37
-   39       0  cpu     baked stamp H: after 3 12 22 23 27 28 29 30 31 32
-   40       0  cpu     sad guess: after 3 4 7 8 9 10 11 13 22 23 27 28 29 30 31 32 38 39
-   41       0  stream0  upload D: after 30 40
-   42       0  stream0  syevd: after 0 2 3 5 22 23 24 27 28 29 30 31 32 35 36 37 38 40
-   43       0  cpu     syevd check: after 42
-   44       0  stream0  inverse root: after 30 35 37 42
-   45       0  stream0  syevd: after 0 2 3 5 22 23 27 28 29 30 31 32 35 36 37 38 40 41 42 43 44
-   46       0  cpu     syevd check: after 45
-   47       0  stream0  download guess w host: after 0 2 3 5 22 23 27 28 29 30 31 32 35 36 38 40 42 43 45 46
-   48       0  cpu     guess check: after 0 1 3 5 22 23 27 28 29 30 31 32 36 37 38 40 47
-   49       0  stream0  guess factor: after 30 35 37 42 44 45 48
-   50       0  stream0  df exchange: after 30 35 37 42 44 45 47 49
-   51       0  stream0  diis history: after 30 49 50
-   52       0  cpu     energy before
-   53       0  stream0  df coulomb: after 30 35 37 41 42 44 45 49 50
-   54       0  stream0  df exchange: after 30 35 37 42 44 45 49 50 53
-   55       0  stream0  guess exchange: after 30 35 37 42 44 45 50 53 54
-   56       0  stream0  fock: after 0 1 3 5 22 23 26 27 28 29 30 31 32 35 36 37 38 40 41 42 44 45 48 49 50 53 54 55
-   57       0  stream0  residual: after 3 6 22 23 24 27 28 29 30 31 32 35 37 38 40 41 42 44 45 49 50 53 54 55 56
-   58       0  cpu     energy and norm: after 0 2 3 5 22 23 27 28 29 30 31 32 35 36 38 40 42 43 45 46 47 48 56 57
-   59       0  stream0  diis push: after 0 1 3 5 22 23 27 28 29 30 31 32 35 36 37 38 40 42 44 45 48 49 50 51 53 54 55 56 57 58
-   60       0  stream0  fock transform: after 30 35 37 42 44 45 49 50 53 54 55 56 57 59
-   61       0  stream0  syevd: after 3 6 22 23 27 28 29 30 31 32 35 37 38 40 42 44 45 49 50 53 54 55 56 57 58 59 60
-   62       0  cpu     syevd check: after 61
-   63       0  stream0  back transform: after 30 35 37 42 44 45 50 53 54 55 56 57 59 60 61
-   64       0  stream0  density: after 41 45 49 53 54 56 57 63
-   65       0  cpu     converged: after 52 53 54 55 56 57 58 59 60 61 62 63 64; decides loop 53-65, at most 100 iterations
-   66       0  stream0  fock transform: after 30 44 50 65
-   67       0  stream0  syevd: after 0 2 3 5 15 16 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 40 42 43 45 46 47 48 50 65 66
-   68       0  cpu     syevd check: after 67
-   69       0  stream0  back transform: after 30 44 50 67
-   70       0  stream0  published density: after 15 16 21 24 25 26 30 32 33 34 35 37 50 65 67 69
-   71       0  stream0  download c.npy: after 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 31 32 35 36 37 38 39 40 41 42 43 45 46 47 48 49 65 67 68 69
-   72       0  cpu     write c.npy: after 71
-   73       0  stream0  download d.npy: after 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 31 32 35 36 37 38 39 40 41 42 43 45 46 47 48 49 65 67 68 70 71 72
-   74       0  cpu     write d.npy: after 73
-   75       0  stream0  download epsilon: after 0 2 3 5 22 23 27 28 29 30 31 32 35 36 38 40 42 43 45 46 47 48 65 67 68 71 72 73 74
-   76       0  cpu     write scf.json: after 52 65 75
-   77       0  cpu     pm tables: after 0 1 2 3 5 22 23 27 28 29 30 31 32 35 36 37 38 40 42 43 45 46 47 48 49 65 67 68 71 72 73 74 75 76
-   78       0  stream0  upload pm atom offsets: after 15 16 21 24 25 26 30 32 33 34 35 37 50 65 67 70 73 77
-   79       0  stream0  upload pm schedule: after 15 16 21 24 25 26 30 32 33 34 35 37 50 65 67 70 73 77
-   80       0  stream0  pm start: after 0 2 3 5 15 16 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 40 42 43 45 46 47 48 50 65 67 68 69 70 71 72 73 74 75 76 77 78 79
-   81       0  cpu     pm before: after 52 65 76 80
-   82       0  stream0  pm sweep: after 0 2 3 5 15 16 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 40 42 43 45 46 47 48 50 65 67 68 70 71 72 73 74 75 76 77 78 79 80 81
-   83       0  cpu     pm converged: after 81 82; decides loop 82-83, at most 64 iterations
-   84       0  stream0  pm rotate: after 15 16 21 24 25 26 30 32 33 34 35 37 50 65 67 69 70 73 80 83
-   85       0  stream0  download doubly U host: after 0 2 3 5 22 23 27 28 29 30 31 32 35 36 38 40 42 43 45 46 47 48 65 67 68 71 72 73 74 75 76 77 79 80 81 83
-   86       0  stream0  download epsilon host: after 0 1 3 5 22 23 27 28 29 30 31 32 36 37 38 40 48 49 65 67 71 72 73 74 77 78
-   87       0  cpu     localization order: after 3 6 22 23 27 28 29 30 31 32 38 40 65 71 72 73 74 81 83 85 86
-   88       0  stream0  localization sort: after 15 16 21 24 25 26 30 32 33 34 35 37 50 65 67 70 73 78 79 80 83 84 85 87
-   89       0  stream0  download c_local.npy: after 0 1 2 3 5 6 22 23 27 28 29 30 31 32 35 36 37 38 40 42 43 45 46 47 48 49 65 67 68 71 72 73 74 75 76 77 78 79 80 81 83 85 86 87 88
-   90       0  cpu     write c_local.npy: after 89
-   91       0  cpu     write localization.json: after 81 83
-worker 0 device table: 227 rows, 35708168 bytes
-peak: 35696304 bytes at node 30
+   26       0  stream0  spherical transform: after 15 16 23 25
+   27       0  cpu     metric tables: after 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 22 23
+   28       0  stream0  metric: after 27
+   29       0  cpu     harmonics: after 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 22 23 27 28
+   30       0  stream0  upload U: after 1 2 4 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 24 25 26 29
+   31       0  stream0  spherical transform: after 28 30
+   32       0  stream0  metric average: after 28 31
+   33       0  stream0  cholesky: after 0 2 3 5 15 16 21 22 23 24 25 26 27 28 29 30 31 32
+   34       0  cpu     cholesky check: after 0 1 3 5 22 23 27 28 29 30 33
+   35       0  cpu     B
+   36       0  cpu     packed three-center tables: after 3 4 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30
+   37       0  stream0  packed three-center: after 15 28 31 32 33 36
+   38       0  stream0  spherical transform: after 23 28 30 31 32 33 37
+   39       0  stream0  density fit: after 28 31 32 33 34 37 38
+   40       0  stream0  B (0, 0) batch transpose: after 28 31 32 33 37 38 39
+   41       0  stream0  download B (0, 0) batch: after 3 4 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 36 37 40
+   42       0  cpu     unstage B (0, 0) batch: after 35 41; closes counted loop 36-42, 1 trips, depth 1
+   43       0  cpu     packed three-center tables: after 3 4 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 36 37 41 42
+   44       0  stream0  packed three-center: after 16 28 31 32 33 37 38 39 40 41 43
+   45       0  stream0  spherical transform: after 15 21 23 25 28 30 31 32 33 37 38 39 44
+   46       0  stream0  density fit: after 28 31 32 33 34 37 38 39 40 41 44 45
+   47       0  stream0  B (0, 1) batch transpose: after 28 31 32 33 38 39 44 45 46
+   48       0  stream0  download B (0, 1) batch: after 3 4 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 36 37 41 42 43 44 47
+   49       0  cpu     unstage B (0, 1) batch: after 35 42 48; closes counted loop 43-49, 1 trips, depth 1
+   50       0  cpu     packed three-center tables: after 3 4 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 36 37 41 42 43 44 48 49
+   51       0  stream0  packed three-center: after 17 28 31 32 33 37 38 39 40 41 44 45 46 47 50
+   52       0  stream0  spherical transform: after 23 28 30 31 32 33 37 38 39 40 41 44 45 46 47 48 51
+   53       0  stream0  density fit: after 28 31 32 33 34 37 38 39 40 41 44 45 46 47 51 52
+   54       0  stream0  B (0, 2) batch transpose: after 28 31 32 33 37 38 40 41 44 45 46 47 51 52 53
+   55       0  stream0  download B (0, 2) batch: after 3 4 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 36 37 41 42 43 44 48 49 50 51 54
+   56       0  cpu     unstage B (0, 2) batch: after 35 42 49 55; closes counted loop 50-56, 1 trips, depth 1
+   57       0  cpu     packed three-center tables: after 3 4 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 36 37 41 42 43 44 48 49 50 51 55 56
+   58       0  stream0  packed three-center: after 18 28 31 32 33 37 38 39 40 41 44 45 46 47 48 51 52 53 54 55 57
+   59       0  stream0  spherical transform: after 15 16 21 23 24 25 26 28 30 31 32 33 37 38 39 44 45 46 47 48 52 53 58
+   60       0  stream0  density fit: after 28 31 32 33 34 37 38 39 40 41 44 45 46 47 48 51 52 53 54 55 58 59
+   61       0  stream0  B (1, 1) batch transpose: after 28 31 32 33 38 39 44 45 47 48 52 53 58 59 60
+   62       0  stream0  download B (1, 1) batch: after 3 4 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 36 37 41 42 43 44 48 49 50 51 55 56 57 58 61
+   63       0  cpu     unstage B (1, 1) batch: after 35 42 49 56 62; closes counted loop 57-63, 1 trips, depth 1
+   64       0  cpu     packed three-center tables: after 3 4 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 36 37 41 42 43 44 48 49 50 51 55 56 57 58 62 63
+   65       0  stream0  packed three-center: after 19 28 31 32 33 37 38 39 40 41 44 45 46 47 48 51 52 53 54 55 58 59 60 61 64
+   66       0  stream0  spherical transform: after 23 28 30 31 32 33 38 39 44 45 46 47 48 52 53 58 59 60 61 62 65
+   67       0  stream0  density fit: after 28 31 32 33 34 37 38 39 40 41 44 45 46 47 51 52 53 54 55 58 59 60 61 65 66
+   68       0  stream0  B (1, 2) batch transpose: after 28 31 32 33 37 38 39 44 45 46 47 48 52 54 55 58 59 60 61 62 65 66 67
+   69       0  stream0  download B (1, 2) batch: after 3 4 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 36 37 41 42 43 44 48 49 50 51 55 56 57 58 62 63 64 65 68
+   70       0  cpu     unstage B (1, 2) batch: after 35 42 49 56 63 69; closes counted loop 64-70, 1 trips, depth 1
+   71       0  cpu     packed three-center tables: after 3 6 7 8 9 12 13 14 22 23 27 28 29 30 36 37 41 42 43 44 48 49 50 51 55 56 57 58 62 63 64 65 69 70
+   72       0  stream0  packed three-center: after 20 28 31 32 33 37 38 39 40 41 44 45 46 47 51 52 53 54 55 58 59 60 61 65 66 67 68 71
+   73       0  stream0  spherical transform: after 23 28 30 31 32 33 37 38 39 40 41 44 45 46 47 48 51 52 53 54 55 58 59 60 61 62 65 66 67 68 69 72
+   74       0  stream0  density fit: after 28 31 32 33 34 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73
+   75       0  stream0  B (2, 2) batch transpose: after 28 31 32 33 37 38 39 40 41 44 45 46 47 51 52 53 54 55 58 59 60 61 65 66 67 68 72 73 74
+   76       0  stream0  download B (2, 2) batch: after 3 4 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 36 37 41 42 43 44 48 49 50 51 55 56 57 58 62 63 64 65 69 70 71 72 75
+   77       0  cpu     unstage B (2, 2) batch: after 35 42 49 56 63 70 76; closes counted loop 71-77, 1 trips, depth 1
+   78       0  cpu     packed tables: after 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 33 34 36 37 39 41 42 43 44 46 48 49 50 51 53 55 56 57 58 60 62 63 64 65 67 69 70 71 72 74 76 77
+   79       0  stream0  upload packed m: after 78
+   80       0  stream0  upload packed n: after 78
+   81       0  stream0  upload packed weight: after 78
+   82       0  cpu     baked stamp O: after 0 1 2 3 5 6 12 14 22 23 27 28 29 30 33 34 36 37 39 41 42 43 44 46 48 49 50 51 53 55 56 57 58 60 62 63 64 65 67 69 70 71 72 74 76 77 78 81
+   83       0  cpu     baked stamp H: after 3 12 22 23 27 28 29 30 36 37 41 42 43 44 48 49 50 51 55 56 57 58 62 63 64 65 69 70 71 72 76 77 78 81
+   84       0  cpu     sad guess: after 3 4 7 8 9 10 11 13 22 23 27 28 29 30 36 37 41 42 43 44 48 49 50 51 55 56 57 58 62 63 64 65 69 70 71 72 76 77 78 79 80 81 82 83
+   85       0  stream0  upload D: after 84
+   86       0  stream0  syevd: after 0 2 3 5 22 23 24 27 28 29 30 31 32 33 34 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73 74 75 78 81 82 84
+   87       0  cpu     syevd check: after 86
+   88       0  stream0  inverse root: after 28 31 32 33 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73 74 75 86
+   89       0  stream0  syevd: after 0 2 3 5 22 23 27 28 29 30 31 32 33 34 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73 74 75 78 81 82 84 85 86 87 88
+   90       0  cpu     syevd check: after 89
+   91       0  stream0  download guess w host: after 0 2 3 5 22 23 27 28 29 30 33 34 78 81 82 84 86 87 89 90
+   92       0  cpu     guess check: after 0 1 3 5 22 23 27 28 29 30 34 39 46 53 60 67 74 78 81 82 84 91
+   93       0  stream0  guess factor: after 28 31 32 33 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73 74 75 86 88 89 92
+   94       0  stream0  df jk pack: after 86 88 89 91 93
+   95       0  cpu     stage B batch: after 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 33 34 35 36 37 39 41 42 43 44 46 48 49 50 51 53 55 56 57 58 60 62 63 64 65 67 69 70 71 72 74 76 77 78 79 80 81 82 83 84 85 86 87 89 90 91 92 93
+   96       0  stream1  upload B batch: after 1 2 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 23 24 25 26 28 30 31 32 33 37 38 39 40 41 44 45 46 47 48 51 52 53 54 55 58 59 60 61 62 65 66 67 68 69 72 73 74 75 76 86 88 89 93 95
+   97       0  stream0  df jk batch: after 1 2 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 23 24 25 26 30 31 32 33 37 38 39 44 45 46 51 52 53 58 59 60 61 62 65 66 67 72 73 74 79 80 81 93 94 96; closes counted loop 95-97, 2 trips, depth 2
+   98       0  stream0  df jk finish: after 94 97
+   99       0  stream0  diis history: after 86 88 89 91 93 94 97 98
+  100       0  cpu     energy before
+  101       0  stream0  df jk pack: after 79 80 81 85 97
+  102       0  cpu     stage B batch: after 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 33 34 35 36 37 39 41 42 43 44 46 48 49 50 51 53 55 56 57 58 60 62 63 64 65 67 69 70 71 72 74 76 77 78 79 80 81 82 83 84 85 86 87 89 90 91 92 93 95 96
+  103       0  stream1  upload B batch: after 1 2 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 23 24 25 26 28 30 31 32 33 37 38 39 40 41 44 45 46 47 48 51 52 53 54 55 58 59 60 61 62 65 66 67 68 69 72 73 74 75 76 86 88 89 93 96 97 102
+  104       0  stream0  df jk batch: after 1 2 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 23 24 25 26 30 31 32 33 37 38 39 44 45 46 51 52 53 58 59 60 61 62 65 66 67 72 73 74 79 80 81 93 96 97 101 103; closes counted loop 102-104, 2 trips, depth 2
+  105       0  stream0  df jk finish: after 28 31 32 33 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73 74 75 79 80 81 86 88 89 93 96 97 101 103 104
+  106       0  stream0  guess exchange: after 28 31 32 33 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73 74 75 86 88 89 93 96 97 98 103 104 105
+  107       0  stream0  fock: after 0 2 3 5 22 23 26 27 28 29 30 31 32 33 34 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73 74 75 78 81 82 84 85 86 87 88 89 90 91 92 93 95 96 97 102 103 104 105 106
+  108       0  stream0  residual: after 0 1 3 5 22 23 24 27 28 29 30 31 32 33 34 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73 74 75 78 81 82 84 85 86 88 89 92 93 95 96 97 102 103 104 105 106 107
+  109       0  cpu     energy and norm: after 3 6 22 23 27 28 29 30 36 37 41 42 43 44 48 49 50 51 55 56 57 58 62 63 64 65 69 70 71 72 76 77 78 81 82 84 95 96 102 103 107 108
+  110       0  stream0  diis push: after 0 2 3 5 22 23 27 28 29 30 31 32 33 34 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73 74 75 78 81 82 84 86 87 88 89 90 91 92 93 95 96 97 99 102 103 104 105 106 107 108 109
+  111       0  stream0  fock transform: after 28 31 32 33 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73 74 75 86 88 89 93 96 97 103 104 105 106 107 108 110
+  112       0  stream0  syevd: after 0 1 3 5 22 23 27 28 29 30 31 32 33 34 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73 74 75 78 81 82 84 86 88 89 92 93 95 96 97 102 103 104 105 106 107 108 109 110 111
+  113       0  cpu     syevd check: after 112
+  114       0  stream0  back transform: after 28 31 32 33 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73 74 75 86 88 89 93 96 97 103 104 105 107 108 110 111 112
+  115       0  stream0  density: after 85 89 93 101 104 107 108 114
+  116       0  cpu     converged: after 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115; decides loop 101-116, at most 100 iterations
+  117       0  stream0  fock transform: after 26 85 88 89 116
+  118       0  stream0  syevd: after 0 2 3 5 22 23 26 27 28 29 30 31 32 33 34 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73 74 75 78 81 82 84 86 87 88 89 90 91 92 93 95 96 97 116 117
+  119       0  cpu     syevd check: after 118
+  120       0  stream0  back transform: after 85 88 89 116 117 118
+  121       0  stream0  published density: after 26 116 117 118 120
+  122       0  stream0  download c.npy: after 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 33 34 36 37 39 41 42 43 44 46 48 49 50 51 53 55 56 57 58 60 62 63 64 65 67 69 70 71 72 74 76 77 78 79 80 81 82 83 84 85 86 87 89 90 91 92 93 95 96 116 118 119 120
+  123       0  cpu     write c.npy: after 122
+  124       0  stream0  download d.npy: after 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 22 23 27 28 29 30 33 34 36 37 39 41 42 43 44 46 48 49 50 51 53 55 56 57 58 60 62 63 64 65 67 69 70 71 72 74 76 77 78 79 80 81 82 83 84 85 86 87 89 90 91 92 93 95 96 116 118 119 121 122 123
+  125       0  cpu     write d.npy: after 124
+  126       0  stream0  download epsilon: after 0 2 3 5 22 23 27 28 29 30 33 34 78 81 82 84 86 87 89 90 91 92 95 96 116 118 119 122 123 124 125
+  127       0  cpu     write scf.json: after 100 116 126
+  128       0  cpu     pm tables: after 0 1 2 3 5 22 23 27 28 29 30 33 34 39 46 53 60 67 74 78 81 82 84 86 87 89 90 91 92 93 95 96 116 118 119 122 123 124 125 126 127
+  129       0  stream0  upload pm atom offsets: after 26 116 117 118 120 121 124 128
+  130       0  stream0  upload pm schedule: after 26 116 117 118 120 121 124 128
+  131       0  stream0  pm start: after 0 2 3 5 22 23 24 26 27 28 29 30 33 34 78 81 82 84 86 87 89 90 91 92 95 96 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130
+  132       0  cpu     pm before: after 35 42 49 56 63 70 77 95 116 131
+  133       0  stream0  pm sweep: after 0 2 3 5 22 23 27 28 29 30 31 32 33 34 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73 74 75 78 81 82 84 86 87 88 89 90 91 92 93 95 96 97 116 118 119 122 123 124 125 126 127 128 130 131 132
+  134       0  cpu     pm converged: after 132 133; decides loop 133-134, at most 64 iterations
+  135       0  stream0  pm rotate: after 28 31 32 33 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73 74 75 86 88 89 93 96 97 116 118 120 131 134
+  136       0  stream0  download doubly U host: after 0 2 3 5 22 23 27 28 29 30 33 34 78 81 82 84 86 87 89 90 91 92 95 96 116 118 119 122 123 124 125 126 127 128 130 131 132 134
+  137       0  stream0  download epsilon host: after 0 1 3 5 22 23 27 28 29 30 34 39 46 53 60 67 74 78 81 82 84 92 93 95 96 116 118 122 123 124 125 128 129
+  138       0  cpu     localization order: after 3 6 22 23 27 28 29 30 36 37 41 42 43 44 48 49 50 51 55 56 57 58 62 63 64 65 69 70 71 72 76 77 78 81 82 84 95 96 116 122 123 124 125 132 134 136 137
+  139       0  stream0  localization sort: after 28 31 32 33 37 38 39 40 44 45 46 47 51 52 53 54 58 59 60 61 65 66 67 68 72 73 74 75 86 88 89 93 96 97 116 118 134 135 138
+  140       0  stream0  download c_local.npy: after 0 1 2 3 5 6 22 23 27 28 29 30 33 34 36 37 39 41 42 43 44 46 48 49 50 51 53 55 56 57 58 60 62 63 64 65 67 69 70 71 72 74 76 77 78 81 82 84 86 87 89 90 91 92 93 95 96 116 118 119 122 123 124 125 126 127 128 129 130 131 132 134 136 137 138 139
+  141       0  cpu     write c_local.npy: after 140
+  142       0  cpu     write localization.json: after 132 134
+width packed B batch: 90 of 90, worker 0 at node 36, 1050112 bytes and 216576 pinned in a room of 8287558120 and 2147483644 pinned
+width df jk batch: 64 of 64, worker 0 at node 95, 1386496 bytes and 329728 pinned in a room of 8287911904 and 2147483648 pinned
+width df jk batch: 64 of 64, worker 0 at node 102, 1043456 bytes and 329728 pinned in a room of 8287826464 and 2147483648 pinned
+worker 0 device table: 280 rows, 34974656 bytes
+peak: 34973728 bytes at node 96
     offset      bytes  owner   life     name: users (w writes, r reads)
          0   33554432  worker  plan     blas workspace
-  33619712         24  edge    1-25     nuclei z: 1w 25r
-  33618688         72  edge    2-25     nuclei c: 2w 25r
-  33618944         52  edge    4-20     prim_begin: 4w 15r 16r 17r 18r 19r 20r
-  33615360        432  edge    5-20     exponent: 5w 15r 16r 17r 18r 19r 20r
-  33615872        432  edge    6-20     coefficient: 6w 15r 16r 17r 18r 19r 20r
-  33617920         96  edge    7-20     c_x: 7w 15r 16r 17r 18r 19r 20r
-  33618176         96  edge    8-20     c_y: 8w 15r 16r 17r 18r 19r 20r
-  33618432         96  edge    9-20     c_z: 9w 15r 16r 17r 18r 19r 20r
-  33619200         48  edge    10-20    ao_offset: 10w 15r 16r 17r 18r 19r 20r
-  33619456         48  edge    11-20    rank: 11w 15r 16r 17r 18r 19r 20r
-  33616896        312  edge    12-20    bra: 12w 15r 16r 17r 18r 19r 20r
-  33617408        312  edge    13-20    ket: 13w 15r 16r 17r 18r 19r 20r
-  33616384        336  edge    14-20    rec_begin: 14w 15r 16r 17r 18r 19r 20r
-  35537664       8624  edge    15-30    zeta (0,0): 15w 21r 25r 30r
-  35546368       8624  edge    15-30    p_x (0,0): 15w 25r 30r
-  35555072       8624  edge    15-30    p_y (0,0): 15w 25r 30r
-  35563776       8624  edge    15-30    p_z (0,0): 15w 25r 30r
-  35572480       8624  edge    15-30    pa_x (0,0): 15w 21r 25r 30r
-  35581184       8624  edge    15-30    pa_y (0,0): 15w 21r 25r 30r
-  35589888       8624  edge    15-30    pa_z (0,0): 15w 21r 25r 30r
-  35598592       8624  edge    15-30    pb_x (0,0): 15w 21r 25r 30r
-  35607296       8624  edge    15-30    pb_y (0,0): 15w 21r 25r 30r
-  35616000       8624  edge    15-30    pb_z (0,0): 15w 21r 25r 30r
-  35624704       8624  edge    15-30    s (0,0): 15w 21r 25r 30r
-  33554432       8624  edge    15-15    ea (0,0): 15w
-  33563136       8624  edge    15-25    eb (0,0): 15w 25r
-  33571840       8624  edge    15-15    bound (0,0): 15w
-  33580544       8624  edge    15-15    bound_ab (0,0): 15w
-  33589248       8624  edge    15-15    bound_ba (0,0): 15w
-  33597952       4312  edge    15-25    off_a (0,0): 15w 21r 25r
-  33602304       4312  edge    15-25    off_b (0,0): 15w 21r 25r
-  33606656       4312  edge    15-15    rank_a (0,0): 15w
-  33611008       4312  edge    15-15    rank_b (0,0): 15w
-  35647488       3440  edge    16-30    zeta (0,1): 16w 21r 25r 30r
-  35651072       3440  edge    16-30    p_x (0,1): 16w 25r 30r
-  35654656       3440  edge    16-30    p_y (0,1): 16w 25r 30r
-  35658240       3440  edge    16-30    p_z (0,1): 16w 25r 30r
-  35661824       3440  edge    16-30    pa_x (0,1): 16w 21r 25r 30r
-  35665408       3440  edge    16-30    pa_y (0,1): 16w 21r 25r 30r
-  35668992       3440  edge    16-30    pa_z (0,1): 16w 21r 25r 30r
-  35672576       3440  edge    16-30    pb_x (0,1): 16w 21r 25r 30r
-  35676160       3440  edge    16-30    pb_y (0,1): 16w 21r 25r 30r
-  35679744       3440  edge    16-30    pb_z (0,1): 16w 21r 25r 30r
-  35683328       3440  edge    16-30    s (0,1): 16w 21r 25r 30r
-  33554432       3440  edge    16-16    ea (0,1): 16w
-  33559552       3440  edge    16-25    eb (0,1): 16w 25r
-  35633408       3440  edge    16-16    bound (0,1): 16w
-  35636992       3440  edge    16-16    bound_ab (0,1): 16w
-  35640576       3440  edge    16-16    bound_ba (0,1): 16w
-  35644160       1720  edge    16-25    off_a (0,1): 16w 21r 25r
-  33576704       1720  edge    16-25    off_b (0,1): 16w 21r 25r
-  33571840       1720  edge    16-16    rank_a (0,1): 16w
-  33573632       1720  edge    16-16    rank_b (0,1): 16w
-  35697152        344  edge    17-30    zeta (0,2): 17w 21r 25r 30r
-  35697664        344  edge    17-30    p_x (0,2): 17w 25r 30r
-  35698176        344  edge    17-30    p_y (0,2): 17w 25r 30r
-  35698688        344  edge    17-30    p_z (0,2): 17w 25r 30r
-  35699200        344  edge    17-30    pa_x (0,2): 17w 21r 25r 30r
-  35699712        344  edge    17-30    pa_y (0,2): 17w 21r 25r 30r
-  35700224        344  edge    17-30    pa_z (0,2): 17w 21r 25r 30r
-  35700736        344  edge    17-30    pb_x (0,2): 17w 21r 25r 30r
-  35701248        344  edge    17-30    pb_y (0,2): 17w 21r 25r 30r
-  35701760        344  edge    17-30    pb_z (0,2): 17w 21r 25r 30r
-  35702272        344  edge    17-30    s (0,2): 17w 21r 25r 30r
-  35645952        344  edge    17-17    ea (0,2): 17w
-  35642880        344  edge    17-25    eb (0,2): 17w 25r
-  35643392        344  edge    17-17    bound (0,2): 17w
-  35646464        344  edge    17-17    bound_ab (0,2): 17w
-  35646976        344  edge    17-17    bound_ba (0,2): 17w
-  35643904        172  edge    17-25    off_a (0,2): 17w 21r 25r
-  35688448        172  edge    17-25    off_b (0,2): 17w 21r 25r
-  35686912        172  edge    17-17    rank_a (0,2): 17w
-  35687168        172  edge    17-17    rank_b (0,2): 17w
-  35688704        536  edge    18-30    zeta (1,1): 18w 21r 25r 30r
-  35689472        536  edge    18-30    p_x (1,1): 18w 25r 30r
-  35690240        536  edge    18-30    p_y (1,1): 18w 25r 30r
-  35691008        536  edge    18-30    p_z (1,1): 18w 25r 30r
-  35691776        536  edge    18-30    pa_x (1,1): 18w 21r 25r 30r
-  35692544        536  edge    18-30    pa_y (1,1): 18w 21r 25r 30r
-  35693312        536  edge    18-30    pa_z (1,1): 18w 21r 25r 30r
-  35694080        536  edge    18-30    pb_x (1,1): 18w 21r 25r 30r
-  35694848        536  edge    18-30    pb_y (1,1): 18w 21r 25r 30r
-  35695616        536  edge    18-30    pb_z (1,1): 18w 21r 25r 30r
-  35696384        536  edge    18-30    s (1,1): 18w 21r 25r 30r
-  35645952        536  edge    18-18    ea (1,1): 18w
-  35646720        536  edge    18-25    eb (1,1): 18w 25r
-  35686912        536  edge    18-18    bound (1,1): 18w
-  35687680        536  edge    18-18    bound_ab (1,1): 18w
-  33571840        536  edge    18-18    bound_ba (1,1): 18w
-  35643392        268  edge    18-25    off_a (1,1): 18w 21r 25r
-  33606656        268  edge    18-25    off_b (1,1): 18w 21r 25r
-  33572608        268  edge    18-18    rank_a (1,1): 18w
-  33573120        268  edge    18-18    rank_b (1,1): 18w
-  35702784         80  edge    19-30    zeta (1,2): 19w 21r 25r 30r
-  35703040         80  edge    19-30    p_x (1,2): 19w 25r 30r
-  35703296         80  edge    19-30    p_y (1,2): 19w 25r 30r
-  35703552         80  edge    19-30    p_z (1,2): 19w 25r 30r
-  35703808         80  edge    19-30    pa_x (1,2): 19w 21r 25r 30r
-  35704064         80  edge    19-30    pa_y (1,2): 19w 21r 25r 30r
-  35704320         80  edge    19-30    pa_z (1,2): 19w 21r 25r 30r
-  35704576         80  edge    19-30    pb_x (1,2): 19w 21r 25r 30r
-  35704832         80  edge    19-30    pb_y (1,2): 19w 21r 25r 30r
-  35705088         80  edge    19-30    pb_z (1,2): 19w 21r 25r 30r
-  35705344         80  edge    19-30    s (1,2): 19w 21r 25r 30r
-  35645952         80  edge    19-19    ea (1,2): 19w
-  35646208         80  edge    19-25    eb (1,2): 19w 25r
-  35646464         80  edge    19-19    bound (1,2): 19w
-  35686912         80  edge    19-19    bound_ab (1,2): 19w
-  35687168         80  edge    19-19    bound_ba (1,2): 19w
-  35687424         40  edge    19-25    off_a (1,2): 19w 21r 25r
-  35687680         40  edge    19-25    off_b (1,2): 19w 21r 25r
-  35687936         40  edge    19-19    rank_a (1,2): 19w
-  35688192         40  edge    19-19    rank_b (1,2): 19w
-  35705600          8  edge    20-30    zeta (2,2): 20w 21r 25r 30r
-  35705856          8  edge    20-30    p_x (2,2): 20w 25r 30r
-  35706112          8  edge    20-30    p_y (2,2): 20w 25r 30r
-  35706368          8  edge    20-30    p_z (2,2): 20w 25r 30r
-  35706624          8  edge    20-30    pa_x (2,2): 20w 21r 25r 30r
-  35706880          8  edge    20-30    pa_y (2,2): 20w 21r 25r 30r
-  35707136          8  edge    20-30    pa_z (2,2): 20w 21r 25r 30r
-  35707392          8  edge    20-30    pb_x (2,2): 20w 21r 25r 30r
-  35707648          8  edge    20-30    pb_y (2,2): 20w 21r 25r 30r
-  35707904          8  edge    20-30    pb_z (2,2): 20w 21r 25r 30r
-  35708160          8  edge    20-30    s (2,2): 20w 21r 25r 30r
-  35645952          8  edge    20-20    ea (2,2): 20w
-  35646464          8  edge    20-25    eb (2,2): 20w 25r
-  35686912          8  edge    20-20    bound (2,2): 20w
-  35687168          8  edge    20-20    bound_ab (2,2): 20w
-  35687936          8  edge    20-20    bound_ba (2,2): 20w
-  35688192          4  edge    20-25    off_a (2,2): 20w 21r 25r
-  33607168          4  edge    20-25    off_b (2,2): 20w 21r 25r
-  33571840          4  edge    20-20    rank_a (2,2): 20w
-  33572096          4  edge    20-20    rank_b (2,2): 20w
-  33554432       5000  edge    21-24    S cartesian: 21w 24r
-  35633408       4800  edge    23-30    U: 23w 24r 26r 30r
-  33571840       4800  task    24-24    S U: 24w
-  35638272       4608  edge    24-80    S: 24w 42r 57r 80r
-  33554432       5000  edge    25-26    H cartesian: 25w 26r
-  33559552       4800  task    26-26    H U: 26w
-  35642880       4608  edge    26-65    H: 26w 56r
-  35324160     121568  edge    28-33    U: 28w 30r 33r
-  35686912       1680  task    30-30    three-center aux: 30w
-  35445760      91728  task    30-30    three-center cells: 30w
-  33554432     655000  task    30-30    (mn|P) cartesian: 30w
-  34209536     580000  task    30-30    (mn|P) work: 30w
-  34789632     534528  edge    30-37    (mn|P): 30w 37r
-  35445760       1680  task    32-32    aux records: 32w
-  33691904      21672  task    32-32    aux pairs: 32w
-  33554432     137288  edge    32-33    M cartesian: 32w 33r
-  33691904     121568  task    33-33    M spherical U: 33w
-  33813504     107648  edge    33-34    M spherical: 33w 34r
-  33554432     107648  edge    34-35    M: 34w 35r
-  34088960     107648  edge    35-37    L: 35w 37r
-  33662208      32768  task    35-35    L tile: 35w
-  35324160          4  task    35-35    L info: 35w
-  33554432     534528  edge    37-65    B: 37w 50r 53r 54r
-  34512128       4608  edge    41-65    D: 41w 45r 53r 56r 57r 64w
-  34098944       4608  edge    42-44    X U: 42w 44r
-  34103552        192  edge    42-44    X w: 42w 44r
-  34088960       9872  task    42-42    syevd work: 42w
-  34103808          4  task    42-42    syevd info: 42w
-  34093568        192  task    44-44    X Lambda: 44w
-  34088960       4608  task    44-44    X M: 44w
-  34516736       4608  edge    44-69    X: 44w 57r 60r 63r 66r 69r
-  34098944       4608  edge    45-49    guess U: 45w 49r
-  34521344        192  edge    45-49    guess w: 45w 47r 49r
-  34088960       9872  task    45-45    syevd work: 45w
-  34103552          4  task    45-45    syevd info: 45w
-  34521600        192  task    49-49    w/2: 49w
-  34521856        192  task    49-49    (w/2)^(-1/2): 49w
-  34522112        192  task    49-49    (w/2)^(1/2): 49w
-  34088960       4608  task    49-49    guess factor: 49w
-  34529792        960  edge    49-65    C occ: 49w 54r 64w
-  34525952       3648  edge    49-50    C rest: 49w 50r
-  34088960     423168  task    50-50    X: 50w
-  34521344       4608  edge    50-65    K: 50w 55w
-  34209536      36864  edge    51-65    DIIS F iterates: 51w 59w
-  34246400      36864  edge    51-65    DIIS F residuals: 51w 59w
-  34525952        512  edge    51-65    DIIS F gram: 51w 59w
-  34283264       4608  edge    53-66    F: 56w 57r 59r 66r
-  34287872       4608  task    66-66    F X: 66w
-  34292480       4608  edge    66-67    F': 66w 67r
-  34297088       4608  edge    67-69    F' U: 67w 69r
-  34306304        192  edge    67-86    F' w: 67w 75r 86r
-  33554432       9872  task    67-67    syevd work: 67w
-  34301696          4  task    67-67    syevd info: 67w
-  34301696       4608  edge    69-84    C: 69w 70r 71r 80r 84r
-  33554432       4608  edge    70-73    D: 70w 73r
-  33555456         16  edge    78-80    pm atom offsets: 78w 80r
-  33557504        120  edge    79-83    pm schedule: 79w 82r
-  33554432        960  task    80-80    S C: 80w
-  33555712          8  task    80-80    pm L device: 80w
-  33556480        600  edge    80-83    pm populations: 80w 82w
-  33557248        200  edge    80-85    pm U: 80w 82w 84r 85r
-  33554432        960  edge    84-88    C local: 84w 88r
-  33557504        200  task    88-88    localization permutation: 88w
-  33555456        960  task    88-88    C local unsorted: 88w
-  33556480        960  edge    88-89    C local: 88w 89r
-loop 53-65: region of 120576 bytes at 34088960, its body's rows:
-  34093568        928  task    53-53    gamma: 53w
-  34088960       4608  edge    53-56    J: 53w 56r
-  34093568     111360  task    54-54    X: 54w
-  34204928       4608  edge    54-55    K: 54w 55r
-  34093568       4608  edge    55-56    K of D: 55w 56r
-  34098176       4608  task    56-56    H + J: 56w
-  34102784          8  task    56-56    tr(D (H + F))/2: 56w
-  34088960       4608  task    57-57    F D: 57w
-  34093568       4608  task    57-57    F D S: 57w
-  34098176       4608  task    57-57    F D S - S D F: 57w
-  34107392          8  task    57-57    |e|² on the device: 57w
-  34102784       4608  edge    57-59    e: 57w 59r
-  34093568         64  task    59-59    DIIS F coefficients: 59w
-  34093824          4  task    59-59    DIIS F singular: 59w
-  34088960       4608  edge    59-60    DIIS F: 59w 60r
-  34093568       4608  task    60-60    F X: 60w
-  34098176       4608  edge    60-61    F': 60w 61r
-  34088960       4608  edge    61-63    F' U: 61w 63r
-  34093568        192  edge    61-61    F' w: 61w
-  34102784       9872  task    61-61    syevd work: 61w
-  34093824          4  task    61-61    syevd info: 61w
-  34093568       4608  edge    63-64    C: 63w 64r
-loop 82-83: region of 1800 bytes at 33554432, its body's rows:
-  33554432        600  task    82-82    pm populations pong: 82w
-  33555200        200  task    82-82    pm U pong: 82w
-  33555456         40  task    82-82    pm cos: 82w
-  33555712         40  task    82-82    pm sin: 82w
-  33555968         20  task    82-82    pm partner: 82w
-  33556224          8  task    82-82    pm L device: 82w
-handoffs: 1->30 1->32 1->34 1->37 2->30 2->32 2->34 2->37 4->30 4->32 4->34 4->37 5->30 5->32 5->34 5->37 6->30 6->32 6->34 6->37 7->30 7->32 7->34 7->37 8->30 8->32 8->34 8->37 9->30 9->32 9->34 9->37 10->30 10->32 10->34 10->37 11->30 11->32 11->34 11->37 12->30 12->32 12->34 12->37 13->30 13->32 13->34 13->37 14->30 14->32 14->34 14->37 15->16 15->18 15->20 15->21 15->24 15->25 15->26 15->30 15->32 15->34 15->37 15->67 15->70 15->78 15->79 15->80 15->82 15->84 15->88 16->17 16->18 16->20 16->21 16->23 16->24 16->25 16->26 16->30 16->32 16->34 16->37 16->67 16->70 16->78 16->79 16->80 16->82 16->84 16->88 17->18 17->19 17->20 17->26 17->30 17->32 17->34 17->37 18->19 18->20 18->24 18->26 18->30 18->32 18->34 18->37 19->20 19->26 19->30 19->32 19->34 19->37 20->24 20->26 20->30 20->32 20->34 20->37 21->25 21->26 21->30 21->32 21->34 21->37 21->67 21->70 21->78 21->79 21->80 21->82 21->84 21->88 24->25 24->30 24->32 24->34 24->37 24->67 24->70 24->78 24->79 24->80 24->82 24->84 24->88 25->26 25->30 25->32 25->34 25->37 25->67 25->70 25->78 25->79 25->80 25->82 25->84 25->88 26->30 26->32 26->34 26->37 26->67 26->70 26->78 26->79 26->80 26->82 26->84 26->88 28->35 30->32 30->33 30->34 30->35 30->37 30->41 30->42 30->44 30->45 30->49 30->50 30->51 30->53 30->54 30->55 30->56 30->57 30->59 30->60 30->61 30->63 30->66 30->67 30->69 30->70 30->78 30->79 30->80 30->82 30->84 30->88 32->33 32->34 32->35 32->37 32->67 32->70 32->78 32->79 32->80 32->82 32->84 32->88 33->34 33->35 33->37 33->67 33->70 33->78 33->79 33->80 33->82 33->84 33->88 34->37 34->67 34->70 34->78 34->79 34->80 34->82 34->84 34->88 35->37 35->42 35->44 35->45 35->49 35->50 35->53 35->54 35->55 35->56 35->57 35->59 35->60 35->61 35->63 35->67 35->70 35->78 35->79 35->80 35->82 35->84 35->88 37->42 37->44 37->45 37->49 37->50 37->53 37->54 37->55 37->56 37->57 37->59 37->60 37->61 37->63 37->67 37->70 37->78 37->79 37->80 37->82 37->84 37->88 42->44 42->45 42->49 42->50 42->53 42->54 42->55 42->56 42->57 42->59 42->60 42->61 42->63 44->45 44->49 44->50 44->53 44->54 44->55 44->56 44->57 44->59 44->60 44->61 44->63 45->49 45->50 45->53 45->54 45->55 45->56 45->57 45->59 45->60 45->61 45->63 47->50 49->50 49->51 49->53 49->54 49->56 49->57 49->59 49->60 49->61 50->51 50->53 50->54 50->55 50->56 50->57 50->59 50->60 50->61 50->63 50->66 50->67 50->69 50->70 50->78 50->79 50->80 50->82 50->84 50->88 53->54 53->55 53->57 53->59 53->60 53->61 53->63 54->55 54->56 54->57 54->59 54->60 54->61 54->63 55->57 55->59 55->60 55->61 55->63 56->57 56->59 56->60 56->61 56->63 57->59 57->60 57->61 57->63 59->60 59->61 59->63 60->61 60->63 61->63 65->67 65->70 65->78 65->79 65->80 65->82 65->84 65->88 67->69 67->70 67->78 67->79 67->80 67->82 67->84 67->88 70->78 70->79 70->80 70->82 70->84 70->88 73->78 73->79 73->80 73->82 73->84 73->88 78->82 78->88 79->88 80->82 80->84 80->88 83->84 83->88 84->88 85->88
-worker 0 pinned table: 45 rows, 121568 bytes
-peak: 121568 bytes at node 27
+  33956096         24  edge    1-25     nuclei z: 1w 25r
+  33955072         72  edge    2-25     nuclei c: 2w 25r
+  33955328         52  edge    4-20     prim_begin: 4w 15r 16r 17r 18r 19r 20r
+  34150400        432  edge    5-20     exponent: 5w 15r 16r 17r 18r 19r 20r
+  34150912        432  edge    6-20     coefficient: 6w 15r 16r 17r 18r 19r 20r
+  33954304         96  edge    7-20     c_x: 7w 15r 16r 17r 18r 19r 20r
+  33954560         96  edge    8-20     c_y: 8w 15r 16r 17r 18r 19r 20r
+  33954816         96  edge    9-20     c_z: 9w 15r 16r 17r 18r 19r 20r
+  33955584         48  edge    10-20    ao_offset: 10w 15r 16r 17r 18r 19r 20r
+  33955840         48  edge    11-20    rank: 11w 15r 16r 17r 18r 19r 20r
+  33953280        312  edge    12-20    bra: 12w 15r 16r 17r 18r 19r 20r
+  33953792        312  edge    13-20    ket: 13w 15r 16r 17r 18r 19r 20r
+  33952768        336  edge    14-20    rec_begin: 14w 15r 16r 17r 18r 19r 20r
+  33813504       8624  edge    15-42    zeta (0,0): 15w 21r 25r 37r
+  33822208       8624  edge    15-42    p_x (0,0): 15w 25r 37r
+  33830912       8624  edge    15-42    p_y (0,0): 15w 25r 37r
+  33839616       8624  edge    15-42    p_z (0,0): 15w 25r 37r
+  33848320       8624  edge    15-42    pa_x (0,0): 15w 21r 25r 37r
+  33857024       8624  edge    15-42    pa_y (0,0): 15w 21r 25r 37r
+  33865728       8624  edge    15-42    pa_z (0,0): 15w 21r 25r 37r
+  33874432       8624  edge    15-42    pb_x (0,0): 15w 21r 25r 37r
+  33883136       8624  edge    15-42    pb_y (0,0): 15w 21r 25r 37r
+  34129408       8624  edge    15-42    pb_z (0,0): 15w 21r 25r 37r
+  34138112       8624  edge    15-42    s (0,0): 15w 21r 25r 37r
+  33891840       8624  edge    15-15    ea (0,0): 15w
+  33900544       8624  edge    15-25    eb (0,0): 15w 25r
+  33909248       8624  edge    15-15    bound (0,0): 15w
+  33917952       8624  edge    15-15    bound_ab (0,0): 15w
+  33926656       8624  edge    15-15    bound_ba (0,0): 15w
+  33935360       4312  edge    15-25    off_a (0,0): 15w 21r 25r
+  33939712       4312  edge    15-25    off_b (0,0): 15w 21r 25r
+  33944064       4312  edge    15-15    rank_a (0,0): 15w
+  33948416       4312  edge    15-15    rank_b (0,0): 15w
+  34151680       3440  edge    16-49    zeta (0,1): 16w 21r 25r 44r
+  34155264       3440  edge    16-49    p_x (0,1): 16w 25r 44r
+  34158848       3440  edge    16-49    p_y (0,1): 16w 25r 44r
+  34162432       3440  edge    16-49    p_z (0,1): 16w 25r 44r
+  34166016       3440  edge    16-49    pa_x (0,1): 16w 21r 25r 44r
+  34169600       3440  edge    16-49    pa_y (0,1): 16w 21r 25r 44r
+  34173184       3440  edge    16-49    pa_z (0,1): 16w 21r 25r 44r
+  34176768       3440  edge    16-49    pb_x (0,1): 16w 21r 25r 44r
+  34180352       3440  edge    16-49    pb_y (0,1): 16w 21r 25r 44r
+  34183936       3440  edge    16-49    pb_z (0,1): 16w 21r 25r 44r
+  34187520       3440  edge    16-49    s (0,1): 16w 21r 25r 44r
+  34146816       3440  edge    16-16    ea (0,1): 16w
+  33896960       3440  edge    16-25    eb (0,1): 16w 25r
+  33891840       3440  edge    16-16    bound (0,1): 16w
+  33909248       3440  edge    16-16    bound_ab (0,1): 16w
+  33912832       3440  edge    16-16    bound_ba (0,1): 16w
+  33916416       1720  edge    16-25    off_a (0,1): 16w 21r 25r
+  33918208       1720  edge    16-25    off_b (0,1): 16w 21r 25r
+  33920000       1720  edge    16-16    rank_a (0,1): 16w
+  33921792       1720  edge    16-16    rank_b (0,1): 16w
+  34199552        344  edge    17-56    zeta (0,2): 17w 21r 25r 51r
+  34200064        344  edge    17-56    p_x (0,2): 17w 25r 51r
+  34200576        344  edge    17-56    p_y (0,2): 17w 25r 51r
+  34201088        344  edge    17-56    p_z (0,2): 17w 25r 51r
+  34201600        344  edge    17-56    pa_x (0,2): 17w 21r 25r 51r
+  34202112        344  edge    17-56    pa_y (0,2): 17w 21r 25r 51r
+  34202624        344  edge    17-56    pa_z (0,2): 17w 21r 25r 51r
+  34203136        344  edge    17-56    pb_x (0,2): 17w 21r 25r 51r
+  34203648        344  edge    17-56    pb_y (0,2): 17w 21r 25r 51r
+  34204160        344  edge    17-56    pb_z (0,2): 17w 21r 25r 51r
+  34204672        344  edge    17-56    s (0,2): 17w 21r 25r 51r
+  34146816        344  edge    17-17    ea (0,2): 17w
+  33920000        344  edge    17-25    eb (0,2): 17w 25r
+  34147328        344  edge    17-17    bound (0,2): 17w
+  34147840        344  edge    17-17    bound_ab (0,2): 17w
+  34148352        344  edge    17-17    bound_ba (0,2): 17w
+  33945088        172  edge    17-25    off_a (0,2): 17w 21r 25r
+  33945344        172  edge    17-25    off_b (0,2): 17w 21r 25r
+  34151424        172  edge    17-17    rank_a (0,2): 17w
+  33944064        172  edge    17-17    rank_b (0,2): 17w
+  34191104        536  edge    18-63    zeta (1,1): 18w 21r 25r 58r
+  34191872        536  edge    18-63    p_x (1,1): 18w 25r 58r
+  34192640        536  edge    18-63    p_y (1,1): 18w 25r 58r
+  34193408        536  edge    18-63    p_z (1,1): 18w 25r 58r
+  34194176        536  edge    18-63    pa_x (1,1): 18w 21r 25r 58r
+  34194944        536  edge    18-63    pa_y (1,1): 18w 21r 25r 58r
+  34195712        536  edge    18-63    pa_z (1,1): 18w 21r 25r 58r
+  34196480        536  edge    18-63    pb_x (1,1): 18w 21r 25r 58r
+  34197248        536  edge    18-63    pb_y (1,1): 18w 21r 25r 58r
+  34198016        536  edge    18-63    pb_z (1,1): 18w 21r 25r 58r
+  34198784        536  edge    18-63    s (1,1): 18w 21r 25r 58r
+  34146816        536  edge    18-18    ea (1,1): 18w
+  33914112        536  edge    18-25    eb (1,1): 18w 25r
+  33914880        536  edge    18-18    bound (1,1): 18w
+  33915648        536  edge    18-18    bound_ab (1,1): 18w
+  34147584        536  edge    18-18    bound_ba (1,1): 18w
+  33944064        268  edge    18-25    off_a (1,1): 18w 21r 25r
+  33944576        268  edge    18-25    off_b (1,1): 18w 21r 25r
+  34148352        268  edge    18-18    rank_a (1,1): 18w
+  34148864        268  edge    18-18    rank_b (1,1): 18w
+  34205184         80  edge    19-70    zeta (1,2): 19w 21r 25r 65r
+  34205440         80  edge    19-70    p_x (1,2): 19w 25r 65r
+  34205696         80  edge    19-70    p_y (1,2): 19w 25r 65r
+  34205952         80  edge    19-70    p_z (1,2): 19w 25r 65r
+  34206208         80  edge    19-70    pa_x (1,2): 19w 21r 25r 65r
+  34206464         80  edge    19-70    pa_y (1,2): 19w 21r 25r 65r
+  34206720         80  edge    19-70    pa_z (1,2): 19w 21r 25r 65r
+  34206976         80  edge    19-70    pb_x (1,2): 19w 21r 25r 65r
+  34207232         80  edge    19-70    pb_y (1,2): 19w 21r 25r 65r
+  34207488         80  edge    19-70    pb_z (1,2): 19w 21r 25r 65r
+  34207744         80  edge    19-70    s (1,2): 19w 21r 25r 65r
+  34151424         80  edge    19-19    ea (1,2): 19w
+  33914880         80  edge    19-25    eb (1,2): 19w 25r
+  33915136         80  edge    19-19    bound (1,2): 19w
+  33915392         80  edge    19-19    bound_ab (1,2): 19w
+  33915648         80  edge    19-19    bound_ba (1,2): 19w
+  33915904         40  edge    19-25    off_a (1,2): 19w 21r 25r
+  33916160         40  edge    19-25    off_b (1,2): 19w 21r 25r
+  34146816         40  edge    19-19    rank_a (1,2): 19w
+  34147072         40  edge    19-19    rank_b (1,2): 19w
+  34208000          8  edge    20-77    zeta (2,2): 20w 21r 25r 72r
+  34208256          8  edge    20-77    p_x (2,2): 20w 25r 72r
+  34208512          8  edge    20-77    p_y (2,2): 20w 25r 72r
+  34208768          8  edge    20-77    p_z (2,2): 20w 25r 72r
+  34209024          8  edge    20-77    pa_x (2,2): 20w 21r 25r 72r
+  34209280          8  edge    20-77    pa_y (2,2): 20w 21r 25r 72r
+  34209536          8  edge    20-77    pa_z (2,2): 20w 21r 25r 72r
+  34209792          8  edge    20-77    pb_x (2,2): 20w 21r 25r 72r
+  34210048          8  edge    20-77    pb_y (2,2): 20w 21r 25r 72r
+  34210304          8  edge    20-77    pb_z (2,2): 20w 21r 25r 72r
+  34210560          8  edge    20-77    s (2,2): 20w 21r 25r 72r
+  34151424          8  edge    20-20    ea (2,2): 20w
+  33915136          8  edge    20-25    eb (2,2): 20w 25r
+  33915392          8  edge    20-20    bound (2,2): 20w
+  33915648          8  edge    20-20    bound_ab (2,2): 20w
+  34146816          8  edge    20-20    bound_ba (2,2): 20w
+  33945600          4  edge    20-25    off_a (2,2): 20w 21r 25r
+  33945856          4  edge    20-25    off_b (2,2): 20w 21r 25r
+  34147072          4  edge    20-20    rank_a (2,2): 20w
+  34147328          4  edge    20-20    rank_b (2,2): 20w
+  33891840       5000  edge    21-24    S cartesian: 21w 24r
+  34146816       4800  edge    23-77    U: 23w 24r 26r 38r 45r 52r 59r 66r 73r
+  33909248       4800  task    24-24    S U: 24w
+  34940928       4608  edge    24-131   S: 24w 86r 108r 131r
+  33891840       5000  edge    25-26    H cartesian: 25w 26r
+  33896960       4800  task    26-26    H U: 26w
+  34945536       4608  edge    26-116   H: 26w 107r
+  33713664       1680  task    28-28    aux records: 28w
+  33691904      21672  task    28-28    aux pairs: 28w
+  33554432     137288  edge    28-31    M cartesian: 28w 31r
+  33900032     121568  edge    30-77    U: 30w 31r 38r 45r 52r 59r 66r 73r
+  33691904     121568  task    31-31    M spherical U: 31w
+  34021632     107648  edge    31-32    M spherical: 31w 32r
+  33554432     107648  edge    32-33    M: 32w 33r
+  34021632     107648  edge    33-77    L: 33w 39r 46r 53r 60r 67r 74r
+  33662208      32768  task    33-33    L tile: 33w
+  33891840          4  task    33-33    L info: 33w
+  34970624       1288  edge    79-116   packed m: 79w 97r 101r 104r 105r
+  34972160       1288  edge    80-116   packed n: 80w 97r 101r 104r 105r
+  34967808       2576  edge    81-116   packed weight: 81w 97r 101r 104r 105r
+  34950144       4608  edge    85-116   D: 85w 89r 101r 107r 108r 115w
+  33564416       4608  edge    86-88    X U: 86w 88r
+  34959360        192  edge    86-88    X w: 86w 88r
+  33554432       9872  task    86-86    syevd work: 86w
+  34954752          4  task    86-86    syevd info: 86w
+  33559040        192  task    88-88    X Lambda: 88w
+  33554432       4608  task    88-88    X M: 88w
+  34954752       4608  edge    88-120   X: 88w 108r 111r 114r 117r 120r
+  33564416       4608  edge    89-93    guess U: 89w 93r
+  34959360        192  edge    89-93    guess w: 89w 91r 93r
+  33554432       9872  task    89-89    syevd work: 89w
+  34959616          4  task    89-89    syevd info: 89w
+  34959616        192  task    93-93    w/2: 93w
+  34959872        192  task    93-93    (w/2)^(-1/2): 93w
+  34960128        192  task    93-93    (w/2)^(1/2): 93w
+  33554432       4608  task    93-93    guess factor: 93w
+  34973696        960  edge    93-116   C occ: 93w 104r 115w
+  34963968       3648  edge    93-97    C rest: 93w 97r
+  34959360       4608  edge    94-98    K lower 0: 94w 97w 98r
+  34681856       4608  edge    98-116   K 0: 98w 106w
+  34608128      36864  edge    99-116   DIIS F iterates: 99w 110w
+  34644992      36864  edge    99-116   DIIS F residuals: 99w 110w
+  34959360        512  edge    99-116   DIIS F gram: 99w 110w
+  34686464       4608  edge    101-117  F: 107w 108r 110r 117r
+  34945536       4608  task    117-117  F X: 117w
+  34950144       4608  edge    117-118  F': 117w 118r
+  34945536       4608  edge    118-120  F' U: 118w 120r
+  33564416        192  edge    118-137  F' w: 118w 126r 137r
+  33554432       9872  task    118-118  syevd work: 118w
+  33564672          4  task    118-118  syevd info: 118w
+  34950144       4608  edge    120-135  C: 120w 121r 122r 131r 135r
+  34945536       4608  edge    121-124  D: 121w 124r
+  34947840         16  edge    129-131  pm atom offsets: 129w 131r
+  34947584        120  edge    130-134  pm schedule: 130w 133r
+  34945536        960  task    131-131  S C: 131w
+  34948096          8  task    131-131  pm L device: 131w
+  34946560        600  edge    131-134  pm populations: 131w 133w
+  34947328        200  edge    131-136  pm U: 131w 133w 135r 136r
+  33554432        960  edge    135-139  C local: 135w 139r
+  33557504        200  task    139-139  localization permutation: 139w
+  33555456        960  task    139-139  C local unsorted: 139w
+  33556480        960  edge    139-140  C local: 139w 140r
+loop 36-42: region of 107648 bytes at 33554432, 1 copies 107776 bytes apart, its body's rows:
+  33612288       1680  task    37-37    packed three-center aux: 37w
+  33583872      28224  task    37-37    packed three-center cells: 37w
+  33554432      29344  edge    37-38    (mn|P) packed: 37w 38r
+  33583872      25984  task    38-38    transform aux: 38w
+  33609984      25984  task    38-38    transform ket: 38w
+  33636096      25984  edge    38-39    (mn|P) packed: 38w 39r
+  33554432      25984  edge    39-40    B: 39w 40r
+  33580544      25984  edge    40-41    B batch pair-fastest: 40w 41r
+loop 43-49: region of 322176 bytes at 33554432, 1 copies 322304 bytes apart, its body's rows:
+  33670912       1680  task    44-44    packed three-center aux: 44w
+  33642496      28224  task    44-44    packed three-center cells: 44w
+  33554432      88032  edge    44-45    (mn|P) packed: 44w 45r
+  33642496      77952  task    45-45    transform aux: 45w
+  33720576      77952  task    45-45    transform ket: 45w
+  33798656      77952  edge    45-46    (mn|P) packed: 45w 46r
+  33554432      77952  edge    46-47    B: 46w 47r
+  33632512      77952  edge    47-48    B batch pair-fastest: 47w 48r
+loop 50-56: region of 148192 bytes at 33554432, 1 copies 148224 bytes apart, its body's rows:
+  33605632       1680  task    51-51    packed three-center aux: 51w
+  33598464       7056  task    51-51    packed three-center cells: 51w
+  33554432      44016  edge    51-52    (mn|P) packed: 51w 52r
+  33598464      38976  task    52-52    transform aux: 52w
+  33637632      32480  task    52-52    transform ket: 52w
+  33670144      32480  edge    52-53    (mn|P) packed: 52w 53r
+  33554432      32480  edge    53-54    B: 53w 54r
+  33586944      32480  edge    54-55    B batch pair-fastest: 54w 55r
+loop 57-63: region of 345408 bytes at 33554432, 1 copies 345600 bytes apart, its body's rows:
+  33659136       1680  task    58-58    packed three-center aux: 58w
+  33648896      10080  task    58-58    packed three-center cells: 58w
+  33554432      94320  edge    58-59    (mn|P) packed: 58w 59r
+  33648896      83520  task    59-59    transform aux: 59w
+  33732608      83520  task    59-59    transform ket: 59w
+  33816320      83520  edge    59-60    (mn|P) packed: 59w 60r
+  33554432      83520  edge    60-61    B: 60w 61r
+  33638144      83520  edge    61-62    B batch pair-fastest: 61w 62r
+loop 64-70: region of 253824 bytes at 33554432, 1 copies 253952 bytes apart, its body's rows:
+  33634048       1680  task    65-65    packed three-center aux: 65w
+  33629952       4032  task    65-65    packed three-center cells: 65w
+  33554432      75456  edge    65-66    (mn|P) packed: 65w 66r
+  33629952      66816  task    66-66    transform aux: 66w
+  33696768      55680  task    66-66    transform ket: 66w
+  33752576      55680  edge    66-67    (mn|P) packed: 66w 67r
+  33554432      55680  edge    67-68    B: 67w 68r
+  33610240      55680  edge    68-69    B batch pair-fastest: 68w 69r
+loop 71-77: region of 122528 bytes at 33554432, 1 copies 122624 bytes apart, its body's rows:
+  33592320       1680  task    72-72    packed three-center aux: 72w
+  33594112       1008  task    72-72    packed three-center cells: 72w
+  33554432      37728  edge    72-73    (mn|P) packed: 72w 73r
+  33592320      33408  task    73-73    transform aux: 73w
+  33625856      27840  task    73-73    transform ket: 73w
+  33653760      23200  edge    73-74    (mn|P) packed: 73w 74r
+  33554432      23200  edge    74-75    B: 74w 75r
+  33577728      23200  edge    75-76    B batch pair-fastest: 75w 76r
+loop 95-97: region of 1386496 bytes at 33554432, 2 copies 693248 bytes apart, its body's rows:
+  33554432     164864  edge    96-97    B batch: 96w 97r
+  33719296     294912  task    97-97    slab: 97w
+  34014208     233472  task    97-97    X: 97w
+loop 102-104: region of 1043456 bytes at 33554432, 2 copies 521728 bytes apart, in loop 101-116's body, its body's rows:
+  33554432     164864  edge    103-104  B batch: 103w 104r
+  34075648        512  task    104-104  gamma: 104w
+  33719296     294912  task    104-104  slab: 104w
+  34014208      61440  task    104-104  X: 104w
+loop 101-116: region of 1053456 bytes at 33554432, its body's rows:
+  34602496       2576  edge    101-104  D packed 0: 101w 104r
+  34605312       2576  edge    101-105  J packed 0: 101w 104w 105r
+  34597888       4608  edge    101-105  K lower 1: 101w 104w 105r
+  33554432       4608  edge    105-107  J 0: 105w 107r
+  33559040       4608  edge    105-106  K 1: 105w 106r
+  33563648       4608  edge    106-107  K of D: 106w 107r
+  33559040       4608  task    107-107  H + J: 107w
+  33568256          8  task    107-107  tr(D (H + F))/2: 107w
+  33554432       4608  task    108-108  F D: 108w
+  33559040       4608  task    108-108  F D S: 108w
+  33563648       4608  task    108-108  F D S - S D F: 108w
+  33572864          8  task    108-108  |e|² on the device: 108w
+  33568256       4608  edge    108-110  e: 108w 110r
+  33559040         64  task    110-110  DIIS F coefficients: 110w
+  33559296          4  task    110-110  DIIS F singular: 110w
+  33554432       4608  edge    110-111  DIIS F: 110w 111r
+  33559040       4608  task    111-111  F X: 111w
+  33564416       4608  edge    111-112  F': 111w 112r
+  33569024       4608  edge    112-114  F' U: 112w 114r
+  33573632        192  edge    112-112  F' w: 112w
+  33554432       9872  task    112-112  syevd work: 112w
+  33573888          4  task    112-112  syevd info: 112w
+  33554432       4608  edge    114-115  C: 114w 115r
+loop 133-134: region of 1800 bytes at 33554432, its body's rows:
+  33554432        600  task    133-133  pm populations pong: 133w
+  33555200        200  task    133-133  pm U pong: 133w
+  33555456         40  task    133-133  pm cos: 133w
+  33555712         40  task    133-133  pm sin: 133w
+  33555968         20  task    133-133  pm partner: 133w
+  33556224          8  task    133-133  pm L device: 133w
+handoffs: 1->30 1->96 1->97 1->103 1->104 2->30 2->96 2->97 2->103 2->104 4->30 4->96 4->97 4->103 4->104 5->23 5->96 5->97 5->103 5->104 6->23 6->96 6->97 6->103 6->104 7->30 7->96 7->97 7->103 7->104 8->30 8->96 8->97 8->103 8->104 9->30 9->96 9->97 9->103 9->104 10->30 10->96 10->97 10->103 10->104 11->30 11->96 11->97 11->103 11->104 12->30 12->96 12->97 12->103 12->104 13->30 13->96 13->97 13->103 13->104 14->30 14->96 14->97 14->103 14->104 15->16 15->17 15->18 15->19 15->20 15->21 15->23 15->24 15->25 15->26 15->30 15->33 15->45 15->59 15->96 15->97 15->103 15->104 16->17 16->18 16->19 16->20 16->21 16->23 16->24 16->25 16->26 16->30 16->33 16->59 16->96 16->97 16->103 16->104 17->18 17->19 17->20 17->23 17->30 17->96 17->97 17->103 17->104 18->19 18->20 18->23 18->30 18->96 18->97 18->103 18->104 19->20 19->23 19->30 19->96 19->97 19->103 19->104 20->23 20->30 20->96 20->97 20->103 20->104 21->25 21->30 21->33 21->45 21->59 21->96 21->97 21->103 21->104 23->96 23->97 23->103 23->104 24->25 24->30 24->33 24->59 24->96 24->97 24->103 24->104 25->26 25->30 25->33 25->45 25->59 25->96 25->97 25->103 25->104 26->30 26->33 26->59 26->96 26->97 26->103 26->104 26->117 26->118 26->121 26->129 26->130 26->131 28->31 28->32 28->33 28->37 28->38 28->39 28->40 28->44 28->45 28->46 28->47 28->51 28->52 28->53 28->54 28->58 28->59 28->60 28->61 28->65 28->66 28->67 28->68 28->72 28->73 28->74 28->75 28->86 28->88 28->89 28->93 28->96 28->103 28->105 28->106 28->107 28->108 28->110 28->111 28->112 28->114 28->118 28->133 28->135 28->139 30->96 30->97 30->103 30->104 31->32 31->33 31->37 31->38 31->39 31->40 31->44 31->45 31->46 31->47 31->51 31->52 31->53 31->54 31->58 31->59 31->60 31->61 31->65 31->66 31->67 31->68 31->72 31->73 31->74 31->75 31->86 31->88 31->89 31->93 31->96 31->97 31->103 31->104 31->105 31->106 31->107 31->108 31->110 31->111 31->112 31->114 31->118 31->133 31->135 31->139 32->33 32->37 32->38 32->39 32->40 32->44 32->45 32->46 32->47 32->51 32->52 32->53 32->54 32->58 32->59 32->60 32->61 32->65 32->66 32->67 32->68 32->72 32->73 32->74 32->75 32->86 32->88 32->89 32->93 32->96 32->97 32->103 32->104 32->105 32->106 32->107 32->108 32->110 32->111 32->112 32->114 32->118 32->133 32->135 32->139 33->37 33->38 33->39 33->40 33->44 33->45 33->46 33->47 33->51 33->52 33->53 33->54 33->58 33->59 33->60 33->61 33->65 33->66 33->67 33->68 33->72 33->73 33->74 33->75 33->86 33->88 33->89 33->93 33->96 33->97 33->103 33->104 33->105 33->106 33->107 33->108 33->110 33->111 33->112 33->114 33->118 33->133 33->135 33->139 37->38 37->39 37->40 37->44 37->45 37->46 37->51 37->52 37->53 37->54 37->58 37->59 37->60 37->65 37->67 37->68 37->72 37->73 37->74 37->75 37->86 37->88 37->89 37->93 37->96 37->97 37->103 37->104 37->105 37->106 37->107 37->108 37->110 37->111 37->112 37->114 37->118 37->133 37->135 37->139 38->39 38->40 38->44 38->45 38->46 38->47 38->51 38->52 38->53 38->54 38->58 38->59 38->60 38->61 38->65 38->66 38->67 38->68 38->72 38->73 38->74 38->75 38->86 38->88 38->89 38->93 38->96 38->97 38->103 38->104 38->105 38->106 38->107 38->108 38->110 38->111 38->112 38->114 38->118 38->133 38->135 38->139 39->44 39->45 39->46 39->47 39->51 39->52 39->53 39->58 39->59 39->60 39->61 39->65 39->66 39->67 39->68 39->72 39->73 39->74 39->75 39->86 39->88 39->89 39->93 39->96 39->97 39->103 39->104 39->105 39->106 39->107 39->108 39->110 39->111 39->112 39->114 39->118 39->133 39->135 39->139 40->44 40->46 40->51 40->52 40->53 40->54 40->58 40->60 40->65 40->67 40->72 40->73 40->74 40->75 40->86 40->88 40->89 40->93 40->96 40->103 40->105 40->106 40->107 40->108 40->110 40->111 40->112 40->114 40->118 40->133 40->135 40->139 41->44 41->46 41->51 41->52 41->53 41->54 41->58 41->60 41->65 41->67 41->72 41->73 41->75 41->96 41->103 44->45 44->46 44->47 44->51 44->52 44->53 44->54 44->58 44->59 44->60 44->61 44->65 44->66 44->67 44->68 44->72 44->73 44->74 44->75 44->86 44->88 44->89 44->93 44->96 44->97 44->103 44->104 44->105 44->106 44->107 44->108 44->110 44->111 44->112 44->114 44->118 44->133 44->135 44->139 45->46 45->47 45->51 45->52 45->53 45->54 45->58 45->59 45->60 45->61 45->65 45->66 45->67 45->68 45->72 45->73 45->74 45->75 45->86 45->88 45->89 45->93 45->96 45->97 45->103 45->104 45->105 45->106 45->107 45->108 45->110 45->111 45->112 45->114 45->118 45->133 45->135 45->139 46->51 46->52 46->53 46->54 46->58 46->59 46->60 46->65 46->66 46->67 46->68 46->72 46->73 46->74 46->75 46->86 46->88 46->89 46->93 46->96 46->97 46->103 46->104 46->105 46->106 46->107 46->108 46->110 46->111 46->112 46->114 46->118 46->133 46->135 46->139 47->51 47->52 47->53 47->54 47->58 47->59 47->60 47->61 47->65 47->66 47->67 47->68 47->72 47->73 47->74 47->75 47->86 47->88 47->89 47->93 47->96 47->103 47->105 47->106 47->107 47->108 47->110 47->111 47->112 47->114 47->118 47->133 47->135 47->139 48->52 48->58 48->59 48->60 48->61 48->65 48->66 48->68 48->73 48->96 48->103 51->52 51->53 51->54 51->58 51->60 51->65 51->67 51->72 51->73 51->74 51->75 51->86 51->88 51->89 51->93 51->96 51->97 51->103 51->104 51->105 51->106 51->107 51->108 51->110 51->111 51->112 51->114 51->118 51->133 51->135 51->139 52->53 52->54 52->58 52->59 52->60 52->61 52->65 52->66 52->67 52->68 52->72 52->73 52->74 52->75 52->86 52->88 52->89 52->93 52->96 52->97 52->103 52->104 52->105 52->106 52->107 52->108 52->110 52->111 52->112 52->114 52->118 52->133 52->135 52->139 53->58 53->59 53->60 53->61 53->65 53->66 53->67 53->72 53->73 53->74 53->75 53->86 53->88 53->89 53->93 53->96 53->97 53->103 53->104 53->105 53->106 53->107 53->108 53->110 53->111 53->112 53->114 53->118 53->133 53->135 53->139 54->58 54->60 54->65 54->67 54->68 54->72 54->73 54->74 54->75 54->86 54->88 54->89 54->93 54->96 54->103 54->105 54->106 54->107 54->108 54->110 54->111 54->112 54->114 54->118 54->133 54->135 54->139 55->58 55->60 55->65 55->67 55->68 55->72 55->73 55->75 55->96 55->103 58->59 58->60 58->61 58->65 58->66 58->67 58->68 58->72 58->73 58->74 58->75 58->86 58->88 58->89 58->93 58->96 58->97 58->103 58->104 58->105 58->106 58->107 58->108 58->110 58->111 58->112 58->114 58->118 58->133 58->135 58->139 59->60 59->61 59->65 59->66 59->67 59->68 59->72 59->73 59->74 59->75 59->86 59->88 59->89 59->93 59->96 59->97 59->103 59->104 59->105 59->106 59->107 59->108 59->110 59->111 59->112 59->114 59->118 59->133 59->135 59->139 60->65 60->66 60->67 60->68 60->72 60->73 60->74 60->75 60->86 60->88 60->89 60->93 60->96 60->97 60->103 60->104 60->105 60->106 60->107 60->108 60->110 60->111 60->112 60->114 60->118 60->133 60->135 60->139 61->65 61->66 61->67 61->68 61->72 61->73 61->74 61->75 61->86 61->88 61->89 61->93 61->96 61->97 61->103 61->104 61->105 61->106 61->107 61->108 61->110 61->111 61->112 61->114 61->118 61->133 61->135 61->139 62->66 62->68 62->73 62->96 62->97 62->103 62->104 65->66 65->67 65->68 65->72 65->73 65->74 65->75 65->86 65->88 65->89 65->93 65->96 65->97 65->103 65->104 65->105 65->106 65->107 65->108 65->110 65->111 65->112 65->114 65->118 65->133 65->135 65->139 66->67 66->68 66->72 66->73 66->74 66->75 66->86 66->88 66->89 66->93 66->96 66->97 66->103 66->104 66->105 66->106 66->107 66->108 66->110 66->111 66->112 66->114 66->118 66->133 66->135 66->139 67->72 67->73 67->74 67->75 67->86 67->88 67->89 67->93 67->96 67->97 67->103 67->104 67->105 67->106 67->107 67->108 67->110 67->111 67->112 67->114 67->118 67->133 67->135 67->139 68->72 68->73 68->74 68->75 68->86 68->88 68->89 68->93 68->96 68->103 68->105 68->106 68->107 68->108 68->110 68->111 68->112 68->114 68->118 68->133 68->135 68->139 69->73 69->96 69->103 72->73 72->74 72->75 72->86 72->88 72->89 72->93 72->96 72->97 72->103 72->104 72->105 72->106 72->107 72->108 72->110 72->111 72->112 72->114 72->118 72->133 72->135 72->139 73->74 73->75 73->86 73->88 73->89 73->93 73->96 73->97 73->103 73->104 73->105 73->106 73->107 73->108 73->110 73->111 73->112 73->114 73->118 73->133 73->135 73->139 74->86 74->88 74->89 74->93 74->96 74->97 74->103 74->104 74->105 74->106 74->107 74->108 74->110 74->111 74->112 74->114 74->118 74->133 74->135 74->139 75->86 75->88 75->89 75->93 75->96 75->103 75->105 75->106 75->107 75->108 75->110 75->111 75->112 75->114 75->118 75->133 75->135 75->139 76->96 76->103 85->117 85->120 86->88 86->89 86->93 86->94 86->96 86->99 86->103 86->105 86->106 86->107 86->108 86->110 86->111 86->112 86->114 86->118 86->133 86->135 86->139 88->89 88->93 88->94 88->96 88->99 88->103 88->105 88->106 88->107 88->108 88->110 88->111 88->112 88->114 88->118 88->133 88->135 88->139 89->93 89->94 89->96 89->99 89->103 89->105 89->106 89->107 89->108 89->110 89->111 89->112 89->114 89->117 89->118 89->120 89->133 89->135 89->139 91->94 91->99 93->94 93->96 93->99 93->103 93->105 93->106 93->107 93->108 93->110 93->111 93->112 93->114 93->118 93->133 93->135 93->139 94->99 96->103 96->104 96->105 96->106 96->107 96->108 96->110 96->111 96->112 96->114 96->118 96->133 96->135 96->139 97->98 97->99 97->101 97->103 97->104 97->105 97->106 97->107 97->108 97->110 97->111 97->112 97->114 97->118 97->133 97->135 97->139 98->99 103->105 103->106 103->107 103->108 103->110 103->111 103->112 103->114 104->105 104->106 104->107 104->108 104->110 104->111 104->112 104->114 105->107 105->108 105->110 105->111 105->112 105->114 106->107 106->108 106->110 106->111 106->112 107->108 107->110 107->111 107->112 107->114 108->110 108->111 108->112 108->114 110->111 110->112 110->114 111->112 111->114 112->114 116->117 116->118 116->120 116->121 116->129 116->130 116->131 116->133 116->135 116->139 117->118 117->120 117->121 117->129 117->130 117->131 118->120 118->121 118->129 118->130 118->131 118->133 118->135 118->139 120->121 120->129 120->130 120->131 121->129 121->130 121->131 124->129 124->130 124->131 134->135 134->139
+worker 0 pinned table: 66 rows, 329728 bytes
+peak: 329728 bytes at node 95
     offset      bytes  owner   life     name: users (w writes, r reads)
        256         24  edge    0-1      nuclei z: 0w 1r
          0         72  edge    0-2      nuclei c: 0w 2r
@@ -342,45 +457,83 @@ peak: 121568 bytes at node 27
       2048        312  edge    3-13     ket: 3w 13r
       1024        336  edge    3-14     rec_begin: 3w 14r
          0       4800  edge    22-23    U: 22w 23r
-         0     121568  edge    27-28    U: 27w 28r
-     91904       1680  edge    29-30    three-center aux: 29w 30r
-         0      91728  edge    29-30    three-center cells: 29w 30r
-     21760       1680  edge    31-32    aux records: 31w 32r
-         0      21672  edge    31-32    aux pairs: 31w 32r
-         0          4  edge    35-36    L info: 35w 36r
-       256          4  edge    36-37    L checked: 36w 37r
-         0       1568  edge    38-40    stamp O: 38w 40r
-      1792        200  edge    39-40    stamp H: 39w 40r
-      2048       4608  edge    40-41    D: 40w 41r
-         0          4  edge    42-43    syevd info: 42w 43r
-         0          4  edge    45-46    syevd info: 45w 46r
-         0        192  edge    47-48    guess w host: 47w 48r
-       256          8  edge    48-49    guess floor: 48w 49r
-         0          4  edge    67-68    syevd info: 67w 68r
-         0       4608  edge    71-72    c.npy: 71w 72r
-         0       4608  edge    73-74    d.npy: 73w 74r
-         0        192  edge    75-76    epsilon: 75w 76r
-       256         16  edge    77-78    pm atom offsets: 77w 78r
-         0        120  edge    77-79    pm schedule: 77w 79r
-         0          8  edge    80-81    pm L before: 80w 81r
-         0        200  edge    85-87    doubly U host: 85w 87r
-       256        192  edge    86-87    epsilon host: 86w 87r
-       512        200  edge    87-88    localization permutation: 87w 88r
-         0        960  edge    89-90    c_local.npy: 89w 90r
-loop 53-65: region of 520 bytes at 0, its body's rows:
-       256          8  edge    56-58    E elec: 56w 58r
-       512          8  edge    57-58    |e|²: 57w 58r
-         0         16  edge    58-65    E, |e|: 58w 65r
-       256          4  edge    59-65    DIIS F singular: 59w 65r
-       512          4  edge    61-62    syevd info: 61w 62r
-loop 82-83: region of 8 bytes at 0, its body's rows:
-         0          8  edge    82-83    pm L: 82w 83r
-handoffs: 0->3 0->22 0->27 0->29 0->31 0->35 0->36 0->38 0->42 0->45 0->47 0->48 0->56 0->58 0->59 0->67 0->71 0->73 0->75 0->77 0->80 0->82 0->85 0->86 0->89 1->3 1->22 1->27 1->29 1->31 1->36 1->38 1->48 1->56 1->59 1->71 1->73 1->77 1->86 1->89 2->3 2->22 2->27 2->29 2->31 2->35 2->38 2->42 2->45 2->47 2->58 2->67 2->71 2->73 2->75 2->77 2->80 2->82 2->85 2->89 3->22 3->27 3->29 3->31 3->35 3->36 3->38 3->39 3->40 3->42 3->45 3->47 3->48 3->56 3->57 3->58 3->59 3->61 3->67 3->71 3->73 3->75 3->77 3->80 3->82 3->85 3->86 3->87 3->89 4->22 4->27 4->29 4->31 4->40 4->71 4->73 5->22 5->27 5->29 5->31 5->35 5->36 5->38 5->42 5->45 5->47 5->48 5->56 5->58 5->59 5->67 5->71 5->73 5->75 5->77 5->80 5->82 5->85 5->86 5->89 6->22 6->27 6->29 6->31 6->38 6->57 6->61 6->71 6->73 6->87 6->89 7->22 7->27 7->29 7->31 7->40 7->71 7->73 8->22 8->27 8->29 8->31 8->40 8->71 8->73 9->22 9->27 9->29 9->31 9->40 9->71 9->73 10->22 10->27 10->29 10->31 10->40 10->71 10->73 11->22 11->27 11->29 11->31 11->40 11->71 11->73 12->22 12->27 12->29 12->31 12->38 12->39 12->71 12->73 13->22 13->27 13->29 13->31 13->40 13->71 13->73 14->22 14->27 14->29 14->31 14->38 14->71 14->73 22->27 22->29 22->31 22->35 22->36 22->38 22->39 22->40 22->42 22->45 22->47 22->48 22->56 22->57 22->58 22->59 22->61 22->67 22->71 22->73 22->75 22->77 22->80 22->82 22->85 22->86 22->87 22->89 23->27 23->29 23->31 23->35 23->36 23->38 23->39 23->40 23->42 23->45 23->47 23->48 23->56 23->57 23->58 23->59 23->61 23->67 23->71 23->73 23->75 23->77 23->80 23->82 23->85 23->86 23->87 23->89 27->29 27->31 27->35 27->36 27->38 27->39 27->40 27->42 27->45 27->47 27->48 27->56 27->57 27->58 27->59 27->61 27->67 27->71 27->73 27->75 27->77 27->80 27->82 27->85 27->86 27->87 27->89 28->29 28->31 28->35 28->36 28->38 28->39 28->40 28->42 28->45 28->47 28->48 28->56 28->57 28->58 28->59 28->61 28->67 28->71 28->73 28->75 28->77 28->80 28->82 28->85 28->86 28->87 28->89 29->31 29->35 29->36 29->38 29->39 29->40 29->42 29->45 29->47 29->48 29->56 29->57 29->58 29->59 29->61 29->67 29->71 29->73 29->75 29->77 29->80 29->82 29->85 29->86 29->87 29->89 30->31 30->35 30->36 30->38 30->39 30->40 30->42 30->45 30->47 30->48 30->56 30->57 30->58 30->59 30->61 30->67 30->71 30->73 30->75 30->77 30->80 30->82 30->85 30->86 30->87 30->89 31->35 31->36 31->38 31->39 31->40 31->42 31->45 31->47 31->48 31->56 31->57 31->58 31->59 31->61 31->67 31->71 31->73 31->75 31->77 31->80 31->82 31->85 31->86 31->87 31->89 32->35 32->36 32->38 32->39 32->40 32->42 32->45 32->47 32->48 32->56 32->57 32->58 32->59 32->61 32->67 32->71 32->73 32->75 32->77 32->80 32->82 32->85 32->86 32->87 32->89 35->38 35->42 35->45 35->47 35->58 35->67 35->71 35->73 35->75 35->77 35->80 35->82 35->85 35->89 36->38 36->42 36->45 36->47 36->48 36->56 36->58 36->59 36->67 36->71 36->73 36->75 36->77 36->80 36->82 36->85 36->86 36->89 37->38 37->48 37->56 37->59 37->71 37->73 37->77 37->86 37->89 38->42 38->45 38->47 38->48 38->56 38->57 38->58 38->59 38->61 38->67 38->71 38->73 38->75 38->77 38->80 38->82 38->85 38->86 38->87 38->89 39->71 39->73 40->42 40->45 40->47 40->48 40->56 40->57 40->58 40->59 40->61 40->67 40->71 40->73 40->75 40->77 40->80 40->82 40->85 40->86 40->87 40->89 41->71 41->73 42->45 42->47 42->58 42->67 42->71 42->73 42->75 42->77 42->80 42->82 42->85 42->89 43->45 43->47 43->58 43->67 43->71 43->73 43->75 43->77 43->80 43->82 43->85 43->89 45->47 45->58 45->67 45->71 45->73 45->75 45->77 45->80 45->82 45->85 45->89 46->47 46->58 46->67 46->71 46->73 46->75 46->77 46->80 46->82 46->85 46->89 47->58 47->67 47->71 47->73 47->75 47->77 47->80 47->82 47->85 47->89 48->56 48->58 48->59 48->67 48->71 48->73 48->75 48->77 48->80 48->82 48->85 48->86 48->89 49->56 49->59 49->71 49->73 49->77 49->86 49->89 56->59 57->61 58->59 58->61 65->67 65->71 65->73 65->75 65->77 65->80 65->82 65->85 65->86 65->87 65->89 67->71 67->73 67->75 67->77 67->80 67->82 67->85 67->89 68->71 68->73 68->75 68->77 68->80 68->82 68->85 68->89 71->73 71->75 71->77 71->80 71->82 71->85 71->86 71->87 71->89 72->73 72->75 72->77 72->80 72->82 72->85 72->86 72->87 72->89 73->75 73->77 73->80 73->82 73->85 73->86 73->87 73->89 74->75 74->77 74->80 74->82 74->85 74->86 74->87 74->89 75->77 75->80 75->82 75->85 75->89 76->77 76->80 76->82 76->85 76->89 77->80 77->82 77->85 77->86 77->89 78->86 78->89 79->80 79->82 79->85 79->89 80->82 80->85 80->89 81->82 81->85 81->89 83->85 83->89 85->89 86->89 87->89 88->89
-plan heap table: 2 rows, 24 bytes
-peak: 24 bytes at node 52
+     21760       1680  edge    27-28    aux records: 27w 28r
+         0      21672  edge    27-28    aux pairs: 27w 28r
+         0     121568  edge    29-30    U: 29w 30r
+         0          4  edge    33-34    L info: 33w 34r
+       256          4  edge    34-77    L checked: 34w 39r 46r 53r 60r 67r 74r
+      2816       1288  edge    78-79    packed m: 78w 79r
+      4352       1288  edge    78-80    packed n: 78w 80r
+         0       2576  edge    78-81    packed weight: 78w 81r
+         0       1568  edge    82-84    stamp O: 82w 84r
+      1792        200  edge    83-84    stamp H: 83w 84r
+      2048       4608  edge    84-85    D: 84w 85r
+         0          4  edge    86-87    syevd info: 86w 87r
+         0          4  edge    89-90    syevd info: 89w 90r
+         0        192  edge    91-92    guess w host: 91w 92r
+       256          8  edge    92-93    guess floor: 92w 93r
+         0          4  edge    118-119  syevd info: 118w 119r
+         0       4608  edge    122-123  c.npy: 122w 123r
+         0       4608  edge    124-125  d.npy: 124w 125r
+         0        192  edge    126-127  epsilon: 126w 127r
+       256         16  edge    128-129  pm atom offsets: 128w 129r
+         0        120  edge    128-130  pm schedule: 128w 130r
+         0          8  edge    131-132  pm L before: 131w 132r
+         0        200  edge    136-138  doubly U host: 136w 138r
+       256        192  edge    137-138  epsilon host: 137w 138r
+       512        200  edge    138-139  localization permutation: 138w 139r
+         0        960  edge    140-141  c_local.npy: 140w 141r
+loop 36-42: region of 30096 bytes at 512, 1 copies 30208 bytes apart, its body's rows:
+     28928       1680  edge    36-37    packed three-center aux: 36w 37r
+       512      28224  edge    36-37    packed three-center cells: 36w 37r
+       512      25984  edge    41-42    B (0, 0) batch window: 41w 42r
+loop 43-49: region of 77952 bytes at 512, 1 copies 78080 bytes apart, its body's rows:
+     28928       1680  edge    43-44    packed three-center aux: 43w 44r
+       512      28224  edge    43-44    packed three-center cells: 43w 44r
+       512      77952  edge    48-49    B (0, 1) batch window: 48w 49r
+loop 50-56: region of 32480 bytes at 512, 1 copies 32512 bytes apart, its body's rows:
+      7680       1680  edge    50-51    packed three-center aux: 50w 51r
+       512       7056  edge    50-51    packed three-center cells: 50w 51r
+       512      32480  edge    55-56    B (0, 2) batch window: 55w 56r
+loop 57-63: region of 83520 bytes at 512, 1 copies 83712 bytes apart, its body's rows:
+     10752       1680  edge    57-58    packed three-center aux: 57w 58r
+       512      10080  edge    57-58    packed three-center cells: 57w 58r
+       512      83520  edge    62-63    B (1, 1) batch window: 62w 63r
+loop 64-70: region of 55680 bytes at 512, 1 copies 55808 bytes apart, its body's rows:
+      4608       1680  edge    64-65    packed three-center aux: 64w 65r
+       512       4032  edge    64-65    packed three-center cells: 64w 65r
+       512      55680  edge    69-70    B (1, 2) batch window: 69w 70r
+loop 71-77: region of 23200 bytes at 512, 1 copies 23296 bytes apart, its body's rows:
+       512       1680  edge    71-72    packed three-center aux: 71w 72r
+      2304       1008  edge    71-72    packed three-center cells: 71w 72r
+       512      23200  edge    76-77    B (2, 2) batch window: 76w 77r
+loop 95-97: region of 329728 bytes at 0, 2 copies 164864 bytes apart, its body's rows:
+         0     164864  edge    95-96    B batch window: 95w 96r
+loop 102-104: region of 329728 bytes at 0, 2 copies 164864 bytes apart, in loop 101-116's body, its body's rows:
+         0     164864  edge    102-103  B batch window: 102w 103r
+loop 101-116: region of 329728 bytes at 0, its body's rows:
+         0          8  edge    107-109  E elec: 107w 109r
+       256          8  edge    108-109  |e|²: 108w 109r
+       512         16  edge    109-116  E, |e|: 109w 116r
+         0          4  edge    110-116  DIIS F singular: 110w 116r
+       256          4  edge    112-113  syevd info: 112w 113r
+loop 133-134: region of 8 bytes at 0, its body's rows:
+         0          8  edge    133-134  pm L: 133w 134r
+handoffs: 0->3 0->22 0->27 0->29 0->33 0->34 0->78 0->82 0->86 0->89 0->91 0->92 0->95 0->102 0->107 0->108 0->110 0->112 0->118 0->122 0->124 0->126 0->128 0->131 0->133 0->136 0->137 0->140 1->3 1->22 1->27 1->29 1->34 1->78 1->82 1->92 1->95 1->102 1->108 1->112 1->122 1->124 1->128 1->137 1->140 2->3 2->22 2->27 2->29 2->33 2->78 2->82 2->86 2->89 2->91 2->95 2->102 2->107 2->110 2->118 2->122 2->124 2->126 2->128 2->131 2->133 2->136 2->140 3->22 3->27 3->29 3->33 3->34 3->36 3->41 3->43 3->48 3->50 3->55 3->57 3->62 3->64 3->69 3->71 3->76 3->78 3->82 3->83 3->84 3->86 3->89 3->91 3->92 3->95 3->102 3->107 3->108 3->109 3->110 3->112 3->118 3->122 3->124 3->126 3->128 3->131 3->133 3->136 3->137 3->138 3->140 4->22 4->27 4->29 4->36 4->41 4->43 4->48 4->50 4->55 4->57 4->62 4->64 4->69 4->76 4->78 4->84 4->95 4->102 4->122 4->124 5->22 5->27 5->29 5->33 5->34 5->78 5->82 5->86 5->89 5->91 5->92 5->95 5->102 5->107 5->108 5->110 5->112 5->118 5->122 5->124 5->126 5->128 5->131 5->133 5->136 5->137 5->140 6->22 6->27 6->29 6->36 6->41 6->43 6->48 6->50 6->55 6->57 6->62 6->64 6->69 6->71 6->76 6->78 6->82 6->95 6->102 6->109 6->122 6->124 6->138 6->140 7->22 7->27 7->29 7->36 7->41 7->43 7->48 7->50 7->55 7->57 7->62 7->64 7->69 7->71 7->76 7->78 7->84 7->95 7->102 7->122 7->124 8->22 8->27 8->29 8->36 8->41 8->43 8->48 8->50 8->55 8->57 8->62 8->64 8->69 8->71 8->76 8->78 8->84 8->95 8->102 8->122 8->124 9->22 9->27 9->29 9->36 9->41 9->43 9->48 9->50 9->55 9->57 9->62 9->64 9->69 9->71 9->76 9->78 9->84 9->95 9->102 9->122 9->124 10->22 10->27 10->29 10->36 10->41 10->43 10->48 10->50 10->55 10->57 10->62 10->64 10->69 10->76 10->78 10->84 10->95 10->102 10->122 10->124 11->22 11->27 11->29 11->36 11->41 11->43 11->48 11->50 11->55 11->57 11->62 11->64 11->69 11->76 11->78 11->84 11->95 11->102 11->122 11->124 12->22 12->27 12->29 12->36 12->41 12->43 12->48 12->50 12->55 12->57 12->62 12->64 12->69 12->71 12->76 12->78 12->82 12->83 12->95 12->102 12->122 12->124 13->22 13->27 13->29 13->36 13->41 13->43 13->48 13->50 13->55 13->57 13->62 13->64 13->69 13->71 13->76 13->78 13->84 13->95 13->102 13->122 13->124 14->22 14->27 14->29 14->36 14->41 14->43 14->48 14->50 14->55 14->57 14->62 14->64 14->69 14->71 14->76 14->78 14->82 14->95 14->102 14->122 14->124 22->27 22->29 22->33 22->34 22->36 22->41 22->43 22->48 22->50 22->55 22->57 22->62 22->64 22->69 22->71 22->76 22->78 22->82 22->83 22->84 22->86 22->89 22->91 22->92 22->95 22->102 22->107 22->108 22->109 22->110 22->112 22->118 22->122 22->124 22->126 22->128 22->131 22->133 22->136 22->137 22->138 22->140 23->27 23->29 23->33 23->34 23->36 23->41 23->43 23->48 23->50 23->55 23->57 23->62 23->64 23->69 23->71 23->76 23->78 23->82 23->83 23->84 23->86 23->89 23->91 23->92 23->95 23->102 23->107 23->108 23->109 23->110 23->112 23->118 23->122 23->124 23->126 23->128 23->131 23->133 23->136 23->137 23->138 23->140 27->29 27->33 27->34 27->36 27->41 27->43 27->48 27->50 27->55 27->57 27->62 27->64 27->69 27->71 27->76 27->78 27->82 27->83 27->84 27->86 27->89 27->91 27->92 27->95 27->102 27->107 27->108 27->109 27->110 27->112 27->118 27->122 27->124 27->126 27->128 27->131 27->133 27->136 27->137 27->138 27->140 28->29 28->33 28->34 28->36 28->41 28->43 28->48 28->50 28->55 28->57 28->62 28->64 28->69 28->71 28->76 28->78 28->82 28->83 28->84 28->86 28->89 28->91 28->92 28->95 28->102 28->107 28->108 28->109 28->110 28->112 28->118 28->122 28->124 28->126 28->128 28->131 28->133 28->136 28->137 28->138 28->140 29->33 29->34 29->36 29->41 29->43 29->48 29->50 29->55 29->57 29->62 29->64 29->69 29->71 29->76 29->78 29->82 29->83 29->84 29->86 29->89 29->91 29->92 29->95 29->102 29->107 29->108 29->109 29->110 29->112 29->118 29->122 29->124 29->126 29->128 29->131 29->133 29->136 29->137 29->138 29->140 30->33 30->34 30->36 30->41 30->43 30->48 30->50 30->55 30->57 30->62 30->64 30->69 30->71 30->76 30->78 30->82 30->83 30->84 30->86 30->89 30->91 30->92 30->95 30->102 30->107 30->108 30->109 30->110 30->112 30->118 30->122 30->124 30->126 30->128 30->131 30->133 30->136 30->137 30->138 30->140 33->78 33->82 33->86 33->89 33->91 33->95 33->102 33->107 33->110 33->118 33->122 33->124 33->126 33->128 33->131 33->133 33->136 33->140 34->78 34->82 34->86 34->89 34->91 34->92 34->95 34->102 34->107 34->108 34->110 34->112 34->118 34->122 34->124 34->126 34->128 34->131 34->133 34->136 34->137 34->140 36->41 36->43 36->48 36->50 36->55 36->57 36->62 36->64 36->69 36->71 36->76 36->78 36->82 36->83 36->84 36->95 36->102 36->109 36->122 36->124 36->138 36->140 37->41 37->43 37->48 37->50 37->55 37->57 37->62 37->64 37->69 37->71 37->76 37->78 37->82 37->83 37->84 37->95 37->102 37->109 37->122 37->124 37->138 37->140 39->78 39->82 39->92 39->95 39->102 39->108 39->112 39->122 39->124 39->128 39->137 39->140 41->43 41->48 41->50 41->55 41->57 41->62 41->64 41->69 41->71 41->76 41->78 41->82 41->83 41->84 41->95 41->102 41->109 41->122 41->124 41->138 41->140 42->43 42->48 42->50 42->55 42->57 42->62 42->64 42->69 42->71 42->76 42->78 42->82 42->83 42->84 42->95 42->102 42->109 42->122 42->124 42->138 42->140 43->48 43->50 43->55 43->57 43->62 43->64 43->69 43->71 43->76 43->78 43->82 43->83 43->84 43->95 43->102 43->109 43->122 43->124 43->138 43->140 44->48 44->50 44->55 44->57 44->62 44->64 44->69 44->71 44->76 44->78 44->82 44->83 44->84 44->95 44->102 44->109 44->122 44->124 44->138 44->140 46->78 46->82 46->92 46->95 46->102 46->108 46->112 46->122 46->124 46->128 46->137 46->140 48->50 48->55 48->57 48->62 48->64 48->69 48->71 48->76 48->78 48->82 48->83 48->84 48->95 48->102 48->109 48->122 48->124 48->138 48->140 49->50 49->55 49->57 49->62 49->64 49->69 49->71 49->76 49->78 49->82 49->83 49->84 49->95 49->102 49->109 49->122 49->124 49->138 49->140 50->55 50->57 50->62 50->64 50->69 50->71 50->76 50->78 50->82 50->83 50->84 50->95 50->102 50->109 50->122 50->124 50->138 50->140 51->55 51->57 51->62 51->64 51->69 51->71 51->76 51->78 51->82 51->83 51->84 51->95 51->102 51->109 51->122 51->124 51->138 51->140 53->78 53->82 53->92 53->95 53->102 53->108 53->112 53->122 53->124 53->128 53->137 53->140 55->57 55->62 55->64 55->69 55->71 55->76 55->78 55->82 55->83 55->84 55->95 55->102 55->109 55->122 55->124 55->138 55->140 56->57 56->62 56->64 56->69 56->71 56->76 56->78 56->82 56->83 56->84 56->95 56->102 56->109 56->122 56->124 56->138 56->140 57->62 57->64 57->69 57->71 57->76 57->78 57->82 57->83 57->84 57->95 57->102 57->109 57->122 57->124 57->138 57->140 58->62 58->64 58->69 58->71 58->76 58->78 58->82 58->83 58->84 58->95 58->102 58->109 58->122 58->124 58->138 58->140 60->78 60->82 60->92 60->95 60->102 60->108 60->112 60->122 60->124 60->128 60->137 60->140 62->64 62->69 62->71 62->76 62->78 62->82 62->83 62->84 62->95 62->102 62->109 62->122 62->124 62->138 62->140 63->64 63->69 63->71 63->76 63->78 63->82 63->83 63->84 63->95 63->102 63->109 63->122 63->124 63->138 63->140 64->69 64->71 64->76 64->78 64->82 64->83 64->84 64->95 64->102 64->109 64->122 64->124 64->138 64->140 65->69 65->71 65->76 65->78 65->82 65->83 65->84 65->95 65->102 65->109 65->122 65->124 65->138 65->140 67->78 67->82 67->92 67->95 67->102 67->108 67->112 67->122 67->124 67->128 67->137 67->140 69->71 69->76 69->78 69->82 69->83 69->84 69->95 69->102 69->109 69->122 69->124 69->138 69->140 70->71 70->76 70->78 70->82 70->83 70->84 70->95 70->102 70->109 70->122 70->124 70->138 70->140 71->76 71->78 71->82 71->83 71->84 71->95 71->102 71->109 71->122 71->124 71->138 71->140 72->76 72->78 72->82 72->83 72->84 72->95 72->102 72->109 72->122 72->124 72->138 72->140 74->78 74->82 74->92 74->95 74->102 74->108 74->112 74->122 74->124 74->128 74->137 74->140 76->78 76->82 76->83 76->84 76->95 76->102 76->109 76->122 76->124 76->138 76->140 77->78 77->82 77->83 77->84 77->95 77->102 77->109 77->122 77->124 77->138 77->140 78->82 78->83 78->84 78->86 78->89 78->91 78->92 78->95 78->102 78->107 78->108 78->109 78->110 78->112 78->118 78->122 78->124 78->126 78->128 78->131 78->133 78->136 78->137 78->138 78->140 79->84 79->95 79->102 79->122 79->124 80->84 80->95 80->102 80->122 80->124 81->82 81->83 81->84 81->86 81->89 81->91 81->92 81->95 81->102 81->107 81->108 81->109 81->110 81->112 81->118 81->122 81->124 81->126 81->128 81->131 81->133 81->136 81->137 81->138 81->140 82->86 82->89 82->91 82->92 82->95 82->102 82->107 82->108 82->109 82->110 82->112 82->118 82->122 82->124 82->126 82->128 82->131 82->133 82->136 82->137 82->138 82->140 83->95 83->102 83->122 83->124 84->86 84->89 84->91 84->92 84->95 84->102 84->107 84->108 84->109 84->110 84->112 84->118 84->122 84->124 84->126 84->128 84->131 84->133 84->136 84->137 84->138 84->140 85->95 85->102 85->122 85->124 86->89 86->91 86->95 86->102 86->107 86->110 86->118 86->122 86->124 86->126 86->128 86->131 86->133 86->136 86->140 87->89 87->91 87->95 87->102 87->107 87->110 87->118 87->122 87->124 87->126 87->128 87->131 87->133 87->136 87->140 89->91 89->95 89->102 89->107 89->110 89->118 89->122 89->124 89->126 89->128 89->131 89->133 89->136 89->140 90->91 90->95 90->102 90->107 90->110 90->118 90->122 90->124 90->126 90->128 90->131 90->133 90->136 90->140 91->95 91->102 91->107 91->110 91->118 91->122 91->124 91->126 91->128 91->131 91->133 91->136 91->140 92->95 92->102 92->107 92->108 92->110 92->112 92->118 92->122 92->124 92->126 92->128 92->131 92->133 92->136 92->137 92->140 93->95 93->102 93->108 93->112 93->122 93->124 93->128 93->137 93->140 95->102 95->107 95->108 95->109 95->110 95->112 95->118 95->122 95->124 95->126 95->128 95->131 95->133 95->136 95->137 95->138 95->140 96->102 96->107 96->108 96->109 96->110 96->112 96->118 96->122 96->124 96->126 96->128 96->131 96->133 96->136 96->137 96->138 96->140 102->107 102->108 102->109 102->110 102->112 103->107 103->108 103->109 103->110 103->112 107->110 108->112 109->110 109->112 116->118 116->122 116->124 116->126 116->128 116->131 116->133 116->136 116->137 116->138 116->140 118->122 118->124 118->126 118->128 118->131 118->133 118->136 118->140 119->122 119->124 119->126 119->128 119->131 119->133 119->136 119->140 122->124 122->126 122->128 122->131 122->133 122->136 122->137 122->138 122->140 123->124 123->126 123->128 123->131 123->133 123->136 123->137 123->138 123->140 124->126 124->128 124->131 124->133 124->136 124->137 124->138 124->140 125->126 125->128 125->131 125->133 125->136 125->137 125->138 125->140 126->128 126->131 126->133 126->136 126->140 127->128 127->131 127->133 127->136 127->140 128->131 128->133 128->136 128->137 128->140 129->137 129->140 130->131 130->133 130->136 130->140 131->133 131->136 131->140 132->133 132->136 132->140 134->136 134->140 136->140 137->140 138->140 139->140
+plan heap table: 3 rows, 299032 bytes
+peak: 298840 bytes at node 100
     offset      bytes  owner   life     name: users (w writes, r reads)
-         0         24  edge    52-76    last build: 52w 65w 76r
-         0         24  edge    81-91    pm info: 81w 83w 87r 91r
-loop 53-65: region of 0 bytes at 0, its body's rows:
-loop 82-83: region of 0 bytes at 0, its body's rows:
-handoffs: 52->81 65->81 76->81
+         0     298816  edge    35-116   B: 35w 42w 49w 56w 63w 70w 77w 95r 102r
+    299008         24  edge    100-127  last build: 100w 116w 127r
+         0         24  edge    132-142  pm info: 132w 134w 138r 142r
+loop 36-42: region of 0 bytes at 0, 1 copies 0 bytes apart, its body's rows:
+loop 43-49: region of 0 bytes at 0, 1 copies 0 bytes apart, its body's rows:
+loop 50-56: region of 0 bytes at 0, 1 copies 0 bytes apart, its body's rows:
+loop 57-63: region of 0 bytes at 0, 1 copies 0 bytes apart, its body's rows:
+loop 64-70: region of 0 bytes at 0, 1 copies 0 bytes apart, its body's rows:
+loop 71-77: region of 0 bytes at 0, 1 copies 0 bytes apart, its body's rows:
+loop 95-97: region of 0 bytes at 0, 2 copies 0 bytes apart, its body's rows:
+loop 102-104: region of 0 bytes at 0, 2 copies 0 bytes apart, in loop 101-116's body, its body's rows:
+loop 101-116: region of 0 bytes at 0, its body's rows:
+loop 133-134: region of 0 bytes at 0, its body's rows:
+handoffs: 35->132 42->132 49->132 56->132 63->132 70->132 77->132 95->132 116->132

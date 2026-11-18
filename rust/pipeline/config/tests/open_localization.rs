@@ -178,7 +178,7 @@ fn localizes_like_pyscf(name: &str, exponent: i64) {
         &cwd,
         &format!(
             "calculation = \"localization\"\noutput = \"run\"\n{head}[eri]\n\
-             mode = \"density_fitting\"\naux_basis = \"{}\"\n[localization]\nexponent = {exponent}\n",
+             mode = \"density_fitting\"\naux_basis = \"{}\"\nschwarz_threshold = 0.0\n[localization]\nexponent = {exponent}\n",
             case["aux_basis"].as_str().unwrap()
         ),
     );

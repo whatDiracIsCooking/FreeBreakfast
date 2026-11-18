@@ -1,6 +1,6 @@
 [package]
 name = "fb-pipeline-eri"
-description = "pipeline/eri: the ERI step, the density-fitted B = L⁻¹ (P|mn) over a placed aux basis, or the conventional packed tensors, built once as tasks"
+description = "pipeline/eri: the ERI step, the density-fitted B = L⁻¹ (P|mn) over a placed aux basis, packed by Schwarz-kept shell pair on the host, or the conventional packed tensors, built once as tasks"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -15,18 +15,20 @@ fb-core-arena.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-planner.workspace = true
 fb-integrals-eri-conventional.workspace = true
-fb-integrals-eri-density-fitting-fit.workspace = true
 fb-integrals-eri-density-fitting-metric.workspace = true
+fb-integrals-eri-density-fitting-pair-map.workspace = true
 fb-integrals-eri-density-fitting-three-center.workspace = true
+fb-integrals-mmd.workspace = true
+fb-integrals-schwarz.workspace = true
 fb-integrals-sys.workspace = true
 fb-io-basis.workspace = true
 fb-molecule.workspace = true
+fb-recipes-cholesky.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
 fb-core-thread-pool = { workspace = true, features = ["device"] }
 fb-integrals-eri-density-fitting-jk.workspace = true
-fb-integrals-mmd.workspace = true
 fb-io-npy.workspace = true
 fb-io-xyz.workspace = true
 fb-test-support.workspace = true

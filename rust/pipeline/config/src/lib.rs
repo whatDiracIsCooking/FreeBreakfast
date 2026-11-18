@@ -116,6 +116,7 @@
 //! | `[eri] mode`, `EriStep::mode`, `EriMode` | [`EriStep::mode`], required: [`EriMode::DensityFitting`], or [`EriMode::Conventional`], which the C++ does not have; integral-direct is not ported |
 //! | nothing: the C++ tree stores no four-index tensor | `[eri] mode = "conventional"`, the closed-shell RHF over the packed tensors (`fb_integrals_eri_conventional`), or with `storage = "dense"` over the dense row blocks spread across `num_gpus` devices, Rust only; an open shell refused at planning |
 //! | `[eri] aux_basis`, a fitting set's name or a path joined to the input directory, `<basis>-acCD-6-6` when empty | [`EriStep::aux_basis`], a compiled-in name alone, never joined, required under `"density_fitting"` and refused under `"conventional"` by [`read_config`] ([`EriStep::check`]), as is one not carried |
+//! | nothing: the C++ step screens on the device's per-record bounds | [`EriStep::schwarz_threshold`], the density-fitting screen on the host Schwarz diagonal at planning, required under `"density_fitting"` (0 keeps every pair), non-negative, and refused under `"conventional"` ([`EriStep::check`]) |
 //! | `[eri]` beside an SCF, the integral-direct default when absent | required beside [`Calculation::Rhf`], refused beside every other, by its row of tables |
 //! | `[scf]`, `ScfStep` and its keys | [`Config::scf`], [`fb_pipeline_scf::ScfStep`] itself, its range checked by [`read_config`] |
 //! | the guess rescaled by `N / Σ Z` for an ion | ported in [`fb_pipeline_scf::add_scf`] |
@@ -148,6 +149,7 @@
 //! [`EriStep`]: fb_pipeline_eri::EriStep
 //! [`EriStep::mode`]: fb_pipeline_eri::EriStep::mode
 //! [`EriStep::aux_basis`]: fb_pipeline_eri::EriStep::aux_basis
+//! [`EriStep::schwarz_threshold`]: fb_pipeline_eri::EriStep::schwarz_threshold
 //! [`EriMode::DensityFitting`]: fb_pipeline_eri::EriMode::DensityFitting
 //! [`EriMode::Conventional`]: fb_pipeline_eri::EriMode::Conventional
 //! [`EriStep::check`]: fb_pipeline_eri::EriStep::check

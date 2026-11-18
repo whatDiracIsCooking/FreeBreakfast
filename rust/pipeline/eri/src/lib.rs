@@ -29,41 +29,47 @@
 //! B = L⁻¹ (P|mn)
 //! ```
 //!
-//! of the orbital basis over an auxiliary one: each SCF iteration's J and K
-//! (`fb_integrals_eri_density_fitting_jk`) read B's row, and none rebuilds
-//! it. The C++ `src/pipeline/eri` is the reference design; its README has
-//! why the aux basis and L are kept beside B.
+//! of the orbital basis over an auxiliary one, packed by kept shell pair
+//! and held in a heap row on the host: each SCF iteration's J and K are
+//! one streamed pass over it in aux batches
+//! (`fb_integrals_eri_density_fitting_jk::add_streamed_jk`), and none
+//! rebuilds it. The C++ `src/pipeline/eri` is the reference design; its
+//! README has why the aux basis and L are kept beside B.
 //!
 //! [`add_df_eri`] does at planning what the C++ step does first: the aux
 //! basis resolved by its compiled-in name
 //! ([`fb_io_basis::resolve_aux_basis`]) and placed on the molecule as the
 //! orbital basis is (`stamp.primitive_normalized().place(&molecule)`).
-//! Then it adds, on one GPU worker:
+//! Then, still at planning, the screen: the shell pairs of
+//! [`record_tables`], each bounded by the largest element of its host
+//! Schwarz diagonal ([`schwarz_diagonal`], the Cartesian `sqrt((mn|mn))`),
+//! and the packed map of those not below `[eri] schwarz_threshold`
+//! ([`PairMap::new`]). With the Coulomb metric `Σ_Q B_Q,mn² = (mn|mn)_DF
+//! <= (mn|mn)`, so a dropped pair's columns of B have 2-norm below the
+//! threshold. At threshold 0 no diagonal is formed and every pair `i <= j`
+//! is kept: the lower triangle at shell-pair granularity. Then it adds, on
+//! one GPU worker:
 //!
-//! - the three-center integrals (mn|P)
-//!   ([`add_three_center`]: `harmonics` and `upload U` for the aux
-//!   basis, and for the
-//!   orbital one unless the caller's slot holds its U already,
-//!   `three-center tables`, `three-center`), over
-//!   the orbital records and U the caller built once;
-//! - the metric M ([`add_metric`]: `metric tables`, `metric`, `spherical
-//!   transform`, `metric average`), reading the aux basis's U from the
-//!   device row the three-center integrals added, so U_aux is staged
-//!   once;
-//! - the fit ([`add_density_fit`]: `cholesky`, `cholesky check`, `density
-//!   fit`), B and L its output rows. A metric that is not positive definite
-//!   fails the run as `Numerical` at the check, and nothing that reads B
-//!   runs.
+//! - the metric M ([`add_metric`]: `harmonics` and `upload U` for the aux
+//!   basis, `metric tables`, `metric`, `spherical transform`, `metric
+//!   average`) and its factor L ([`add_cholesky`]: `cholesky`, `cholesky
+//!   check`). A metric that is not positive definite fails the run as
+//!   `Numerical` at the check, and nothing that reads B runs;
+//! - the build loop ([`add_packed_b`]): B's heap row, then per class of
+//!   the map its pairs in batches of the adaptive width `packed B batch`,
+//!   each the packed three-center integrals, the fit against L, a
+//!   transpose and the download into the heap row, the aux basis's U
+//!   staged once for M and every batch;
+//! - the map's index tables on the device ([`add_packed_tables`], `packed
+//!   tables` and its uploads), once, for every streamed pass over B.
 //!
-//! (mn|P) comes first so that its scratch, about three B's, is the plan's
-//! peak with nothing of the metric beside it; the metric's rows end at the
-//! fit, beside (mn|P) and B.
-//!
-//! **Memory is admission's.** Every row the step needs, B (`naux · nao²`
-//! doubles) and L (`naux²`) among them, is in the plan's table before the
-//! first launch, so a pair of sets that does not fit the card is refused at
-//! planning by [`fb_core_arena::admit`], naming the bytes over and the rows
-//! live at the peak, not by an allocation that fails mid-run
+//! **Memory is admission's.** No device row holds B whole: the device holds
+//! L (`naux²` doubles), the records and one batch's ring, B
+//! (`naux · n_columns` doubles) is a heap row, and every row is in the
+//! plan's table before the first launch. The batch's width is the widest
+//! that fits the worker's room ([`Dag::plan_within`]), and a room short of
+//! one pair's batch is refused at planning by [`fb_core_arena::admit`],
+//! naming the bytes over and the rows live at the peak
 //! (`docs/memory.md`, "Sizes the dimensions do not fix").
 //!
 //! | C++ (`free_breakfast`) | Here |
@@ -76,9 +82,9 @@
 //! | `default_aux_basis`, `<name>-acCD-6-6` when `aux_basis` is empty | not ported: the aux basis is always named |
 //! | `resolve_aux_basis(spec)` over a name or a path, an unknown name `IO` | a compiled-in name alone, an unknown one `InvalidConfig` at planning |
 //! | `place(stamp.primitive_normalized(), molecule)` | the same, at planning |
-//! | B's and L's bytes against `memory_budget()`, `Unsupported` past it | B and L rows of the plan's table, refused by admission as `Allocation` |
-//! | `l`, the metric's spherical matrix copied into it, the pair freed, a sync | M an output row read by the fit; no sync |
-//! | `three_center` into `b`, then `density_fit` in place over `l` | (mn\|P) its own row, B and L the fit's output rows, the tensor's bytes reused after its last read |
+//! | B's and L's bytes against `memory_budget()`, `Unsupported` past it | L and the batches' ring rows of the plan's table, B a heap row, refused by admission as `Allocation` |
+//! | `l`, the metric's spherical matrix copied into it, the pair freed, a sync | M an output row read by the Cholesky; no sync |
+//! | `three_center` into a square `b` on the device, then `density_fit` in place over `l` | B packed by kept shell pair in a heap row, built in batches ([`add_packed_b`]), screened at planning by `[eri] schwarz_threshold` (Rust only) |
 //! | `DensityFitted::naux` | [`DensityFitted::aux`]'s `nao_sphe()` |
 //! | `EriStep::footprint` | nothing: the layout declares every row, and the arena's size is the plan's golden |
 
@@ -86,15 +92,18 @@
 
 use contracts::debug_requires;
 use fb_basis::BasisSet;
-use fb_core_arena::{Device, RowId};
+use fb_core_arena::{Device, Heap, RowId};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::Dag;
 use fb_integrals_eri_conventional::{Conventional, Dense, add_conventional, add_dense};
-use fb_integrals_eri_density_fitting_fit::add_density_fit;
 use fb_integrals_eri_density_fitting_metric::add_metric;
-use fb_integrals_eri_density_fitting_three_center::add_three_center;
-use fb_integrals_sys::ClassRows;
+use fb_integrals_eri_density_fitting_pair_map::PairMap;
+use fb_integrals_eri_density_fitting_three_center::add_packed_b;
+use fb_integrals_mmd::record_tables;
+use fb_integrals_schwarz::schwarz_diagonal;
+use fb_integrals_sys::{ClassRows, PackedTables, add_packed_tables};
 use fb_molecule::Molecule;
+use fb_recipes_cholesky::add_cholesky;
 use serde::Deserialize;
 
 /// `[eri]`: the config's table of the two-electron integrals, built once
@@ -105,6 +114,7 @@ use serde::Deserialize;
 /// [eri]
 /// mode = "density_fitting"
 /// aux_basis = "cc-pvdz-jkfit"
+/// schwarz_threshold = 1e-12   # 0 screens nothing
 /// ```
 ///
 /// or, with no fitting set,
@@ -114,7 +124,7 @@ use serde::Deserialize;
 /// mode = "conventional"
 /// storage = "dense"   # or "packed", the default
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EriStep {
     /// `mode`: how the integrals are built. Required: the C++ default,
@@ -127,6 +137,13 @@ pub struct EriStep {
     /// `<basis>-acCD-6-6` is not ported), and refused by
     /// `"conventional"`, which fits nothing ([`EriStep::check`]).
     pub aux_basis: Option<String>,
+    /// `schwarz_threshold`: the density-fitting screen. A shell pair whose
+    /// every Cartesian `sqrt((mn|mn))` is below it is dropped from B whole
+    /// ([`add_df_eri`]); 0 drops none. Required by `"density_fitting"`,
+    /// with no default yet, a non-negative number, and refused by
+    /// `"conventional"`, which screens nothing ([`EriStep::check`]).
+    #[serde(default)]
+    pub schwarz_threshold: Option<f64>,
     /// `storage`: how `"conventional"` stores the tensor
     /// ([`EriStorage`]): `"packed"` by AO pair on GPU worker 0, the
     /// default, or `"dense"`, unpacked and unsymmetrized, its rows spread
@@ -155,12 +172,14 @@ pub enum EriStorage {
 }
 
 impl EriStep {
-    /// The density-fitted step over the fitting set `aux_basis`: the table
-    /// `mode = "density_fitting"` and `aux_basis` read into.
-    pub fn density_fitting(aux_basis: &str) -> EriStep {
+    /// The density-fitted step over the fitting set `aux_basis`, screened
+    /// at `schwarz_threshold`: the table `mode = "density_fitting"`,
+    /// `aux_basis` and `schwarz_threshold` read into.
+    pub fn density_fitting(aux_basis: &str, schwarz_threshold: f64) -> EriStep {
         EriStep {
             mode: EriMode::DensityFitting,
             aux_basis: Some(aux_basis.to_owned()),
+            schwarz_threshold: Some(schwarz_threshold),
             storage: None,
         }
     }
@@ -171,8 +190,10 @@ impl EriStep {
     ///
     /// # Errors
     /// `InvalidConfig`, naming the key: under `"density_fitting"`, no
-    /// `aux_basis` or one that is not a compiled-in fitting set, or a
-    /// `storage` at all; under `"conventional"`, an `aux_basis` at all.
+    /// `aux_basis` or one that is not a compiled-in fitting set, no
+    /// `schwarz_threshold` or one that is negative or not a number, or a
+    /// `storage` at all; under `"conventional"`, an `aux_basis` or a
+    /// `schwarz_threshold` at all.
     pub fn check(&self) -> Status {
         if let (EriMode::DensityFitting, Some(storage)) = (self.mode, self.storage) {
             return Err(Error::config(format!(
@@ -193,6 +214,20 @@ impl EriStep {
                 "[eri] aux_basis: '{aux}' given, but mode = \"conventional\" fits nothing"
             ))),
             _ => Ok(()),
+        }?;
+        match (self.mode, self.schwarz_threshold) {
+            (EriMode::DensityFitting, None) => Err(Error::config(
+                "[eri] schwarz_threshold: mode = \"density_fitting\" needs a screen (0 \
+                     screens nothing)",
+            )),
+            (EriMode::DensityFitting, Some(t)) if t.is_nan() || t < 0.0 => Err(Error::config(
+                format!("[eri] schwarz_threshold: {t} is not a non-negative number"),
+            )),
+            (EriMode::Conventional, Some(t)) => Err(Error::config(format!(
+                "[eri] schwarz_threshold: {t} given, but mode = \"conventional\" screens \
+                     nothing"
+            ))),
+            _ => Ok(()),
         }
     }
 }
@@ -202,7 +237,9 @@ impl EriStep {
 #[serde(rename_all = "snake_case")]
 pub enum EriMode {
     /// `"density_fitting"`: the fitted factor B = L⁻¹ (P|mn) over
-    /// [`EriStep::aux_basis`], with M = (P|Q) = L Lᵀ ([`add_df_eri`]).
+    /// [`EriStep::aux_basis`], with M = (P|Q) = L Lᵀ, packed by the shell
+    /// pairs [`EriStep::schwarz_threshold`] keeps, on the host
+    /// ([`add_df_eri`]).
     DensityFitting,
     /// `"conventional"`: the packed four-index tensor and its
     /// exchange-ordered gather, stored once ([`add_conventional`]); exact,
@@ -213,8 +250,12 @@ pub enum EriMode {
 
 /// The two-electron integrals of a plan, [`add_eri`]'s product: what the
 /// SCF's J and K read, by mode.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one per plan, built at planning and read by reference"
+)]
 pub enum Eri {
-    /// `"density_fitting"`'s B and L ([`add_df_eri`]).
+    /// `"density_fitting"`'s packed B, L and map ([`add_df_eri`]).
     DensityFitted(DensityFitted),
     /// `"conventional"`'s packed tensors ([`add_conventional`]).
     Conventional(Conventional),
@@ -270,7 +311,10 @@ pub fn add_eri(
     };
     match (step.mode, &step.aux_basis, step.storage) {
         (EriMode::DensityFitting, Some(aux), _) => {
-            add_df_eri(dag, worker, molecule, basis, classes, u, aux).map(Eri::DensityFitted)
+            // check() holds a threshold under "density_fitting".
+            let threshold = step.schwarz_threshold.unwrap_or(0.0);
+            add_df_eri(dag, worker, molecule, basis, classes, u, aux, threshold)
+                .map(Eri::DensityFitted)
         }
         (_, _, Some(EriStorage::Dense)) => {
             add_dense(dag, gpus, basis, u).map(Eri::Dense).map_err(led)
@@ -283,49 +327,68 @@ pub fn add_eri(
 
 /// The density-fitted integrals of a plan, [`add_df_eri`]'s product.
 pub struct DensityFitted {
-    /// B = L⁻¹ (P|mn): an output row of `naux · nao²` doubles, column-major
-    /// at leading dimension `naux`, element `(Q, n + nao m)` at
-    /// `Q + naux (n + nao m)`, Q fastest: what J and K read.
-    pub b: RowId<Device, f64>,
+    /// B = L⁻¹ (P|mn), packed by [`DensityFitted::map`]'s kept pairs: a
+    /// heap row of `naux · n_columns` doubles, `n_columns` the map's
+    /// spherical columns, element `(column, Q)` at `column + n_columns Q`,
+    /// pair-fastest (the pair map's crate doc): what the streamed J and K
+    /// read, an aux batch at a time.
+    pub b: RowId<Heap, f64>,
     /// L, with M = L Lᵀ: an output row of `naux²` doubles, column-major,
-    /// L in its lower triangle and M's strict upper triangle above it.
+    /// L in its lower triangle.
     pub l: RowId<Device, f64>,
     /// The aux basis, placed over the molecule; `naux` is its
     /// `nao_sphe()`.
     pub aux: BasisSet,
+    /// The packed shell-pair map B was built over: the pairs the screen
+    /// kept, and their columns.
+    pub map: PairMap,
+    /// The map's spherical index tables on the worker, uploaded once for
+    /// every streamed pass over B ([`add_packed_tables`]).
+    pub tables: PackedTables,
 }
 
 /// Add the density-fitted integrals of `basis` over the fitting set named
-/// `aux_basis` to `dag` on GPU worker `worker`, and return them: B, L and
-/// the aux basis placed over `molecule`.
+/// `aux_basis`, screened at `schwarz_threshold`, to `dag` on GPU worker
+/// `worker`, and return them: the packed B on the host, L, the aux basis
+/// placed over `molecule`, the map and its tables.
 ///
 /// `aux_basis` is a compiled-in fitting set's name, in any spelling
 /// [`fb_io_basis::is_builtin_aux_basis`] folds (`"cc-pvdz-jkfit"`); it is
 /// resolved and placed over `molecule`, the atoms `basis` is placed on,
-/// here at planning. `classes` are the records of `basis`, added on
-/// `worker` by `fb_integrals_mmd::add_records` earlier in `dag`. `u` is the
-/// plan's slot for the orbital basis's U, the one its one-electron
-/// matrices fill (`fb_recipes_matrix_ao::add_harmonics`): (mn|P) reads the
-/// row it holds, and when it is `None` `harmonics` and `upload U`
-/// are added here and U's device row left in it. The tasks are the crate doc's: (mn|P), then M, then the
-/// fit, the aux basis's U staged once for (mn|P) and M. The step declares no
-/// BLAS workspace; the plan's caller does
+/// here at planning. So is the screen: each shell pair of
+/// [`record_tables`] bounded by its largest Cartesian `sqrt((mn|mn))`
+/// ([`schwarz_diagonal`]) and kept when that is not below
+/// `schwarz_threshold` ([`PairMap::new`]); at 0 no diagonal is formed and
+/// every pair kept. `classes` are the records of `basis`, added on
+/// `worker` by `fb_integrals_mmd::add_records` earlier in `dag`. `u` is
+/// the plan's slot for the orbital basis's U, the one its one-electron
+/// matrices fill (`fb_recipes_matrix_ao::add_harmonics`): the build reads
+/// the row it holds, and when it is `None` `harmonics` and `upload U` are
+/// added here and U's device row left in it. The tasks are the crate
+/// doc's: M, L, the build loop, then the tables, the aux basis's U staged
+/// once. The step declares no BLAS workspace; the plan's caller does
 /// ([`Dag::blas_workspace`]).
 ///
 /// # Errors
 /// At planning, each led by `add_df_eri: `: `InvalidConfig` for a name
 /// that is not a compiled-in fitting set, or a set without an element of
-/// `molecule` (naming its Z); and the refusals of [`add_three_center`],
-/// [`add_metric`] and [`add_density_fit`]: a kernel library that is not
-/// the one the bindings describe (`GpuRuntime`), an orbital shell above f
-/// or an aux shell above i, or a basis past the kernels' 32-bit index
-/// (`Unsupported`). `dag` may hold some of the step's tasks after an error,
-/// and is dropped with it. At run time, the tasks' errors, a metric that
-/// is not positive definite (`Numerical`) among them.
+/// `molecule` (naming its Z); `Unsupported` when the screen keeps no
+/// pair; and the refusals of [`add_metric`], [`add_cholesky`] and
+/// [`add_packed_b`]: a kernel library that is not the one the bindings
+/// describe (`GpuRuntime`), an orbital shell above f or an aux shell above
+/// i, or a pair's block past the kernels' 32-bit index (`Unsupported`).
+/// `dag` may hold some of the step's tasks after an error, and is dropped
+/// with it. At run time, the tasks' errors, a metric that is not positive
+/// definite (`Numerical`) among them.
 ///
 /// # Panics
 /// If `classes` are rows of another worker's or another plan's table
 /// ([`Dag::add_gpu`]).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the step's inputs, as the C++ step's, with the screen"
+)]
+#[debug_requires(schwarz_threshold >= 0.0, "the threshold is not negative")]
 #[track_caller]
 pub fn add_df_eri(
     dag: &mut Dag<'_>,
@@ -335,6 +398,7 @@ pub fn add_df_eri(
     classes: &[ClassRows],
     u: &mut Option<RowId<Device, f64>>,
     aux_basis: &str,
+    schwarz_threshold: f64,
 ) -> Result<DensityFitted> {
     if !fb_io_basis::is_builtin_aux_basis(aux_basis) {
         return Err(Error::config(format!(
@@ -347,10 +411,53 @@ pub fn add_df_eri(
             e.message = format!("add_df_eri: fitting set '{aux_basis}': {}", e.message);
             e
         })?;
+    let tables = record_tables(basis);
+    let bounds = (schwarz_threshold > 0.0).then(|| {
+        let pairs: Vec<(u32, u32)> = tables
+            .classes()
+            .iter()
+            .flat_map(|c| c.bra.iter().copied().zip(c.ket.iter().copied()))
+            .collect();
+        let diagonal = schwarz_diagonal(basis, &pairs);
+        let shells = basis.shells();
+        let mut at = 0;
+        pairs
+            .iter()
+            .map(|&(a, b)| {
+                let n = (shells[a as usize].function_count_cart()
+                    * shells[b as usize].function_count_cart()) as usize;
+                let block = &diagonal[at..at + n];
+                at += n;
+                block.iter().copied().fold(0.0, f64::max)
+            })
+            .collect::<Vec<f64>>()
+    });
+    let map = PairMap::new(&tables, bounds.as_deref(), schwarz_threshold);
+    if map.pairs().is_empty() {
+        return Err(Error::unsupported(format!(
+            "add_df_eri: schwarz_threshold {schwarz_threshold} drops every shell pair"
+        )));
+    }
     let mut u_aux = None;
-    let tensor = add_three_center(dag, worker, basis, classes, &aux, u, &mut u_aux)?;
     let metric = add_metric(dag, worker, &aux, &mut u_aux)?;
-    let (nao, naux) = (basis.nao_sphe() as usize, aux.nao_sphe() as usize);
-    let (b, l) = add_density_fit(dag, worker, nao, naux, metric, tensor)?;
-    Ok(DensityFitted { b, l, aux })
+    let naux = aux.nao_sphe() as usize;
+    let factor = add_cholesky(dag, worker, "L", naux, metric)?;
+    let b = add_packed_b(
+        dag, worker, basis, classes, &aux, &map, factor, u, &mut u_aux,
+    )?;
+    let packing = map.sphe().clone();
+    let packed = add_packed_tables(
+        dag,
+        worker,
+        packing.nao(),
+        packing.n_columns(),
+        move |r, c, w| packing.write_tables(r, c, w),
+    );
+    Ok(DensityFitted {
+        b,
+        l: factor.0,
+        aux,
+        map,
+        tables: packed,
+    })
 }

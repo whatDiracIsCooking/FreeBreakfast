@@ -138,14 +138,14 @@ fn packing() -> Packing {
         .clone()
 }
 
-/// One J and one K streamed over the packing's B on worker 0, planned in
-/// `room` (none: [`Dag::plan`], the widest batch), and the one width line
-/// of its text.
-fn streamed(room: Option<Room>) -> (Plan<'static>, String) {
+/// One J and one K streamed over the packing's B of `naux` aux functions
+/// on worker 0, planned in `room` (none: [`Dag::plan`], the widest
+/// batch), and the one width line of its text.
+fn streamed(naux: usize, room: Option<Room>) -> (Plan<'static>, String) {
     let packing = packing();
     let (nao, nc) = (packing.nao(), packing.n_columns());
     let declare = |dag: &mut Dag<'static>| {
-        let b = dag.add_cpu("source", 0, HeapB(NAUX_STREAMED * nc));
+        let b = dag.add_cpu("source", 0, HeapB(naux * nc));
         let p = packing.clone();
         let tables = add_packed_tables(dag, 0, nao, nc, move |r, c, w| p.write_tables(r, c, w));
         let [d, c] = [("D", nao * nao), ("C", nao * NOCC)]
@@ -154,7 +154,7 @@ fn streamed(room: Option<Room>) -> (Plan<'static>, String) {
             Contraction::Coulomb(d),
             Contraction::Exchange { c, nocc: NOCC },
         ];
-        add_streamed_jk(dag, 0, &packing, tables, NAUX_STREAMED, b, &set).map(drop)
+        add_streamed_jk(dag, 0, &packing, tables, naux, b, &set).map(drop)
     };
     let planned = match room {
         None => {
@@ -182,7 +182,7 @@ fn streamed(room: Option<Room>) -> (Plan<'static>, String) {
 fn streamed_plan_golden() {
     let packing = packing();
     let (nao, nc) = (packing.nao(), packing.n_columns());
-    let (planned, width) = streamed(None);
+    let (planned, width) = streamed(NAUX_STREAMED, None);
     assert!(width.contains(": 64 of 64,"), "{width}");
     for whole in [NAUX_STREAMED * nao * nao, NAUX_STREAMED * nc] {
         let bytes = whole * size_of::<f64>();
@@ -193,6 +193,21 @@ fn streamed_plan_golden() {
         );
     }
     plan_golden(&planned, "plan_streamed_naux150_nao9_nocc3.txt");
+}
+
+/// A fitting set no larger than one batch is one trip, its ring one copy:
+/// the pass plans, a loop of one trip at depth 1. Catches a ring deeper
+/// than the loop's trips, which the planner refuses (an H atom's DF-ROHF).
+#[test]
+fn a_fitting_set_of_one_batch_is_one_trip() {
+    let (planned, width) = streamed(20, None);
+    assert!(width.contains(": 64 of 64,"), "{width}");
+    let text = planned.to_string();
+    assert!(
+        text.lines()
+            .any(|l| l.contains("df jk batch:") && l.contains("1 trips, depth 1")),
+        "{text}"
+    );
 }
 
 /// The batch's width in a plan's width line.
@@ -213,11 +228,11 @@ fn width_of(line: &str) -> usize {
 #[test]
 fn a_narrowed_streamed_plan_warns() {
     fb_core_log::init();
-    let widest = streamed(None).0;
+    let widest = streamed(NAUX_STREAMED, None).0;
     let mut device = widest.device_table(0).total();
     let narrowed = |room: Room| {
         let before = fb_core_log::warning_count();
-        let (_, width) = streamed(Some(room));
+        let (_, width) = streamed(NAUX_STREAMED, Some(room));
         (width, fb_core_log::warning_count() - before)
     };
     loop {

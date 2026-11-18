@@ -139,7 +139,7 @@ fn converges_to_pyscf(name: &str) -> fb_pipeline_scf::ScfOutput {
     let run = Run::new(
         &molecule,
         case["basis"].as_str().unwrap(),
-        &EriStep::density_fitting(case["aux_basis"].as_str().unwrap()),
+        &EriStep::density_fitting(case["aux_basis"].as_str().unwrap(), 0.0),
         &step,
         1,
         |n| syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n),

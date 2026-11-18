@@ -72,7 +72,7 @@ fn scf_run(step: &ScfStep) -> Result<Run> {
     Run::new(
         &water(0, 1),
         "cc-pvdz",
-        &EriStep::density_fitting("cc-pvdz-jkfit"),
+        &EriStep::density_fitting("cc-pvdz-jkfit", 0.0),
         step,
         1,
         |_| Ok(LWORK),
@@ -102,6 +102,7 @@ fn conventional() -> EriStep {
     EriStep {
         mode: EriMode::Conventional,
         aux_basis: None,
+        schwarz_threshold: None,
         storage: None,
     }
 }
@@ -194,7 +195,7 @@ fn a_refused_input_is_an_error() {
         Run::new(
             &water(0, 1),
             basis,
-            &EriStep::density_fitting(aux),
+            &EriStep::density_fitting(aux, 0.0),
             &step,
             1,
             |_| Ok(LWORK),
@@ -207,7 +208,7 @@ fn a_refused_input_is_an_error() {
     let err = Run::new(
         &water(0, 1),
         "sto-3g",
-        &EriStep::density_fitting("cc-pvdz-jkfit"),
+        &EriStep::density_fitting("cc-pvdz-jkfit", 0.0),
         &step,
         1,
         |n| {
@@ -395,7 +396,7 @@ fn rohf_plan_golden() {
     let run = Run::new(
         &water(1, 2),
         "cc-pvdz",
-        &EriStep::density_fitting("cc-pvdz-jkfit"),
+        &EriStep::density_fitting("cc-pvdz-jkfit", 0.0),
         &ScfStep::default(),
         1,
         |_| Ok(LWORK),
@@ -417,7 +418,7 @@ fn an_open_shell_planning_cannot_hold_is_refused() {
     let err = Run::new(
         &water(0, 9),
         "sto-3g",
-        &EriStep::density_fitting("cc-pvdz-jkfit"),
+        &EriStep::density_fitting("cc-pvdz-jkfit", 0.0),
         &step,
         1,
         |_| Ok(LWORK),
@@ -429,9 +430,10 @@ fn an_open_shell_planning_cannot_hold_is_refused() {
 }
 
 /// An open shell with no beta electron (water at charge +9, one electron
-/// in a doublet) plans with no beta factor: three `df exchange` tasks, the
-/// two rests' before the loop and the alpha factor's in the body, where
-/// one beta electron or more has a fourth, the beta factor's in the body.
+/// in a doublet) plans with no beta factor: three K in its streamed
+/// passes (a `K lower` accumulator each), the two rests' before the loop
+/// and the alpha factor's in the body, where one beta electron or more has
+/// a fourth, the beta factor's in the body's pass.
 #[test]
 fn no_beta_electron_plans_without_a_beta_exchange() {
     let step = ScfStep::default();
@@ -439,7 +441,7 @@ fn no_beta_electron_plans_without_a_beta_exchange() {
         let run = Run::new(
             &water(charge, 2),
             "sto-3g",
-            &EriStep::density_fitting("cc-pvdz-jkfit"),
+            &EriStep::density_fitting("cc-pvdz-jkfit", 0.0),
             &step,
             1,
             |_| Ok(LWORK),
@@ -447,7 +449,7 @@ fn no_beta_electron_plans_without_a_beta_exchange() {
         .expect("the doublet plans");
         text(run.planned())
             .lines()
-            .filter(|line| line.contains(" df exchange:"))
+            .filter(|line| line.contains(" K lower "))
             .count()
     };
     assert_eq!(exchanges(9), 3, "one electron");

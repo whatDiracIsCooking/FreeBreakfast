@@ -30,8 +30,9 @@ use fb_test_support::golden;
 /// The syevd work the DF-RHF's plan is laid out with.
 const LWORK: usize = 1234;
 
-/// The card reader the example plans are given: no example holds an
-/// adaptive part, so none reads a card.
+/// The card reader of a plan with no adaptive part (every plan but the
+/// density-fitted ones), or one refused before any is added: it reads no
+/// card.
 fn no_card(_: usize) -> fb_core_error_handling::Result<Card> {
     panic!("a card read by a plan with no adaptive part")
 }
@@ -55,13 +56,14 @@ fn examples() -> PathBuf {
 }
 
 /// `rust/examples/<file>`'s plan text, checked against the golden
-/// `golden`.
+/// `golden`, planned on [`tib`]'s card, so a density-fitted plan's widths
+/// are those of the default `[memory]` caps, whatever card runs the test.
 fn plan_text(file: &str, calculation: Calculation, golden_name: &str) {
     let config = read_config(&examples().join(file)).unwrap();
     assert_eq!(config.calculation, calculation);
     // The table's text ends an empty handoffs line in a space, which the
     // trailing-whitespace hook strips from the committed file.
-    let text: String = plan(&config, |_| Ok(LWORK), no_card)
+    let text: String = plan(&config, |_| Ok(LWORK), tib)
         .unwrap()
         .to_string()
         .lines()
@@ -284,9 +286,10 @@ fn guess_refusals() {
 }
 
 /// What `[eri]` refuses, each `InvalidConfig` naming the key or table: the
-/// C++ default mode, which is not ported; a missing `aux_basis` under
-/// `density_fitting`, which has no default; an `aux_basis` under
-/// `conventional`, which fits nothing; an unknown key; a well-formed table
+/// C++ default mode, which is not ported; a missing `aux_basis` or
+/// `schwarz_threshold` under `density_fitting`, which have no default, or
+/// a negative threshold; an `aux_basis` or a `schwarz_threshold` under
+/// `conventional`, which fits and screens nothing; an unknown key; a well-formed table
 /// beside a calculation other than `rhf`; its absence beside `rhf`; and a
 /// fitting set that is not compiled in.
 #[test]
@@ -303,6 +306,22 @@ fn eri_refusals() {
             "[eri] aux_basis: mode = \"density_fitting\" needs a fitting set",
         ),
         (
+            "eri_no_schwarz_threshold",
+            RHF.replace("schwarz_threshold = 0.0\n", ""),
+            "[eri] schwarz_threshold: mode = \"density_fitting\" needs a screen",
+        ),
+        (
+            "eri_negative_schwarz_threshold",
+            RHF.replace("schwarz_threshold = 0.0", "schwarz_threshold = -1e-12"),
+            "[eri] schwarz_threshold: -0.000000000001 is not a non-negative number",
+        ),
+        (
+            "eri_conventional_with_schwarz_threshold",
+            RHF.replace("density_fitting", "conventional")
+                .replace("aux_basis = \"cc-pvdz-jkfit\"\n", ""),
+            "[eri] schwarz_threshold: 0 given, but mode = \"conventional\" screens nothing",
+        ),
+        (
             "eri_conventional_with_aux_basis",
             RHF.replace("density_fitting", "conventional"),
             "[eri] aux_basis: 'cc-pvdz-jkfit' given, but mode = \"conventional\" fits nothing",
@@ -317,7 +336,7 @@ fn eri_refusals() {
         ),
         (
             "eri_beside_guess",
-            format!("{GUESS}[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n"),
+            format!("{GUESS}{ERI}"),
             "[eri] is read by calculation = \"rhf\" and \"localization\" alone",
         ),
         (
@@ -341,11 +360,13 @@ fn eri_refusals() {
 }
 
 /// The `[eri]` table of [`RHF`].
-const ERI: &str = "[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n";
+const ERI: &str =
+    "[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\nschwarz_threshold = 0.0\n";
 
 /// A DF-RHF config with no `[scf]`.
 const RHF: &str = "calculation = \"rhf\"\n[molecule]\nxyz = \"m.xyz\"\n[basis_set]\nbasis = \
-                   \"sto-3g\"\n[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n";
+                   \"sto-3g\"\n[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n\
+                   schwarz_threshold = 0.0\n";
 
 /// `[scf]` is optional, every key at its default; a key set replaces its
 /// default alone.
@@ -965,7 +986,8 @@ fn rows_and_heap(device: usize, pinned: usize, heap: usize) -> Plan<'static> {
 /// The heap block is admitted against `[memory] max_host_mem`: a block at
 /// the cap fits, and one past it is refused, `Allocation`, naming the
 /// plan, the heap block, its row and the key. The DF-RHF's plan holds the
-/// SCF's carried `last build` on the heap, and fits the default.
+/// packed B and the SCF's carried `last build` on the heap, and fits the
+/// default.
 #[test]
 fn heap_is_admitted_against_max_host_mem() {
     let caps = MemoryCaps {
@@ -983,8 +1005,8 @@ fn heap_is_admitted_against_max_host_mem() {
         assert!(error.message.contains(named), "{named}: {error}");
     }
     let config = read_config(&examples().join("rhf.toml")).unwrap();
-    let rhf = plan(&config, |_| Ok(LWORK), no_card).unwrap();
-    assert_eq!(rhf.heap_table().n_rows(), 1, "the SCF's last build");
+    let rhf = plan(&config, |_| Ok(LWORK), tib).unwrap();
+    assert_eq!(rhf.heap_table().n_rows(), 2, "B and the SCF's last build");
     admit_plan(&rhf, &MemoryCaps::default(), tib, NODE).unwrap();
 }
 

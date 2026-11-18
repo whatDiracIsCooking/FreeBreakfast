@@ -183,7 +183,7 @@ fn water() -> PathBuf {
 
 /// The fitted integrals of the density-fitted cases.
 fn df() -> EriStep {
-    EriStep::density_fitting("cc-pvdz-jkfit")
+    EriStep::density_fitting("cc-pvdz-jkfit", 0.0)
 }
 
 /// The run of `xyz` in cc-pVDZ over `eri` with `step`, syevd's work asked
@@ -302,6 +302,7 @@ fn water_over_the_conventional_integrals_converges_to_pyscf() {
     let eri = EriStep {
         mode: EriMode::Conventional,
         aux_basis: None,
+        schwarz_threshold: None,
         storage: None,
     };
     converges_to_pyscf("h2o", &water(), &eri, &ScfStep::default());
@@ -445,6 +446,7 @@ fn a_guess_with_a_negative_eigenvalue_is_warned_of() {
         &classes,
         &mut u,
         "cc-pvdz-jkfit",
+        0.0,
     )
     .unwrap();
     let guess = add_loaded_guess(&mut dag, 0, &basis, path.clone()).unwrap();

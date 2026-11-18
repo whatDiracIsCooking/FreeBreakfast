@@ -1,11 +1,13 @@
 # The ERI step's reference data
 
-PySCF's density-fitted J and K of water's SAD guess, for the one device
-case `tests/jk.rs`, so the test needs no PySCF.
+PySCF's density-fitted J and K of water's SAD guess, for the device case
+of `tests/jk.rs` that compares them, so the test needs no PySCF; and the
+screen's extended geometry.
 
 | File | What |
 |---|---|
 | `h2o.xyz` | Water, in Angstrom: the three-center crate's (`../../../../integrals/eri/density_fitting/three_center/tests/data/`), byte for byte |
+| `h2o_pair.xyz` | Two copies of `h2o.xyz` 12 Å apart along x, for the screen's case in `tests/jk.rs`: no reference, the bound is checked against the unscreened B |
 | `h2o_cc-pvdz_d.npy` | The SAD guess D in cc-pVDZ, 24 × 24: the compiled-in stamps `data/sad/cc-pVDZ/{008,001}.npy` on the atoms' diagonal blocks, as the Guess step places them |
 | `h2o_cc-pvdz_c.npy` | Its factor C, 24 × 7, `D = 2 C Cᵀ` to 1.3e-15 |
 | `h2o_cc-pvdz_cc-pvdz-jkfit_j.npy`, `..._k.npy` | J and K of D, PySCF's `scf.RHF(mol).density_fit(auxbasis=...).get_jk` over cc-pVDZ-JKFIT, 24 × 24 |

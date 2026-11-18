@@ -1,10 +1,18 @@
-//! J and K over the step's B on a card (tier 4, device 0, one run): water
-//! in cc-pVDZ / cc-pVDZ-JKFIT, the committed SAD guess D and its factor C
-//! (`D = 2 C Cᵀ`) staged and uploaded, J of D and K of C built by the jk
-//! crate's tasks over the B [`add_df_eri`](fb_pipeline_eri::add_df_eri)
+//! J and K over the step's B on a card (tier 4, device 0, one run each):
+//! water in cc-pVDZ / cc-pVDZ-JKFIT at `schwarz_threshold = 0`, the
+//! committed SAD guess D and its factor C (`D = 2 C Cᵀ`) staged and
+//! uploaded, J of D and K of C built by one streamed pass of the jk
+//! crate's over the packed B [`add_df_eri`](fb_pipeline_eri::add_df_eri)
 //! planned, and both brought back. The references are PySCF's DF
 //! `get_jk` of the same D over the same orbital and fitting documents
 //! (`tests/data/reference.py`, which says how each file is made).
+//!
+//! And the screen at a positive threshold, on two waters 12 Å apart
+//! (`tests/data/h2o_pair.xyz`), where the pairs across the gap are
+//! dropped: the dropped pairs are those whose host Schwarz bound is below
+//! the threshold, and their columns of the unscreened B, built on the card,
+//! have 2-norm below it (the projection bound, `Σ_Q B_Q,mn² = (mn|mn)_DF
+//! <= (mn|mn)`).
 //!
 //! **The bar** is the C++ tree's for DF against the same approximation,
 //! `max |Δ| <= 1e-10 max |ref|` (`test/gtest/df_jk_derivative_gpu.cpp`,
@@ -25,7 +33,9 @@ use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
-use fb_integrals_eri_density_fitting_jk::{add_df_coulomb, add_df_exchange};
+use fb_integrals_eri_density_fitting_jk::{Contraction, add_streamed_jk};
+use fb_integrals_eri_density_fitting_pair_map::PairMap;
+use fb_integrals_mmd::record_tables;
 
 /// The bar's fraction of `max |ref|`.
 const REL_TOL: f64 = 1e-10;
@@ -141,12 +151,13 @@ fn miss_and_scale(got: &[f64], want: &[f64]) -> (f64, f64) {
     (miss, scale)
 }
 
-/// J of the SAD guess D and K of its factor over the step's B, against
-/// PySCF's DF `get_jk` over the same documents, to 1e-10 of each one's
-/// maximum. Catches the step wiring the wrong tensor or metric into the
-/// fit, the aux basis placed unnormalized or off the molecule, a B laid
-/// out other than J and K read it, and a reader of B ordered before the
-/// fit. Needs a GPU.
+/// J of the SAD guess D and K of its factor over the step's B at
+/// threshold 0, one streamed pass, against PySCF's DF `get_jk` over the
+/// same documents, to 1e-10 of each one's maximum. Catches the step wiring
+/// the wrong tensor or metric into the fit, the aux basis placed
+/// unnormalized or off the molecule, a B laid out other than J and K read
+/// it, a pair of the triangle missing, and a reader of B ordered before
+/// the build. Needs a GPU.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn j_and_k_over_b_match_pyscf_df() {
@@ -161,7 +172,7 @@ fn j_and_k_over_b_match_pyscf_df() {
     let (_, want_k) = fixture("h2o_cc-pvdz_cc-pvdz-jkfit_k.npy");
 
     let mut dag = Dag::new();
-    let fitted = common::add_step(&mut dag, &molecule, &basis, common::AUX).unwrap();
+    let fitted = common::add_step(&mut dag, &molecule, &basis, common::AUX, 0.0).unwrap();
     let naux = fitted.aux.nao_sphe() as usize;
     let mut upload = |name, data: Vec<f64>| {
         let len = data.len();
@@ -169,9 +180,18 @@ fn j_and_k_over_b_match_pyscf_df() {
         dag.add_gpu(format!("upload {name}"), 0, Upload { name, staged, len })
     };
     let (d, c) = (upload("D", d), upload("C", c));
-    let j = add_df_coulomb(&mut dag, 0, nao, naux, fitted.b, d);
-    let k = add_df_exchange(&mut dag, 0, nao, naux, nocc, fitted.b, c).unwrap();
-    let outs: Vec<_> = [("J host", j), ("K host", k)]
+    let set = [Contraction::Coulomb(d), Contraction::Exchange { c, nocc }];
+    let jk = add_streamed_jk(
+        &mut dag,
+        0,
+        fitted.map.sphe(),
+        fitted.tables,
+        naux,
+        fitted.b,
+        &set,
+    )
+    .unwrap();
+    let outs: Vec<_> = [("J host", jk[0]), ("K host", jk[1])]
         .into_iter()
         .map(|(name, row)| {
             let down = dag.add_gpu(
@@ -213,4 +233,109 @@ fn j_and_k_over_b_match_pyscf_df() {
             "max |Δ{what}| = {miss:e} > {REL_TOL:e} · {scale:e}"
         );
     }
+}
+
+/// CPU: the heap row of B copied out, after the build's last write.
+struct Keep(RowId<Heap, f64>, Arc<Mutex<Vec<f64>>>);
+
+impl CpuTask for Keep {
+    type Rows = ();
+
+    fn layout(&self, _: &mut Layout<'_, Pinned>, heap: &mut Layout<'_, Heap>) {
+        heap.read(self.0);
+    }
+
+    fn run(&self, _: &(), _: &Bufs<'_, Pinned>, heap: &Bufs<'_, Heap>) -> Status {
+        *self.1.lock().unwrap() = heap.get(self.0).to_vec();
+        Ok(())
+    }
+}
+
+/// The screen's threshold for two waters 12 Å apart: between the pairs
+/// within a molecule (bounds of 1e-3 and up) and those across the gap
+/// (below 1e-15), so no pair lies near it.
+const THRESHOLD: f64 = 1e-8;
+
+/// At a positive threshold over two distant waters: the step keeps
+/// exactly the pairs whose largest host Schwarz element is not below it,
+/// some are dropped, and each dropped pair's columns of the unscreened B
+/// (threshold 0, built on the card) have 2-norm below the threshold.
+/// Catches a screen that drops a pair whose B is not negligible (the
+/// bound read from the wrong block, or of the wrong pair), and a map
+/// built over other bounds than the step's. Needs a GPU.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn dropped_pairs_columns_are_below_the_threshold() {
+    let (molecule, basis) = common::molecule("h2o_pair.xyz");
+    let tables = record_tables(&basis);
+    let pairs: Vec<(u32, u32)> = tables
+        .classes()
+        .iter()
+        .flat_map(|c| c.bra.iter().copied().zip(c.ket.iter().copied()))
+        .collect();
+    let q = fb_integrals_schwarz::schwarz_diagonal(&basis, &pairs);
+    let shells = basis.shells();
+    let mut at = 0;
+    let bounds: Vec<f64> = pairs
+        .iter()
+        .map(|&(a, b)| {
+            let n = (shells[a as usize].function_count_cart()
+                * shells[b as usize].function_count_cart()) as usize;
+            at += n;
+            q[at - n..at].iter().copied().fold(0.0, f64::max)
+        })
+        .collect();
+
+    let mut screened = Dag::new();
+    let kept = common::add_step(&mut screened, &molecule, &basis, common::AUX, THRESHOLD)
+        .unwrap()
+        .map;
+    let want: Vec<usize> = (0..pairs.len())
+        .filter(|&p| bounds[p] >= THRESHOLD)
+        .collect();
+    let got: Vec<usize> = kept.pairs().iter().map(|k| k.pair).collect();
+    assert_eq!(got, want, "the step's kept pairs are the bound's");
+    assert!(got.len() < pairs.len(), "the screen drops a pair");
+
+    let mut dag = Dag::new();
+    let fitted = common::add_step(&mut dag, &molecule, &basis, common::AUX, 0.0).unwrap();
+    assert_eq!(
+        fitted.map,
+        PairMap::new(&tables, None, 0.0),
+        "every pair kept"
+    );
+    let out = Arc::new(Mutex::new(Vec::new()));
+    dag.add_cpu("keep B", 0, Keep(fitted.b, Arc::clone(&out)));
+    let mut instance = dag.plan().instantiate(&[0]);
+    let mut backend = instance.backend();
+    instance.run(&mut backend, 1).result.unwrap();
+
+    let b = std::mem::take(&mut *out.lock().unwrap());
+    let n_columns = fitted.map.sphe().n_columns();
+    let naux = fitted.aux.nao_sphe() as usize;
+    assert_eq!(b.len(), naux * n_columns, "the build did not run");
+    let mut worst = 0.0_f64;
+    let dropped: Vec<usize> = (0..pairs.len())
+        .filter(|&p| bounds[p] < THRESHOLD)
+        .collect();
+    for &p in &dropped {
+        let block = &fitted.map.sphe().blocks()[p];
+        for column in block.column..block.end() {
+            let norm = (0..naux)
+                .map(|k| b[column + n_columns * k].powi(2))
+                .sum::<f64>()
+                .sqrt();
+            assert!(
+                norm < THRESHOLD,
+                "pair {p}: a column of norm {norm:e} >= {THRESHOLD:e}"
+            );
+            worst = worst.max(norm);
+        }
+    }
+    println!(
+        "two waters 12 Å apart: {} of {} pairs dropped at {THRESHOLD:e}, largest dropped \
+         column norm {worst:e}",
+        dropped.len(),
+        pairs.len()
+    );
 }
