@@ -66,12 +66,19 @@ use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::trsm;
 use wwr_sys::{wwr_blas_diag_type, wwr_blas_fill_mode, wwr_blas_operation, wwr_blas_side_mode};
 
-/// Add the fit of `columns` columns of a three-center tensor, `tensor`,
-/// against a metric's factor L, to `dag` on GPU worker `worker`, and
-/// return B = L⁻¹ `tensor`: an output row of `naux · columns` doubles
-/// named `"B"`, in the tensor's layout.
+/// Add the fit of a batch of `batch` columns of a three-center tensor of
+/// `columns`, `tensor`, against a metric's factor L, to `dag` on GPU
+/// worker `worker`, and return B = L⁻¹ `tensor`: an output row of
+/// `naux · batch` doubles named `"B"`, in the tensor's layout.
 ///
-/// `tensor` is an earlier task's output of `naux · columns` doubles,
+/// Batch `k` is the `k`-th `batch` of the `columns`, the last what is
+/// left: outside a loop the task fits the first, and in a counted loop of
+/// `columns.div_ceil(batch)` trips batch `k` in trip `k`, its
+/// `batch.min(columns - k · batch)` columns, from its views' iteration,
+/// the front of both rows, the rest of B left. One batch of every column
+/// is `batch == columns`.
+///
+/// `tensor` is an earlier task's output of `naux · batch` doubles,
 /// column-major at leading dimension `naux`, element `(P, c)` at
 /// `P + naux · c`, left as it was: a packed batch of shell pairs'
 /// spherical columns
@@ -91,15 +98,17 @@ use wwr_sys::{wwr_blas_diag_type, wwr_blas_fill_mode, wwr_blas_operation, wwr_bl
 /// # Panics
 /// If a row is of another worker's table ([`Dag::add_gpu`]).
 #[debug_requires(naux > 0, "a fitting set of at least one function")]
-#[debug_requires(columns > 0, "a batch of at least one column")]
+#[debug_requires(batch > 0, "a batch of at least one column")]
+#[debug_requires(batch <= columns, "a batch of at most every column")]
 #[requires(fits_i32!(naux), "naux fits the BLAS's i32")]
-#[requires(fits_i32!(columns), "columns fits the BLAS's i32")]
+#[requires(fits_i32!(batch), "batch fits the BLAS's i32")]
 #[track_caller]
 pub fn add_batch_fit(
     dag: &mut Dag<'_>,
     worker: usize,
     naux: usize,
     columns: usize,
+    batch: usize,
     factor: (RowId<Device, f64>, RowId<Pinned, i32>),
     tensor: RowId<Device, f64>,
 ) -> RowId<Device, f64> {
@@ -112,6 +121,7 @@ pub fn add_batch_fit(
             l,
             checked,
             columns,
+            batch,
             naux,
         },
     )
@@ -123,7 +133,9 @@ struct Fit {
     l: RowId<Device, f64>,
     /// Read only to order the task after a check that passed.
     checked: RowId<Pinned, i32>,
+    /// Every batch's columns, and the first's.
     columns: usize,
+    batch: usize,
     naux: usize,
 }
 
@@ -134,11 +146,11 @@ impl GpuTask for Fit {
         device.read(self.tensor);
         device.read(self.l);
         host.read(self.checked);
-        device.output("B", self.naux * self.columns)
+        device.output("B", self.naux * self.batch)
     }
 
     fn dims(&self) -> Vec<(&'static str, usize)> {
-        vec![("columns", self.columns), ("naux", self.naux)]
+        vec![("columns", self.batch), ("naux", self.naux)]
     }
 
     fn run(
@@ -148,11 +160,16 @@ impl GpuTask for Fit {
         _: &CopyOnly<'_, Pinned>,
         worker: &DeviceStream,
     ) -> Status {
+        // This trip's columns: the batch's, or what is left for the last.
+        let count = self
+            .batch
+            .min(self.columns - device.iteration() * self.batch);
         let mut b = device.take_mut(*b);
         memcpy_d2d(&b, device.get(self.tensor), worker)?;
-        // add_batch_fit checked that naux and columns fit an i32; the handle
-        // is the worker's, bound to its stream, so the solve follows the copy.
-        let (naux, columns) = (self.naux as i32, self.columns as i32);
+        // add_batch_fit checked that naux and batch fit an i32, and a
+        // trip's columns are at most the batch; the handle is the worker's,
+        // bound to its stream, so the solve follows the copy.
+        let (naux, columns) = (self.naux as i32, count as i32);
         trsm(
             worker.blas(),
             wwr_blas_side_mode::WWR_BLAS_SIDE_LEFT,

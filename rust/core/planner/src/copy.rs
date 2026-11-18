@@ -415,47 +415,53 @@ impl<T: Element> GpuTask for DownloadRows<T> {
 }
 
 impl<'a> Dag<'a, Pinned, DeviceStream> {
-    /// Add the download of the device row `src`, `runs` runs of
-    /// `first.len()` elements side by side, into the heap row `dst`, run
-    /// `r` at `first` moved on by `r · pitch`: the pitched form of
-    /// [`Dag::download_heap`], for a matrix whose leading dimension in the
-    /// heap row is wider than the device row's, the columns of a batch
-    /// into a row of every batch's. Two nodes through a pinned window of
-    /// `runs · first.len()` elements, `download <name>` on lane `at`, `src`
-    /// copied into the window `<name> window`, and `unstage <name>` on the
-    /// CPU pool, each run copied into its place once the executor has
-    /// waited for the download's event, for the reason [`Dag::upload_heap`]
-    /// gives.
+    /// Add the download of the device row `src`, `runs` runs of `width`
+    /// elements side by side, into the columns `columns` of the heap row
+    /// `dst`, a matrix of `runs` rows of `pitch`, run `r` at columns
+    /// moved on by `r · pitch`: the pitched form of [`Dag::download_heap`],
+    /// for a matrix whose leading dimension in the heap row is wider than
+    /// the device row's, the columns of a batch into a row of every
+    /// batch's. Two nodes through a pinned window of `runs · width`
+    /// elements, `download <name>` on lane `at`, `src` copied into the
+    /// window `<name> window`, and `unstage <name>` on the CPU pool, each
+    /// run copied into its place once the executor has waited for the
+    /// download's event, for the reason [`Dag::upload_heap`] gives.
     ///
-    /// `dst` is written, not made, as [`Dag::download_heap`] writes it. In
-    /// a loop, iteration `k` writes every run moved on by `k` of its
-    /// lengths, `first.start + k · first.len()` the first run's start: a
-    /// matrix of `pitch` columns cut into batches of one width comes down
-    /// in a counted loop of a trip per batch, batch `k` in trip `k`.
+    /// `dst` is written, not made, as [`Dag::download_heap`] writes it.
+    /// Iteration `k` writes the `width` columns from `columns.start +
+    /// k · width` of every run, clamped to `columns.end` as
+    /// [`Dag::download_heap`] clamps to its row's end: the head of each of
+    /// the window's runs, `width.min(columns.len() - k · width)` elements,
+    /// goes into its place. So `columns` cut into batches of `width` come
+    /// down in a counted loop of `columns.len().div_ceil(width)` trips,
+    /// batch `k` in trip `k`, the last one ragged; outside every loop, the
+    /// first batch, all of `columns` when `width` is its length.
     ///
     /// # Panics
     /// When the plan runs, if `src` is not the window's length long
-    /// (`memcpy_d2p`), or if an iteration's last run runs past the end of
-    /// `dst`.
-    #[debug_requires(first.start < first.end, "a run has an element")]
+    /// (`memcpy_d2p`), if an iteration's columns start past
+    /// `columns.end`, or if its last run runs past the end of `dst`.
+    #[debug_requires(columns.start < columns.end, "a run has an element")]
+    #[debug_requires(0 < width && width <= columns.len(), "a batch of 1 to every column")]
     #[debug_requires(runs > 0, "at least one run")]
-    #[debug_requires(runs == 1 || first.len() <= pitch, "the runs do not overlap")]
+    #[debug_requires(runs == 1 || columns.end <= pitch, "the runs do not overlap")]
     #[allow(
         clippy::too_many_arguments,
-        reason = "download_heap's, with the run count and the pitch"
+        reason = "download_heap's, with the batch's width, the run count and the pitch"
     )]
     pub fn download_heap_pitched<T: Element>(
         &mut self,
         at: impl Into<LaneId>,
         src: RowId<Device, T>,
         dst: RowId<Heap, T>,
-        first: Range<usize>,
+        columns: Range<usize>,
+        width: usize,
         runs: usize,
         pitch: usize,
         name: &str,
     ) {
         let at = at.into();
-        let run = first.len();
+        let run = width;
         let window = self.add_gpu(
             format!("download {name}"),
             at,
@@ -471,7 +477,7 @@ impl<'a> Dag<'a, Pinned, DeviceStream> {
             UnstagePitched {
                 window,
                 dst,
-                start: first.start,
+                columns,
                 run,
                 runs,
                 pitch,
@@ -485,7 +491,8 @@ impl<'a> Dag<'a, Pinned, DeviceStream> {
 struct UnstagePitched<T, P: StagingKind> {
     window: RowId<P, T>,
     dst: RowId<Heap, T>,
-    start: usize,
+    /// Every iteration's columns of a run, `run` an iteration.
+    columns: Range<usize>,
     run: usize,
     runs: usize,
     pitch: usize,
@@ -504,11 +511,15 @@ impl<T: Element, P: StagingKind> CpuTask<P> for UnstagePitched<T, P> {
     }
 
     fn run(&self, _: &(), pinned: &Bufs<'_, P>, heap: &Bufs<'_, Heap>) -> Status {
-        let from = self.start + heap.iteration() * self.run;
+        // This iteration's columns: the first moved on by its lengths, the
+        // end clamped to the columns', the slice panicking on an iteration
+        // that starts past them.
+        let from = self.columns.start + heap.iteration() * self.run;
         let (window, dst) = (pinned.get(self.window), heap.take_mut(self.dst));
+        let n = self.run.min(dst[from..self.columns.end].len());
         for r in 0..self.runs {
             let (at, of) = (from + r * self.pitch, r * self.run);
-            dst[at..at + self.run].copy_from_slice(&window[of..of + self.run]);
+            dst[at..at + n].copy_from_slice(&window[of..of + n]);
         }
         Ok(())
     }
@@ -547,9 +558,12 @@ mod pitched_tests {
     }
 
     /// GPU, the stand-in's: trip `k`'s window, `RUNS` runs of `WIDTH`,
-    /// element `(r, c)` of batch `k` the value of column `k WIDTH + c` of
-    /// run `r`, as the device download would leave it.
-    struct Window;
+    /// element `(r, c)` of batch `k` the value of column
+    /// `start + k WIDTH + c` of run `r`, as the device download would leave
+    /// it, past the matrix's columns too.
+    struct Window {
+        start: usize,
+    }
 
     impl GpuTask<PinnedStandIn, ()> for Window {
         type Rows = RowId<PinnedStandIn, f64>;
@@ -572,7 +586,7 @@ mod pitched_tests {
             let w = pinned.take_mut(*w);
             for r in 0..RUNS {
                 for c in 0..WIDTH {
-                    w[r * WIDTH + c] = value(r * PITCH + k * WIDTH + c);
+                    w[r * WIDTH + c] = value(r * PITCH + self.start + k * WIDTH + c);
                 }
             }
             Ok(())
@@ -593,36 +607,52 @@ mod pitched_tests {
         }
     }
 
-    /// A matrix of `PITCH` columns comes down in batches of `WIDTH`
-    /// columns, a counted loop of a trip per batch, depth 2: trip `k`'s
-    /// runs land at columns `k WIDTH ..` of every row, and the heap row
-    /// is bitwise the whole matrix.
+    /// A matrix's columns come down in batches of `WIDTH` columns, a
+    /// counted loop of a trip per batch, depth 2: trip `k`'s runs land at
+    /// columns `start + k WIDTH ..` of every row, and the heap row is
+    /// bitwise the matrix over the columns. All `PITCH` columns in
+    /// batches that divide them, or the columns from 1, whose last batch
+    /// is ragged and clamped: a clamp that copied too few elements leaves
+    /// the block's fill inside the columns, one that copied too many
+    /// writes column 0 of the next row, which holds the block's fill too.
     #[test]
     fn pitched_batches_tile_the_heap_row() {
-        let keep = Arc::new(Mutex::new(Vec::new()));
-        let mut dag: Dag<'_, PinnedStandIn, ()> = Dag::new();
-        let dst = dag.add_cpu("dst", 0, Dst);
-        let body = dag.len();
-        let window = dag.add_gpu("download b", 0, Window);
-        dag.add_cpu(
-            "unstage b",
-            0,
-            UnstagePitched {
-                window,
-                dst,
-                start: 0,
-                run: WIDTH,
-                runs: RUNS,
-                pitch: PITCH,
-            },
-        );
-        dag.add_counted(body, PITCH / WIDTH, 2);
-        dag.add_cpu("keep", 0, Keep(dst, Arc::clone(&keep)));
-        let mut instance = dag.plan().instantiate(&[0]);
-        let record = instance.run(&mut HostOnly::new(1), 2);
-        record.result.as_ref().unwrap();
-        let want: Vec<u64> = (0..RUNS * PITCH).map(|i| value(i).to_bits()).collect();
-        assert_eq!(*keep.lock().unwrap(), want);
+        for columns in [0..PITCH, 1..PITCH] {
+            let keep = Arc::new(Mutex::new(Vec::new()));
+            let mut dag: Dag<'_, PinnedStandIn, ()> = Dag::new();
+            let dst = dag.add_cpu("dst", 0, Dst);
+            let body = dag.len();
+            let start = columns.start;
+            let window = dag.add_gpu("download b", 0, Window { start });
+            let trips = columns.len().div_ceil(WIDTH);
+            dag.add_cpu(
+                "unstage b",
+                0,
+                UnstagePitched {
+                    window,
+                    dst,
+                    columns: columns.clone(),
+                    run: WIDTH,
+                    runs: RUNS,
+                    pitch: PITCH,
+                },
+            );
+            dag.add_counted(body, trips, 2);
+            dag.add_cpu("keep", 0, Keep(dst, Arc::clone(&keep)));
+            let mut instance = dag.plan().instantiate(&[0]);
+            let record = instance.run(&mut HostOnly::new(1), 2);
+            record.result.as_ref().unwrap();
+            let got = keep.lock().unwrap();
+            for (i, &bits) in got.iter().enumerate() {
+                let inside = columns.contains(&(i % PITCH));
+                assert_eq!(
+                    bits == value(i).to_bits(),
+                    inside,
+                    "{columns:?}: element {i} written {}",
+                    if inside { "wrong" } else { "outside" }
+                );
+            }
+        }
     }
 
     /// The download is two nodes named after the row, the window the
@@ -649,7 +679,7 @@ mod pitched_tests {
         let dst = dag.add_cpu("dst", 0, Dst);
         let body = dag.len();
         let src = dag.add_gpu("src", 0, Src);
-        dag.download_heap_pitched(0, src, dst, 0..WIDTH, RUNS, PITCH, "b");
+        dag.download_heap_pitched(0, src, dst, 0..PITCH, WIDTH, RUNS, PITCH, "b");
         dag.add_counted(body, PITCH / WIDTH, 2);
         let planned = dag.plan();
         let text = planned.to_string();

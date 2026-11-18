@@ -70,13 +70,22 @@ fn packed_batches_are_the_hosts_fit() {
     for pairs in [0..n, 0..split, split..n] {
         let columns = blocks[pairs.end - 1].end() - blocks[pairs.start].column;
         let packed = add_packed_three_center(
-            &mut dag, 0, &basis, &classes, &aux, &map, pairs, 1, &mut u, &mut u_aux,
+            &mut dag,
+            0,
+            &basis,
+            &classes,
+            &aux,
+            &map,
+            pairs.clone(),
+            pairs.len(),
+            &mut u,
+            &mut u_aux,
         )
         .expect("the kernels cover both sets");
         if tensor.is_none() {
             tensor = Some(common::download(&mut dag, packed, naux * columns));
         }
-        let b = add_batch_fit(&mut dag, 0, naux, columns, factor, packed);
+        let b = add_batch_fit(&mut dag, 0, naux, columns, columns, factor, packed);
         batches.push((common::download(&mut dag, b, naux * columns), columns));
     }
 

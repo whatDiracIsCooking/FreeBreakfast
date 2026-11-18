@@ -182,7 +182,7 @@ fn fit(naux: usize, m: Vec<f64>, b: Vec<f64>) -> (Record, Fitted) {
     );
     let factor = add_cholesky(&mut dag, 0, "L", naux, metric).unwrap();
     let (b, l) = (
-        add_batch_fit(&mut dag, 0, naux, NAO * NAO, factor, tensor),
+        add_batch_fit(&mut dag, 0, naux, NAO * NAO, NAO * NAO, factor, tensor),
         factor.0,
     );
     let rows = dag.add_gpu(

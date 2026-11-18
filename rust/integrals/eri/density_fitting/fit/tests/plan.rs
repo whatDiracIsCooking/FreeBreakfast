@@ -73,7 +73,7 @@ fn plan_golden() {
     let (metric, tensor) = inputs(&mut dag);
     let factor = add_cholesky(&mut dag, 0, "L", NAUX, metric).unwrap();
     let (b, l) = (
-        add_batch_fit(&mut dag, 0, NAUX, NAO * NAO, factor, tensor),
+        add_batch_fit(&mut dag, 0, NAUX, NAO * NAO, NAO * NAO, factor, tensor),
         factor.0,
     );
     let planned = dag.plan();
@@ -104,7 +104,7 @@ fn an_empty_batch_is_refused() {
     let mut dag = Dag::new();
     let (metric, tensor) = inputs(&mut dag);
     let factor = add_cholesky(&mut dag, 0, "L", NAUX, metric).unwrap();
-    let _ = add_batch_fit(&mut dag, 0, NAUX, 0, factor, tensor);
+    let _ = add_batch_fit(&mut dag, 0, NAUX, 0, 0, factor, tensor);
 }
 
 /// Two batches fitted against one factor: one `cholesky` and one check,
@@ -134,7 +134,7 @@ fn batches_share_one_factor() {
             },
         );
         bs.push((
-            add_batch_fit(&mut dag, 0, NAUX, columns, factor, tensor),
+            add_batch_fit(&mut dag, 0, NAUX, columns, columns, factor, tensor),
             columns,
         ));
     }

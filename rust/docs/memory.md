@@ -111,8 +111,9 @@ full length, so the last of `total.div_ceil(len)` trips moves the
 `total - k len` elements left. A device row that is a matrix narrower
 than the heap row's, a batch of B's columns into B, comes down through
 `Dag::download_heap_pitched`, the same two nodes with the window's runs
-written at a pitch, each trip's moved on by its run; it has no clamp, so
-a short last batch is a loop of its own.
+written at a pitch, each trip's moved on by its run and clamped to the
+matrix's columns, so a short last batch is its loop's last trip, as the
+tasks before it take their count from the iteration.
 A task never writes such a copy by hand; a copy inside a task's larger
 work, a solver's `info` flag down beside its launch, stays the task's.
 On one card the copy node is the transport; between cards, placement's

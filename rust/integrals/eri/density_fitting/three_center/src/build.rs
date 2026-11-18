@@ -38,8 +38,9 @@ const DEPTH: usize = 2;
 /// **The tasks**, in plan order: `harmonics` and `upload U` for each slot
 /// still `None`; **`B`** (CPU), the heap row, which every batch writes its
 /// columns of; then, per class `(la, lb)` of `map`, in the map's order,
-/// its pairs in batches of one size, a counted loop of
-/// ring depth 2 (`docs/memory.md`, "Nested plans"), each trip:
+/// its pairs in batches of one size, the last what is left, a counted
+/// loop of a trip per batch and ring depth 2 (`docs/memory.md`, "Nested
+/// plans"), each trip:
 ///
 /// - [`add_packed_three_center`]'s `packed three-center tables`, `packed
 ///   three-center` and `spherical transform` over the trip's pairs;
@@ -50,14 +51,15 @@ const DEPTH: usize = 2;
 /// - `Dag::download_heap_pitched`'s `download` and `unstage`, the
 ///   batch's `naux` runs of its columns into B at a pitch of `n_columns`.
 ///
-/// A class whose pairs the batch does not divide ends in one more batch
-/// of what is left, a counted loop of one trip (`B (la, lb) last batch`),
-/// since a heap range moves by its trip and its own length (#1712). A
-/// batch never spans two classes: a class's blocks are of one shape
-/// ([`PairMap::classes`]), so every trip of a loop has the first's rows
-/// and launches, and the loops are at most twice the classes, whatever
-/// the basis's size. Each batch's columns are fitted apart from every
-/// other's, so B is the one-batch B column for column.
+/// A class whose pairs the batch does not divide ends in a short batch,
+/// the loop's last trip, whose tasks take its count from their iteration
+/// and work on the front of the first trip's rows, and whose download is
+/// clamped to the class's columns. A batch never spans two classes: a
+/// class's blocks are of one shape ([`PairMap::classes`]), so every trip
+/// of a loop has the first's rows and launches, the last a prefix of
+/// them, and the loops are the classes, whatever the basis's size. Each
+/// batch's columns are fitted apart from every other's, so B is the
+/// one-batch B column for column.
 ///
 /// The batch's width is an adaptive part (`fb_core_planner::Adaptive`,
 /// `docs/memory.md`, "Adaptive widths: one planner routine"), `packed B
@@ -154,59 +156,48 @@ pub fn add_packed_b(
     let width = dag.width("packed B batch", worker, &part);
     for shape in &part.shapes {
         let per = shape.per_batch(width);
-        let (full, last) = (shape.pairs / per, shape.pairs % per);
-        let mut batches = |start: usize, pairs: usize, trips: usize, name: String| -> Result<()> {
-            let body = dag.len();
-            // Never an error: the library and the momenta were checked
-            // above, and the batch's counts are bounded by the cap.
-            let packed = add_packed_three_center(
-                dag,
-                worker,
-                basis,
-                classes,
-                aux,
-                map,
-                start..start + pairs,
-                trips,
-                u,
-                u_aux,
-            )?;
-            let columns = pairs * shape.sph[0] * shape.sph[1];
-            let fitted = add_batch_fit(dag, worker, naux[1], columns, factor, packed);
-            let batch = dag.add_gpu(
-                format!("{name} transpose"),
-                worker,
-                Transpose {
-                    b: fitted,
-                    naux: naux[1],
-                    columns,
-                },
-            );
-            let first = sphe[start].column;
-            dag.download_heap_pitched(
-                worker,
+        let trips = shape.pairs.div_ceil(per);
+        let name = format!("B ({}, {}) batch", shape.la, shape.lb);
+        let body = dag.len();
+        // Never an error: the library and the momenta were checked above,
+        // and the batch's counts are bounded by the cap.
+        let packed = add_packed_three_center(
+            dag,
+            worker,
+            basis,
+            classes,
+            aux,
+            map,
+            shape.first..shape.first + shape.pairs,
+            per,
+            u,
+            u_aux,
+        )?;
+        let block = shape.sph[0] * shape.sph[1];
+        let [columns, batch] = [shape.pairs * block, per * block];
+        let fitted = add_batch_fit(dag, worker, naux[1], columns, batch, factor, packed);
+        let transposed = dag.add_gpu(
+            format!("{name} transpose"),
+            worker,
+            Transpose {
+                b: fitted,
+                naux: naux[1],
+                columns,
                 batch,
-                b,
-                first..first + columns,
-                naux[1],
-                n_columns,
-                &name,
-            );
-            dag.add_counted(body, trips, DEPTH.min(trips));
-            Ok(())
-        };
-        let class = format!("B ({}, {})", shape.la, shape.lb);
-        if full > 0 {
-            batches(shape.first, per, full, format!("{class} batch"))?;
-        }
-        if last > 0 {
-            batches(
-                shape.first + full * per,
-                last,
-                1,
-                format!("{class} last batch"),
-            )?;
-        }
+            },
+        );
+        let first = sphe[shape.first].column;
+        dag.download_heap_pitched(
+            worker,
+            transposed,
+            b,
+            first..first + columns,
+            batch,
+            naux[1],
+            n_columns,
+            &name,
+        );
+        dag.add_counted(body, trips, DEPTH.min(trips));
     }
     Ok(b)
 }
@@ -330,12 +321,15 @@ impl CpuTask for HeapB {
     }
 }
 
-/// GPU: a batch of B, `naux` × `columns` aux fastest, transposed to
-/// pair-fastest, `columns` × `naux`.
+/// GPU: a batch of B, `naux` × `batch` aux fastest, transposed to
+/// pair-fastest, `batch` × `naux`; batch `k` of the class's `columns`, the
+/// last what is left, the front of each row, at the first batch's leading
+/// dimension, the window's pitch.
 struct Transpose {
     b: RowId<Device, f64>,
     naux: usize,
     columns: usize,
+    batch: usize,
 }
 
 impl GpuTask for Transpose {
@@ -343,11 +337,11 @@ impl GpuTask for Transpose {
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.b);
-        device.output("B batch pair-fastest", self.naux * self.columns)
+        device.output("B batch pair-fastest", self.naux * self.batch)
     }
 
     fn dims(&self) -> Vec<(&'static str, usize)> {
-        vec![("columns", self.columns), ("naux", self.naux)]
+        vec![("columns", self.batch), ("naux", self.naux)]
     }
 
     fn run(
@@ -357,17 +351,23 @@ impl GpuTask for Transpose {
         _: &CopyOnly<'_, Pinned>,
         worker: &DeviceStream,
     ) -> Status {
+        // This trip's columns: the batch's, or what is left for the last.
+        let count = self
+            .batch
+            .min(self.columns - device.iteration() * self.batch);
         let b = device.get(self.b);
         let mut out = device.take_mut(*out);
-        // In range: add_packed_b's cap bounds columns · naux_cart by an
-        // i32, and naux is at most naux_cart. beta is zero, so B's second
-        // operand only gives the call a pointer: C = Bᵀ exactly.
-        let (n, columns) = (self.naux as i32, self.columns as i32);
+        // In range: add_packed_b's cap bounds batch · naux_cart by an i32,
+        // naux is at most naux_cart, and count at most batch. beta is zero,
+        // so B's second operand only gives the call a pointer: C = Bᵀ
+        // exactly, the first count rows of each of naux columns at the
+        // batch's leading dimension.
+        let (n, count, ld) = (self.naux as i32, count as i32, self.batch as i32);
         geam(
             worker.blas(),
             WWR_BLAS_OP_T,
             WWR_BLAS_OP_T,
-            columns,
+            count,
             n,
             1.0,
             &b,
@@ -376,7 +376,7 @@ impl GpuTask for Transpose {
             &b,
             n,
             &mut out,
-            columns,
+            ld,
         )
     }
 }

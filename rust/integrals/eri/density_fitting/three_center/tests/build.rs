@@ -25,8 +25,8 @@ use fb_test_support::golden;
 
 /// The device room the golden's plan and the bitwise case are made in,
 /// above the metric's peak: a batch of 27 Cartesian columns, so every
-/// class but p-d and d-d takes two loops or more, four of them a short last
-/// batch.
+/// class but p-d and d-d takes two trips or more, and four of those end in
+/// a short last batch.
 const ROOM: usize = 750_000;
 
 /// What a planned build hands back: B's heap row, and, when asked, the
@@ -100,9 +100,18 @@ fn plan(basis: &BasisSet, aux: &BasisSet, room: usize, add: Add) -> (Plan<'stati
                 let first = sphe[pairs.start].column;
                 let columns = sphe[pairs.end - 1].end() - first;
                 let packed = add_packed_three_center(
-                    dag, 0, basis, &classes, aux, &map, pairs, 1, &mut u, &mut u_aux,
+                    dag,
+                    0,
+                    basis,
+                    &classes,
+                    aux,
+                    &map,
+                    pairs.clone(),
+                    pairs.len(),
+                    &mut u,
+                    &mut u_aux,
                 )?;
-                let b = add_batch_fit(dag, 0, naux, columns, factor, packed);
+                let b = add_batch_fit(dag, 0, naux, columns, columns, factor, packed);
                 Ok::<_, fb_core_error_handling::Error>(Batch {
                     first,
                     columns,
@@ -145,6 +154,15 @@ impl CpuTask for Keep {
     }
 }
 
+/// The width of a width line.
+fn width_of(line: &str) -> usize {
+    line["width packed B batch: ".len()..]
+        .split(' ')
+        .next()
+        .and_then(|w| w.parse().ok())
+        .expect("a width")
+}
+
 /// The width line of a plan's text.
 fn width_line(planned: &Plan<'_>) -> String {
     planned
@@ -156,9 +174,10 @@ fn width_line(planned: &Plan<'_>) -> String {
 }
 
 /// Water's build in [`ROOM`]: B is the heap table's row of
-/// `naux · n_columns` doubles, no device row is a whole B's or larger, the
-/// classes are cut into several counted loops, and the plan text is the
-/// committed golden `plan_h2o_packed_b.txt`.
+/// `naux · n_columns` doubles, no device row is a whole B's or larger,
+/// each class is one counted loop, some of several trips and some whose
+/// batch does not divide its pairs, so ending in a short trip, and the
+/// plan text is the committed golden `plan_h2o_packed_b.txt`.
 #[test]
 fn build_plan_golden() {
     let (basis, aux) = common::water();
@@ -182,7 +201,19 @@ fn build_plan_golden() {
         .collect();
     let loops = text.matches("closes counted loop").count();
     println!("{} in {loops} loops", width_line(&planned));
-    assert!(loops > map.classes().len(), "some class takes two loops");
+    assert_eq!(loops, map.classes().len(), "a loop per class");
+    let width = width_of(&width_line(&planned));
+    let cart = map.cart().blocks();
+    let ragged = map
+        .classes()
+        .iter()
+        .filter(|c| {
+            let block = cart[c.pairs.start].n[0] * cart[c.pairs.start].n[1];
+            let per = (width / block).clamp(1, c.pairs.len());
+            per < c.pairs.len() && !c.pairs.len().is_multiple_of(per)
+        })
+        .count();
+    assert!(ragged > 0, "some class ends in a short trip");
     golden(env!("CARGO_MANIFEST_DIR"), "plan_h2o_packed_b.txt", &text);
 }
 
@@ -229,7 +260,8 @@ const BAR: f64 = 1e-12;
 
 /// The heap B of the plan in [`ROOM`], built in several batches per class,
 /// against the same batches planned apart, outside any loop, bitwise: the
-/// same shapes, so the same kernels, and a trip's cells taken from the
+/// same shapes, a short last trip's counts its own over the front of the
+/// first trip's rows, so the same kernels, and a trip's cells taken from the
 /// wrong batch, a pitch or a trip's column offset wrong, the transpose
 /// wrong, or an element left unwritten (the heap block's NaN fill)
 /// changes bits; and against the one-batch B within [`BAR`], which
@@ -245,11 +277,7 @@ fn the_heap_b_is_its_batches_bitwise_and_the_one_batch_b_within_the_bar() {
     let (naux, n_columns) = (aux.nao_sphe() as usize, map.sphe().n_columns());
     let (sized, _) = plan(&basis, &aux, ROOM, Add::Workspace);
     let line = width_line(&sized);
-    let width: usize = line["width packed B batch: ".len()..]
-        .split(' ')
-        .next()
-        .and_then(|w| w.parse().ok())
-        .expect("a width");
+    let width = width_of(&line);
     let (planned, built) = plan(&basis, &aux, ROOM, Add::References(width));
     assert_eq!(width_line(&planned), line, "the references move no width");
     println!("{line}: {} batches", built.batches.len());

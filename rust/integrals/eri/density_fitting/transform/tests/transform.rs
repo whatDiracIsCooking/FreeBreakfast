@@ -253,6 +253,7 @@ fn a_packed_batch_matches_the_dense_transform() {
         0,
         &map,
         pairs.clone(),
+        pairs.len(),
         [nac, nas],
         x,
         [u_row, u_aux_row],
