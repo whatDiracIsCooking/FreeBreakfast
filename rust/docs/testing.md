@@ -369,6 +369,10 @@ every case that calls it is named here, which `fb-doc-check`'s
 - `fb-pipeline-scf`'s `benzene_converges_to_pyscf`, the DF-RHF loop for
   benzene in cc-pVDZ / cc-pVDZ-JKFIT against PySCF;
   `water_converges_to_pyscf` is its family's representative.
+- `fb-pipeline-config`'s `the_default_threshold_keeps_benzenes_energy`,
+  benzene's DF-RHF at the default `[eri] schwarz_threshold` against 0, two
+  full SCF runs; `schwarz_threshold_is_optional` (plan-level) stands in for
+  it at the gates.
 - `fb-core-planner`'s `tier5_every_split_is_bitwise_one_workers`, the
   partitioned product on one, two and four workers against one another,
   a clique made per run;

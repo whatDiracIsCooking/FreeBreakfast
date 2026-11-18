@@ -15,7 +15,7 @@ type = "sad"           # the default; or from = "d.npy", a run's D read back
 [eri]                  # required: no default
 mode = "density_fitting"      # or "conventional" (conventional.toml)
 aux_basis = "cc-pvdz-jkfit"   # a compiled-in fitting set
-schwarz_threshold = 0.0      # required: a shell pair whose every sqrt((mn|mn)) is below it is dropped; 0 keeps all
+schwarz_threshold = 1e-12    # the default: a shell pair whose every sqrt((mn|mn)) is below it is dropped; 0 keeps all
 
 [scf]                  # every key optional; these are the defaults
 max_iterations = 100          # Fock builds before MaxIterationsExceeded

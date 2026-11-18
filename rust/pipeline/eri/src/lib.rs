@@ -114,7 +114,7 @@ use serde::Deserialize;
 /// [eri]
 /// mode = "density_fitting"
 /// aux_basis = "cc-pvdz-jkfit"
-/// schwarz_threshold = 1e-12   # 0 screens nothing
+/// schwarz_threshold = 1e-12   # the default; 0 screens nothing
 /// ```
 ///
 /// or, with no fitting set,
@@ -137,11 +137,24 @@ pub struct EriStep {
     /// `<basis>-acCD-6-6` is not ported), and refused by
     /// `"conventional"`, which fits nothing ([`EriStep::check`]).
     pub aux_basis: Option<String>,
-    /// `schwarz_threshold`: the density-fitting screen. A shell pair whose
-    /// every Cartesian `sqrt((mn|mn))` is below it is dropped from B whole
-    /// ([`add_df_eri`]); 0 drops none. Required by `"density_fitting"`,
-    /// with no default yet, a non-negative number, and refused by
-    /// `"conventional"`, which screens nothing ([`EriStep::check`]).
+    /// `schwarz_threshold`: the density-fitting screen, in the atomic
+    /// units of `sqrt((mn|mn))`. A shell pair whose every Cartesian
+    /// `sqrt((mn|mn))` is below it is dropped from B whole
+    /// ([`add_df_eri`]); 0 drops none. Optional under
+    /// `"density_fitting"`, **1e-12** when absent, a non-negative number;
+    /// refused by `"conventional"`, which screens nothing
+    /// ([`EriStep::check`]).
+    ///
+    /// What the bound means: a dropped column of B has 2-norm below the
+    /// threshold. The fit is the projection of `|mn)` onto the fitting
+    /// space in the Coulomb metric, so `Σ_Q B_Q,mn² = (mn|mn)_DF <=
+    /// (mn|mn)` (`fb_integrals_schwarz`'s crate doc), and a dropped
+    /// column's share of J or K is at most the threshold times the norm
+    /// of the vector it is dotted with. The default is pinned by the
+    /// largest density-fitted case of the tree, benzene in cc-pVDZ /
+    /// cc-pVDZ-JKFIT: its DF-RHF energy at the default and at 0 agree
+    /// within 1e-10 hartree, the bar of the PySCF comparison
+    /// (`fb-pipeline-config`'s `tests/schwarz_default.rs`).
     #[serde(default)]
     pub schwarz_threshold: Option<f64>,
     /// `storage`: how `"conventional"` stores the tensor
@@ -190,8 +203,8 @@ impl EriStep {
     ///
     /// # Errors
     /// `InvalidConfig`, naming the key: under `"density_fitting"`, no
-    /// `aux_basis` or one that is not a compiled-in fitting set, no
-    /// `schwarz_threshold` or one that is negative or not a number, or a
+    /// `aux_basis` or one that is not a compiled-in fitting set, a
+    /// `schwarz_threshold` that is negative or not a number, or a
     /// `storage` at all; under `"conventional"`, an `aux_basis` or a
     /// `schwarz_threshold` at all.
     pub fn check(&self) -> Status {
@@ -216,10 +229,6 @@ impl EriStep {
             _ => Ok(()),
         }?;
         match (self.mode, self.schwarz_threshold) {
-            (EriMode::DensityFitting, None) => Err(Error::config(
-                "[eri] schwarz_threshold: mode = \"density_fitting\" needs a screen (0 \
-                     screens nothing)",
-            )),
             (EriMode::DensityFitting, Some(t)) if t.is_nan() || t < 0.0 => Err(Error::config(
                 format!("[eri] schwarz_threshold: {t} is not a non-negative number"),
             )),
@@ -266,7 +275,8 @@ pub enum Eri {
 
 /// Add the two-electron integrals `step` asks for, of `basis` placed over
 /// `molecule`, to `dag`, and return them: by `step.mode`, [`add_df_eri`]
-/// over `step.aux_basis` or [`add_conventional`] on GPU worker `worker`,
+/// over `step.aux_basis` at `step.schwarz_threshold` (1e-12 when absent)
+/// or [`add_conventional`] on GPU worker `worker`,
 /// or, for `storage = "dense"`, [`add_dense`] over GPU workers
 /// `0..gpus`, U on worker 0, which `worker` must then be.
 ///
@@ -311,8 +321,8 @@ pub fn add_eri(
     };
     match (step.mode, &step.aux_basis, step.storage) {
         (EriMode::DensityFitting, Some(aux), _) => {
-            // check() holds a threshold under "density_fitting".
-            let threshold = step.schwarz_threshold.unwrap_or(0.0);
+            // The key's documented default.
+            let threshold = step.schwarz_threshold.unwrap_or(1e-12);
             add_df_eri(dag, worker, molecule, basis, classes, u, aux, threshold)
                 .map(Eri::DensityFitted)
         }
