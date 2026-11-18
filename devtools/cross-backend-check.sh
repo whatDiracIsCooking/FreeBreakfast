@@ -33,6 +33,8 @@
 # Flags:
 #   --fresh         wipe the CMake cache first. Needed after changing a
 #                   toolchain variable, which a plain reconfigure keeps.
+#                   Implied for a tree, with a line saying so, when its
+#                   cached C++ compiler is gone or reports another version.
 #   -j N            parallel compile jobs (default: BUILD_JOBS from
 #                   devtools/config.sh, or Ninja's own choice when empty).
 #   --device-only   build only the device .cu libraries instead of the whole
@@ -244,12 +246,24 @@ check_cached_backend() {
     refuse "$2 in $1 is configured for '${cached:-nothing}', not $backend"
 }
 
+# Whether to configure the tree $1 with --fresh: asked for, or the tree was
+# configured by a compiler that has since changed and cannot configure again
+# (#1333, as devtools/build.sh does; the nightly's build-cross-check failed
+# every night after the image's clang moved, #1556).
+wants_fresh() {
+  local drift
+  [ "$fresh" = 1 ] && return 0
+  drift=$(build_tree_compiler_drift "$1") || return 1
+  echo "cross-backend-check: compiler changed ($drift) in $1;" \
+    "reconfiguring with --fresh"
+}
+
 # ---------------------------------------------------------------------------
 # Phase 1: run the check, here, with cmake
 # ---------------------------------------------------------------------------
 run_here() {
   local -a cfg=(cmake --preset "$preset" -B "$build_dir" -DFREE_BREAKFAST_COMPILE_TIME_ONLY=ON)
-  [ "$fresh" = 1 ] && cfg+=(--fresh)
+  wants_fresh "$build_dir" && cfg+=(--fresh)
 
   echo "cross-backend-check: configuring $backend (preset=$preset) -> $build_dir"
   "${cfg[@]}"
@@ -269,7 +283,7 @@ run_here() {
   local rust_build=$build_dir/rust
   case "$rust_build" in /*) ;; *) rust_build=$REPO_ROOT/$rust_build ;; esac
   local -a rcfg=(cmake --preset "$rust_preset" -B "$rust_build")
-  [ "$fresh" = 1 ] && rcfg+=(--fresh)
+  wants_fresh "$rust_build" && rcfg+=(--fresh)
   echo "cross-backend-check: configuring rust/ for $backend (preset=$rust_preset) -> $rust_build"
   (cd rust && "${rcfg[@]}")
   check_cached_backend "$rust_build" "rust/"
