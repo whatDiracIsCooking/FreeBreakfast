@@ -78,6 +78,7 @@ fn plan_golden() {
         0,
         &map,
         0..map.pairs().len(),
+        map.pairs().len(),
         N_AUX,
         x,
         [u, u_aux],
@@ -114,6 +115,7 @@ fn a_count_past_i32_is_unsupported_at_planning() {
         0,
         &map,
         0..map.pairs().len(),
+        map.pairs().len(),
         [n_aux, n_aux],
         x,
         [u, u_aux],
@@ -142,5 +144,5 @@ fn an_empty_batch_is_refused() {
     let map = map();
     let mut dag = Dag::new();
     let [x, u, u_aux] = inputs(&mut dag, &map, N_AUX);
-    let _ = add_spherical_transform(&mut dag, 0, &map, 1..1, N_AUX, x, [u, u_aux]);
+    let _ = add_spherical_transform(&mut dag, 0, &map, 1..1, 1, N_AUX, x, [u, u_aux]);
 }

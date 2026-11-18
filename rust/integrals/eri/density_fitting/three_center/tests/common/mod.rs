@@ -110,7 +110,16 @@ pub fn plan(basis: &BasisSet, aux: &BasisSet) -> Fixture {
     let map = PairMap::new(&record_tables(basis), None, 0.0);
     let all = 0..map.pairs().len();
     let b = add_packed_three_center(
-        &mut dag, 0, basis, &classes, aux, &map, all, 1, &mut None, &mut None,
+        &mut dag,
+        0,
+        basis,
+        &classes,
+        aux,
+        &map,
+        all.clone(),
+        all.len(),
+        &mut None,
+        &mut None,
     )
     .expect("the kernels cover both");
     let (n_ao, n_aux) = (basis.nao_sphe() as usize, aux.nao_sphe() as usize);

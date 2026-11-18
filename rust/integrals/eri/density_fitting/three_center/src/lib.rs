@@ -76,11 +76,11 @@ use fb_integrals_sys::{
 use fb_recipes_matrix_ao::add_harmonics;
 
 /// Add the spherical three-center integrals of the kept shell pairs
-/// `pairs` of `map`, a batch, to `dag` on GPU worker `worker`, and return
-/// them, packed: an output row of `naux · s` doubles, `s` the batch's
-/// spherical columns ([`PairMap::sphe`]), element `(Q, c)` at
-/// `Q + naux · c`, the aux index fastest and `c` relative to the batch's
-/// first spherical column. Each pair's block is its `(m, n)` alone, once,
+/// `pairs` of `map`, in batches of `batch`, to `dag` on GPU worker
+/// `worker`, and return them, packed: an output row of `naux · s` doubles,
+/// `s` the first batch's spherical columns ([`PairMap::sphe`]), element
+/// `(Q, c)` at `Q + naux · c`, the aux index fastest and `c` relative to
+/// the batch's first spherical column. Each pair's block is its `(m, n)` alone, once,
 /// with no average: a diagonal pair's full square, any other pair's `m`
 /// on its bra shell.
 ///
@@ -97,13 +97,15 @@ use fb_recipes_matrix_ao::add_harmonics;
 /// transform`, stream), whose output this is. The Cartesian batch is the
 /// transform's input row, and ends there.
 ///
-/// `pairs` is the first of `trips` batches of one size side by side, batch
-/// `k` the range moved on by `k` of its lengths: outside a loop the tasks
-/// compute the first, and in a counted loop of `trips` trips batch `k` in
-/// trip `k`, as [`add_packed_b`] builds B. Every batch's pairs must be of
-/// the first's classes, pair for pair, so that its columns and its
-/// transform are the first's. U's slots make U copied up once for every
-/// build over them.
+/// Batch `k` is the `k`-th `batch` of `pairs`, the last what is left:
+/// outside a loop the tasks compute the first, and in a counted loop of
+/// `pairs.len().div_ceil(batch)` trips batch `k` in trip `k`, as
+/// [`add_packed_b`] builds B; one batch of every pair is
+/// `batch == pairs.len()`. Every batch's pairs must be a prefix of the
+/// first's classes, pair for pair, so that its columns and its transform
+/// are the front of the first's: a short last batch's columns are the
+/// front of the output, the rest left. U's slots make U copied up once
+/// for every build over them.
 ///
 /// First, before anything is added, the kernel library's load check
 /// ([`fb_integrals_sys::check_library`]), and then what the kernels can
@@ -132,15 +134,12 @@ use fb_recipes_matrix_ao::add_harmonics;
     "map is a map of basis's pairs"
 )]
 #[debug_requires(pairs.start < pairs.end, "a batch of at least one kept pair")]
-#[debug_requires(trips > 0, "at least one batch")]
-#[debug_requires(
-    pairs.start + trips * pairs.len() <= map.pairs().len(),
-    "every batch is of map's kept pairs"
-)]
+#[debug_requires(batch > 0, "a batch of at least one pair")]
+#[debug_requires(pairs.end <= map.pairs().len(), "every batch is of map's kept pairs")]
 #[allow(
     clippy::too_many_arguments,
-    reason = "the bases, their records and U slots, the map, the first batch's range of its \
-              pairs and the batches"
+    reason = "the bases, their records and U slots, the map, the range of its pairs and the \
+              batch"
 )]
 #[track_caller]
 pub fn add_packed_three_center(
@@ -151,13 +150,14 @@ pub fn add_packed_three_center(
     aux: &BasisSet,
     map: &PairMap,
     pairs: Range<usize>,
-    trips: usize,
+    batch: usize,
     u: &mut Option<RowId<Device, f64>>,
     u_aux: &mut Option<RowId<Device, f64>>,
 ) -> Result<RowId<Device, f64>> {
     let table = checked_aux_table("add_packed_three_center", basis, aux)?;
     let blocks = map.cart().blocks();
-    let n_col = blocks[pairs.end - 1].end() - blocks[pairs.start].column;
+    let last = pairs.end.min(pairs.start + batch) - 1;
+    let n_col = blocks[last].end() - blocks[pairs.start].column;
     let n_aux = aux.nao_cart() as usize;
     if i32::try_from(n_col * n_aux).is_err() {
         return Err(Error::unsupported(format!(
@@ -168,19 +168,18 @@ pub fn add_packed_three_center(
     }
     let n_aux = [n_aux, aux.nao_sphe() as usize];
     let tables = record_tables(basis);
-    let every = pairs.start..pairs.start + trips * pairs.len();
-    let kept: Vec<usize> = map.pairs()[every].iter().map(|k| k.pair).collect();
+    let kept: Vec<usize> = map.pairs()[pairs.clone()].iter().map(|k| k.pair).collect();
     let u = [
         add_harmonics(dag, worker, basis, u),
         add_harmonics(dag, worker, aux, u_aux),
     ];
     let cartesian =
-        add_packed_three_center_tasks(dag, worker, classes, &tables, &table, &kept, trips);
+        add_packed_three_center_tasks(dag, worker, classes, &tables, &table, &kept, batch);
     // Never an error past the refusal above, so nothing is added and then
     // refused: each of the transform's counts is at most `n_col · n_aux`
     // (`n_aux_cart`; `n_aux · n_b_sph` and a class's `pairs · n_a`, since
     // a block's `n_a · n_b` columns are at least `n_b` and `n_a`).
-    add_spherical_transform(dag, worker, map, pairs, n_aux, cartesian, u)
+    add_spherical_transform(dag, worker, map, pairs, batch, n_aux, cartesian, u)
 }
 
 /// The kernel library's load check, then each shell of `basis` and `aux`

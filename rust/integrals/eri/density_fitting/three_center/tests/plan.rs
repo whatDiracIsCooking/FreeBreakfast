@@ -38,7 +38,16 @@ fn packed_plan_golden() {
         let blocks = map.sphe().blocks();
         let columns = blocks[pairs.end - 1].end() - blocks[pairs.start].column;
         let out = add_packed_three_center(
-            &mut dag, 0, &basis, &classes, &aux, &map, pairs, 1, &mut u, &mut u_aux,
+            &mut dag,
+            0,
+            &basis,
+            &classes,
+            &aux,
+            &map,
+            pairs.clone(),
+            pairs.len(),
+            &mut u,
+            &mut u_aux,
         )
         .unwrap();
         outs.push((out, columns));
@@ -109,7 +118,16 @@ fn a_shell_past_the_kernels_is_unsupported_at_planning() {
         let map = PairMap::new(&record_tables(&basis), None, 0.0);
         let all = 0..map.pairs().len();
         let err = add_packed_three_center(
-            &mut dag, 0, &basis, &classes, &aux, &map, all, 1, &mut None, &mut None,
+            &mut dag,
+            0,
+            &basis,
+            &classes,
+            &aux,
+            &map,
+            all.clone(),
+            all.len(),
+            &mut None,
+            &mut None,
         )
         .unwrap_err();
         assert_eq!(err.kind, ErrorKind::Unsupported, "{err}");
@@ -138,8 +156,19 @@ fn u_and_u_aux_are_read_from_the_slots() {
     let (mut u, mut u_aux) = (None, None);
     let mut build = |u: &mut Option<_>, u_aux: &mut Option<_>| {
         let all = 0..map.pairs().len();
-        add_packed_three_center(&mut dag, 0, &basis, &classes, &aux, &map, all, 1, u, u_aux)
-            .unwrap();
+        add_packed_three_center(
+            &mut dag,
+            0,
+            &basis,
+            &classes,
+            &aux,
+            &map,
+            all.clone(),
+            all.len(),
+            u,
+            u_aux,
+        )
+        .unwrap();
     };
     build(&mut u, &mut u_aux);
     assert!(u.is_some() && u_aux.is_some(), "both slots are filled");
