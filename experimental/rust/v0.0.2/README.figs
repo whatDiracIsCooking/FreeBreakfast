@@ -1,0 +1,153 @@
+@@ before <h2 id="result">
+<figure><div class="scroll">
+<svg viewBox="0 0 680 150" role="img" aria-label="Three phases left to right. Setup parses the config, geometry and bases on the host and fills the dimensions; it is not budgeted. Budget mode calls each step's mem_budget, which counts and allocates, and a final node accepts or refuses the whole plan. Execute mode calls each step's run inside the shared wrapper and allocates nothing. Budget mode and execute mode are the same step graph, built into a rustflow Taskflow once per mode.">
+<defs>
+<marker id="v2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<rect class="box" x="20" y="18" width="190" height="86" rx="4"/>
+<text class="t" x="115" y="38" text-anchor="middle">Setup</text>
+<text class="sm" x="115" y="57" text-anchor="middle">config, geometry, bases</text>
+<text class="sm" x="115" y="72" text-anchor="middle">fills the dimensions</text>
+<text class="sm mt" x="115" y="91" text-anchor="middle">host only, not budgeted</text>
+<rect class="ab" x="245" y="18" width="190" height="86" rx="4"/>
+<text class="t" x="340" y="38" text-anchor="middle">Budget mode</text>
+<text class="sm" x="340" y="57" text-anchor="middle">each node: mem_budget</text>
+<text class="sm" x="340" y="72" text-anchor="middle">count, check, allocate</text>
+<text class="sm mt" x="340" y="91" text-anchor="middle">final node: accept or refuse</text>
+<rect class="ab" x="470" y="18" width="190" height="86" rx="4"/>
+<text class="t" x="565" y="38" text-anchor="middle">Execute mode</text>
+<text class="sm" x="565" y="57" text-anchor="middle">each node: run, in the wrapper</text>
+<text class="sm" x="565" y="72" text-anchor="middle">allocates nothing</text>
+<text class="sm mt" x="565" y="91" text-anchor="middle">a replay reuses the buffers</text>
+<line class="ln" x1="210" y1="61" x2="243" y2="61" marker-end="url(#v2a)"/>
+<line class="ln" x1="435" y1="61" x2="468" y2="61" marker-end="url(#v2a)"/>
+<path class="al" d="M245,112v8H660v-8"/>
+<text class="sm at" x="452" y="138" text-anchor="middle">one step graph, built into a rustflow Taskflow once per mode</text>
+</svg></div>
+<figcaption>A run is three phases. The last two are the same graph of steps with a different body in each node, so neither mode has a graph of its own.</figcaption>
+</figure>
+
+@@ replace-pre harmonics ─┬─
+<figure><div class="scroll">
+<svg viewBox="0 0 680 290" role="img" aria-label="The step graph of a DF-RHF. Harmonics and records are both read by overlap, core_hamiltonian and eri. Overlap is read by orthogonalizer. The scf step reads overlap, core_hamiltonian, orthogonalizer, eri and guess; guess reads nothing.">
+<defs>
+<marker id="v2b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<rect class="box" x="60" y="14" width="130" height="30" rx="4"/><text x="125" y="34" text-anchor="middle">harmonics</text>
+<rect class="box" x="220" y="14" width="130" height="30" rx="4"/><text x="285" y="34" text-anchor="middle">records</text>
+<rect class="box" x="540" y="14" width="130" height="30" rx="4"/><text x="605" y="34" text-anchor="middle">guess</text>
+<line class="ln" x1="125" y1="44" x2="125" y2="66"/>
+<line class="ln" x1="285" y1="44" x2="285" y2="66"/>
+<line class="ln" x1="125" y1="66" x2="445" y2="66"/>
+<line class="ln" x1="125" y1="66" x2="125" y2="88" marker-end="url(#v2b)"/>
+<line class="ln" x1="285" y1="66" x2="285" y2="88" marker-end="url(#v2b)"/>
+<line class="ln" x1="445" y1="66" x2="445" y2="88" marker-end="url(#v2b)"/>
+<rect class="box" x="40" y="90" width="170" height="30" rx="4"/><text x="125" y="110" text-anchor="middle">overlap</text>
+<rect class="box" x="220" y="90" width="130" height="30" rx="4"/><text x="285" y="110" text-anchor="middle">core_hamiltonian</text>
+<rect class="box" x="380" y="90" width="130" height="30" rx="4"/><text x="445" y="110" text-anchor="middle">eri</text>
+<line class="ln" x1="85" y1="120" x2="85" y2="158" marker-end="url(#v2b)"/>
+<rect class="box" x="20" y="160" width="130" height="30" rx="4"/><text x="85" y="180" text-anchor="middle">orthogonalizer</text>
+<line class="ln" x1="85" y1="190" x2="85" y2="238" marker-end="url(#v2b)"/>
+<line class="ln" x1="190" y1="120" x2="190" y2="238" marker-end="url(#v2b)"/>
+<line class="ln" x1="285" y1="120" x2="285" y2="238" marker-end="url(#v2b)"/>
+<line class="ln" x1="445" y1="120" x2="445" y2="238" marker-end="url(#v2b)"/>
+<line class="ln" x1="605" y1="44" x2="605" y2="238" marker-end="url(#v2b)"/>
+<rect class="ab" x="20" y="240" width="650" height="34" rx="4"/>
+<text class="t" x="40" y="262">scf</text>
+<text x="365" y="262" text-anchor="middle">a condition loop of the graph, each trip one Fock build</text>
+<text class="sm mt" x="525" y="165" text-anchor="middle">overlap, core_hamiltonian</text>
+<text class="sm mt" x="525" y="180" text-anchor="middle">and eri have no edge</text>
+<text class="sm mt" x="525" y="195" text-anchor="middle">among them</text>
+</svg></div>
+<figcaption>The step DAG, every edge a step's declared <code>Reads</code>. <code>harmonics</code> and <code>records</code> are each read by all three steps under the bar. Those three have no edge among them, so they hold the card at the same time.</figcaption>
+</figure>
+
+@@ before <h2 id="what-the-prototype-says-to-change">
+<figure><div class="scroll">
+<svg viewBox="0 0 680 124" role="img" aria-label="How a looping step is built into the graph: the steps it reads lead to an entry node, then the body, which is run plus the wrapper's sync, then a condition node. The condition's edge back to the body is weak and is taken while run returns Again; its other edge leads to an exit node and on to the step's readers.">
+<defs>
+<marker id="v2c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+<marker id="v2d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<rect class="ml dash" x="10" y="54" width="96" height="30" rx="4"/><text class="sm mt" x="58" y="73" text-anchor="middle">steps it reads</text>
+<rect class="box" x="136" y="54" width="70" height="30" rx="4"/><text x="171" y="74" text-anchor="middle">entry</text>
+<rect class="ab" x="236" y="54" width="160" height="30" rx="4"/><text x="316" y="74" text-anchor="middle">run + wrapper's sync</text>
+<rect class="box" x="426" y="54" width="76" height="30" rx="4"/><text x="464" y="74" text-anchor="middle">again?</text>
+<rect class="box" x="532" y="54" width="60" height="30" rx="4"/><text x="562" y="74" text-anchor="middle">exit</text>
+<rect class="ml dash" x="620" y="54" width="52" height="30" rx="4"/><text class="sm mt" x="646" y="73" text-anchor="middle">readers</text>
+<line class="ln" x1="106" y1="69" x2="134" y2="69" marker-end="url(#v2c)"/>
+<line class="ln" x1="206" y1="69" x2="234" y2="69" marker-end="url(#v2c)"/>
+<line class="ln" x1="396" y1="69" x2="424" y2="69" marker-end="url(#v2c)"/>
+<line class="ln" x1="502" y1="69" x2="530" y2="69" marker-end="url(#v2c)"/>
+<line class="ln" x1="592" y1="69" x2="618" y2="69" marker-end="url(#v2c)"/>
+<path class="al dash" d="M464,54V28H316V52" marker-end="url(#v2d)"/>
+<text class="sm at" x="390" y="20" text-anchor="middle">Again: the condition's edge is weak</text>
+<text class="sm mt" x="516" y="104" text-anchor="middle">Done</text>
+<text class="sm mt" x="171" y="104" text-anchor="middle">the body's one strong predecessor</text>
+</svg></div>
+<figcaption>A step that sets <code>LOOPS</code> becomes four nodes. A weak edge does not count as a predecessor, so without the entry node a body that reads nothing would never start.</figcaption>
+</figure>
+
+@@ after <p>Ordered by how much each bears
+<figure><div class="scroll">
+<svg viewBox="0 0 680 118" role="img" aria-label="The device memory of the eri step on benzene, 347 MiB, as one bar. B is 55 MiB and the J and K scratch 55 MiB: 111 MiB, 32 percent, is read after the build. The rest is build-only: the Cartesian slabs 61 MiB, the half-transformed slabs 58, the packed three-centre integrals 36, the fitted tensor and its transpose 32 each, and 18 of metric and tables: 237 MiB, 68 percent.">
+<rect class="ab" x="40" y="34" width="96" height="30"/><text class="sm" x="88" y="53" text-anchor="middle">B  55</text>
+<rect class="ab" x="136" y="34" width="96" height="30"/><text class="sm" x="184" y="53" text-anchor="middle">J/K scratch  55</text>
+<rect class="row" x="232" y="34" width="106" height="30"/><text class="sm" x="285" y="53" text-anchor="middle">Cartesian slabs  61</text>
+<rect class="row" x="338" y="34" width="101" height="30"/><text class="sm" x="388" y="53" text-anchor="middle">half-transf.  58</text>
+<rect class="row" x="439" y="34" width="62" height="30"/><text class="sm" x="470" y="53" text-anchor="middle">(mn|P)  36</text>
+<rect class="row" x="501" y="34" width="54" height="30"/><text class="sm" x="528" y="53" text-anchor="middle">fit  32</text>
+<rect class="row" x="555" y="34" width="54" height="30"/><text class="sm" x="582" y="53" text-anchor="middle">fitᵀ  32</text>
+<rect class="row" x="609" y="34" width="32" height="30"/><text class="sm" x="625" y="53" text-anchor="middle">18</text>
+<path class="al" d="M40,72v7H232v-7"/>
+<text class="sm at" x="136" y="96" text-anchor="middle">read after the build: 111 MiB, 32%</text>
+<path class="ml" d="M232,72v7H641v-7"/>
+<text class="sm mt" x="436" y="96" text-anchor="middle">build-only, kept for the run: 237 MiB, 68%</text>
+<text class="t" x="40" y="22">eri's device memory on benzene: 347 MiB</text>
+<text class="sm mt" x="641" y="22" text-anchor="end">MiB; the last block is the metric and the tables</text>
+</svg></div>
+<figcaption>Item 2. Two thirds of the step's bytes are dead once B exists, and an <code>Output</code> that lives for the run has no way to give them back.</figcaption>
+</figure>
+
+@@ after <p>Ordered by how much each bears
+<figure><div class="scroll">
+<svg viewBox="0 0 680 250" role="img" aria-label="Which stream each step's work went on. In eri, the step's own stream carries the class kernels for the metric and the three-centre integrals; then, with the device's mutex held, the library stream carries the metric's factorization, the fit, the gather kernel and the transforms. In one trip of scf the step's own stream carries nothing: J and K, the Fock matrix, energy and residual, the DIIS solve kernel, the extrapolation, the eigensolve and the new density are all on the library stream under the mutex.">
+<defs>
+<marker id="v2e" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="ah" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<text class="t" x="10" y="20">eri</text>
+<text class="sm" x="124" y="47" text-anchor="end">step's own stream</text>
+<text class="sm" x="124" y="85" text-anchor="end">library stream</text>
+<line class="ml" x1="130" y1="43" x2="136" y2="43"/>
+<line class="ml" x1="296" y1="43" x2="672" y2="43"/>
+<line class="ml" x1="130" y1="81" x2="310" y2="81"/>
+<line class="ml" x1="652" y1="81" x2="672" y2="81"/>
+<rect class="row" x="136" y="30" width="160" height="26"/><text class="sm" x="216" y="47" text-anchor="middle">class kernels: (P|Q), (mn|P)</text>
+<path class="al" d="M302,45V66" marker-end="url(#v2e)"/>
+<rect class="row" x="310" y="68" width="84" height="26"/><text class="sm" x="352" y="85" text-anchor="middle">metric → L</text>
+<rect class="row" x="398" y="68" width="62" height="26"/><text class="sm" x="429" y="85" text-anchor="middle">fit</text>
+<rect class="ab" x="464" y="68" width="84" height="26"/><text class="sm" x="506" y="85" text-anchor="middle">gather kernel</text>
+<rect class="row" x="552" y="68" width="100" height="26"/><text class="sm" x="602" y="85" text-anchor="middle">U sandwiches</text>
+<path class="al" d="M660,79V58" marker-end="url(#v2e)"/>
+<path class="al" d="M310,100v5H652v-5"/>
+<text class="sm at" x="481" y="118" text-anchor="middle">the device's mutex held</text>
+<text class="t" x="10" y="142">scf, one trip</text>
+<text class="sm" x="124" y="169" text-anchor="end">step's own stream</text>
+<text class="sm" x="124" y="207" text-anchor="end">library stream</text>
+<line class="ml" x1="130" y1="165" x2="672" y2="165"/>
+<line class="ml" x1="130" y1="203" x2="148" y2="203"/>
+<line class="ml" x1="652" y1="203" x2="672" y2="203"/>
+<text class="sm mt" x="400" y="160" text-anchor="middle">nothing of its own</text>
+<path class="al" d="M140,167V188" marker-end="url(#v2e)"/>
+<rect class="row" x="148" y="190" width="56" height="26"/><text class="sm" x="176" y="207" text-anchor="middle">J, K</text>
+<rect class="row" x="208" y="190" width="110" height="26"/><text class="sm" x="263" y="207" text-anchor="middle">F, E, residual</text>
+<rect class="ab" x="322" y="190" width="84" height="26"/><text class="sm" x="364" y="207" text-anchor="middle">DIIS solve</text>
+<rect class="row" x="410" y="190" width="84" height="26"/><text class="sm" x="452" y="207" text-anchor="middle">extrapolate</text>
+<rect class="row" x="498" y="190" width="62" height="26"/><text class="sm" x="529" y="207" text-anchor="middle">syevd</text>
+<rect class="row" x="564" y="190" width="88" height="26"/><text class="sm" x="608" y="207" text-anchor="middle">C, next D</text>
+<path class="al" d="M660,201V180" marker-end="url(#v2e)"/>
+<path class="al" d="M148,222v5H652v-5"/>
+<text class="sm at" x="400" y="242" text-anchor="middle">the device's mutex held</text>
+</svg></div>
+<figcaption>Item 1. Where each step's work was enqueued, in order (not to scale). The accent arrows are the fork and the join; the accent blocks are kernels that are not BLAS, put on the library stream because they sit between BLAS calls. <code>orthogonalizer</code> looks like <code>scf</code>.</figcaption>
+</figure>
