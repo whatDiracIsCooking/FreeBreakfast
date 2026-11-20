@@ -1,4 +1,4 @@
-# rust/v0.2: the rustflow redesign, prototyped
+# rust/v0.0.2: the rustflow redesign, prototyped
 
 A prototype of the redesign proposed on 2026-11-20 ("Rust rebuild: steps, the
 memory budget and rustflow", a design note that is not in the tree): a
@@ -54,7 +54,7 @@ a benchmark.
 ```sh
 git submodule update --init --recursive
 (cd rust && cmake --preset cuda && cmake --build --preset cuda -j8)   # the libraries the crates link
-cd experimental/rust/v0.2
+cd experimental/rust/v0.0.2
 cargo test                                                # 9 device-free tests, 2 doctests
 cargo test -- --include-ignored --nocapture --test-threads=1   # and the 8 GPU cases
 cargo run --release --example run -- examples/h2o.toml    # setup, budget mode, execute mode
@@ -255,3 +255,14 @@ Ordered by how much each bears on the design document.
   rescale of the guess (a charged molecule is refused at setup).
 - `records`: no screening bounds.
 - Setup: one molecule, built-in bases, `num_gpus = 1` in effect.
+
+## This page as HTML
+
+`v0.0.2.html` beside this file is this README rendered by `rust/docs/md2html.py`,
+with the hand-drawn figures of `README.figs` spliced in (the step DAG there
+replaces the text one above). The `.md` and the `.figs` are the source; after
+editing either, from this directory:
+
+```sh
+uv run --no-project --with markdown-it-py python ../../../rust/docs/md2html.py README.md v0.0.2.html README.figs
+```
