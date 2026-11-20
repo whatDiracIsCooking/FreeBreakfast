@@ -1,0 +1,24 @@
+# DF-RHF of water in cc-pVDZ over cc-pVDZ-JKFIT, one card.
+# One table per step: a step whose table is absent is not in the DAG.
+
+[molecule]
+xyz = "../../../../rust/integrals/one_electron/overlap/tests/data/h2o.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[eri]
+aux_basis = "cc-pvdz-jkfit"
+
+[guess]
+
+[scf]
+max_iterations = 100
+energy_tolerance = 1e-10
+commutator_tolerance = 1e-7
+diis_history = 8
+
+[resources]
+num_gpus = 1
+threads = 4
+# device_cap_mib = 512   # absent: the card's free memory at setup, less a margin
