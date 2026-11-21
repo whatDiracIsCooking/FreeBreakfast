@@ -1615,3 +1615,25 @@ card visible). Water's B in batches of 27 Cartesian columns, four
 classes ending in a short trip: all 17 batches bitwise their own
 planned apart, and within 1.06e-14 of max|B| of the one-batch B (bar
 1e-12). Not compiled for HIP.
+
+2026-11-21, the spherical-aux packed three-center kernels (#1736):
+`fb_three_center_packed_class` over FelizJueves's `speri3<la, lb, lP>` at
+6e1c341 (#743), its 70 classes through (ff|i) in the low-stack form, the
+aux index written in real solid harmonics, so `add_spherical_transform`
+lost its dense `U_aux` GEMM and its `transform aux` row. On an RTX 3080
+(CUDA), the `default` preset: `devtools/test.py pr --only cargo` passes at
+597bf1af, tier 4 520 passed, the 13 tier-5 cases not run (one card
+visible). Every pair of the witness basis (46,354 elements) and its
+screened sub-range within 1.04e-13 of each class's `|U|`-weighted scale of
+libcint's `int3c2e_cart` contracted by `U` (bar 1e-11); water and
+`df_high_aux` (run by hand, a slow case) within 2.2e-14 and 1.6e-14 of
+max|(mn|P)| of PySCF (bar 1e-12); and, in an A/B against 00c4d498's
+Cartesian kernels then `U_aux` GEMM, both fixtures' packed tensors within
+4.6e-16 and 1.9e-15 of max|(mn|P)| of the old path's, 71% and 31% of
+elements bitwise. Water's B within 1.4e-14 of max|B| of the host's
+substitution. The units compile alone in at most 4.6 s each (`speri3_136`,
+`devtools/kernel-compile-watchdog.sh --build-dir rust/build-cuda`, 122 s
+for all 70 at six jobs); the largest stack is `speri3<3,3,6>`'s 7,072 B,
+down from `peri3<3,3,6>`'s 8,256 B. Compiled for HIP
+(`devtools/cross-backend-check.sh --device-only`, PASS); not run on the
+gfx1200.
