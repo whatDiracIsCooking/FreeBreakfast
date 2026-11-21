@@ -1,16 +1,13 @@
-plan: 4 tasks, GPU workers: 1
+plan: 3 tasks, GPU workers: 1
  task  worker  lane    name: after
     0       0  stream  (mn|P) cartesian
     1       0  stream  U
-    2       0  stream  U aux
-    3       0  stream  spherical transform: after 0 1 2
-worker 0 device table: 6 rows, 67664 bytes
-peak: 66960 bytes at node 3
+    2       0  stream  spherical transform: after 0 1
+worker 0 device table: 4 rows, 40016 bytes
+peak: 39520 bytes at node 2
     offset      bytes  owner   life     name: users (w writes, r reads)
-         0      20440  edge    0-3      (mn|P) cartesian: 0w 3r
-     20480        720  edge    1-3      U: 1w 3r
-     21248       7000  edge    2-3      U aux: 2w 3r
-     28416      14600  task    3-3      transform aux: 3w
-     43264      12600  task    3-3      transform ket: 3w
-     56064      11600  edge    3-3      (mn|P) packed: 3w
+         0      14600  edge    0-2      (mn|P) cartesian: 0w 2r
+     14848        720  edge    1-2      U: 1w 2r
+     15616      12600  task    2-2      transform ket: 2w
+     28416      11600  edge    2-2      (mn|P) packed: 2w
 handoffs:

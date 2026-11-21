@@ -83,7 +83,6 @@ fn packed_batches_are_the_hosts_fit() {
             pairs.clone(),
             pairs.len(),
             &mut u,
-            &mut u_aux,
         )
         .expect("the kernels cover both sets");
         if tensor.is_none() {

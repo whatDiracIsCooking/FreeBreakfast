@@ -1,9 +1,12 @@
 # The packed three-center kernels' reference data
 
 libcint's Cartesian three-center integrals (mn|P), from PySCF's
-`int3c2e_cart`, packed as `fb_three_center_packed_class` writes them, for
-the fixture `tests/packed_witness.rs` compares against, so the test needs
-no PySCF.
+`int3c2e_cart`, packed by column as `fb_three_center_packed_class` writes
+them but with the aux index Cartesian, for the fixture
+`tests/packed_witness.rs` compares against, so the test needs no PySCF.
+The kernels write the aux index spherical (FelizJueves #743); the test
+applies the aux basis's `U` (`fb_basis::spherical_transform_matrix`) to
+this array's aux index before comparing, so the array is unchanged.
 
 | File | What |
 |---|---|

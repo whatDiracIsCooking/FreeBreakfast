@@ -1,5 +1,5 @@
 // The DF three-center integrals' launch wrapper over the packed
-// peri3<la, lb, lP> kernels: rust/'s own, which the C++ tree does not have
+// spherical-aux speri3<la, lb, lP> kernels: rust/'s own, which the C++ tree does not have
 // (tools/emit/packed_three_center_kernels.py). One source for both backends
 // -- nvcc under CUDA, clang -x hip under HIP.
 //
@@ -14,9 +14,9 @@
 // into one staging buffer. The square kernels, eri3<la, lb, lP>, their
 // launcher and the symmetrization are not carried (#1725). The generated
 // kernels are sources of this library of their own (packed/kernels/), each
-// one explicit specialization of the kernel template `peri3`.
-// packed/kernels/peri3.h declares the template, every specialization and
-// peri3_kernels, their [la][lb][lP] table, nullptr where la > lb (only
+// one explicit specialization of the kernel template `speri3`.
+// packed/kernels/speri3.h declares the template, every specialization and
+// ssperi3_kernels, their [la][lb][lP] table, nullptr where la > lb (only
 // la <= lb is emitted), so nothing here names a class: a class the table
 // names but no unit defines fails to link. Launching a specialization another
 // TU defines wants relocatable device code under nvcc (CMakeLists.txt).
@@ -40,11 +40,12 @@
 
 #include <runtime.h>
 
-#include "eri/density_fitting/three_center/packed/kernels/peri3.h"
+#include "eri/density_fitting/three_center/packed/kernels/speri3.h"
 
-static_assert(std::extent_v<decltype(peri3_kernels), 0> == FB_THREE_CENTER_MAX_MOMENTUM + 1 &&
-                  std::extent_v<decltype(peri3_kernels), 1> == FB_THREE_CENTER_MAX_MOMENTUM + 1 &&
-                  std::extent_v<decltype(peri3_kernels), 2> == FB_THREE_CENTER_AUX_MAX_MOMENTUM + 1,
+static_assert(std::extent_v<decltype(speri3_kernels), 0> == FB_THREE_CENTER_MAX_MOMENTUM + 1 &&
+                  std::extent_v<decltype(speri3_kernels), 1> == FB_THREE_CENTER_MAX_MOMENTUM + 1 &&
+                  std::extent_v<decltype(speri3_kernels), 2> ==
+                      FB_THREE_CENTER_AUX_MAX_MOMENTUM + 1,
               "packed/kernels/'s [la][lb][lP] extents and the three-center limits disagree: "
               "rerun tools/emit/packed_three_center_kernels.py");
 static_assert(FB_THREE_CENTER_MAX_MOMENTUM == free_breakfast::kMaxAngularMomentum,
@@ -83,7 +84,7 @@ extern "C" fb_launch_status fb_three_center_packed_class(const wwr_stream stream
   const auto c = [&](const int32_t field) {
     return cells + (static_cast<size_t>(field) * static_cast<size_t>(n_cell));
   };
-  const auto kernel = peri3_kernels[la][lb][lp];
+  const auto kernel = speri3_kernels[la][lb][lp];
   // One thread per cell, kFourWarps to a block.
   const uint32_t blocks =
       free_breakfast::math::idivup(static_cast<uint32_t>(n_cell), free_breakfast::kFourWarps);

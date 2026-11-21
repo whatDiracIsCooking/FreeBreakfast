@@ -30,12 +30,14 @@ const DEPTH: usize = 2;
 /// one batch's rows beside the metric's factor and the records, and B is
 /// on the host.
 ///
-/// `basis`, `classes`, `aux`, `map`, `u` and `u_aux` are as for
+/// `basis`, `classes`, `aux`, `map` and `u` are as for
 /// [`add_packed_three_center`]; `factor` is
 /// `fb_recipes_cholesky::add_cholesky`'s `(L, checked)` over the
-/// `naux` × `naux` metric of `aux`, added before.
+/// `naux` × `naux` metric of `aux`, added before. `u_aux`, the plan's slot
+/// for U over `aux`, is neither read nor filled: the kernels write the
+/// aux index spherical, so B needs no U_aux.
 ///
-/// **The tasks**, in plan order: `harmonics` and `upload U` for each slot
+/// **The tasks**, in plan order: `harmonics` and `upload U` if `u` is
 /// still `None`; **`B`** (CPU), the heap row, which every batch writes its
 /// columns of; then, per class `(la, lb)` of `map`, in the map's order,
 /// its pairs in batches of one size, the last what is left, a counted
@@ -78,7 +80,7 @@ const DEPTH: usize = 2;
 /// As [`add_packed_three_center`]: a `GpuRuntime` error with the load
 /// check's message, or an `Unsupported` one naming the shell; or an
 /// `Unsupported` one naming the count, if one pair's Cartesian block
-/// times the aux basis's Cartesian functions does not fit the kernels'
+/// times the aux basis's spherical functions does not fit the kernels'
 /// 32-bit index. Nothing is added to `dag` on an error.
 ///
 /// # Panics
@@ -105,10 +107,10 @@ pub fn add_packed_b(
     map: &PairMap,
     factor: (RowId<Device, f64>, RowId<Pinned, i32>),
     u: &mut Option<RowId<Device, f64>>,
-    u_aux: &mut Option<RowId<Device, f64>>,
+    _u_aux: &mut Option<RowId<Device, f64>>,
 ) -> Result<RowId<Heap, f64>> {
     let table = checked_aux_table("add_packed_b", basis, aux)?;
-    let naux = [aux.nao_cart() as usize, aux.nao_sphe() as usize];
+    let naux = aux.nao_sphe() as usize;
     let (cart, sphe) = (map.cart().blocks(), map.sphe().blocks());
     let shapes: Vec<Shape> = map
         .classes()
@@ -127,13 +129,12 @@ pub fn add_packed_b(
     // and one pair's block, so capping the width here bounds every count
     // add_packed_three_center refuses, and the transform's, fit's and
     // transpose's below it (add_packed_three_center's argument).
-    let cap = i32::MAX as usize / naux[0];
+    let cap = i32::MAX as usize / naux;
     if largest > cap {
         return Err(Error::unsupported(format!(
-            "add_packed_b: a pair's Cartesian block, {largest} columns x {} elements ({} bytes), \
-             is past the kernels' 32-bit index",
-            naux[0],
-            8 * largest * naux[0]
+            "add_packed_b: a pair's Cartesian block, {largest} columns x {naux} elements ({} \
+             bytes), is past the kernels' 32-bit index",
+            8 * largest * naux
         )));
     }
     let part = Batch {
@@ -144,13 +145,12 @@ pub fn add_packed_b(
         cap,
     };
     add_harmonics(dag, worker, basis, u);
-    add_harmonics(dag, worker, aux, u_aux);
     let n_columns = map.sphe().n_columns();
     let b = dag.add_cpu(
         "B",
         worker,
         HeapB {
-            len: naux[1] * n_columns,
+            len: naux * n_columns,
         },
     );
     let width = dag.width("packed B batch", worker, &part);
@@ -171,17 +171,16 @@ pub fn add_packed_b(
             shape.first..shape.first + shape.pairs,
             per,
             u,
-            u_aux,
         )?;
         let block = shape.sph[0] * shape.sph[1];
         let [columns, batch] = [shape.pairs * block, per * block];
-        let fitted = add_batch_fit(dag, worker, naux[1], columns, batch, factor, packed);
+        let fitted = add_batch_fit(dag, worker, naux, columns, batch, factor, packed);
         let transposed = dag.add_gpu(
             format!("{name} transpose"),
             worker,
             Transpose {
                 b: fitted,
-                naux: naux[1],
+                naux,
                 columns,
                 batch,
             },
@@ -193,7 +192,7 @@ pub fn add_packed_b(
             b,
             first..first + columns,
             batch,
-            naux[1],
+            naux,
             n_columns,
             &name,
         );
@@ -230,8 +229,8 @@ impl Shape {
 /// The batch's adaptive part: the largest class's ring at a width.
 struct Batch {
     shapes: Vec<Shape>,
-    /// The aux basis's Cartesian and spherical functions.
-    naux: [usize; 2],
+    /// The aux basis's spherical functions.
+    naux: usize,
     /// The aux records row's doubles.
     aux_rec: usize,
     /// The aux shells: a pair's cells.
@@ -243,16 +242,15 @@ struct Batch {
 impl Batch {
     /// Class `c`'s batch of `p` pairs, in bytes each padded to the device
     /// alignment: its device rows (the tables' copies and the packed
-    /// tensor, the transform's two scratch rows and output, the fit's B and
-    /// its transpose) and its pinned rows (the tables and the window).
+    /// tensor, the transform's scratch row and output, the fit's B and its
+    /// transpose) and its pinned rows (the tables and the window).
     fn rows(&self, c: usize, p: usize) -> (usize, usize) {
         let s = &self.shapes[c];
-        let [nc, ns] = self.naux;
+        let ns = self.naux;
         let (cart, sph) = (p * s.block(), p * s.sph[0] * s.sph[1]);
         let tables = pad(8 * self.aux_rec)
             + pad(4 * FB_THREE_CENTER_PACKED_CELL_FIELDS as usize * p * self.aux_shells);
         let device = tables
-            + pad(8 * nc * cart)
             + pad(8 * ns * cart)
             + pad(8 * ns * p * s.cart[0] * s.sph[1])
             + 3 * pad(8 * ns * sph);
@@ -357,8 +355,8 @@ impl GpuTask for Transpose {
             .min(self.columns - device.iteration() * self.batch);
         let b = device.get(self.b);
         let mut out = device.take_mut(*out);
-        // In range: add_packed_b's cap bounds batch · naux_cart by an i32,
-        // naux is at most naux_cart, and count at most batch. beta is zero,
+        // In range: add_packed_b's cap bounds batch · naux by an i32, and
+        // count is at most batch. beta is zero,
         // so B's second operand only gives the call a pointer: C = Bᵀ
         // exactly, the first count rows of each of naux columns at the
         // batch's leading dimension.
@@ -388,7 +386,7 @@ mod tests {
     use super::*;
 
     /// Classes of every momentum pair through f, each of `pairs` pairs.
-    fn batch(pairs: usize, naux: [usize; 2]) -> Batch {
+    fn batch(pairs: usize, naux: usize) -> Batch {
         let n = |l: usize| [(l + 1) * (l + 2) / 2, 2 * l + 1];
         let mut shapes = Vec::new();
         for la in 0..=3 {
@@ -409,7 +407,7 @@ mod tests {
             naux,
             aux_rec: 9 * 40,
             aux_shells: 30,
-            cap: i32::MAX as usize / naux[0],
+            cap: i32::MAX as usize / naux,
         }
     }
 
@@ -419,7 +417,7 @@ mod tests {
     /// class whole.
     #[test]
     fn the_bytes_are_monotone() {
-        for (pairs, naux) in [(1, [10, 9]), (5, [116, 98]), (17, [300, 250])] {
+        for (pairs, naux) in [(1, 9), (5, 98), (17, 250)] {
             let part = batch(pairs, naux);
             let max = part.width_max();
             for w in 1..max {

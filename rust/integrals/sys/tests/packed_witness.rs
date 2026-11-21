@@ -1,8 +1,10 @@
-//! The packed Cartesian (mn|P), [`add_packed_three_center_tasks`] over
-//! `fb_three_center_packed_class`, against libcint's `int3c2e_cart`
-//! (`tests/data/README.md`), so the packed kernels are witnessed by an
-//! independent code rather than by another of the same arithmetic. Needs a
-//! GPU (tier 4).
+//! The packed (mn|Q), [`add_packed_three_center_tasks`] over
+//! `fb_three_center_packed_class`, `m` and `n` Cartesian and `Q` spherical,
+//! against libcint's `int3c2e_cart` (`tests/data/README.md`) with the aux
+//! basis's `U` (`fb_basis::spherical_transform_matrix`) applied to its aux
+//! index on the host, so the packed kernels are witnessed by an independent
+//! code rather than by another of the same arithmetic. Needs a GPU (tier
+//! 4).
 //!
 //! The basis has an orbital shell of every momentum through f on each of
 //! two centres, A's contracted, and an aux shell of every momentum through
@@ -12,18 +14,26 @@
 //! coefficients as given on raw Cartesian Gaussians, the reference reaching
 //! that normalisation through the overlap.
 //!
-//! The bar is `1e-11` of each class `(la, lb, lP)`'s largest
-//! `|(mn|P)_ref|`, element by element. Its analysis: at L = 12, the
-//! kernels' Hermite expansion and R recursion run a few hundred operations
-//! deep, each near an ulp (1.1e-16), so a few times 1e-14 of the largest
-//! term; the sum over the Hermite terms of mixed sign cancels by up to two
+//! The bar is `1e-11` of each class `(la, lb, lP)`'s scale, element by
+//! element, the scale the largest `Σ_P |U[P, Q]| |(mn|P)_ref|` over the
+//! class: the contracted reference's magnitude before any cancellation
+//! between Cartesian components. Its analysis: at L = 12, the kernels'
+//! Hermite expansion and R recursion run a few hundred operations deep,
+//! each near an ulp (1.1e-16), so a few times 1e-14 of the largest term;
+//! the sum over the Hermite terms of mixed sign cancels by up to two
 //! decades at the class's highest momenta, and libcint's Rys quadrature
-//! carries its own rounding of the same order. Per class, so a small
-//! high-momentum class is not measured against a large (ss|s). One run.
+//! carries its own rounding of the same order. The kernel's spherical
+//! terms are a subset of the `|U|`-weighted Cartesian ones
+//! (`../deps/FelizJueves/docs/implementation/three_center.md`, "The
+//! spherical-aux packed output (#743)"), so its error is bounded by the
+//! same fraction of that weighted sum, and the host's contraction adds at
+//! most 28 roundings of it, `3e-15`. Per class, so a small high-momentum
+//! class is not measured against a large (ss|s). One run.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use fb_basis::{BasisSet, Shell as BasisShell, spherical_transform_matrix};
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
@@ -137,6 +147,29 @@ fn tables() -> RecordTables {
     RecordTables::new(t, classes, at)
 }
 
+/// The aux basis's `U`, `n_cart` × `n_sph` column-major, over
+/// [`aux_shells`]' momenta in their order.
+fn u_aux() -> (Vec<f64>, usize, usize) {
+    let basis = BasisSet::new(
+        aux_shells()
+            .into_iter()
+            .map(|(l, c, prims)| {
+                let (e, k): (Vec<f64>, Vec<f64>) = prims.into_iter().unzip();
+                let centre = fb_core_types::Double3 {
+                    x: c[0],
+                    y: c[1],
+                    z: c[2],
+                };
+                BasisShell::zipped(l, &e, &k, centre)
+            })
+            .collect(),
+    );
+    let (nc, ns) = (basis.nao_cart() as usize, basis.nao_sphe() as usize);
+    let mut u = vec![0.0; nc * ns];
+    spherical_transform_matrix(&basis, &mut u);
+    (u, nc, ns)
+}
+
 /// The aux table of [`aux_shells`], its functions in the shells' order.
 fn aux() -> AuxTable {
     let shells = aux_shells();
@@ -195,16 +228,19 @@ fn download(dag: &mut Dag<'_>, row: RowId<Device, f64>, len: usize) -> Arc<Mutex
 }
 
 /// Every pair of `pairs`' block in `packed`, laid out from column 0,
-/// against the reference's columns of that pair, each element within the
-/// bar of its class's scale; the count of elements compared and the
-/// largest error relative to its class's scale.
+/// against the reference's columns of that pair with `U` applied to their
+/// aux index, each element within the bar of its class's scale; the count
+/// of elements compared and the largest error relative to its class's
+/// scale.
 fn compare(packed: &[f64], want: &[f64], pairs: &[usize]) -> (usize, f64) {
     let t = tables();
+    let (u, nc, ns) = u_aux();
+    // Each spherical aux function's momentum.
     let aux_l: Vec<i32> = aux_shells()
         .iter()
-        .flat_map(|s| std::iter::repeat_n(s.0, n_cart(s.0)))
+        .flat_map(|s| std::iter::repeat_n(s.0, 2 * s.0 as usize + 1))
         .collect();
-    let n_aux = aux_l.len();
+    assert_eq!(aux_l.len(), ns, "the aux basis's spherical functions");
     // Each pair's class (la, lb) and its first column in the reference.
     let mut where_ = Vec::new();
     let mut column = 0;
@@ -214,14 +250,26 @@ fn compare(packed: &[f64], want: &[f64], pairs: &[usize]) -> (usize, f64) {
             column += n_cart(c.la) * n_cart(c.lb);
         }
     }
-    assert_eq!(want.len(), column * n_aux, "the reference's length");
-    // Each class (la, lb, lP)'s largest |want|, over the whole reference.
+    assert_eq!(want.len(), column * nc, "the reference's length");
+    // The reference with U applied to the aux index, (col, Q) at
+    // col ns + Q, and each element's scale, Σ_P |U[P, Q]| |want[col, P]|.
+    let mut sph = vec![0.0; column * ns];
+    let mut mag = vec![0.0; column * ns];
+    for col in 0..column {
+        let w = &want[col * nc..(col + 1) * nc];
+        for q in 0..ns {
+            let uq = &u[q * nc..(q + 1) * nc];
+            sph[col * ns + q] = uq.iter().zip(w).map(|(a, b)| a * b).sum();
+            mag[col * ns + q] = uq.iter().zip(w).map(|(a, b)| (a * b).abs()).sum();
+        }
+    }
+    // Each class (la, lb, lP)'s scale, over the whole reference.
     let mut scale = [[[0.0_f64; 7]; 4]; 4];
     for &(la, lb, first) in &where_ {
         for col in first..first + n_cart(la) * n_cart(lb) {
             for (q, &lp) in aux_l.iter().enumerate() {
                 let s = &mut scale[la as usize][lb as usize][lp as usize];
-                *s = s.max(want[col * n_aux + q].abs());
+                *s = s.max(mag[col * ns + q]);
             }
         }
     }
@@ -231,8 +279,8 @@ fn compare(packed: &[f64], want: &[f64], pairs: &[usize]) -> (usize, f64) {
         let (la, lb, first) = where_[pair];
         for k in 0..n_cart(la) * n_cart(lb) {
             for (q, &lp) in aux_l.iter().enumerate() {
-                let got = packed[(at + k) * n_aux + q];
-                let w = want[(first + k) * n_aux + q];
+                let got = packed[(at + k) * ns + q];
+                let w = sph[(first + k) * ns + q];
                 let rel = (got - w).abs() / scale[la as usize][lb as usize][lp as usize];
                 // Not f64::max, which would drop a NaN.
                 if rel.is_nan() || rel > worst {
@@ -247,7 +295,7 @@ fn compare(packed: &[f64], want: &[f64], pairs: &[usize]) -> (usize, f64) {
         }
         at += n_cart(la) * n_cart(lb);
     }
-    assert_eq!(packed.len(), at * n_aux, "the packed tensor's length");
+    assert_eq!(packed.len(), at * ns, "the packed tensor's length");
     assert!(
         misses.is_empty(),
         "{} of {} elements past the bar {BAR:e}:\n{}",
@@ -260,16 +308,17 @@ fn compare(packed: &[f64], want: &[f64], pairs: &[usize]) -> (usize, f64) {
 
 /// Every pair as one batch, and a sub-range with pairs screened out (every
 /// other pair of 7..31, its columns relative to its first), each element
-/// within the bar of libcint's. Catches a Hermite coefficient, an R
-/// recursion or a Boys order wrong in any class through (ff|i), a
-/// contraction summed wrong, a block stored with `b` slower or at the
-/// wrong destination, and a diagonal pair's block not stored whole. Needs
-/// a GPU.
+/// within the bar of libcint's contracted by `U`. Catches a Hermite
+/// coefficient, an R recursion or a Boys order wrong in any class through
+/// (ff|i), a solid-harmonic coefficient, order or sign wrong at any aux
+/// momentum, a contraction summed wrong, a block stored with `b` slower or
+/// at the wrong destination or aux offset, and a diagonal pair's block not
+/// stored whole. Needs a GPU.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn packed_blocks_match_libcint_through_ff_i() {
     let aux = aux();
-    let n_aux = aux.n_cart();
+    let (n_aux_cart, n_aux) = (aux.n_cart(), u_aux().2);
     let t = tables();
     let every: Vec<usize> = (0..t.n_pairs()).collect();
     let some: Vec<usize> = (7..31).step_by(2).collect();
@@ -294,11 +343,15 @@ fn packed_blocks_match_libcint_through_ff_i() {
 
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/packed_witness.npy");
     let want = fb_io_npy::read_npy(&path).expect("the reference reads");
-    assert_eq!(want.shape, [n_aux, cols(&every)], "the reference's shape");
+    assert_eq!(
+        want.shape,
+        [n_aux_cart, cols(&every)],
+        "the reference's shape"
+    );
     let (checked, worst) = compare(&all.lock().unwrap(), &want.data, &every);
     let (part_checked, part_worst) = compare(&part.lock().unwrap(), &want.data, &some);
     println!(
-        "packed against libcint: {checked} elements of every pair, max {worst:e} of the class's \
-         scale; {part_checked} of the sub-range, max {part_worst:e}; bar {BAR:e}"
+        "packed against libcint contracted by U: {checked} elements of every pair, max {worst:e} \
+         of the class's scale; {part_checked} of the sub-range, max {part_worst:e}; bar {BAR:e}"
     );
 }

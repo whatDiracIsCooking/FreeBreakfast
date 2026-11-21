@@ -1,24 +1,25 @@
 //! The transform on a card (tier 4, device 0), one run: random packed
-//! Cartesian input over a basis reaching f, a screened map and a batch
-//! that cuts its first and last classes, staged, uploaded, transformed by
-//! [`add_spherical_transform`] over the plan's U rows, and brought back by
-//! a task after it.
+//! input over a basis reaching f, Cartesian on the orbital indices, a
+//! screened map and a batch that cuts its first and last classes, staged,
+//! uploaded, transformed by [`add_spherical_transform`] over the plan's U
+//! row, and brought back by a task after it.
 //!
 //! **The reference** is the dense transform, the same approximation by
 //! another route: each aux function's Cartesian matrix, symmetric and
-//! random, is transformed whole, `Uᵀ X_P U`, combined over the aux index by
-//! U_aux, and packed by the map's spherical packing; the input is the same
-//! matrices packed by its Cartesian one. A block's spherical columns
-//! depend on its own Cartesian ones alone, U being block-diagonal by
-//! shell, so the screened pairs' elements, which the dense reference reads
-//! and the batch does not hold, change nothing.
+//! random, is transformed whole, `Uᵀ X_Q U`, and packed by the map's
+//! spherical packing; the input is the same matrices packed by its
+//! Cartesian one. A block's spherical columns depend on its own Cartesian
+//! ones alone, U being block-diagonal by shell, so the screened pairs'
+//! elements, which the dense reference reads and the batch does not hold,
+//! change nothing.
 //!
 //! **The bar, by analysis, one run.** Each output element is a sum of at
-//! most `n_aux_cart · 10 · 10` products in fp64, by two orders of
-//! summation; their difference is within `n ε` of the sum of the terms'
-//! magnitudes, n here 3500 and ε 1.1e-16, about 4e-13 of the largest
-//! element when the terms do not cancel. The test holds every element
-//! within `1e-12 · max |reference|`.
+//! most `10 · 10` products in fp64 (a shell's 10 Cartesian functions on
+//! each side), by two orders of summation; their difference is within
+//! `2 n ε` of the sum of the terms' magnitudes, n here 100 and ε 1.1e-16,
+//! and that sum is at most about ten times the largest element for random
+//! terms of mixed sign, so about 2e-13 of it at worst. The test holds
+//! every element within `1e-12 · max |reference|`.
 
 use std::sync::{Arc, Mutex};
 
@@ -158,12 +159,13 @@ impl CpuTask for Collect {
     }
 }
 
-/// A packed batch of random symmetric Cartesian matrices, one per aux
-/// function, over a basis through f and an aux basis through g, every
+/// A packed batch of random symmetric Cartesian matrices, one per
+/// spherical aux function, over a basis through f and an aux basis
+/// through g, every
 /// fourth pair screened and the batch cut inside its first and last
 /// classes, against the pack of the dense transform: every element within
 /// `1e-12 · max |reference|`. Catches a wrong leading dimension, stride or
-/// batch count in any of the three GEMMs, a U block taken at the wrong
+/// batch count in either GEMM, a U block taken at the wrong
 /// shell or momentum, the bra and ket transforms swapped (a block's `a`
 /// slower than `b`), and a class's columns misplaced in any layout,
 /// relative to the batch or across a screened pair. Needs a GPU.
@@ -187,23 +189,24 @@ fn a_packed_batch_matches_the_dense_transform() {
     );
 
     let (nc, ns) = (cart.nao(), sphe.nao());
-    let (nac, nas) = (aux.nao_cart() as usize, aux.nao_sphe() as usize);
+    let nas = aux.nao_sphe() as usize;
     let cols = [
         cart.blocks()[pairs.start].column..cart.blocks()[pairs.end - 1].end(),
         sphe.blocks()[pairs.start].column..sphe.blocks()[pairs.end - 1].end(),
     ];
     let mut u = vec![0.0; nc * ns];
     spherical_transform_matrix(&basis, &mut u);
-    let mut u_aux = vec![0.0; nac * nas];
-    spherical_transform_matrix(&aux, &mut u_aux);
 
-    // The input, (P, c) at P + nac c, and each P's Uᵀ X_P U.
+    // The input, (Q, c) at Q + nas c, and the reference, the pack of each
+    // Q's Uᵀ X_Q U, (Q, c) at Q + nas c.
     let mut rng = Rng(SEED);
-    let mut input = vec![0.0; nac * cols[0].len()];
-    let mut y = vec![vec![0.0; ns * ns]; nac];
+    let mut input = vec![0.0; nas * cols[0].len()];
+    let mut reference = vec![0.0; nas * cols[1].len()];
+    let mut y = vec![0.0; ns * ns];
     let mut packed = vec![0.0; cart.n_columns()];
+    let mut packed_sph = vec![0.0; sphe.n_columns()];
     let mut x = vec![0.0; nc * nc];
-    for (p, y) in y.iter_mut().enumerate() {
+    for q in 0..nas {
         for m in 0..nc {
             for n in 0..=m {
                 let v = rng.next();
@@ -213,7 +216,7 @@ fn a_packed_batch_matches_the_dense_transform() {
         }
         cart.pack(&x, &mut packed);
         for (c, &v) in packed[cols[0].clone()].iter().enumerate() {
-            input[p + nac * c] = v;
+            input[q + nas * c] = v;
         }
         // xu = X U, nc × ns; y = Uᵀ xu.
         let mut xu = vec![0.0; nc * ns];
@@ -227,17 +230,8 @@ fn a_packed_batch_matches_the_dense_transform() {
                 y[i * ns + j] = (0..nc).map(|m| u[m + i * nc] * xu[m * ns + j]).sum();
             }
         }
-    }
-    // The reference, (Q, c) at Q + nas c.
-    let mut reference = vec![0.0; nas * cols[1].len()];
-    let mut z = vec![0.0; ns * ns];
-    let mut packed = vec![0.0; sphe.n_columns()];
-    for q in 0..nas {
-        for (e, z) in z.iter_mut().enumerate() {
-            *z = (0..nac).map(|p| u_aux[p + q * nac] * y[p][e]).sum();
-        }
-        sphe.pack(&z, &mut packed);
-        for (c, &v) in packed[cols[1].clone()].iter().enumerate() {
+        sphe.pack(&y, &mut packed_sph);
+        for (c, &v) in packed_sph[cols[1].clone()].iter().enumerate() {
             reference[q + nas * c] = v;
         }
     }
@@ -247,18 +241,8 @@ fn a_packed_batch_matches_the_dense_transform() {
     let staged = dag.add_cpu("stage X", 0, Stage { data: input });
     let x = dag.add_gpu("upload X", 0, Upload { staged, len });
     let u_row = add_harmonics(&mut dag, 0, &basis, &mut None);
-    let u_aux_row = add_harmonics(&mut dag, 0, &aux, &mut None);
-    let out = add_spherical_transform(
-        &mut dag,
-        0,
-        &map,
-        pairs.clone(),
-        pairs.len(),
-        [nac, nas],
-        x,
-        [u_row, u_aux_row],
-    )
-    .unwrap();
+    let out = add_spherical_transform(&mut dag, 0, &map, pairs.clone(), pairs.len(), nas, x, u_row)
+        .unwrap();
     let len = reference.len();
     let row = dag.add_gpu("download", 0, Download { out, len });
     let got = Arc::new(Mutex::new(Vec::new()));
@@ -290,7 +274,7 @@ fn a_packed_batch_matches_the_dense_transform() {
         "seed {SEED}: pairs {pairs:?} of {}, {} x {} Cartesian columns -> {} x {} spherical, \
          max |reference| {largest:e}, max miss {miss:e} at (Q {}, c {}) (bar {:e})",
         map.pairs().len(),
-        nac,
+        nas,
         cols[0].len(),
         nas,
         cols[1].len(),

@@ -21,5 +21,7 @@ fb-kernel-abi.workspace = true
 wwr-sys = { workspace = true, features = ["blas"] }
 
 [dev-dependencies]
+fb-basis.workspace = true
+fb-core-types.workspace = true
 fb-core-wwr = { workspace = true, features = ["test-support"] }
 fb-io-npy.workspace = true

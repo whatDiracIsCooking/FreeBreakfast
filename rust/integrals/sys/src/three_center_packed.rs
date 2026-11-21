@@ -1,7 +1,7 @@
-//! The packed three-center integrals' device path: the Cartesian (mn|P) of
-//! a batch of an orbital basis's shell pairs, each pair's block in columns
-//! of its own, side by side, as two tasks
-//! ([`add_packed_three_center_tasks`]).
+//! The packed three-center integrals' device path: the (mn|Q) of a batch
+//! of an orbital basis's shell pairs, m and n Cartesian and Q the aux
+//! basis's real solid harmonics, each pair's block in columns of its own,
+//! side by side, as two tasks ([`add_packed_three_center_tasks`]).
 //!
 //! The tasks, added in this order:
 //!
@@ -17,7 +17,8 @@
 //! A cell is the deleted square path's (#1721): a shell pair's
 //! record range, its prefix in its class, and an aux shell's, with its
 //! destination in place of the three AO offsets, the pair's first column
-//! times the aux count plus the aux shell's offset, and whether the pair is
+//! times the aux basis's spherical count plus the aux shell's first
+//! spherical function, and whether the pair is
 //! a shell's with itself, whose block is then stored whole. Every
 //! destination is formed from the first batch's columns, at planning,
 //! which every batch shares, its pairs a prefix of the first's classes
@@ -62,7 +63,7 @@ struct CellClass {
 struct Staging {
     /// A trip's columns.
     n_col: usize,
-    /// The aux basis's Cartesian functions: each column's length.
+    /// The aux basis's spherical functions: each column's length.
     n_aux: usize,
     /// The orbital classes, whose bra fields the launches read in place.
     classes: Vec<ClassRows>,
@@ -84,10 +85,10 @@ struct Staging {
     /// is a shell's with itself.
     pair: Vec<([i32; 2], bool)>,
     /// The aux shells of each momentum, and each shell's record range
-    /// (`n_shells + 1` long) and first Cartesian function.
+    /// (`n_shells + 1` long) and first spherical function.
     aux_of_l: Vec<Vec<usize>>,
     aux_rec_begin: Vec<i32>,
-    aux_ao_offset: Vec<i32>,
+    aux_sph_offset: Vec<usize>,
 }
 
 impl Staging {
@@ -129,7 +130,7 @@ impl Staging {
                         rec1,
                         self.aux_rec_begin[sh],
                         self.aux_rec_begin[sh + 1],
-                        (self.column[place] * self.n_aux) as i32 + self.aux_ao_offset[sh],
+                        (self.column[place] * self.n_aux + self.aux_sph_offset[sh]) as i32,
                         i32::from(diagonal),
                     ];
                     for (f, v) in fields.into_iter().enumerate() {
@@ -142,11 +143,16 @@ impl Staging {
     }
 }
 
-/// Add the Cartesian (mn|P) of a batch of shell pairs of an orbital basis
-/// and an auxiliary one to `dag` on GPU worker `worker`, and return it,
-/// packed: an output row of `n_col · aux.n_cart()` doubles, `n_col` the
-/// batch's columns, column `c`'s `aux.n_cart()` aux functions contiguous,
-/// element `(c, P)` at `c · aux.n_cart() + P`.
+/// Add the (mn|Q) of a batch of shell pairs of an orbital basis and an
+/// auxiliary one to `dag` on GPU worker `worker`, `m` and `n` Cartesian and
+/// `Q` the aux basis's real solid harmonics, and return it, packed: an
+/// output row of `n_col · n_sph` doubles, `n_col` the batch's columns and
+/// `n_sph` the aux basis's spherical functions, `2 l + 1` a shell of `aux`
+/// in its shells' order, column `c`'s `n_sph` aux functions contiguous,
+/// element `(c, Q)` at `c · n_sph + Q`. A shell's functions are in the
+/// order `m = -l ..= l`, its block of `fb_basis::spherical_transform_matrix`
+/// applied to its Cartesian ones, so the output is the Cartesian (mn|P)
+/// with that matrix applied to the aux index, computed without forming it.
 ///
 /// `pairs` are batches of `batch` shell pairs side by side, the last of
 /// what is left, each pair by its index among the pairs of `tables` in
@@ -163,8 +169,8 @@ impl Staging {
 /// stands for `(n, m)` too. So a range of the packed shell-pair map's
 /// kept pairs (`fb_integrals_eri_density_fitting_pair_map`) has that
 /// map's Cartesian columns, each relative to the range's first. Every
-/// element is held to libcint's `int3c2e_cart` through (ff|i) by
-/// `tests/packed_witness.rs`.
+/// element is held through (ff|i) to libcint's `int3c2e_cart` with that
+/// matrix applied to its aux index by `tests/packed_witness.rs`.
 ///
 /// Every batch's classes are a prefix of the first's, pair for pair, so
 /// its columns and its launches are the front of the first's: the rows
@@ -189,7 +195,7 @@ impl Staging {
 /// [`add_record_tasks`]: crate::add_record_tasks
 ///
 /// # Panics
-/// If `n_col · aux.n_cart()` does not fit the kernels' 32-bit index, or a
+/// If `n_col · n_sph` does not fit the kernels' 32-bit index, or a
 /// class's cell count does not fit an `i32`, both counts the body forms;
 /// if a batch's classes are not a prefix of the first's, pair for pair,
 /// which the first's columns and launches would not fit; or a class is
@@ -253,11 +259,14 @@ fn staging(
     pairs: &[usize],
     batch: usize,
 ) -> Staging {
-    let n_aux = aux.n_cart();
     let n_l = aux.momentum.iter().copied().max().unwrap_or(0) as usize + 1;
     let mut aux_of_l = vec![Vec::new(); n_l];
+    let mut aux_sph_offset = Vec::with_capacity(aux.n_shells());
+    let mut n_aux = 0;
     for (s, &l) in aux.momentum.iter().enumerate() {
         aux_of_l[l as usize].push(s);
+        aux_sph_offset.push(n_aux);
+        n_aux += 2 * l as usize + 1;
     }
 
     // Each pair's class, record range and diagonal flag, every batch's.
@@ -351,7 +360,7 @@ fn staging(
         pair,
         aux_of_l,
         aux_rec_begin: aux.rec_begin.clone(),
-        aux_ao_offset: aux.ao_offset.clone(),
+        aux_sph_offset,
     }
 }
 
@@ -484,8 +493,9 @@ impl GpuTask for PackedThreeCenter {
             // inside [0, n_rec) (the classes are the tables', a contract),
             // its aux range from the AuxTable's prefix, and its destination
             // its pair's first column times n_aux plus the aux shell's
-            // offset, so its block, n_cart(la) n_cart(lb) columns from the
-            // pair's first, the aux shell's functions inside [0, n_aux),
+            // first spherical function, so its block, n_cart(la) n_cart(lb)
+            // columns from the pair's first, the aux shell's 2 lp + 1
+            // spherical functions inside [0, n_aux) (staging's prefix sum),
             // lies inside out's n_col n_aux doubles; the view is a host
             // struct that outlives the call, which only enqueues on the
             // task's stream.

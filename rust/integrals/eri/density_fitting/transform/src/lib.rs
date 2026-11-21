@@ -1,50 +1,51 @@
-//! The Cartesian-to-spherical transform of a packed three-centre batch, as
-//! a task of a [`Dag`]: for a range of a [`PairMap`]'s kept shell pairs,
-//! their Cartesian columns of `(mn|P)`, over the Cartesian functions of
-//! both the orbital and the aux basis, become their spherical columns,
+//! The orbital half of the Cartesian-to-spherical transform of a packed
+//! three-centre batch, as a task of a [`Dag`]: for a range of a
+//! [`PairMap`]'s kept shell pairs, their Cartesian columns of `(mn|Q)`,
+//! over the Cartesian functions of the orbital basis and the spherical
+//! ones of the aux basis, become their spherical columns,
 //!
 //! ```text
-//! (αβ|Q) = Σ_P Σ_ab U_aux[P, Q] U[a, α] U[b, β] (ab|P)
+//! (αβ|Q) = Σ_ab U[a, α] U[b, β] (ab|Q)
 //! ```
 //!
 //! block by block, each kept pair's block alone: U is block-diagonal by
 //! shell (`fb_basis::spherical_transform_matrix`), so no pair's
 //! spherical block reads another's Cartesian one, and a range of pairs is
-//! transformed apart from the rest of the map.
+//! transformed apart from the rest of the map. The aux index arrives
+//! spherical: the packed three-centre kernels write it so
+//! (`fb_integrals_sys::add_packed_three_center_tasks`).
 //!
 //! **The layouts.** Input and output are the map's packed columns
 //! (`fb_integrals_eri_density_fitting_pair_map`'s crate doc) over the
 //! batch alone, each pair's column taken relative to the batch's first,
-//! with the aux index fastest: the input is `n_aux_cart` × the batch's
+//! with the aux index fastest: the input is `n_aux` × the batch's
 //! Cartesian columns ([`Packing::blocks`] of [`PairMap::cart`]), element
-//! `(P, c)` at `P + n_aux_cart · c`, as the packed three-centre kernels
+//! `(Q, c)` at `Q + n_aux · c`, as the packed three-centre kernels
 //! write it, and the output `n_aux` × its spherical columns
 //! ([`PairMap::sphe`]), `(Q, c)` at `Q + n_aux · c`, column-major, ready
 //! for the fit's left solve against L. Inside a block, element `(a, b)` is
 //! column `column + a · n_b + b`, `a` the bra shell's function.
 //!
 //! **The task**, **`spherical transform`** on the worker's stream, reads
-//! the input and the plan's device rows of U and U_aux
+//! the input and the plan's device row of U
 //! (`fb_recipes_matrix_ao::add_harmonics`'), and runs, on the worker's
-//! BLAS handle:
+//! BLAS handle, per class `(la, lb)` with a pair in the batch, whose
+//! blocks the map keeps contiguous and of one shape
+//! ([`PairMap::classes`]), two strided-batched GEMMs, U's block of the
+//! class's momentum shared by every product (stride 0), read in place
+//! from U's row at the first pair's shells, since every shell of one
+//! momentum has the same block:
 //!
-//! 1. the aux index, one GEMM over every column: `W = U_auxᵀ X`, into the
-//!    scratch `transform aux`, `n_aux` × the Cartesian columns;
-//! 2. per class `(la, lb)` with a pair in the batch, whose blocks the map
-//!    keeps contiguous and of one shape ([`PairMap::classes`]), two
-//!    strided-batched GEMMs, U's block of the class's momentum shared by
-//!    every product (stride 0), read in place from U's row at the first
-//!    pair's shells, since every shell of one momentum has the same block:
-//!    - the ket index, one product per pair and bra function `a`: the
-//!      `n_aux × n_b` slab of W at `(a, ·)` times `U_lb`, into the scratch
-//!      `transform ket`, `n_aux × n_b_sph` per slab;
-//!    - the bra index, one product per pair: the pair's
-//!      `(n_aux · n_b_sph) × n_a` view of that scratch times `U_la`, into
-//!      the output, which is then the pair's spherical block, `(α, β)` at
-//!      column `column + α · n_b_sph + β`.
+//! - the ket index, one product per pair and bra function `a`: the
+//!   `n_aux × n_b` slab of the input at `(a, ·)` times `U_lb`, into the
+//!   scratch `transform ket`, `n_aux × n_b_sph` per slab;
+//! - the bra index, one product per pair: the pair's
+//!   `(n_aux · n_b_sph) × n_a` view of that scratch times `U_la`, into
+//!   the output, which is then the pair's spherical block, `(α, β)` at
+//!   column `column + α · n_b_sph + β`.
 //!
 //! Every element of the output is written by exactly one product, so
-//! nothing is zeroed. The two scratch rows and the output are in the plan's
+//! nothing is zeroed. The scratch row and the output are in the plan's
 //! table at planning, so a batch that does not fit is refused by
 //! admission with the rows named.
 //!
@@ -52,9 +53,9 @@
 //! goes through its two GEMMs: the products are exact, and one path is
 //! one thing to test.
 //!
-//! There is no C++ counterpart: the C++ (mn|P) is square, `[m][n][P]`, and
-//! its transform the dense three GEMMs `fb_integrals_sys`'s three-center
-//! task runs.
+//! There is no C++ counterpart: the C++ (mn|P) is square, `[m][n][P]`, its
+//! aux index Cartesian, and its transform the dense three GEMMs
+//! `fb_integrals_sys`'s three-center task runs.
 //!
 //! ```no_run
 //! use fb_basis::{BasisSet, Shell};
@@ -67,7 +68,7 @@
 //! use fb_integrals_mmd::record_tables;
 //! use fb_recipes_matrix_ao::add_harmonics;
 //!
-//! /// The packed Cartesian batch's producer, the three-centre launches.
+//! /// The packed batch's producer, the three-centre launches.
 //! struct ThreeCentre {
 //!     len: usize,
 //! }
@@ -76,7 +77,7 @@
 //!     type Rows = RowId<Device, f64>;
 //!
 //!     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
-//!         device.output("(mn|P) cartesian", self.len)
+//!         device.output("(mn|Q) cartesian", self.len)
 //!     }
 //!
 //!     fn run(
@@ -94,30 +95,20 @@
 //! let basis = BasisSet::new(vec![shell(0, 0.0), shell(2, 1.5)]);
 //! let aux = BasisSet::new(vec![shell(0, 0.0), shell(3, 1.5)]);
 //! let map = PairMap::new(&record_tables(&basis), None, 0.0);
-//! let n_aux = [aux.nao_cart() as usize, aux.nao_sphe() as usize];
+//! let n_aux = aux.nao_sphe() as usize;
 //!
 //! let mut dag = Dag::new();
 //! let cartesian = dag.add_gpu(
 //!     "three-centre",
 //!     0,
 //!     ThreeCentre {
-//!         len: n_aux[0] * map.cart().n_columns(),
+//!         len: n_aux * map.cart().n_columns(),
 //!     },
 //! );
 //! let u = add_harmonics(&mut dag, 0, &basis, &mut None);
-//! let u_aux = add_harmonics(&mut dag, 0, &aux, &mut None);
 //! // Every kept pair as one batch: n_aux × map.sphe().n_columns() doubles.
 //! let every = map.pairs().len();
-//! let b = add_spherical_transform(
-//!     &mut dag,
-//!     0,
-//!     &map,
-//!     0..every,
-//!     every,
-//!     n_aux,
-//!     cartesian,
-//!     [u, u_aux],
-//! )?;
+//! let b = add_spherical_transform(&mut dag, 0, &map, 0..every, every, n_aux, cartesian, u)?;
 //! # Ok::<(), fb_core_error_handling::Error>(())
 //! ```
 //!
@@ -132,10 +123,10 @@ use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
-use fb_core_wwr::blas::{gemm, gemm_strided_batched};
+use fb_core_wwr::blas::gemm_strided_batched;
 use fb_core_wwr::device_slice::{split_at, split_at_mut};
 use fb_integrals_eri_density_fitting_pair_map::PairMap;
-use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N, WWR_BLAS_OP_T};
+use wwr_sys::wwr_blas_operation::WWR_BLAS_OP_N;
 
 /// Add the spherical transform of the packed Cartesian batch `cartesian`,
 /// of the kept pairs `pairs` of `map` in batches of `batch`, to `dag` on
@@ -151,16 +142,14 @@ use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N, WWR_BLAS_OP_T};
 /// so a short last batch is transformed by the same GEMMs over its own
 /// pairs' counts, its columns the front of each row, the rest left.
 ///
-/// `cartesian` is an earlier task's output of `n_aux_cart · k` doubles,
-/// `k` the first batch's Cartesian columns, `(P, c)` at
-/// `P + n_aux_cart · c`; `n_aux` is `[n_aux_cart, n_aux]`, the aux basis's Cartesian and
-/// spherical counts; and `[u, u_aux]` the device rows of the orbital and
-/// the aux basis's U, `map.cart().nao()` × `map.sphe().nao()` and
-/// `n_aux_cart` × `n_aux`, column-major, written by earlier tasks of `dag`
-/// on `worker` (`fb_recipes_matrix_ao::add_harmonics`'). The task added is
-/// `spherical transform` (stream), which reads the three, holds the
-/// aux-transformed batch (`n_aux · k` doubles) and the ket-transformed one
-/// as scratch, and leaves `cartesian` as it was.
+/// `cartesian` is an earlier task's output of `n_aux · k` doubles, `k` the
+/// first batch's Cartesian columns, `(Q, c)` at `Q + n_aux · c`, `n_aux`
+/// the aux basis's spherical functions; and `u` the device row of the
+/// orbital basis's U, `map.cart().nao()` × `map.sphe().nao()`,
+/// column-major, written by an earlier task of `dag` on `worker`
+/// (`fb_recipes_matrix_ao::add_harmonics`'). The task added is
+/// `spherical transform` (stream), which reads the two, holds the
+/// ket-transformed batch as scratch, and leaves `cartesian` as it was.
 ///
 /// # Errors
 /// An `Unsupported` error naming the count, if a GEMM's count or leading
@@ -169,8 +158,8 @@ use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N, WWR_BLAS_OP_T};
 ///
 /// # Panics
 /// If a row is of another worker's or another plan's table
-/// ([`Dag::add_gpu`]), or, at run time, if `cartesian`, U's or U_aux's row
-/// is shorter than the extent above (`fb_core_wwr::blas`'s GEMMs).
+/// ([`Dag::add_gpu`]), or, at run time, if `cartesian` or U's row is
+/// shorter than the extent above (`fb_core_wwr::blas`'s GEMMs).
 #[debug_requires(pairs.start < pairs.end, "a batch of at least one kept pair")]
 #[debug_requires(batch > 0, "a batch of at least one pair")]
 #[debug_requires(pairs.end <= map.pairs().len(), "the batches are of map's kept pairs")]
@@ -178,13 +167,10 @@ use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N, WWR_BLAS_OP_T};
     prefixes(map, pairs.clone(), batch),
     "every batch's blocks are a prefix of the first's, pair for pair"
 )]
-#[debug_requires(
-    1 <= n_aux[1] && n_aux[1] <= n_aux[0],
-    "U_aux has 1 to its n_aux_cart rows of columns"
-)]
+#[debug_requires(n_aux > 0, "an aux basis of at least one function")]
 #[allow(
     clippy::too_many_arguments,
-    reason = "the map's range of pairs and its batch, the aux counts, the input and both U rows"
+    reason = "the map's range of pairs and its batch, the aux count, the input and U's row"
 )]
 #[track_caller]
 pub fn add_spherical_transform(
@@ -193,9 +179,9 @@ pub fn add_spherical_transform(
     map: &PairMap,
     pairs: Range<usize>,
     batch: usize,
-    n_aux: [usize; 2],
+    n_aux: usize,
     cartesian: RowId<Device, f64>,
-    u: [RowId<Device, f64>; 2],
+    u: RowId<Device, f64>,
 ) -> Result<RowId<Device, f64>> {
     let all = pairs.clone();
     let pairs = pairs.start..pairs.end.min(pairs.start + batch);
@@ -210,7 +196,7 @@ pub fn add_spherical_transform(
     let mut ket_columns = 0;
     // The counts the GEMMs take as i32, beside those every map holds within
     // it (its columns, its nao, a shell's functions).
-    let mut largest = n_aux[0];
+    let mut largest = n_aux;
     for class in map.classes() {
         let r = class.pairs.start.max(pairs.start)..class.pairs.end.min(pairs.end);
         if r.is_empty() {
@@ -218,7 +204,7 @@ pub fn add_spherical_transform(
         }
         let (c, s) = (cart[r.start], sphe[r.start]);
         largest = largest
-            .max(n_aux[1].saturating_mul(s.n[1]))
+            .max(n_aux.saturating_mul(s.n[1]))
             .max(r.len() * c.n[0]);
         steps.push(Step {
             place: r.start - pairs.start,
@@ -234,9 +220,9 @@ pub fn add_spherical_transform(
     }
     if i32::try_from(largest).is_err() {
         return Err(Error::unsupported(format!(
-            "add_spherical_transform: a GEMM count of {largest}, for {} aux functions over the \
-             batch's {} Cartesian columns, is past the BLAS's 32-bit index",
-            n_aux[1], columns[0]
+            "add_spherical_transform: a GEMM count of {largest}, for {n_aux} aux functions over \
+             the batch's {} Cartesian columns, is past the BLAS's 32-bit index",
+            columns[0]
         )));
     }
     Ok(dag
@@ -290,12 +276,13 @@ struct Step {
     u: [usize; 2],
 }
 
-/// GPU: the aux index, then each class's ket and bra index.
+/// GPU: each class's ket and bra index.
 struct Transform {
     cartesian: RowId<Device, f64>,
-    /// U and U_aux, the caller's device rows.
-    u: [RowId<Device, f64>; 2],
-    n_aux: [usize; 2],
+    /// U, the caller's device row.
+    u: RowId<Device, f64>,
+    /// The aux basis's spherical functions.
+    n_aux: usize,
     /// U's rows, the orbital basis's Cartesian functions.
     ld_u: usize,
     /// The batch's Cartesian and spherical columns.
@@ -310,7 +297,6 @@ struct Transform {
 
 #[derive(Clone, Copy)]
 struct TransformRows {
-    aux: RowId<Device, f64>,
     ket: RowId<Device, f64>,
     out: RowId<Device, f64>,
 }
@@ -320,11 +306,9 @@ impl GpuTask for Transform {
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.cartesian);
-        device.read(self.u[0]);
-        device.read(self.u[1]);
-        let n_aux = self.n_aux[1];
+        device.read(self.u);
+        let n_aux = self.n_aux;
         TransformRows {
-            aux: device.scratch("transform aux", n_aux * self.columns[0]),
             ket: device.scratch("transform ket", n_aux * self.ket_columns),
             out: device.output("(mn|P) packed", n_aux * self.columns[1]),
         }
@@ -332,7 +316,7 @@ impl GpuTask for Transform {
 
     fn dims(&self) -> Vec<(&'static str, usize)> {
         vec![
-            ("n_aux", self.n_aux[1]),
+            ("n_aux", self.n_aux),
             ("columns_cart", self.columns[0]),
             ("columns", self.columns[1]),
         ]
@@ -346,8 +330,7 @@ impl GpuTask for Transform {
         worker: &DeviceStream,
     ) -> Status {
         let input = device.get(self.cartesian);
-        let (u, u_aux) = (device.get(self.u[0]), device.get(self.u[1]));
-        let mut aux = device.take_mut(rows.aux);
+        let u = device.get(self.u);
         let mut ket = device.take_mut(rows.ket);
         let mut out = device.take_mut(rows.out);
         let handle = worker.blas();
@@ -356,35 +339,13 @@ impl GpuTask for Transform {
         // first batch's, so of its steps, each cut to the trip's pairs.
         let trip = self.batch.min(self.all - device.iteration() * self.batch);
         let pairs_of = |s: &Step| s.pairs.min(trip.saturating_sub(s.place));
-        let columns: usize = self
-            .steps
-            .iter()
-            .map(|s| pairs_of(s) * s.n_cart[0] * s.n_cart[1])
-            .sum();
 
         // In range, as every cast below: add_spherical_transform refused a
-        // count past i32 (n_aux_cart, n_aux · n_b_sph, a class's pairs ·
-        // n_a), the trip's counts are at most the first batch's, and the
-        // map holds its columns and nao within it.
-        let [n_aux_cart, n_aux] = self.n_aux;
-        let (nac, na, ld_u) = (n_aux_cart as i32, n_aux as i32, self.ld_u as i32);
-        // The aux index: W = U_auxᵀ X, n_aux × the trip's Cartesian columns.
-        gemm(
-            handle,
-            WWR_BLAS_OP_T,
-            WWR_BLAS_OP_N,
-            na,
-            columns as i32,
-            nac,
-            1.0,
-            &u_aux,
-            nac,
-            &input,
-            nac,
-            0.0,
-            &mut aux,
-            na,
-        )?;
+        // count past i32 (n_aux, n_aux · n_b_sph, a class's pairs · n_a),
+        // the trip's counts are at most the first batch's, and the map
+        // holds its columns and nao within it.
+        let n_aux = self.n_aux;
+        let (na, ld_u) = (n_aux as i32, self.ld_u as i32);
         for s in &self.steps {
             let pairs = pairs_of(s);
             if pairs == 0 {
@@ -393,8 +354,8 @@ impl GpuTask for Transform {
             let [ca, cb] = s.n_cart.map(|n| n as i32);
             let [sa, sb] = s.n_sph.map(|n| n as i32);
             // The ket index: per pair and bra function, the n_aux × n_b
-            // slab of W times U_lb, into an n_aux × n_b_sph slab.
-            let (_, w) = split_at(&aux, n_aux * s.cart);
+            // slab of the input times U_lb, into an n_aux × n_b_sph slab.
+            let (_, w) = split_at(&input, n_aux * s.cart);
             let (_, u_b) = split_at(&u, s.u[1]);
             let (_, mut k) = split_at_mut(&mut ket, n_aux * s.ket);
             gemm_strided_batched(
