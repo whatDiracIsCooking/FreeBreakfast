@@ -116,7 +116,7 @@ closure of the step DAG behave as the design says? A model over a fixed dummy DA
 this page in JavaScript and in Python (<code>model.py</code>), which is the reference:
 it carries the same values, checks the page's input against its own, and pins every
 number the page prints.</p>
-<pre><code>uv run python experimental/dag_transitive_closure/model.py   # standard library, ~2 s</code></pre>
+<pre><code>uv run python experimental/dag_transitive_closure/model.py   # standard library, ~17 s</code></pre>
 
 <h2 id="question">The question</h2>
 <p>The redesign keeps <code>Output</code>s summed and packs only step scratch: memory a
@@ -211,6 +211,29 @@ with no scratch have no column.</figcaption>
 <li><strong>Packing quality</strong>: the packed peak against the lower bound on random
   DAGs, to see how far first fit falls short, if at all.</li>
 </ul>
+<p>Those hold the packing against the closure, which shows the packer obeys the
+closure and cannot show the closure is the right rule. Added on 2026-11-21:</p>
+<ul>
+<li><strong>The closure itself</strong>, against plain depth-first reachability: an
+  independent computation, where the page's JavaScript copies the same bitset logic.</li>
+<li><strong>Execution</strong>: simulated runs on a pool of 1 to 8 workers, any ready step
+  taken at random as stealing would, each step with a random host part and device part.
+  A region is in use from its step's start to the end of its device work. No two
+  regions sharing bytes may ever be in use at once.</li>
+<li><strong>The negative control</strong>: the same runs with the step-end sync dropped,
+  so a node finishes when its host part does and its device work runs on. The
+  simulation must now find collisions; if it did not, it would be testing nothing.</li>
+<li><strong>Devices and kinds</strong>: one slab per (device, kind), packed
+  independently; a multi-GPU step declaring on both cards; pinned staging beside device
+  memory.</li>
+<li><strong>A manager's scratch</strong>: declared by each caller, as the redesign
+  proposes, against owned by the manager.</li>
+<li><strong>A condition's exclusive branches</strong>: what the closure does with steps
+  that never run together.</li>
+<li><strong>Better packing</strong>: first fit over a fixed set of four orders (largest,
+  most constrained, size × conflicts, topological), keeping the lowest peak; and the
+  exact optimum, by first fit over every order, on small DAGs.</li>
+</ul>
 
 <h2 id="found">What the model found</h2>
 <p><span class="tag">run</span> 2026-11-21, every check passing. 3000 random DAGs of 2 to
@@ -234,22 +257,71 @@ scratch.</p>
   and the shortfall is the fixed largest-first order, not the bound</td></tr>
 </table></div>
 <ul>
-<li><strong>Largest first is the right fixed order.</strong> A one-off comparison (not in
-  <code>model.py</code>): first fit in topological order reached the bound on only 1947
-  of 2994 (worst 2.29, mean 1.038). Taking the better of the two reached the bound on 12
-  more DAGs than largest first alone, without changing the worst case (1.281).</li>
-<li><strong>The gap is cheap to close if it ever matters.</strong> At a few dozen steps,
-  trying a fixed set of orders and keeping the lowest peak, or an exact search, costs
-  nothing next to budget mode's allocations. It stays deterministic as long as the
-  set of orders is fixed. Not needed for the dummy DAG, which first fit packs to the
-  bound.</li>
+<li><strong>Largest first is the right single order.</strong> A one-off comparison (not
+  in <code>model.py</code>): first fit in topological order reached the bound on only
+  1947 of 2994 (worst 2.29, mean 1.038).</li>
 <li><strong>What the model does not say.</strong> Whether real steps' scratch is large
   enough for packing to matter: the dummy DAG's peak is inside <code>eri</code>, and its
   <code>Output</code>s are 80% of the device total. That is the redesign's open
   measurement: per step, <code>Output</code> bytes against scratch bytes.</li>
 </ul>
 
-<p class="note">Out of scope: rustflow, a device, real sizes, and packing
+<h3 id="found2">Correctness and better packing</h3>
+<p><span class="tag">run</span> 2026-11-21, every check passing, seeds fixed and every
+count pinned in <code>model.py</code>.</p>
+<div class="tablewrap"><table>
+<tr><th>Check</th><th>Result</th></tr>
+<tr><td>Closure against DFS</td><td>Equal, descendants and the ordered relation both, on
+  1000 random DAGs of 1 to 60 steps</td></tr>
+<tr><td>Execution, synced</td><td>3500 runs (600 random DAGs of 2 to 24 steps, five runs
+  each, and 500 of the dummy DAG): no two regions sharing bytes in use at once</td></tr>
+<tr><td>Negative control, no sync</td><td>Collisions in 2395 of 3000 runs: the simulation
+  sees what it is meant to</td></tr>
+<tr><td>Replay</td><td>Offsets packed once over one iteration, three iterations unrolled:
+  safe statically and in 300 simulated runs</td></tr>
+<tr><td>Devices and kinds</td><td>1777 slabs over 500 random DAGs on two cards and two
+  kinds, a fifth of the steps declaring a second region: every slab safe, at or above
+  its own bound, and safe in simulated runs. A slab's offsets do not move when another
+  slab's regions change</td></tr>
+<tr><td>Manager scratch, declared by callers</td><td>Safe in 300 runs; the two unordered
+  callers (CASSCF and a response solve) get disjoint regions with no special case. Peak
+  500</td></tr>
+<tr><td>Manager scratch, owned by the manager</td><td>Collides in all 300 runs: the region
+  is packed as the manager's step's, so it shares bytes with that step's successors,
+  and is then in use during them. Peak 450, lower only because it is wrong</td></tr>
+<tr><td>Exclusive branches</td><td>The closure calls steps on two branches of one
+  condition unordered and keeps them apart: safe, peak 220. Packing them as exclusive is
+  also safe when one branch runs: peak 120</td></tr>
+<tr><td>Best of four orders</td><td>At the bound on 2970 of 2994 random DAGs (99.2%),
+  against 2938 for largest first; worst 1.174 against 1.281; mean 1.0003</td></tr>
+<tr><td>Exact optimum, 4000 small DAGs</td><td>At most 8 regions, small integer sizes:
+  the optimum equals the lower bound on every one. Largest first is optimal on 3769,
+  the best of four orders on 3953</td></tr>
+</table></div>
+<ul>
+<li><strong>The step-end sync is load-bearing, and now shown to be.</strong> With it no
+  run collides; without it four runs in five do. The closure is the right rule exactly
+  because a finished node is finished device work.</li>
+<li><strong>A manager must not own scratch.</strong> Callers declaring it, sized by the
+  manager's size function, is the only form of the two that is safe. That settles the
+  redesign's proposal on correctness, not only on tidiness.</li>
+<li><strong>Exclusive branches are a possible saving, not adopted.</strong> The closure
+  is conservative there and safe. Treating two branches as exclusive is safe only if
+  rustflow never runs both, which holds for one condition's successors but needs the
+  condition's semantics stated; it would be the first rule beyond the DAG itself.</li>
+<li><strong>Use the best of the four orders.</strong> Deterministic, since the set is
+  fixed; it costs four first-fit passes at a few dozen steps, nothing next to budget
+  mode's allocations; it cuts the misses from 56 to 24 and the worst case from 1.28 to
+  1.17.</li>
+<li><strong>The lower bound is not always reachable in principle.</strong> It was on
+  every DAG the model could solve exactly. But this is dynamic storage allocation over
+  the conflicts, which is NP-hard even when lifetimes are intervals, while the bound
+  (a heaviest clique of a perfect graph) is cheap; so, unless P = NP, instances above
+  it exist. None appeared at this size.</li>
+</ul>
+
+<p class="note">Out of scope: rustflow itself (the simulation models its pool, not its
+code), a device, real sizes, and packing
 <code>Output</code>s over a producer-to-last-reader interval (the same closure, held
 until the measurement says <code>Output</code>s are what stacks).</p>
 
