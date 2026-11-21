@@ -41,12 +41,19 @@ further. The contraction with the two harmonics is S's, unchanged. There is
 no Boys function, no Hermite table and no Cartesian integral.
 
 **Negligible pairs.** A primitive pair's block is `μ` times a polynomial of
-degree `la + lb + 2` in `sqrt(μ) R` times `exp(-μ R²)`. So a pair of shells
-with `μ_min |A - B|² >= 40 + 4 (la + lb + 2)` is left zero: S's cutoff, two
-orders up. Past the bound the term falls with `μ`, so the smallest `μ`
-gives the largest term. The unit test checks that a full block just past
-the bound is under 1e-15 for every pair of momenta through i, at diffuse
-exponents (`μ ≈ 0.3`) and at tight ones (`μ ≈ 310`).
+degree `la + lb + 2` in `sqrt(μ) R` times `exp(-μ R²)`. So a primitive pair
+with `μ |A - B|² >= 40 + 4 (la + lb + 2)` is skipped, and a pair of shells
+past it for its `μ_min` is left zero: S's cutoff, two orders up. Past the
+bound the term falls with `μ`, so the smallest `μ` gives the largest term.
+A unit test checks that a full block just past the bound is under 1e-15
+for every pair of momenta through i, at diffuse exponents (`μ ≈ 0.3`) and
+at tight ones (`μ ≈ 310`).
+
+The primitive test is the one that pays, as in `../s_overlap_host`.
+Between atoms, the tight primitives of a shell pair that is kept are
+mostly past the bound. On gly10 in cc-pVTZ skipping them halves the time
+(55 ms to 28 ms on one thread) and changes no element by more than
+rounding.
 
 `kinetic_via_cartesian` is the textbook route, kept to check and time
 against: Obara-Saika overlaps per axis to `lb + 2`, the 1-D kinetic
@@ -88,7 +95,7 @@ by hand only.
 
 ## Checked (2026-11-21)
 
-`cargo test --release`: 8 unit and integration tests and 1 doctest pass;
+`cargo test --release`: 9 unit and integration tests and 1 doctest pass;
 `cargo clippy --all-targets` and `cargo fmt --check` are clean.
 
 The integration tests compare both routes' lower triangles with PySCF's
@@ -111,6 +118,8 @@ The unit tests cover:
   components;
 - the two routes against each other on contracted shells of every pair of
   momenta through i, to `1e-14` of the block's largest element;
+- the same on a shell pair that is kept but whose tight primitive pairs
+  are skipped (`μ R²` about 1800 for them, 0.6 for the diffuse);
 - the cutoff, as above.
 
 A further integration test requires the triangle to carry the same bits on
@@ -124,18 +133,20 @@ the routes agree to 1.7e-13 (6e-15 of `max |T|`).
 
 | System | Basis | nao | Negligible pairs | Spherical, 1 thread | 8 | 24 | Via Cartesian, 24 | Cartesian / spherical |
 |---|---|---|---|---|---|---|---|---|
-| H2O | STO-3G | 7 | 0% | | | 18 µs | 42 µs | 2.4x |
-| H2O | cc-pVDZ | 24 | 0% | | | 31 µs | 104 µs | 3.3x |
-| CO | cc-pVTZ | 60 | 0% | | | 129 µs | 332 µs | 2.6x |
-| gly10 | cc-pVDZ | 734 | 47.8% | | | 1.3 ms | 30 ms | 22.8x |
-| gly10 | cc-pVTZ | 1678 | 45.6% | 55 ms | 8.2 ms | 5.1 ms | 98 ms | 19.4x |
+| H2O | STO-3G | 7 | 0% | | | 13 µs | 35 µs | 2.7x |
+| H2O | cc-pVDZ | 24 | 0% | | | 37 µs | 103 µs | 2.8x |
+| CO | cc-pVTZ | 60 | 0% | | | 122 µs | 306 µs | 2.5x |
+| gly10 | cc-pVDZ | 734 | 47.8% | | | 0.80 ms | 30 ms | 37.6x |
+| gly10 | cc-pVTZ | 1678 | 45.6% | 28 ms | 4.4 ms | 3.0 ms | 99 ms | 33.5x |
 
-- **T costs about 1.4x S** on gly10 in cc-pVTZ (55 ms against
-  `../s_overlap_host`'s 39 ms on one thread): two more orders of the
+- **T costs about 1.4x S** on gly10 in cc-pVTZ (28 ms against
+  `../s_overlap_host`'s 20 ms on one thread): two more orders of the
   recurrences, and the three-term Laplacian in the inner sum.
 - **The ratio grows with the molecule** because the Cartesian route
   screens nothing, and its gap over S's Cartesian route is wider: it
   carries `lb + 2` overlaps per axis and three products per element.
+  Before primitive pairs were skipped, gly10 in cc-pVTZ took 55 ms,
+  8.2 ms and 5.1 ms on 1, 8 and 24 threads.
 - **The small cases measure overhead, not integrals.** At 24 AOs the time
   is mostly rayon's dispatch to 24 threads.
 - Not measured: the time on one thread, or by thread count, of anything
