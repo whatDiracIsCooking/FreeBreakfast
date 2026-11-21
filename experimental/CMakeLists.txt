@@ -63,6 +63,11 @@ add_subdirectory(routine)
 # ctest entry.
 add_subdirectory(hip_comp)
 
+# Does a vendor solver or BLAS handle take device memory behind a caller-sized
+# workspace? One case per process, the card's free memory read around each
+# step. A probe, not a ctest entry.
+add_subdirectory(library_handle_workspace)
+
 # rust/gemm (fp64 gemm from Rust) has no CMake of its own: it binds WarpWraps'
 # C ABI (wwr.capi.*, built with deps/) through the wwr-sys crate.
 
