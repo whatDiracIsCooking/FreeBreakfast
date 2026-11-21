@@ -3,7 +3,7 @@
 //! `BASIS` (a compiled-in name such as `cc-pvdz`, or a BSE JSON path),
 //! computed on the host. It prints the size, the best time of each route
 //! (directly spherical, and via the Cartesian integrals) and their largest
-//! difference; writes the packed triangle to `OUT.npy` if given, one
+//! difference, and the best time of S and T together; writes the packed triangle to `OUT.npy` if given, one
 //! dimension of `n (n + 1) / 2`; and compares it with the lower triangle of
 //! the full `n × n` `REFERENCE.npy` if given, exiting 1 past
 //! `1e-12 max |T_ref|`.
@@ -12,7 +12,9 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use fb_t_kinetic_host::{kinetic, kinetic_via_cartesian, lower_index, negligible_pairs};
+use fb_t_kinetic_host::{
+    kinetic, kinetic_via_cartesian, lower_index, negligible_pairs, overlap_and_kinetic,
+};
 
 /// The comparison's bar, relative to `max |T_ref|`: the device crate's.
 const BAR: f64 = 1e-12;
@@ -76,6 +78,15 @@ fn run(args: &[String]) -> Result<bool, String> {
     );
     let (t, direct, direct_runs) = best_of(|| kinetic(&basis));
     println!("directly spherical: {direct:.2?} (best of {direct_runs})");
+    let (_, together, together_runs) = best_of(|| {
+        let (s, t) = overlap_and_kinetic(&basis);
+        drop(s);
+        t
+    });
+    println!(
+        "S and T together:   {together:.2?} (best of {together_runs}), {:.2}x T alone",
+        together.as_secs_f64() / direct.as_secs_f64()
+    );
     let (via, cartesian, cartesian_runs) = best_of(|| kinetic_via_cartesian(&basis));
     println!(
         "via Cartesian:      {cartesian:.2?} (best of {cartesian_runs}), {:.2}x",
