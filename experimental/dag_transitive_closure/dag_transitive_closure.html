@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scratch by closure</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --ink: #1c1d21; --muted: #666a73;
+    --line: #d9d7cf; --hot: #c2410c; --code-bg: #efeee9;
+    --setup-bg: #e2f1ee; --setup-bd: #2b8a7a;
+    --int-bg: #e6e8fb; --int-bd: #4b55c4;
+    --la-bg: #fbeeda; --la-bd: #b7791f;
+    --scf-bg: #f1e9f5; --scf-bd: #8a4fa3;
+    --edge: #9a9da6; --ok: #2b8a7a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #17181c; --panel: #1f2126; --ink: #e8e8ea; --muted: #9a9ea8;
+      --line: #33363d; --hot: #fb923c; --code-bg: #26282e;
+      --setup-bg: #17332f; --setup-bd: #4fb8a6;
+      --int-bg: #23274f; --int-bd: #8891f0;
+      --la-bg: #3a2c14; --la-bd: #e0a84a;
+      --scf-bg: #33233b; --scf-bd: #c08ad6;
+      --edge: #6d717b; --ok: #4fb8a6;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17181c; --panel: #1f2126; --ink: #e8e8ea; --muted: #9a9ea8;
+    --line: #33363d; --hot: #fb923c; --code-bg: #26282e;
+    --setup-bg: #17332f; --setup-bd: #4fb8a6;
+    --int-bg: #23274f; --int-bd: #8891f0;
+    --la-bg: #3a2c14; --la-bd: #e0a84a;
+    --scf-bg: #33233b; --scf-bd: #c08ad6;
+    --edge: #6d717b; --ok: #4fb8a6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 28px 16px 64px; }
+  h1 { font-size: 25px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  h2 { font-size: 19px; margin: 40px 0 10px; padding-top: 14px;
+       border-top: 1px solid var(--line); }
+  h3 { font-size: 15.5px; margin: 24px 0 8px; }
+  p { margin: 0 0 11px; max-width: 80ch; }
+  ul, ol { margin: 0 0 12px; padding-left: 22px; max-width: 80ch; }
+  li { margin: 0 0 5px; }
+  a { color: var(--int-bd); }
+  .lede { color: var(--muted); }
+  code { font: 13px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+         background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+        padding: 12px 14px; overflow-x: auto; margin: 0 0 14px; }
+  pre code { background: none; padding: 0; font-size: 13px; line-height: 1.5; }
+  .tablewrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line);
+               border-radius: 8px; margin: 0 0 14px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 6px 10px;
+           border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .note { background: var(--panel); border: 1px solid var(--line);
+          border-left: 4px solid var(--hot); border-radius: 6px; padding: 9px 13px;
+          margin: 0 0 14px; max-width: 80ch; }
+  figure.fig { margin: 6px 0 16px; background: var(--panel); border: 1px solid var(--line);
+               border-radius: 8px; padding: 10px 12px 8px; overflow-x: auto; }
+  .fig svg { display: block; width: 100%; min-width: 640px; height: auto; }
+  .fig text { fill: var(--ink); font: 12.5px system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .fig text.m { fill: var(--muted); }
+  .fig text.s { font-size: 11.5px; }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 6px; max-width: 80ch; }
+  .node rect { fill: var(--int-bg); stroke: var(--int-bd); stroke-width: 1.5; }
+  .node.zero rect { fill: var(--panel); stroke: var(--edge); stroke-dasharray: 4 3; }
+  .node { cursor: pointer; }
+  .edge { fill: none; stroke: var(--edge); stroke-width: 1.3; }
+  .dim { opacity: 0.2; }
+  .node.sel rect, .region.sel rect { stroke: var(--hot); stroke-width: 2.6; }
+  .node.anc rect, .node.desc rect { fill: var(--setup-bg); stroke: var(--setup-bd); }
+  .node.par rect { fill: var(--la-bg); stroke: var(--la-bd); }
+  .region rect { fill: var(--int-bg); stroke: var(--int-bd); stroke-width: 1.2; }
+  .region.conf rect { fill: var(--la-bg); stroke: var(--la-bd); }
+  .region.share rect { fill: var(--setup-bg); stroke: var(--setup-bd); }
+  .grid { stroke: var(--line); stroke-width: 1; }
+  .tag { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 0 6px;
+         border-radius: 4px; border: 1px solid var(--int-bd); color: var(--int-bd); }
+  .peak { stroke: var(--hot); stroke-width: 1.5; stroke-dasharray: 6 4; }
+  table.mx { width: auto; font-size: 12.5px; }
+  table.mx th, table.mx td { padding: 3px 6px; text-align: center; border: 1px solid var(--line); }
+  table.mx td.o { background: var(--setup-bg); }
+  table.mx td.u { background: var(--la-bg); }
+  table.mx td.self { background: var(--code-bg); }
+  table.mx th.r { text-align: right; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px;
+            color: var(--muted); margin: 0 0 8px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 14px; height: 14px; border-radius: 3px; border: 1.5px solid; }
+  .sw.o { background: var(--setup-bg); border-color: var(--setup-bd); }
+  .sw.u { background: var(--la-bg); border-color: var(--la-bd); }
+  .sw.s { background: var(--panel); border-color: var(--hot); border-width: 2.4px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+           gap: 10px; margin: 0 0 14px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+          padding: 9px 12px; }
+  .stat .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat .k { font-size: 12.5px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Step scratch packed by the DAG's closure</h1>
+<p class="lede">An experiment for <a href="../../docs/rust-redesign.html#scratch">the Rust
+redesign's step scratch</a>: does packing each step's scratch region from the transitive
+closure of the step DAG behave as the design says? A model over a fixed dummy DAG, on
+this page in JavaScript and in Python (<code>model.py</code>), which is the reference:
+it carries the same values, checks the page's input against its own, and pins every
+number the page prints.</p>
+<pre><code>uv run python experimental/dag_transitive_closure/model.py   # standard library, ~2 s</code></pre>
+
+<h2 id="question">The question</h2>
+<p>The redesign keeps <code>Output</code>s summed and packs only step scratch: memory a
+step needs during its run and nothing reads afterwards. A step declares its region's
+size; once every step has, the final budget node takes the closure of the DAG and packs
+the regions into one slab per device and kind. <strong>Two regions may overlap only if
+one step reaches the other in the DAG.</strong> A finished node is finished device work,
+so a path is a happens-before on the card too, and no edge is ever added for memory.</p>
+<p>What the model has to show:</p>
+<ol>
+<li>The packing is <strong>safe</strong>: every pair of overlapping regions is ordered by
+  the closure.</li>
+<li>It is <strong>deterministic</strong>: the offsets depend on the DAG and the sizes,
+  never on the order steps declared in.</li>
+<li>It is <strong>good</strong>: its peak against the lower bound, the heaviest set of
+  mutually unordered regions, which no packing that keeps unordered regions apart can
+  beat; and against the two designs it replaces, the plain sum and one max per device
+  under a lock.</li>
+<li>Its <strong>limits</strong> are the ones the design names: a chain packs to its
+  largest region; a fully parallel DAG packs to the sum; and a peak inside one step is
+  not lowered.</li>
+</ol>
+
+<h2 id="model">The model</h2>
+<p>Twelve steps, one node each, shaped like a DF-RHF setup followed by a CASSCF and an
+NEVPT2. An edge is a declared read. <strong>Every size is a dummy value in MiB</strong>,
+loosely gly10-shaped so the proportions mean something (B's 7.8&nbsp;GB slab, the
+three-centre step's work lists and build intermediates at about 2&nbsp;GB), and none is a
+measurement. One device, one kind; packing is per device and kind, so one is enough to
+test it.</p>
+
+<div class="tablewrap"><table id="steps"></table></div>
+
+<figure class="fig">
+<svg id="dag" role="img" aria-label="The dummy step DAG: twelve steps in levels, edges from what is read to what reads it"></svg>
+<figcaption>The dummy DAG, levels by longest path from a source. Click a step: green are
+the steps it is ordered with (ancestors and descendants), whose regions it may share;
+amber are the steps it is unordered with, whose regions must stay apart. Dashed steps
+declare no scratch.</figcaption>
+</figure>
+
+<h2 id="closure">The closure</h2>
+<p>Steps in a topological order; each step's set of descendants is the union of its
+successors and their descendants, taken in reverse order. At a few dozen steps a bitset
+per step is all it needs. Two steps are <em>ordered</em> when either reaches the other.</p>
+
+<div class="legend"><span><i class="sw o"></i>ordered: regions may overlap</span>
+<span><i class="sw u"></i>unordered: regions kept apart</span></div>
+<div class="tablewrap"><table class="mx" id="matrix"></table></div>
+
+<h2 id="packing">The packing</h2>
+<p>Greedy first fit, in a fixed order: largest region first, ties by step id. Each
+region goes at the lowest offset where it overlaps no already-placed region of a step it
+is unordered with. Regions of ordered steps are ignored, so they may land on the same
+bytes. The order depends only on the sizes and the steps' ids, not on the order they were
+declared in, so the offsets are the same every run.</p>
+
+<pre><code>for r in sorted(regions, key=lambda r: (-r.size, r.id)):
+    conflicts = [q for q in placed if not ordered(r, q)]
+    r.offset = lowest o in {0} ∪ {q.offset + q.size} with
+               [o, o + r.size) disjoint from every conflict
+    placed.append(r)
+peak = max(r.offset + r.size)</code></pre>
+
+<div class="stats" id="stats"></div>
+
+<figure class="fig">
+<svg id="layout" role="img" aria-label="The packed scratch slab: each step's region drawn at its offset, one column per step in topological order"></svg>
+<figcaption>The slab, one column per step in topological order, each region at its
+offset, to scale. Regions at the same height share bytes. Click a region: green regions
+it may share with, amber ones it must not. The dashed line is the packed peak. Steps
+with no scratch have no column.</figcaption>
+</figure>
+
+<div class="tablewrap"><table id="placed"></table></div>
+
+<h2 id="reading">What the dummy DAG says</h2>
+<ul id="reading-list"></ul>
+
+<h2 id="checks">What <code>model.py</code> checks</h2>
+<ul>
+<li><strong>Safety</strong>: for every pair of regions whose byte ranges intersect, the
+  closure orders the two steps. On this DAG and on random DAGs.</li>
+<li><strong>Determinism</strong>: the offsets are identical when the steps are declared
+  in any order (every permutation of a small DAG, shuffles of a large one).</li>
+<li><strong>The page's numbers</strong>: the sum, the max, the packed peak, the lower
+  bound and every offset printed here, so page and model cannot drift.</li>
+<li><strong>Limits</strong>: a chain packs to its largest region; a DAG with no edges
+  packs to the sum; on every DAG, max ≤ lower bound ≤ packed ≤ sum.</li>
+<li><strong>A replayed loop body</strong>: the closure is taken over one iteration's
+  body, computed once; two steps unordered within the body stay apart.</li>
+<li><strong>Packing quality</strong>: the packed peak against the lower bound on random
+  DAGs, to see how far first fit falls short, if at all.</li>
+</ul>
+
+<h2 id="found">What the model found</h2>
+<p><span class="tag">run</span> 2026-11-21, every check passing. 3000 random DAGs of 2 to
+16 steps (edge probability 0.05 to 0.6, 15% of steps with no scratch, sizes log-uniform
+from 1 to 2048, declared in shuffled order, seed fixed), 2994 of them with some
+scratch.</p>
+<div class="tablewrap"><table>
+<tr><th>Check</th><th>Result</th></tr>
+<tr><td>Safety</td><td>No unordered pair overlaps, on the dummy DAG, on every random
+  DAG, and on every probe order below</td></tr>
+<tr><td>Determinism</td><td>The dummy DAG's offsets are unchanged under 200 shuffles of
+  its declaration order, and under all 720 orders of its first six steps</td></tr>
+<tr><td>Limits</td><td>A chain packs to its largest region; no edges packs to the sum;
+  max ≤ bound ≤ packed ≤ sum on every random DAG</td></tr>
+<tr><td>Replay</td><td>Offsets packed once over one iteration of a loop body stay safe
+  when two iterations are unrolled; the body's two unordered steps stay apart</td></tr>
+<tr><td>First fit at the lower bound</td><td>2938 of 2994 (98.1%); mean peak / bound
+  1.0014, worst 1.281</td></tr>
+<tr><td>The 56 above the bound</td><td>In every one, some other first-fit order (best of
+  500 random orders) reaches the bound exactly. So the bound was reachable each time,
+  and the shortfall is the fixed largest-first order, not the bound</td></tr>
+</table></div>
+<ul>
+<li><strong>Largest first is the right fixed order.</strong> A one-off comparison (not in
+  <code>model.py</code>): first fit in topological order reached the bound on only 1947
+  of 2994 (worst 2.29, mean 1.038). Taking the better of the two reached the bound on 12
+  more DAGs than largest first alone, without changing the worst case (1.281).</li>
+<li><strong>The gap is cheap to close if it ever matters.</strong> At a few dozen steps,
+  trying a fixed set of orders and keeping the lowest peak, or an exact search, costs
+  nothing next to budget mode's allocations. It stays deterministic as long as the
+  set of orders is fixed. Not needed for the dummy DAG, which first fit packs to the
+  bound.</li>
+<li><strong>What the model does not say.</strong> Whether real steps' scratch is large
+  enough for packing to matter: the dummy DAG's peak is inside <code>eri</code>, and its
+  <code>Output</code>s are 80% of the device total. That is the redesign's open
+  measurement: per step, <code>Output</code> bytes against scratch bytes.</li>
+</ul>
+
+<p class="note">Out of scope: rustflow, a device, real sizes, and packing
+<code>Output</code>s over a producer-to-last-reader interval (the same closure, held
+until the measurement says <code>Output</code>s are what stacks).</p>
+
+</main>
+<script>
+// The dummy DAG. model.py carries the same values; its test holds the two equal.
+const STEPS = [
+  {id: "S",      label: "overlap S",          reads: [],                          out: 4,    scratch: 1},
+  {id: "T",      label: "kinetic T",          reads: [],                          out: 4,    scratch: 1},
+  {id: "V",      label: "nuclear V",          reads: [],                          out: 4,    scratch: 2},
+  {id: "guess",  label: "SAD guess",          reads: [],                          out: 4,    scratch: 0},
+  {id: "metric", label: "metric (P|Q)",       reads: [],                          out: 104,  scratch: 20},
+  {id: "X",      label: "orthogonalizer X",   reads: ["S"],                       out: 4,    scratch: 6},
+  {id: "H",      label: "core H",             reads: ["T", "V"],                  out: 4,    scratch: 0},
+  {id: "factor", label: "metric factor",      reads: ["metric"],                  out: 104,  scratch: 8},
+  {id: "eri",    label: "three-centre → B",   reads: ["factor"],                  out: 7800, scratch: 2040},
+  {id: "scf",    label: "SCF",                reads: ["H", "X", "eri", "guess"],  out: 8,    scratch: 40},
+  {id: "casscf", label: "CASSCF",             reads: ["scf", "eri"],              out: 20,   scratch: 300},
+  {id: "nevpt2", label: "NEVPT2",             reads: ["casscf", "eri"],           out: 2,    scratch: 900},
+];
+
+// What each dummy scratch size stands for. Labels only; the model does not read them.
+const WHAT = {
+  S: "the kernel's records", T: "the kernel's records", V: "records and point charges",
+  metric: "its records and the aux-pair work list",
+  X: "the eigensolve's work (syevd)", factor: "the factorization's work (potrf)",
+  eri: "the work lists (cells) and B's build intermediates",
+  scf: "the Fock matrix, the DIIS ring, the eigensolve's work, J/K's scratch",
+  casscf: "CI vectors, the Davidson subspace, the orbital Hessian's pieces",
+  nevpt2: "the higher-order RDMs and their intermediates",
+};
+
+const n = STEPS.length;
+const idx = Object.fromEntries(STEPS.map((s, i) => [s.id, i]));
+const preds = STEPS.map(s => s.reads.map(r => idx[r]));
+const succs = STEPS.map(() => []);
+preds.forEach((ps, i) => ps.forEach(p => succs[p].push(i)));
+
+// Topological order (Kahn, smallest index first, so it is fixed).
+function topo() {
+  const indeg = preds.map(p => p.length), order = [], ready = [];
+  indeg.forEach((d, i) => { if (!d) ready.push(i); });
+  while (ready.length) {
+    ready.sort((a, b) => a - b);
+    const i = ready.shift(); order.push(i);
+    for (const j of succs[i]) if (--indeg[j] === 0) ready.push(j);
+  }
+  return order;
+}
+const order = topo();
+
+// Closure: desc[i] = every step i reaches.
+const desc = STEPS.map(() => new Set());
+for (const i of [...order].reverse())
+  for (const j of succs[i]) { desc[i].add(j); for (const k of desc[j]) desc[i].add(k); }
+const ordered = (a, b) => a === b || desc[a].has(b) || desc[b].has(a);
+
+// Levels for the drawing: longest path from a source.
+const level = Array(n).fill(0);
+for (const i of order) for (const j of succs[i]) level[j] = Math.max(level[j], level[i] + 1);
+
+// Packing: greedy first fit, largest first, ties by index.
+const regions = STEPS.map((s, i) => ({i, size: s.scratch})).filter(r => r.size > 0);
+const placed = [];
+const byId = (a, b) => (STEPS[a.i].id < STEPS[b.i].id ? -1 : 1);
+for (const r of [...regions].sort((a, b) => b.size - a.size || byId(a, b))) {
+  const conf = placed.filter(q => !ordered(r.i, q.i));
+  const cands = [0, ...conf.map(q => q.off + q.size)].sort((a, b) => a - b);
+  r.off = cands.find(o => conf.every(q => o + r.size <= q.off || q.off + q.size <= o));
+  placed.push(r);
+}
+const off = Object.fromEntries(regions.map(r => [r.i, r.off]));
+const peak = Math.max(...regions.map(r => r.off + r.size));
+const sum = regions.reduce((a, r) => a + r.size, 0);
+const max = Math.max(...regions.map(r => r.size));
+const outSum = STEPS.reduce((a, s) => a + s.out, 0);
+
+// Lower bound: the heaviest antichain of scratch-declaring steps (brute force; small n).
+let bound = 0, boundSet = [];
+const R = regions.map(r => r.i);
+for (let m = 1; m < (1 << R.length); m++) {
+  const set = R.filter((_, k) => m & (1 << k));
+  let ok = true;
+  for (let a = 0; ok && a < set.length; a++)
+    for (let b = a + 1; ok && b < set.length; b++) if (ordered(set[a], set[b])) ok = false;
+  if (!ok) continue;
+  const w = set.reduce((acc, i) => acc + STEPS[i].scratch, 0);
+  if (w > bound) { bound = w; boundSet = set; }
+}
+
+// Pairs a per-device lock would serialize: unordered steps that both use scratch.
+const lockPairs = [];
+for (let a = 0; a < R.length; a++)
+  for (let b = a + 1; b < R.length; b++) if (!ordered(R[a], R[b])) lockPairs.push([R[a], R[b]]);
+
+// Safety, on this DAG, for the page itself.
+for (const a of regions) for (const b of regions)
+  if (a.i < b.i && a.off < b.off + b.size && b.off < a.off + a.size && !ordered(a.i, b.i))
+    throw new Error(`unsafe overlap: ${STEPS[a.i].id} and ${STEPS[b.i].id}`);
+
+// ---- rendering ----
+const fmt = v => v.toLocaleString("en-US");
+const NS = "http://www.w3.org/2000/svg";
+const el = (tag, attrs, parent) => {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (parent) parent.appendChild(e);
+  return e;
+};
+const txt = (parent, x, y, s, cls, anchor) => {
+  const t = el("text", {x, y, "text-anchor": anchor || "start"}, parent);
+  if (cls) t.setAttribute("class", cls);
+  t.textContent = s; return t;
+};
+
+document.getElementById("steps").innerHTML =
+  `<tr><th>Step</th><th>Reads</th><th class="num">Output (MiB)</th>
+   <th class="num">Scratch (MiB)</th><th>What the scratch stands for</th></tr>` +
+  STEPS.map(s => `<tr><td><code>${s.id}</code> ${s.label}</td>
+    <td>${s.reads.map(r => `<code>${r}</code>`).join(", ") || "—"}</td>
+    <td class="num">${fmt(s.out)}</td><td class="num">${fmt(s.scratch)}</td>
+    <td>${WHAT[s.id] || ""}</td></tr>`).join("");
+
+// The DAG.
+function drawDag() {
+  const svg = document.getElementById("dag");
+  const nl = Math.max(...level) + 1, byLevel = [...Array(nl)].map(() => []);
+  order.forEach(i => byLevel[level[i]].push(i));
+  const W = 900, colW = W / Math.max(...byLevel.map(l => l.length)), rowH = 74, bw = 128, bh = 40;
+  const H = nl * rowH + 10;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const pos = {};
+  byLevel.forEach((l, lv) => l.forEach((i, k) => {
+    const x = (W - l.length * colW) / 2 + k * colW + colW / 2;
+    pos[i] = [x, 14 + lv * rowH + bh / 2];
+  }));
+  const edges = [];
+  preds.forEach((ps, j) => ps.forEach(i => {
+    const [x1, y1] = pos[i], [x2, y2] = pos[j];
+    const p = el("path", {class: "edge",
+      d: `M${x1},${y1 + bh / 2} C${x1},${(y1 + y2) / 2} ${x2},${(y1 + y2) / 2} ${x2},${y2 - bh / 2}`}, svg);
+    edges.push([i, j, p]);
+  }));
+  const nodes = STEPS.map((s, i) => {
+    const g = el("g", {class: "node" + (s.scratch ? "" : " zero"), tabindex: 0}, svg);
+    const [x, y] = pos[i];
+    el("rect", {x: x - bw / 2, y: y - bh / 2, width: bw, height: bh, rx: 7}, g);
+    txt(g, x, y - 3, s.label, "", "middle");
+    txt(g, x, y + 13, s.scratch ? `scratch ${fmt(s.scratch)}` : "no scratch", "m s", "middle");
+    g.addEventListener("click", () => select(i));
+    return g;
+  });
+  function select(i) {
+    nodes.forEach((g, k) => {
+      g.classList.remove("sel", "anc", "desc", "par");
+      if (k === i) g.classList.add("sel");
+      else if (desc[i].has(k)) g.classList.add("desc");
+      else if (desc[k].has(i)) g.classList.add("anc");
+      else g.classList.add("par");
+    });
+    edges.forEach(([a, b, p]) =>
+      p.classList.toggle("dim", !(ordered(i, a) && ordered(i, b))));
+  }
+}
+drawDag();
+
+// The matrix.
+document.getElementById("matrix").innerHTML =
+  `<tr><th></th>${order.map(j => `<th>${STEPS[j].id}</th>`).join("")}</tr>` +
+  order.map(i => `<tr><th class="r">${STEPS[i].id}</th>${order.map(j =>
+    i === j ? `<td class="self"></td>` :
+    ordered(i, j) ? `<td class="o">${desc[i].has(j) ? "→" : "←"}</td>` : `<td class="u">·</td>`
+  ).join("")}</tr>`).join("");
+
+// The numbers.
+const stats = [
+  [fmt(sum), "plain sum of scratch (MiB): no reuse"],
+  [fmt(peak), "packed peak (MiB): this design"],
+  [fmt(bound), "lower bound (MiB): heaviest unordered set"],
+  [fmt(max), "one max under a lock (MiB): the first form"],
+];
+document.getElementById("stats").innerHTML =
+  stats.map(([v, k]) => `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+
+// The layout.
+function drawLayout() {
+  const svg = document.getElementById("layout");
+  const cols = order.filter(i => STEPS[i].scratch > 0);
+  const W = 900, top = 16, left = 64, plotH = 300, H = top + plotH + 46;
+  const colW = (W - left - 10) / cols.length, scale = plotH / Math.max(peak, 1);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const yOf = v => top + plotH - v * scale;
+  const step = Math.pow(10, Math.floor(Math.log10(peak))) / 2;
+  for (let v = 0; v <= peak; v += step) {
+    el("line", {class: "grid", x1: left, x2: W - 10, y1: yOf(v), y2: yOf(v)}, svg);
+    txt(svg, left - 6, yOf(v) + 4, fmt(v), "m s", "end");
+  }
+  txt(svg, 4, top + 10, "MiB", "m s");
+  el("line", {class: "peak", x1: left, x2: W - 10, y1: yOf(peak), y2: yOf(peak)}, svg);
+  txt(svg, W - 12, yOf(peak) - 5, `peak ${fmt(peak)}`, "s", "end");
+  const groups = cols.map((i, c) => {
+    const x = left + c * colW + 4, s = STEPS[i];
+    const g = el("g", {class: "region", tabindex: 0}, svg);
+    const h = Math.max(s.scratch * scale, 3);
+    el("rect", {x, y: yOf(off[i] + s.scratch), width: colW - 8, height: h, rx: 2}, g);
+    const tl = el("title", {}, g);
+    tl.textContent = `${s.label}: [${fmt(off[i])}, ${fmt(off[i] + s.scratch)}) MiB`;
+    txt(svg, x + (colW - 8) / 2, top + plotH + 16, s.id, "s", "middle");
+    txt(svg, x + (colW - 8) / 2, top + plotH + 31, fmt(s.scratch), "m s", "middle");
+    g.addEventListener("click", () => {
+      groups.forEach(([k, gg]) => {
+        gg.classList.remove("sel", "conf", "share");
+        if (k === i) gg.classList.add("sel");
+        else gg.classList.add(ordered(i, k) ? "share" : "conf");
+      });
+    });
+    return [i, g];
+  });
+}
+drawLayout();
+
+document.getElementById("placed").innerHTML =
+  `<tr><th>Placed in this order</th><th class="num">Size</th><th class="num">Offset</th>
+   <th>Kept apart from (unordered, already placed)</th></tr>` +
+  placed.map((r, k) => `<tr><td>${k + 1}. <code>${STEPS[r.i].id}</code></td>
+    <td class="num">${fmt(r.size)}</td><td class="num">${fmt(r.off)}</td>
+    <td>${placed.slice(0, k).filter(q => !ordered(r.i, q.i)).map(q => `<code>${STEPS[q.i].id}</code>`).join(", ") || "nothing: overlaps everything before it"}</td></tr>`).join("");
+
+const ids = a => a.map(i => `<code>${STEPS[i].id}</code>`).join(", ");
+document.getElementById("reading-list").innerHTML = [
+  `<strong>Packing saves ${fmt(sum - peak)} of ${fmt(sum)}&nbsp;MiB</strong> against the
+   plain sum, and lands at ${peak === bound ? "the lower bound exactly" : `${fmt(peak - bound)}&nbsp;MiB over the lower bound`}:
+   the heaviest unordered set is ${ids(boundSet)}.`,
+  `<strong>It costs ${fmt(peak - max)}&nbsp;MiB over the lock's one max</strong>, which
+   bought its ${fmt(max)}&nbsp;MiB by serializing ${lockPairs.length} unordered pairs of
+   scratch-using steps, among them ${ids([idx.eri, idx.X])}. Packed, those run side by side.`,
+  `<strong>The chain after <code>eri</code> costs nothing.</strong> <code>scf</code>,
+   <code>casscf</code> and <code>nevpt2</code> all follow <code>eri</code>, so their
+   ${fmt(STEPS[idx.scf].scratch + STEPS[idx.casscf].scratch + STEPS[idx.nevpt2].scratch)}&nbsp;MiB
+   land inside its region.`,
+  `<strong>The peak is inside one step.</strong> <code>eri</code>'s region is
+   ${fmt(STEPS[idx.eri].scratch)} of the ${fmt(peak)}&nbsp;MiB, and packing cannot lower
+   it; only that step's own design can (a batched build, or work lists derived in the
+   kernel).`,
+  `<strong>Scratch is not where most of the memory is.</strong> The <code>Output</code>s
+   sum to ${fmt(outSum)}&nbsp;MiB, ${fmt(STEPS[idx.eri].out)} of it B's slab, and are not
+   packed. The whole device total is ${fmt(outSum + peak)}&nbsp;MiB packed against
+   ${fmt(outSum + sum)} summed.`,
+].map(s => `<li>${s}</li>`).join("");
+</script>
+</body>
+</html>
