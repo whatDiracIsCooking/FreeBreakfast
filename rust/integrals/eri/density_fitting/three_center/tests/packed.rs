@@ -11,10 +11,14 @@
 //! substitution, so what differs is rounding alone, a few ulps of the
 //! largest element carried through L⁻¹.
 //!
-//! And the batches' promise, exactly: the columns of every step are
-//! independent, so B over two disjoint batches, one class cut between
-//! them, is the one-batch B bitwise. Both run in this one process, so
-//! the BLAS's choice of kernel per shape is the same library's.
+//! And the batches' promise: the columns of every step are independent,
+//! so B over two disjoint batches, one class cut between them, is the
+//! one-batch B within the same bar. Not bitwise: the two widths give the
+//! transform's GEMMs and the fit's trsm other shapes, and the BLAS picks
+//! its kernel by shape, so they round apart (10,745 of 37,352 elements
+//! differ in their last bits on the gfx1200, #1750). A batch fitted
+//! against the wrong columns is off by far more than the bar.
+//! `tests/build.rs` holds B bitwise against batches of the same shapes.
 
 mod common;
 
@@ -31,7 +35,7 @@ const BAR: f64 = 1e-12;
 
 /// Water's B, packed over every pair as one batch and as two, against the
 /// host's `L⁻¹ (mn|P)` within the bar column by column, a diagonal block's
-/// upper columns included, and the two batches' bitwise the one's. Catches a
+/// upper columns included, and the two batches' within the bar of the one's. Catches a
 /// packed column fitted against the wrong pair or aux function, a batch's
 /// column offset taken from the map instead of the batch, and a step
 /// whose columns are not independent. Needs a GPU.
@@ -128,19 +132,27 @@ fn packed_batches_are_the_hosts_fit() {
         worst / scale
     );
     let two = [first, second].concat();
-    let differ = one
-        .iter()
-        .zip(&two)
-        .filter(|(a, b)| a.to_bits() != b.to_bits())
-        .count();
+    assert_eq!(two.len(), one.len(), "the two batches cover the one");
+    let mut apart = 0.0_f64;
+    for (a, b) in one.iter().zip(&two) {
+        // Not f64::max, which would drop a NaN.
+        let d = (a - b).abs();
+        if d.is_nan() || d > apart {
+            apart = d;
+        }
+    }
+    println!(
+        "water: two batches against one, max |Δ| / max |B| = {:e}, bar {BAR:e}",
+        apart / scale
+    );
     let mut misses = Vec::new();
     if worst.is_nan() || worst > BAR * scale {
         misses.push(format!("max |Δ| = {worst:e} > {:e}", BAR * scale));
     }
-    if differ > 0 {
+    if apart.is_nan() || apart > BAR * scale {
         misses.push(format!(
-            "{differ} of {} elements of the two-batch B differ in their bits from the one-batch B",
-            one.len()
+            "two batches against one: max |Δ| = {apart:e} > {:e}",
+            BAR * scale
         ));
     }
     assert!(misses.is_empty(), "water failed:\n{}", misses.join("\n"));
