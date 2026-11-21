@@ -160,8 +160,59 @@ PySCF reference was run for it.
   threads on H2O and CO (0.17 ms against 72 µs; 0.90 ms against 0.29 ms)
   because two or three centers are two or three tasks. Splitting by
   shell left gly10 unchanged.
-- Not measured: anything larger than gly10, and where the one-thread time
-  goes. Not tried: `../df_metric`'s far field applied to the nuclei. Once
-  `p |P - C|²` is large, `R_tuv` is a derivative of `1 / |P - C|` and needs
-  no Boys function. The large-`x` branch of `boys` already skips the series,
-  though, so how much that would save is not known.
+- Not measured: anything larger than gly10.
+
+### Where the time goes (2026-11-21)
+
+Experiments only: the crate's code is unchanged. They were made with
+temporary switches and counters in `src/lib.rs`, since reverted. gly10,
+one thread, best of 3 to 5 runs.
+
+**The time split, by switching pieces off.** Each row replaces one piece
+with a trivial stand-in; the time it saves is that piece's cost. This is not
+a profiler, and the pieces overlap a little.
+
+| Piece | cc-pVDZ (0.94 s) | cc-pVTZ (4.06 s) |
+|---|---|---|
+| The Boys function | 0.47 s, 50% | 1.56 s, 38% |
+| The `R` recurrence | 0.21 s, 22% | 0.99 s, 24% |
+| The sum over nuclei into `W` | 0.19 s, 20% | 0.91 s, 22% |
+| All three together: the per-nucleus work | 0.82 s, 87% | 3.56 s, 88% |
+| The contraction with `E`, the `E` expansion, the spherical transform | within noise | within noise |
+| What is left: the loops, the screening, `exp(-mu R²)` | 0.12 s | 0.45 s |
+
+So the per-nucleus work is the whole cost. The contraction that folding the
+nuclei into one table moved out of the nucleus loop no longer shows.
+
+**The work, counted.** Over the kept shell pairs:
+
+| | CO, cc-pVTZ | gly10, cc-pVDZ | gly10, cc-pVTZ |
+|---|---|---|---|
+| Primitive pairs kept, of those in kept shell pairs | 7027 of 7684 | 324,912 of 839,189 | 1,110,558 of 2,784,105 |
+| (primitive pair, nucleus) evaluations | 14,054 | 23.7 M | 81.1 M |
+| ... with `x = p |P - C|² >= 40 + 4L`, far | 32.6% | 93.1% | 91.9% |
+| ... with `x >= L + 8`, `boys`' large-`x` branch | 41.9% | 97.4% | 97.0% |
+| Distinct (atom A, atom B, `a`, `b`) among the kept primitive pairs | 10.4% | 19.9% | 11.6% |
+| `R`-table work, per kept pair against once per distinct pair at its highest `L` | 5.4x | 3.4x | 4.9x |
+
+- **Most primitive pairs are repeats.** A carried cc set is generally
+  contracted, stored as segments: an atom's s shells (and p shells) repeat
+  the same exponents with different coefficients. `W_tuv` depends on the
+  two exponents and the two centers, not on the momenta or the
+  coefficients, and a table built to the highest `L` holds every lower
+  one. So building each distinct pair's table once would divide the
+  per-nucleus work by the last row, 3.4x to 4.9x on gly10. This is
+  counted, not timed: the shared tables have to be stored and looked up.
+- **Almost every nucleus is far.** On gly10, 92 to 93% of evaluations
+  are past `df_metric`'s far-field bound, where `exp(-x)` is under 1e-17 of
+  what is kept.
+
+**The far seed, timed.** For a far evaluation the Boys function can be
+replaced by the closed form, `R^n_000 = sqrt(pi / p) / 2 * (-1)^n
+(2n-1)!! / r^(2n+1)`: no `exp`, no `erf`, no series. That alone took gly10
+from 0.94 s to 0.57 s in cc-pVDZ (1.64x) and from 4.34 s to 3.02 s in
+cc-pVTZ (1.44x). The errors against PySCF on the three fixtures and
+against the Cartesian route on gly10 matched the version without it in
+every printed digit; the matrices themselves were not compared bit for bit. It was not kept, because experiments were all this was. The
+`R` recurrence and the sum into `W` still run for a far nucleus, so this
+is the smallest piece of the multipole idea, not the idea.
