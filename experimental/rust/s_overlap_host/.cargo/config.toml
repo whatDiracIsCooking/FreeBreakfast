@@ -1,0 +1,11 @@
+# The hot loops are written with `f64::mul_add`. Without the FMA target
+# feature that is a call into a software fma; with it, one instruction.
+# src/lib.rs refuses to compile on x86-64 without the feature, so the two
+# cannot drift apart.
+#
+# Cargo reads this file only when run from this directory or below, and a
+# RUSTFLAGS in the environment replaces it: pass the flag there too.
+[build]
+rustflags = ["-C", "target-feature=+fma"]
+# The doctests are built by rustdoc, which reads its own flags.
+rustdocflags = ["-C", "target-feature=+fma"]
