@@ -109,7 +109,6 @@ fn plan(basis: &BasisSet, aux: &BasisSet, room: usize, add: Add) -> (Plan<'stati
                     pairs.clone(),
                     pairs.len(),
                     &mut u,
-                    &mut u_aux,
                 )?;
                 let b = add_batch_fit(dag, 0, naux, columns, columns, factor, packed);
                 Ok::<_, fb_core_error_handling::Error>(Batch {

@@ -119,7 +119,6 @@ pub fn plan(basis: &BasisSet, aux: &BasisSet) -> Fixture {
         all.clone(),
         all.len(),
         &mut None,
-        &mut None,
     )
     .expect("the kernels cover both");
     let (n_ao, n_aux) = (basis.nao_sphe() as usize, aux.nao_sphe() as usize);

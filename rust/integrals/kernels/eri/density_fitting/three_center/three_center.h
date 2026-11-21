@@ -20,13 +20,13 @@ extern "C" {
 
 /// The largest momentum of an orbital shell m or n
 /// fb_three_center_packed_class has a kernel for, f: the la and lb extents of
-/// the peri3 table tools/emit/packed_three_center_kernels.py writes, which
+/// the speri3 table tools/emit/packed_three_center_kernels.py writes, which
 /// three_center_launch.cu static_asserts against it and against the orbital
 /// basis's limit.
 #define FB_THREE_CENTER_MAX_MOMENTUM ((int32_t)3)
 
 /// The largest momentum of an auxiliary shell P fb_three_center_packed_class
-/// has a kernel for, i: the lP extent of the peri3 table, as
+/// has a kernel for, i: the lP extent of the speri3 table, as
 /// FB_METRIC_MAX_MOMENTUM is the metric's. It is above the orbital limit on
 /// purpose.
 #define FB_THREE_CENTER_AUX_MAX_MOMENTUM ((int32_t)6)
@@ -43,15 +43,18 @@ extern "C" {
 /// diagonal flag diag, 1 for a shell's pair with itself and 0 otherwise.
 #define FB_THREE_CENTER_PACKED_CELL_FIELDS ((int32_t)6)
 
-/// Writes class (cls->la, cls->lb, lp) of the Cartesian (mn|P) into the
-/// packed eri3, n_col columns of n_aux doubles, on stream: the generated
-/// peri3<la, lb, lp>, one thread per cell, each cell's whole Cartesian block
-/// at its destination, element (a, b, q) at dst + n_aux (a nB + b) + q, a
-/// the bra shell's Cartesian (momentum la), b the ket's (lb, nB of them) and
-/// q the aux shell's. A pair whose block opens at column c, crossed with an
-/// aux shell at Cartesian offset off_p, has dst = c n_aux + off_p. A
-/// diagonal cell (diag = 1, read only when la == lb) stores its full square
-/// block; any other stores its block once, with no (m, n) mirror.
+/// Writes class (cls->la, cls->lb, lp) of the (mn|Q) into the packed eri3,
+/// m and n Cartesian and Q the aux shell's real solid harmonics, n_col columns
+/// of n_aux doubles, n_aux the aux basis's spherical functions, on stream: the
+/// generated speri3<la, lb, lp>, one thread per cell, each cell's whole block
+/// at its destination, element (a, b, q) at dst + n_aux (a nB + b) + q, a the
+/// bra shell's Cartesian (momentum la), b the ket's (lb, nB of them) and q
+/// the aux shell's solid harmonic, 2 lp + 1 of them in the order m = -lp ..=
+/// lp (fb_basis::spherical_transform_matrix's block of lp, transposed). A
+/// pair whose block opens at column c, crossed with an aux shell whose first
+/// spherical function is off_p, has dst = c n_aux + off_p. A diagonal cell
+/// (diag = 1, read only when la == lb) stores its full square block; any
+/// other stores its block once, with no (m, n) mirror.
 ///
 /// The bra records are cls's, read in place: its zeta, p_*, pa_*, pb_* and
 /// s, each cls->n_rec long. aux is FB_THREE_CENTER_AUX_FIELDS segments of

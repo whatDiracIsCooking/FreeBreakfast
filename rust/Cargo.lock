@@ -613,11 +613,13 @@ name = "fb-integrals-sys"
 version = "0.1.0"
 dependencies = [
  "contracts",
+ "fb-basis",
  "fb-core-arena",
  "fb-core-error-handling",
  "fb-core-log",
  "fb-core-planner",
  "fb-core-thread-pool",
+ "fb-core-types",
  "fb-core-wwr",
  "fb-io-npy",
  "fb-kernel-abi",

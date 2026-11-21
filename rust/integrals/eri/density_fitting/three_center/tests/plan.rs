@@ -32,7 +32,7 @@ fn packed_plan_golden() {
     let map = PairMap::new(&record_tables(&basis), None, 0.0);
     let (n, naux) = (map.pairs().len(), aux.nao_sphe() as usize);
     let split = n / 2;
-    let (mut u, mut u_aux) = (None, None);
+    let mut u = None;
     let mut outs = Vec::new();
     for pairs in [0..split, split..n] {
         let blocks = map.sphe().blocks();
@@ -47,7 +47,6 @@ fn packed_plan_golden() {
             pairs.clone(),
             pairs.len(),
             &mut u,
-            &mut u_aux,
         )
         .unwrap();
         outs.push((out, columns));
@@ -71,7 +70,7 @@ fn packed_plan_golden() {
 }
 
 /// Both of a batch's tensors are rows of the plan's device table at
-/// planning: the Cartesian batch (`n_col_cart · naux_cart` doubles) and
+/// planning: the Cartesian batch (`n_col_cart · naux` doubles) and
 /// its spherical transform (`naux · n_col`), each named `(mn|P) packed`,
 /// so a budget one byte short of the two is refused by admission as
 /// `Allocation`, naming each with its bytes, and the table's own total is
@@ -81,7 +80,7 @@ fn admission_refuses_a_budget_short_of_the_two_tensors() {
     let (basis, aux) = common::water();
     let fixture = common::plan(&basis, &aux);
     let table = fixture.planned.device_table(0);
-    let cartesian = 8 * fixture.map.cart().n_columns() * aux.nao_cart() as usize;
+    let cartesian = 8 * fixture.map.cart().n_columns() * fixture.n_aux;
     let spherical = 8 * fixture.map.sphe().n_columns() * fixture.n_aux;
     let err = fb_core_arena::admit(table, cartesian + spherical - 1, "gpu0").unwrap_err();
     assert_eq!(err.kind, ErrorKind::Allocation, "{err}");
@@ -127,7 +126,6 @@ fn a_shell_past_the_kernels_is_unsupported_at_planning() {
             all.clone(),
             all.len(),
             &mut None,
-            &mut None,
         )
         .unwrap_err();
         assert_eq!(err.kind, ErrorKind::Unsupported, "{err}");
@@ -142,19 +140,20 @@ fn a_shell_past_the_kernels_is_unsupported_at_planning() {
     }
 }
 
-/// U and U_aux come from the caller's slots (`fb_recipes_matrix_ao::add_harmonics`):
-/// empty ones get one `harmonics` task and one `upload U` copy node each and
-/// are left holding the upload's device row, and a second build over the
-/// same slots adds none and runs after both uploads, reading their rows, so
-/// neither transform is staged or copied up twice.
+/// U comes from the caller's slot (`fb_recipes_matrix_ao::add_harmonics`):
+/// an empty one gets one `harmonics` task and one `upload U` copy node and
+/// is left holding the upload's device row, and a second build over the
+/// same slot adds none and runs after the upload, reading its row, so U is
+/// neither staged nor copied up twice. No U_aux is formed: the kernels
+/// write the aux index spherical.
 #[test]
-fn u_and_u_aux_are_read_from_the_slots() {
+fn u_is_read_from_the_slot() {
     let (basis, aux) = common::water();
     let mut dag = Dag::new();
     let classes = fb_integrals_mmd::add_records(&mut dag, 0, &basis).unwrap();
     let map = PairMap::new(&record_tables(&basis), None, 0.0);
-    let (mut u, mut u_aux) = (None, None);
-    let mut build = |u: &mut Option<_>, u_aux: &mut Option<_>| {
+    let mut u = None;
+    let mut build = |u: &mut Option<_>| {
         let all = 0..map.pairs().len();
         add_packed_three_center(
             &mut dag,
@@ -166,13 +165,12 @@ fn u_and_u_aux_are_read_from_the_slots() {
             all.clone(),
             all.len(),
             u,
-            u_aux,
         )
         .unwrap();
     };
-    build(&mut u, &mut u_aux);
-    assert!(u.is_some() && u_aux.is_some(), "both slots are filled");
-    build(&mut u, &mut u_aux);
+    build(&mut u);
+    assert!(u.is_some(), "the slot is filled");
+    build(&mut u);
     let planned = dag.plan();
     let names: Vec<String> = planned
         .to_string()
@@ -183,11 +181,19 @@ fn u_and_u_aux_are_read_from_the_slots() {
         .map(|l| l.split(':').next().unwrap().to_owned())
         .collect();
     let count = |name: &str| names.iter().filter(|n| *n == name).count();
-    assert_eq!(count("harmonics"), 2, "one harmonics per basis: {names:?}");
+    assert_eq!(
+        count("harmonics"),
+        1,
+        "one harmonics, the orbital basis's: {names:?}"
+    );
     let uploads: Vec<usize> = (0..names.len())
         .filter(|&t| names[t] == "upload U")
         .collect();
-    assert_eq!(uploads.len(), 2, "one upload per basis: {names:?}");
+    assert_eq!(
+        uploads.len(),
+        1,
+        "one upload, the orbital basis's: {names:?}"
+    );
     let last = names.len() - 1;
     // The second build adds `packed three-center tables`, `packed
     // three-center` and `spherical transform` alone.

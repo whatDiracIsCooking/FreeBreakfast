@@ -10,7 +10,7 @@ so a build never runs Python. Run this after bumping that submodule:
 `--out-root DIR` writes the same tree under DIR instead of src/integrals/,
 each file at its path relative to src/integrals/. `--family NAME`, which
 may be repeated, writes only the families named; the default writes both.
-rust/ carries `metric` alone (its (mn|P) is the packed `peri3`,
+rust/ carries `metric` alone (its (mn|P) is the packed `speri3`,
 tools/emit/packed_three_center_kernels.py's, and the square `eri3` left it
 in #1725), so
 

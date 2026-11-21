@@ -1,6 +1,6 @@
 //! The transform's plan (tier 3): an s, p and d basis's every pair as one
-//! batch, the plan text with its device table (the two scratch rows and
-//! the output, their bytes) the committed golden
+//! batch, the plan text with its device table (the scratch row and the
+//! output, their bytes) the committed golden
 //! `tests/golden/plan_spd_naux25.txt`, `FB_BLESS=1` rewriting it
 //! (`docs/testing.md`, "Performance"); and the refusals planning makes.
 //! Planning touches no device; the crate links the kernel library through
@@ -17,9 +17,8 @@ use fb_integrals_eri_density_fitting_transform::add_spherical_transform;
 use fb_integrals_mmd::record_tables;
 use fb_test_support::golden;
 
-/// The aux basis's Cartesian and spherical counts: s, p, d, f and g
-/// shells.
-const N_AUX: [usize; 2] = [35, 25];
+/// The aux basis's spherical count: s, p, d, f and g shells.
+const N_AUX: usize = 25;
 
 /// GPU: an input, declared and never computed.
 struct Input {
@@ -56,14 +55,13 @@ fn map() -> PairMap {
     PairMap::new(&record_tables(&basis), None, 0.0)
 }
 
-/// The batch's producer and the two U rows' on worker 0 of a new plan,
-/// for `n_aux`.
-fn inputs(dag: &mut Dag<'_>, map: &PairMap, n_aux: [usize; 2]) -> [RowId<Device, f64>; 3] {
+/// The batch's producer and U's row on worker 0 of a new plan, for
+/// `n_aux`.
+fn inputs(dag: &mut Dag<'_>, map: &PairMap, n_aux: usize) -> [RowId<Device, f64>; 2] {
     let (cart, sphe) = (map.cart(), map.sphe());
     [
-        ("(mn|P) cartesian", n_aux[0] * cart.n_columns()),
+        ("(mn|P) cartesian", n_aux * cart.n_columns()),
         ("U", cart.nao() * sphe.nao()),
-        ("U aux", n_aux[0] * n_aux[1]),
     ]
     .map(|(name, len)| dag.add_gpu(name, 0, Input { name, len }))
 }
@@ -72,7 +70,7 @@ fn inputs(dag: &mut Dag<'_>, map: &PairMap, n_aux: [usize; 2]) -> [RowId<Device,
 fn plan_golden() {
     let map = map();
     let mut dag = Dag::new();
-    let [x, u, u_aux] = inputs(&mut dag, &map, N_AUX);
+    let [x, u] = inputs(&mut dag, &map, N_AUX);
     let out = add_spherical_transform(
         &mut dag,
         0,
@@ -81,15 +79,15 @@ fn plan_golden() {
         map.pairs().len(),
         N_AUX,
         x,
-        [u, u_aux],
+        u,
     )
     .unwrap();
     let planned = dag.plan();
     assert_eq!(
         planned.device_table(0).len(out),
-        N_AUX[1] * map.sphe().n_columns()
+        N_AUX * map.sphe().n_columns()
     );
-    assert_eq!(planned.predecessors(3), [0, 1, 2]);
+    assert_eq!(planned.predecessors(2), [0, 1]);
     // The table's text ends an empty handoffs line in a space, which the
     // trailing-whitespace hook strips from the committed file.
     let text: String = planned
@@ -107,7 +105,7 @@ fn plan_golden() {
 fn a_count_past_i32_is_unsupported_at_planning() {
     let map = map();
     let mut dag = Dag::new();
-    let [x, u, u_aux] = inputs(&mut dag, &map, [1, 1]);
+    let [x, u] = inputs(&mut dag, &map, 1);
     // d's 5 spherical functions times this pass i32; it alone does not.
     let n_aux = (i32::MAX / 4) as usize;
     let err = add_spherical_transform(
@@ -116,9 +114,9 @@ fn a_count_past_i32_is_unsupported_at_planning() {
         &map,
         0..map.pairs().len(),
         map.pairs().len(),
-        [n_aux, n_aux],
+        n_aux,
         x,
-        [u, u_aux],
+        u,
     )
     .unwrap_err();
     assert_eq!(err.kind, ErrorKind::Unsupported, "{err}");
@@ -143,6 +141,6 @@ fn a_count_past_i32_is_unsupported_at_planning() {
 fn an_empty_batch_is_refused() {
     let map = map();
     let mut dag = Dag::new();
-    let [x, u, u_aux] = inputs(&mut dag, &map, N_AUX);
-    let _ = add_spherical_transform(&mut dag, 0, &map, 1..1, 1, N_AUX, x, [u, u_aux]);
+    let [x, u] = inputs(&mut dag, &map, N_AUX);
+    let _ = add_spherical_transform(&mut dag, 0, &map, 1..1, 1, N_AUX, x, u);
 }

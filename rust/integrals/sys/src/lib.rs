@@ -24,7 +24,7 @@
 //! | `metric`'s host staging: one record per aux primitive, the pairs P <= Q per class, swapped to the lower momentum first | [`AuxTable::push_shell`] and the `metric tables` task of [`add_metric_tasks`] |
 //! | `three_center_class(stream, la, lb, lp, n_bra_rec, bra, …)`, `three_center_symmetrize` (`.../three_center`) | nothing: the square tensor is not built (#1721), and its kernels and launchers are not carried (#1725); the packed launcher below is the only (mn\|P) |
 //! | `three_center`'s host staging: `mmd`'s records copied back and regrouped by shell pair, the aux records, the cells, U and U_aux in one upload; the launches, the three spherical GEMMs and the average | nothing: (mn\|P) is built packed, a batch of kept shell pairs at a time ([`add_packed_three_center_tasks`]) |
-//! | nothing: the C++ (mn\|P) is square | [`fb_three_center_packed_class`], rust/'s own launcher over FelizJueves's packed `peri3<la, lb, lP>` units, each cell's block at its destination column, and [`FB_THREE_CENTER_PACKED_CELL_FIELDS`]; the safe path is [`add_packed_three_center_tasks`] |
+//! | nothing: the C++ (mn\|P) is square | [`fb_three_center_packed_class`], rust/'s own launcher over FelizJueves's packed spherical-aux `speri3<la, lb, lP>` units, each cell's block at its destination column, the aux index already spherical, and [`FB_THREE_CENTER_PACKED_CELL_FIELDS`]; the safe path is [`add_packed_three_center_tasks`] |
 //! | `kMetricMaxMomentum`, `kThreeCenterMaxMomentum`, `kThreeCenterAuxMaxMomentum` | [`FB_METRIC_MAX_MOMENTUM`], [`FB_THREE_CENTER_MAX_MOMENTUM`], [`FB_THREE_CENTER_AUX_MAX_MOMENTUM`] |
 //! | `kMetricRecordFields`, `kMetricPairFields`, `kThreeCenterAuxFields` | [`FB_METRIC_RECORD_FIELDS`], [`FB_METRIC_PAIR_FIELDS`], [`FB_THREE_CENTER_AUX_FIELDS`], for a safe layer to size its segments by; `kThreeCenterCellFields`, the square cell's, has nothing (#1725) |
 //! | `kThreeCenterBraFields`, the packed bra records' segment count | nothing: the bra records cross as a class view, a field per pointer |
@@ -60,8 +60,8 @@
 //!   from the table and held in the tasks' own rows, so no device table a
 //!   caller could fill reaches the launch.
 //!
-//! - [`add_packed_three_center_tasks`], the two tasks of the Cartesian
-//!   (mn\|P) of a batch of shell pairs, packed: each pair's block in
+//! - [`add_packed_three_center_tasks`], the two tasks of the (mn\|Q) of a
+//!   batch of shell pairs, `m` and `n` Cartesian and `Q` spherical, packed: each pair's block in
 //!   columns of its own, side by side, the cells' destinations formed at
 //!   planning from the batch's columns, one [`fb_three_center_packed_class`]
 //!   per class into an output row.

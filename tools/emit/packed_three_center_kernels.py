@@ -12,26 +12,30 @@ rust/integrals/kernels/, each file at its path relative to it. The C++ tree
 has no such kernels: this tool writes rust/'s alone, and its default root is
 rust/'s (rust/README.md, "Build and test").
 
-One family, FelizJueves's `Target.ERI3` built `packed=True`
-(`eri/density_fit/kernel_eri3.py`, "THE PACKED OUTPUT"): `peri3<la, lb, lP>`,
-the three-center (mn|P) with the square `eri3<la, lb, lP>`'s records, cells
-and arithmetic, each cell's whole staged Cartesian block stored at its cell
-table's destination offset `dst`, element `(a, b, q)` at
-`dst + n_aux (a nB + b) + q`, the aux index fastest, a diagonal shell pair
-(`diag = 1`) storing its full square. Every class tools/emit/df_kernels.py
-emits for `eri3`: `la <= lb` with both at most MAX_L (f), against every `lP`
-at most AUX_MAX_L (i), 70 classes, each in the same form as its square twin
-(FelizJueves's default, but for tools/emit/lowstack.py's forced classes), so
-a packed block is bitwise the square kernel's.
+One family, FelizJueves's `Target.ERI3` built `packed=True,
+spherical_aux=True` (`eri/density_fit/kernel_eri3.py`, "THE PACKED OUTPUT"
+and "THE SPHERICAL-AUX OUTPUT"; `docs/implementation/three_center.md`, "The
+spherical-aux packed output (#743)"): `speri3<la, lb, lP>`, the
+three-center (ab|Q) with the square `eri3<la, lb, lP>`'s records and cells,
+`a`, `b` Cartesian and `Q` the aux shell's real solid harmonics, `2 lP + 1`
+of them, so the aux half of the spherical transform is the kernel's. Each
+cell's whole block is stored at its cell table's destination offset `dst`,
+element `(a, b, q)` at `dst + n_aux (a nB + b) + q`, `n_aux` the aux
+basis's spherical functions and the aux index fastest, a diagonal shell
+pair (`diag = 1`) storing its full square. Every class
+tools/emit/df_kernels.py emits for `eri3`: `la <= lb` with both at most
+MAX_L (f), against every `lP` at most AUX_MAX_L (i), 70 classes, each in
+FelizJueves's low-stack form, the only one the mode has, so
+tools/emit/lowstack.py's choices do not apply.
 
 As tools/emit/df_kernels.py does, each class is one explicit specialization
-of the template `peri3`, and `peri3.h` declares the primary, every class and
-`peri3_kernels`, the [la][lb][lP] table a launcher indexes. Every [n, 3]
-record vector is split into three flat arrays (`ir.passes.split_axes`),
-spelled as there, so a launcher hands the bra a class's record rows as they
-are. The units include the device Boys routine by bare name, the
-`eval_boys.h` rust/integrals/kernels/shared/ carries; this tool writes
-nothing there.
+of the template `speri3`, and `speri3.h` declares the primary, every class
+and `speri3_kernels`, the [la][lb][lP] table a launcher indexes. Every
+[n, 3] record vector is split into three flat arrays
+(`ir.passes.split_axes`), spelled as there, so a launcher hands the bra a
+class's record rows as they are. The units include the device Boys routine
+by bare name, the `eval_boys.h` rust/integrals/kernels/shared/ carries;
+this tool writes nothing there.
 
 FelizJueves needs only the standard library to import, so this needs no
 virtualenv.
@@ -52,7 +56,6 @@ from felizjueves.emit.gpu import Specialization  # noqa: E402
 from felizjueves.eri.density_fit.kernel_eri3 import build_eri3_kernel  # noqa: E402
 from felizjueves.ir.passes import split_axes  # noqa: E402
 from felizjueves.performance.device import by_name  # noqa: E402
-from lowstack import forced  # noqa: E402
 
 # With no shuffle the arch fixes nothing in the text; the gpu backend still
 # takes one.
@@ -62,10 +65,9 @@ ARCH = "sm_86"
 OUT = Path("eri/density_fitting/three_center/packed/kernels")
 
 
-def peri3(cls: tuple[int, int, int]):
-    # The square twin's form (tools/emit/df_kernels.py's `eri3`).
+def speri3(cls: tuple[int, int, int]):
     return split_axes(
-        build_eri3_kernel(cls, packed=True, **forced("eri3", cls)),
+        build_eri3_kernel(cls, packed=True, spherical_aux=True),
         {**BRA_AXES, **AUX_AXES},
     )
 
@@ -84,8 +86,8 @@ def main() -> int:
     arch = by_name(ARCH)
     classes = eri3_classes()
     for cls in classes:
-        kernel = peri3(cls)
-        spec = Specialization("peri3", cls)
+        kernel = speri3(cls)
+        spec = Specialization("speri3", cls)
         write(out / f"{kernel.name}.cu", gpu.emit(kernel, arch, spec))
     # Any class's kernel spells the primary: one family, one parameter block.
     write(out / spec.header, gpu.emit_template(kernel, arch, spec, classes))
