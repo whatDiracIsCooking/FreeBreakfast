@@ -34,11 +34,18 @@ the one order `la + lb` over its primitive pairs. An element of the block
 is then a sum over the two harmonics' nonzero Cartesian terms of a lookup
 into that sum.
 
-**Negligible pairs.** S falls as `exp(-μ R²)`, so a pair of shells with
-`μ_min |A - B|² >= 40 + 4 (la + lb)` is left zero. That is the metric's
-far-field bound used as a cutoff, and the unit test checks that a full
-block just past it is under 1e-15 for every pair of momenta through i. The
-metric has a far field; S has nothing beyond its cutoff.
+**Negligible pairs.** S falls as `exp(-μ R²)`, so a primitive pair with
+`μ |A - B|² >= 40 + 4 (la + lb)` is skipped, and a pair of shells past it
+for its `μ_min` is left zero. That is the metric's far-field bound used as
+a cutoff. A unit test checks that a full block just past it is under 1e-15
+for every pair of momenta through i, at diffuse and at tight exponents.
+The metric has a far field; S has nothing beyond its cutoff.
+
+The primitive test is the one that pays. Between atoms, the tight
+primitives of a shell pair that is kept are mostly past the bound, and each
+one skipped saves an `exp` and three recurrences. On gly10 in cc-pVTZ it
+halves the time (39 ms to 20 ms on one thread) and changes no element by
+more than rounding.
 
 `overlap_via_cartesian` is the textbook route, kept to check and time
 against: Obara-Saika per axis for every Cartesian `<a|b>`, then a dense
@@ -80,7 +87,7 @@ by hand only.
 
 ## Checked (2026-11-21)
 
-`cargo test --release`: 8 unit and integration tests and 1 doctest pass;
+`cargo test --release`: 9 unit and integration tests and 1 doctest pass;
 `cargo clippy --all-targets` and `cargo fmt --check` are clean.
 
 The integration tests compare both routes' lower triangles with PySCF on
@@ -99,6 +106,8 @@ The unit tests cover:
   component, by both routes;
 - the two routes against each other on contracted shells of every pair of
   momenta through i, to 1e-14;
+- the same on a shell pair that is kept but whose tight primitive pairs
+  are skipped (`μ R²` about 1800 for them, 0.6 for the diffuse);
 - the cutoff, as above.
 
 A further integration test requires the triangle to carry the same bits on
@@ -112,13 +121,16 @@ the routes agree to 2e-14.
 
 | System | Basis | nao | Negligible pairs | Spherical, 1 thread | 8 | 24 | Via Cartesian, 24 | Cartesian / spherical |
 |---|---|---|---|---|---|---|---|---|
-| H2O | cc-pVDZ | 24 | 0% | | | 33 µs | 59 µs | 1.8x |
-| CO | cc-pVTZ | 60 | 0% | | | 97 µs | 190 µs | 2.0x |
-| gly10 | cc-pVDZ | 734 | 51.7% | | | 1.1 ms | 16 ms | 14.8x |
-| gly10 | cc-pVTZ | 1678 | 48.7% | 39 ms | 5.8 ms | 3.8 ms | 52 ms | 13.5x |
+| H2O | cc-pVDZ | 24 | 0% | | | 29 µs | 66 µs | 2.2x |
+| CO | cc-pVTZ | 60 | 0% | | | 86 µs | 188 µs | 2.2x |
+| gly10 | cc-pVDZ | 734 | 51.7% | | | 0.68 ms | 16 ms | 23.6x |
+| gly10 | cc-pVTZ | 1678 | 48.7% | 20 ms | 3.3 ms | 2.4 ms | 52 ms | 21.4x |
 
 - **The ratio grows with the molecule** because the Cartesian route
-  screens nothing. Half of gly10's pairs are negligible.
+  screens nothing. Half of gly10's pairs of shells are negligible, and
+  most of the primitive pairs inside the rest are too. Before primitive
+  pairs were skipped, gly10 in cc-pVTZ took 39 ms, 5.8 ms and 3.8 ms on 1,
+  8 and 24 threads.
 - **The small cases measure overhead, not integrals.** At 24 AOs the time
   is mostly rayon's dispatch to 24 threads.
 - Not measured: the time on one thread, or by thread count, of anything

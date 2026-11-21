@@ -50,9 +50,11 @@
 //!
 //! **Negligible pairs.** A primitive pair's block is `mu` times a
 //! polynomial of degree `la + lb + 2` in `sqrt(mu) R` times
-//! `exp(-mu R²)`, so a pair of shells with
-//! `mu |A - B|² >= 40 + 4 (la + lb + 2)` for its smallest `mu` is left zero
-//! (see [`is_negligible`]).
+//! `exp(-mu R²)`, so a primitive pair with
+//! `mu |A - B|² >= 40 + 4 (la + lb + 2)` is skipped, and a pair of shells
+//! past it for its smallest `mu` is left zero (see [`is_negligible`]). The
+//! first test is the one that pays: between atoms, the tight primitives of
+//! a shell pair that is kept are mostly past it.
 
 #![forbid(unsafe_code)]
 
@@ -176,18 +178,19 @@ fn split_rows(
     rows
 }
 
-/// Whether a pair of shells of total momentum `order`, `r2` apart squared,
-/// is negligible: `mu r²` at least `40 + 4 (order + 2)` for its smallest
-/// `mu`, so for every pair of its primitives.
+/// Whether a primitive pair of total momentum `order`, `r2` apart squared,
+/// is negligible: `mu r²` at least `40 + 4 (order + 2)`. Given a pair of
+/// shells' smallest `mu`, whether every pair of its primitives is.
 ///
 /// A primitive pair of the block is `mu` times a polynomial of degree
 /// `order + 2` in `sqrt(mu) R` times `exp(-mu R²)`, with
 /// primitive-normalized factors below one. Past this bound that falls with
 /// `mu`, so the smallest `mu` is the largest term
 /// (`negligible_pairs_are_below_1e_15` checks through i, diffuse and
-/// tight).
-fn is_negligible(mu_min: f64, r2: f64, order: usize) -> bool {
-    mu_min * r2 >= 40.0 + 4.0 * (order + 2) as f64
+/// tight; `skipped_primitive_pairs_change_nothing` checks a kept pair
+/// whose tight primitives are skipped).
+fn is_negligible(mu: f64, r2: f64, order: usize) -> bool {
+    mu * r2 >= 40.0 + 4.0 * (order + 2) as f64
 }
 
 /// One shell as the direct route reads it, the pair-independent factors
@@ -293,7 +296,8 @@ impl Scratch {
 
 /// The spherical block `<a|T|b>` of two shells `r = A - B` apart with no
 /// Cartesian integral formed, into `scratch.out`: the module's "Directly
-/// spherical". No pair is screened here.
+/// spherical". Negligible primitive pairs are skipped; the shell pair is
+/// not screened here.
 fn block(
     a: &ShellData,
     va: &ShellView,
@@ -313,6 +317,9 @@ fn block(
             for &(bx, wb) in &b.primitives {
                 let p = ax + bx;
                 let mu = ax * bx / p;
+                if is_negligible(mu, r2, 0) {
+                    continue;
+                }
                 sum += wa
                     * wb
                     * mu
@@ -331,6 +338,9 @@ fn block(
         for &(bx, wb) in &b.primitives {
             let p = ax + bx;
             let mu = ax * bx / p;
+            if is_negligible(mu, r2, order) {
+                continue;
+            }
             for (axis, &x) in r.iter().enumerate() {
                 let h = &mut h[axis * dh..(axis + 1) * dh];
                 h[0] = 1.0;
@@ -692,10 +702,40 @@ mod tests {
         }
     }
 
+    /// A shell pair that is kept, whose tight primitives are past
+    /// [`is_negligible`]'s bound and skipped (`mu r²` about 1800 for the
+    /// tight pair, about 0.6 for the diffuse): the direct route agrees
+    /// with the unscreened Cartesian one through i, to 1e-14 of the
+    /// block's largest element.
+    #[test]
+    fn skipped_primitive_pairs_change_nothing() {
+        let r = [0.96, -1.2, 1.28];
+        let r2: f64 = r.iter().map(|x| x * x).sum();
+        assert!(is_negligible(450.0, r2, 12) && !is_negligible(0.15, r2, 0));
+        for la in 0..=6 {
+            for lb in 0..=6 {
+                let basis = BasisSet::new(vec![
+                    place(lb, &[900.0, 0.3], &[0.2, 0.8], [0.0; 3]),
+                    place(la, &[0.3, 900.0], &[0.8, 0.2], r),
+                ]);
+                assert_eq!(negligible_pairs(&basis), (0, 3), "<{la}|T|{lb}>");
+                let (t, via) = (kinetic(&basis), kinetic_via_cartesian(&basis));
+                let scale = via.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+                for (k, (got, want)) in t.iter().zip(&via).enumerate() {
+                    assert!(
+                        (got - want).abs() <= 1e-14 * scale,
+                        "<{la}|T|{lb}> [{k}]: {got:e} vs {want:e}"
+                    );
+                }
+            }
+        }
+    }
+
     /// Just past [`is_negligible`]'s bound, where what it drops is
     /// largest, the full block of every pair of momenta through i is under
-    /// 1e-15: contracted shells, off every axis, with no screening; diffuse
-    /// exponents, and tight ones, where the block's `mu` is large.
+    /// 1e-15, by the Cartesian route, which screens nothing: contracted
+    /// shells, off every axis; diffuse exponents, and tight ones, where the
+    /// block's `mu` is large.
     #[test]
     fn negligible_pairs_are_below_1e_15() {
         for (ea, eb) in [([0.8, 2.1], [1.3, 0.5]), ([800.0, 2100.0], [1300.0, 500.0])] {
@@ -711,21 +751,14 @@ mod tests {
                         place(la, &ea, &[0.3, 0.9], r),
                     ]);
                     assert_eq!(negligible_pairs(&basis), (1, 3), "<{la}|T|{lb}>");
-                    let t = kinetic(&basis);
-                    let nb = (2 * lb + 1) as usize;
-                    assert!(
-                        t[lower_index(nb, 0)..lower_index(nb, 0) + nb]
-                            .iter()
-                            .all(|&v| v == 0.0)
-                    );
-
-                    let views = views(&basis);
-                    let (b, a) = (ShellData::new(&basis, 0), ShellData::new(&basis, 1));
-                    let mut scratch = Scratch::new(views.len() - 1);
-                    block(&a, &views[a.l], &b, &views[b.l], r, &mut scratch);
-                    let largest = scratch.out[..a.nsph() * b.nsph()]
-                        .iter()
-                        .fold(0.0_f64, |m, v| m.max(v.abs()));
+                    let (t, via) = (kinetic(&basis), kinetic_via_cartesian(&basis));
+                    let (na, nb) = ((2 * la + 1) as usize, (2 * lb + 1) as usize);
+                    let mut largest = 0.0_f64;
+                    for row in nb..nb + na {
+                        let cols = lower_index(row, 0)..lower_index(row, 0) + nb;
+                        assert!(t[cols.clone()].iter().all(|&v| v == 0.0));
+                        largest = via[cols].iter().fold(largest, |m, v| m.max(v.abs()));
+                    }
                     assert!(largest <= 1e-15, "<{la}|T|{lb}>, mu {mu}: {largest:e}");
                 }
             }
