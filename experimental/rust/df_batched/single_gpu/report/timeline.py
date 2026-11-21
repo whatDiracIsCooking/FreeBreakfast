@@ -6,10 +6,12 @@
 
 The plan carries no NVTX ranges, so each event is classed by kernel name and
 by its place in the trip. A trip is: the packed three-center kernel(s)
-(`peri3`), the spherical transform's GEMMs, the trsm against L (its own
-kernels and the GEMMs it issues), one `geam`, then the device-to-host copy.
-GEMMs after a `peri3` and before the trip's first trsm kernel are the
-transform. Anything from that first trsm kernel up to the `geam` is the fit.
+(`peri3`, or `speri3` with spherical aux), the spherical transform's GEMMs,
+the trsm against L (its own kernels and the GEMMs it issues), one `geam`,
+then the device-to-host copy. GEMMs after the integrals and before the
+trip's first trsm kernel are the transform: with `peri3`, the first of them
+is the dense aux GEMM. Anything from that first trsm kernel up to the `geam`
+is the fit.
 
 The window is the last full run in the file: from the first `peri3` after
 the last Cholesky kernel.
@@ -57,14 +59,17 @@ def main(db: str, out: str) -> None:
     start_i = chol[-1] if chol else 0
     first = next(i for i in range(start_i, len(events)) if events[i][3] == "integrals")
     run = events[first:]
-    # Attribute the GEMMs. After a trip's integrals, the first GEMM (with any
-    # split-K reduction it issues) is the dense aux GEMM W = U_aux^T X; the
-    # GEMMs after it, up to the first trsm kernel, are the ket and bra
-    # transforms; from that trsm kernel on, the fit.
-    phase, aux_seen = "aux", False
+    # Attribute the GEMMs. With the Cartesian-aux kernels (`peri3`), the first
+    # GEMM after a trip's integrals (with any split-K reduction it issues) is
+    # the dense aux GEMM W = U_aux^T X. The spherical-aux kernels (`speri3`,
+    # #1736) leave no aux GEMM, so every GEMM up to the trip's first trsm
+    # kernel is the ket and bra transforms. From that trsm kernel on, the fit.
+    spherical = any("speri3" in ev[4] for ev in run)
+    start = "orbital" if spherical else "aux"
+    phase, aux_seen = start, False
     for i, (s, e, stream, kind, name) in enumerate(run):
         if kind == "integrals":
-            phase, aux_seen = "aux", False
+            phase, aux_seen = start, False
         elif kind == "trsm":
             phase = "fit"
         elif kind == "transpose":
