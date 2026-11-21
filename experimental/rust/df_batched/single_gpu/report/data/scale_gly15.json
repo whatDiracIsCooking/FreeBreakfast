@@ -1,0 +1,422 @@
+{
+  "aux": "cc-pvdz-jkfit",
+  "b_bytes": 6451208408,
+  "basis": "cc-pvdz",
+  "card_free_bytes": 9169797120,
+  "card_total_bytes": 10331226112,
+  "classes": 6,
+  "columns": 150701,
+  "kept_pairs": 35295,
+  "nao": 1089,
+  "naux": 5351,
+  "prefix": {
+    "device_bytes": 1085491336,
+    "tasks": {
+      "cholesky": {
+        "count": 1,
+        "device_s": 0.151170626,
+        "host_s": 0.001912733
+      },
+      "cholesky check": {
+        "count": 1,
+        "device_s": 0.0,
+        "host_s": 3.94e-6
+      },
+      "harmonics": {
+        "count": 1,
+        "device_s": 0.0,
+        "host_s": 0.009485493
+      },
+      "metric": {
+        "count": 1,
+        "device_s": 0.006728704,
+        "host_s": 0.000045921
+      },
+      "metric average": {
+        "count": 1,
+        "device_s": 0.0014336,
+        "host_s": 0.00001792
+      },
+      "metric tables": {
+        "count": 1,
+        "device_s": 0.0,
+        "host_s": 0.002190418
+      },
+      "mmd records (0,0)": {
+        "count": 1,
+        "device_s": 0.002810304,
+        "host_s": 0.000047611
+      },
+      "mmd records (0,1)": {
+        "count": 1,
+        "device_s": 0.001928832,
+        "host_s": 0.00002336
+      },
+      "mmd records (0,2)": {
+        "count": 1,
+        "device_s": 0.000356352,
+        "host_s": 0.000023161
+      },
+      "mmd records (1,1)": {
+        "count": 1,
+        "device_s": 0.000481344,
+        "host_s": 0.00002329
+      },
+      "mmd records (1,2)": {
+        "count": 1,
+        "device_s": 0.000238592,
+        "host_s": 0.00002374
+      },
+      "mmd records (2,2)": {
+        "count": 1,
+        "device_s": 0.000062624,
+        "host_s": 0.000021741
+      },
+      "mmd tables": {
+        "count": 1,
+        "device_s": 0.0,
+        "host_s": 0.000137143
+      },
+      "spherical transform": {
+        "count": 1,
+        "device_s": 1.687554955,
+        "host_s": 0.000112422
+      },
+      "upload U": {
+        "count": 1,
+        "device_s": 0.019891934,
+        "host_s": 0.0000163
+      },
+      "upload ao_offset": {
+        "count": 1,
+        "device_s": 4.928e-6,
+        "host_s": 3.27e-6
+      },
+      "upload bra": {
+        "count": 1,
+        "device_s": 0.000043968,
+        "host_s": 3.52e-6
+      },
+      "upload c_x": {
+        "count": 1,
+        "device_s": 5.312e-6,
+        "host_s": 3.18e-6
+      },
+      "upload c_y": {
+        "count": 1,
+        "device_s": 5.568e-6,
+        "host_s": 3.35e-6
+      },
+      "upload c_z": {
+        "count": 1,
+        "device_s": 5.408e-6,
+        "host_s": 3.36e-6
+      },
+      "upload coefficient": {
+        "count": 1,
+        "device_s": 6.976e-6,
+        "host_s": 3.83e-6
+      },
+      "upload exponent": {
+        "count": 1,
+        "device_s": 0.000013408,
+        "host_s": 9.29e-6
+      },
+      "upload ket": {
+        "count": 1,
+        "device_s": 0.000042624,
+        "host_s": 3.61e-6
+      },
+      "upload prim_begin": {
+        "count": 1,
+        "device_s": 0.000022816,
+        "host_s": 0.000018241
+      },
+      "upload rank": {
+        "count": 1,
+        "device_s": 5.888e-6,
+        "host_s": 3.67e-6
+      },
+      "upload rec_begin": {
+        "count": 1,
+        "device_s": 0.000043296,
+        "host_s": 3.681e-6
+      }
+    },
+    "wall_s": 1.883389618,
+    "walls_s": [
+      1.882630695,
+      1.883389618,
+      1.8834224210000001
+    ]
+  },
+  "runs": [
+    {
+      "build_s": 38.779050794999996,
+      "compare": null,
+      "device_bytes": 5627815192,
+      "keep_s": -0.0,
+      "pinned_bytes": 1199993860,
+      "room_bytes": 8599371776,
+      "tasks": {
+        "B": {
+          "count": 1,
+          "device_s": 0.0,
+          "host_s": 4.4e-7
+        },
+        "B (0, 0) batch transpose": {
+          "count": 1,
+          "device_s": 0.001700864,
+          "host_s": 7.37e-6
+        },
+        "B (0, 1) batch transpose": {
+          "count": 3,
+          "device_s": 0.006027264000000001,
+          "host_s": 0.000024
+        },
+        "B (0, 2) batch transpose": {
+          "count": 2,
+          "device_s": 0.003166208,
+          "host_s": 0.000011289999999999999
+        },
+        "B (1, 1) batch transpose": {
+          "count": 3,
+          "device_s": 0.005682176000000001,
+          "host_s": 0.000019510999999999997
+        },
+        "B (1, 2) batch transpose": {
+          "count": 3,
+          "device_s": 0.00610816,
+          "host_s": 0.000018221
+        },
+        "B (2, 2) batch transpose": {
+          "count": 1,
+          "device_s": 0.001308672,
+          "host_s": 9.92e-6
+        },
+        "cholesky": {
+          "count": 1,
+          "device_s": 0.162145153,
+          "host_s": 0.001842431
+        },
+        "cholesky check": {
+          "count": 1,
+          "device_s": 0.0,
+          "host_s": 4.45e-6
+        },
+        "density fit": {
+          "count": 13,
+          "device_s": 11.114515544,
+          "host_s": 0.0026565259999999998
+        },
+        "download B (0, 0) batch": {
+          "count": 1,
+          "device_s": 0.036356896,
+          "host_s": 5.21e-6
+        },
+        "download B (0, 1) batch": {
+          "count": 3,
+          "device_s": 0.13624646499999998,
+          "host_s": 0.000011611000000000001
+        },
+        "download B (0, 2) batch": {
+          "count": 2,
+          "device_s": 0.075733249,
+          "host_s": 7.91e-6
+        },
+        "download B (1, 1) batch": {
+          "count": 3,
+          "device_s": 0.136300641,
+          "host_s": 0.00001272
+        },
+        "download B (1, 2) batch": {
+          "count": 3,
+          "device_s": 0.11342434900000001,
+          "host_s": 0.00001203
+        },
+        "download B (2, 2) batch": {
+          "count": 1,
+          "device_s": 0.028431999,
+          "host_s": 7.19e-6
+        },
+        "harmonics": {
+          "count": 2,
+          "device_s": 0.0,
+          "host_s": 0.009954287
+        },
+        "metric": {
+          "count": 1,
+          "device_s": 0.006602752,
+          "host_s": 0.000053851
+        },
+        "metric average": {
+          "count": 1,
+          "device_s": 0.001436672,
+          "host_s": 0.00001519
+        },
+        "metric tables": {
+          "count": 1,
+          "device_s": 0.0,
+          "host_s": 0.002733126
+        },
+        "mmd records (0,0)": {
+          "count": 1,
+          "device_s": 0.003122624,
+          "host_s": 0.00003389
+        },
+        "mmd records (0,1)": {
+          "count": 1,
+          "device_s": 0.00192608,
+          "host_s": 0.00001766
+        },
+        "mmd records (0,2)": {
+          "count": 1,
+          "device_s": 0.001675264,
+          "host_s": 0.00001685
+        },
+        "mmd records (1,1)": {
+          "count": 1,
+          "device_s": 0.000482304,
+          "host_s": 0.000015411
+        },
+        "mmd records (1,2)": {
+          "count": 1,
+          "device_s": 0.000238592,
+          "host_s": 0.00001475
+        },
+        "mmd records (2,2)": {
+          "count": 1,
+          "device_s": 0.000062528,
+          "host_s": 0.00001398
+        },
+        "mmd tables": {
+          "count": 1,
+          "device_s": 0.0,
+          "host_s": 0.000141333
+        },
+        "packed three-center": {
+          "count": 13,
+          "device_s": 2.2942826259999998,
+          "host_s": 0.0007389220000000001
+        },
+        "packed three-center tables": {
+          "count": 13,
+          "device_s": 0.0,
+          "host_s": 0.209122057
+        },
+        "spherical transform": {
+          "count": 14,
+          "device_s": 26.713376402,
+          "host_s": 0.0009306049999999998
+        },
+        "unstage B (0, 0) batch": {
+          "count": 1,
+          "device_s": 0.0,
+          "host_s": 0.03932175
+        },
+        "unstage B (0, 1) batch": {
+          "count": 3,
+          "device_s": 0.0,
+          "host_s": 0.143678967
+        },
+        "unstage B (0, 2) batch": {
+          "count": 2,
+          "device_s": 0.0,
+          "host_s": 0.07583432200000001
+        },
+        "unstage B (1, 1) batch": {
+          "count": 3,
+          "device_s": 0.0,
+          "host_s": 0.124115874
+        },
+        "unstage B (1, 2) batch": {
+          "count": 3,
+          "device_s": 0.0,
+          "host_s": 0.12321009499999999
+        },
+        "unstage B (2, 2) batch": {
+          "count": 1,
+          "device_s": 0.0,
+          "host_s": 0.03160225
+        },
+        "upload U": {
+          "count": 2,
+          "device_s": 0.020590401,
+          "host_s": 0.00002704
+        },
+        "upload ao_offset": {
+          "count": 1,
+          "device_s": 4.032e-6,
+          "host_s": 2.17e-6
+        },
+        "upload bra": {
+          "count": 1,
+          "device_s": 0.000042624,
+          "host_s": 2.03e-6
+        },
+        "upload c_x": {
+          "count": 1,
+          "device_s": 3.936e-6,
+          "host_s": 2.04e-6
+        },
+        "upload c_y": {
+          "count": 1,
+          "device_s": 3.808e-6,
+          "host_s": 2.09e-6
+        },
+        "upload c_z": {
+          "count": 1,
+          "device_s": 3.808e-6,
+          "host_s": 2.34e-6
+        },
+        "upload coefficient": {
+          "count": 1,
+          "device_s": 5.6e-6,
+          "host_s": 2.34e-6
+        },
+        "upload exponent": {
+          "count": 1,
+          "device_s": 8.8e-6,
+          "host_s": 6.3e-6
+        },
+        "upload ket": {
+          "count": 1,
+          "device_s": 0.000042784,
+          "host_s": 1.88e-6
+        },
+        "upload prim_begin": {
+          "count": 1,
+          "device_s": 0.00009168,
+          "host_s": 0.000019121
+        },
+        "upload rank": {
+          "count": 1,
+          "device_s": 3.776e-6,
+          "host_s": 1.91e-6
+        },
+        "upload rec_begin": {
+          "count": 1,
+          "device_s": 0.000043296,
+          "host_s": 2.06e-6
+        }
+      },
+      "trips": [
+        1,
+        3,
+        2,
+        3,
+        3,
+        1
+      ],
+      "wall_s": 40.662440413,
+      "walls_s": [
+        40.241093128,
+        40.662440413,
+        41.39678499
+      ],
+      "width_line": "width packed B batch: 14018 of 41526, worker 0 at node 29, 7794841088 bytes and 1975439872 pinned in a room of 7795861528 and 18446744073709551611 pinned"
+    }
+  ],
+  "schwarz": 1e-12,
+  "xyz": "/home/lostica/projects/FreeBreakfast/main/.temp/gly/gly15.xyz"
+}
