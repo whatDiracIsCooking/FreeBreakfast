@@ -167,11 +167,14 @@ allocates. A design, agreed in discussion and not yet built: the code is
 <p>
 <span class="tag dec">decided</span> agreed in discussion, 2026-11-19 (executor) and
 2026-11-20 (memory; then views, managers and devices), and 2026-11-21 (the step
-boundary around B, the target of an output, manifests, step scratch, and library
-workspace after <code>experimental/library_handle_workspace</code>).
+boundary around B, the target of an output, setup's lengths, step scratch, and library
+workspace after <code>experimental/library_handle_workspace</code>; then step scratch
+packed by the closure of the DAG, a step as one node of the outer graph, and the records
+and work lists as scratch with no umbrella name).
 <span class="tag prop">proposed</span> this document's suggestion, not yet agreed
-(one remains, in the <a href="#managers">managers</a> discussion: the device's
-mutex held per library call, and one contention check).
+(two remain, in the <a href="#managers">managers</a> discussion: the device's
+mutex held per library call with one contention check, and a manager's scratch declared
+by its callers).
 <span class="tag disc">to discuss</span> raised in review and set aside for a fuller
 discussion; <a href="#open">collected at the end</a>.
 <span class="tag run">run</span> measured by the one experiment, under the old memory
@@ -183,7 +186,7 @@ vendor or rustflow documentation and not checked against source.
 <li><a href="#shape">The shape</a></li>
 <li><a href="#changes">What changes</a></li>
 <li><a href="#steps">Steps and the MainBus</a></li>
-<li><a href="#budget">The memory budget</a> (and <a href="#manifest">manifests</a>)</li>
+<li><a href="#budget">The memory budget</a> (and <a href="#lengths">setup's lengths</a>)</li>
 <li><a href="#kinds">What is budgeted, by kind</a></li>
 <li><a href="#workspace">BLAS and solver workspace</a></li>
 <li><a href="#caps">Caps, and what the limit covers</a></li>
@@ -216,12 +219,12 @@ will allocate and then allocates it. The same DAG runs in two modes over one rus
 <div class="phases">
   <div class="phase setup"><h4>Setup</h4>
     <p>Parse the config, the geometry and the bases on the host. Fills the dimensions
-    (n_atom, n_ao, n_aux, …), with every length a <a href="#manifest">manifest</a>
-    needs: counted, not built. Not budgeted.</p></div>
+    (n_atom, n_ao, n_aux, …), with <a href="#lengths">every length</a> a step's
+    arrays need: counted, not built. Not budgeted.</p></div>
   <div class="arrow">→</div>
   <div class="phase budget"><h4>Budget mode</h4>
     <p>The DAG, each node calling its step's <code>mem_budget</code>: count, check,
-    allocate into the <code>MainBus</code>. A final node sizes step scratch and
+    allocate into the <code>MainBus</code>. A final node packs step scratch and
     accepts or refuses the whole plan.</p></div>
   <div class="arrow">→</div>
   <div class="phase exec"><h4>Execute mode</h4>
@@ -229,11 +232,14 @@ will allocate and then allocates it. The same DAG runs in two modes over one rus
     Replays (an optimization, AIMD) write into the same buffers.</p></div>
 </div>
 
-<p>There is no planner, no table, no lifetime analysis and no byte reuse between steps.
-The peak of a kind is the sum of what the steps allocate, plus step scratch, which is a
-max per device and holds every library call's work buffer, plus a fixed BLAS-handle
-workspace. That is the trade: some memory for a model small enough to hold in one
-page, and one in which work stealing cannot interact with memory at all.</p>
+<p>There is no planner, no table, and no byte reuse between the <code>Output</code>s
+steps pass on. The peak of a kind is the sum of what the steps' <code>Output</code>s hold,
+plus step scratch, plus a fixed BLAS-handle workspace. Step scratch is what dies with its
+step, every library call's work buffer included; it is packed into one slab per device
+and kind, and two steps share bytes only where the DAG already orders them, by its
+<a href="#scratch">transitive closure</a>. No edge is added for memory. That is the
+trade: some memory for a model small enough to hold in one page, and one in which work
+stealing cannot interact with memory at all.</p>
 
 <h2 id="changes">What changes</h2>
 
@@ -245,8 +251,8 @@ page, and one in which work stealing cannot interact with memory at all.</p>
   <span class="tag dec">decided</span></td></tr>
 <tr><td>Unit of the DAG</td><td>A task (<code>GpuTask</code>, <code>CpuTask</code>)
   with a <code>layout</code></td>
-  <td>A step with <code>mem_budget</code> and <code>run</code>; its inner tasks are its
-  own <span class="tag dec">decided</span></td></tr>
+  <td>A step: one node of the outer graph, with <code>mem_budget</code> and
+  <code>run</code>; its inner tasks are its own <span class="tag dec">decided</span></td></tr>
 <tr><td>Memory description</td><td><code>layout</code>: rows of the plan's table</td>
   <td><code>mem_budget</code>: charges and allocates
   <span class="tag dec">decided</span></td></tr>
@@ -256,8 +262,9 @@ page, and one in which work stealing cannot interact with memory at all.</p>
   <span class="tag dec">decided</span></td></tr>
 <tr><td>Byte reuse</td><td>The assigner packs rows by lifetime; every reuse is a
   handoff edge</td>
-  <td>None between buffers steps own. Step scratch only: a max per device, lent to
-  one step at a time <span class="tag dec">decided</span></td></tr>
+  <td>None between <code>Output</code>s. Step scratch only: packed per device and kind,
+  two steps' regions overlapping only where the DAG's closure orders them; no edge added
+  <span class="tag dec">decided</span></td></tr>
 <tr><td>Admission</td><td>Block + reserve + stack against the cap; the reserve
   measured per worker</td>
   <td>An atomic counter per kind against the cap; no reserve measurement
@@ -377,10 +384,24 @@ locks are never contended.</figcaption>
 </figure>
 
 <ul>
-<li><strong>An <code>Output</code> holds everything its step allocates.</strong> The
-  products other steps read, and the step's private buffers (the DIIS rings, a streamed
-  pass's ring, the Fock matrix rewritten every iteration) as private fields.
+<li><strong>An <code>Output</code> holds what outlives its step's run; scratch holds
+  the rest.</strong> An <code>Output</code> is what other steps read, or what carries
+  over a replay (the last geometry's orbitals as the next guess). Everything else the
+  step allocates dies with the step and is <a href="#scratch">step scratch</a>: the DIIS
+  rings, a Davidson subspace, a streamed pass's ring, the records and work lists, build
+  intermediates. Revised 2026-11-21: the step's private buffers were fields of its
+  <code>Output</code>, summed for the whole calculation.
   <span class="tag dec">decided</span></li>
+<li><strong>A step is exactly one node of the outer graph.</strong> Something is its own
+  step only if another step reads its product, its product carries over a replay, or it
+  has its own config table. Everything finer is the step's inner graph, built in
+  <code>run</code>: a subflow, condition loops inside it, a pipeline, or a plain loop on
+  one stream. The SCF iteration is a condition loop inside <code>ScfStep</code>'s subflow,
+  not in the outer graph. Splitting a step is not free: its intermediates become
+  <code>Output</code>s, which are summed (B is the case: one step, one 7.8&nbsp;GB slab,
+  where two would hold two). What a finer step would buy, overlap between its pieces, is
+  available inside the step. It also gives scratch one lifetime, a node's run, so the
+  closure is over nodes. <span class="tag dec">decided</span> 2026-11-21</li>
 <li><strong>The lock is used plainly.</strong> The owning step takes
   <code>write()</code>, a reader's view takes <code>read()</code>. No generation stamp,
   no <code>try_</code>, no assertion. It exists because Rust will not compile shared
@@ -399,11 +420,13 @@ locks are never contended.</figcaption>
   <span class="tag dec">decided</span></li>
 <li><strong>A step the config does not ask for is not in the DAG.</strong> A step that
   declares it reads one is a refusal when the DAG is built, naming both, as the C++
-  planner does. No slot is ever read empty. <span class="tag dec">decided</span></li>
+  planner does. So no declared read finds an empty slot; the types hold only that a read
+  is declared, and the slot's emptiness is a runtime assert (an <code>Option</code> budget
+  mode fills), as the prototype found. <span class="tag dec">decided</span></li>
 <li><strong>Shared code with per-user state is a type, not a step.</strong> DIIS is the
   case: the SCF's history and a coupled-cluster solver's cannot be shared and their
   vector lengths differ. Each user holds its own <code>Diis</code> as a private field of
-  its <code>Output</code>, charged in its own <code>mem_budget</code>. Whether DIIS should
+  its step scratch, declared in its own <code>mem_budget</code>. Whether DIIS should
   instead be a step with a manager is part of the manager discussion. The question runs
   the other way too (2026-11-21): if DIIS is not a manager, is the
   <code>EriManager</code> one, or only an <code>Output</code> with methods?
@@ -420,7 +443,8 @@ locks are never contended.</figcaption>
   an epilogue node at its end, or a <code>reset</code> mode that some steps support.
   The prototype's reset mode sufficed; one way to make what carries over explicit is a
   trait method the wrapper calls when a replay enters (an <code>on_replay</code> with a
-  no-op default). Tagged for later, 2026-11-21.
+  no-op default). Tagged for later, 2026-11-21. The split above narrows it: what lives in
+  scratch never carries over, so only an <code>Output</code>'s fields need the rule.
   <span class="tag disc">to discuss</span></li>
 <li><strong><code>mem_budget</code> is an associated function.</strong> Sizes depend on
   step options (<code>nroots</code>, a Davidson subspace) as well as on the dimensions,
@@ -472,7 +496,14 @@ later for CASSCF and the response solvers.</p>
     <code>nroots</code> for a state average, many right-hand sides for a response solve.
     Either callers declare and the manager takes the max (the scratch pattern), or the
     scratch is sized for one density and callers loop. Not on the table: more than one
-    manager, or more than one B.</li>
+    manager, or more than one B.
+    <br><em>Suggested, 2026-11-21:</em> the manager owns no scratch. It exposes a size
+    function (<code>EriManager::jk_scratch(n_dens)</code>); each caller adds that to its
+    own declaration in <code>mem_budget</code>, and <code>build_jk</code> works in the
+    caller's region, since it runs during the caller's <code>run</code>. Packing then
+    covers the SCF, a state average and a response solve with no new rule, and the
+    internal lock is left guarding almost nothing, which bears on the opening question.
+    <span class="tag prop">proposed</span></li>
   <li>Whether a manager owns its own streams and BLAS handles per card, which would
     take its <code>gemm</code> calls off the device's one library stream.
     <br><em>Leaning after the prototype, 2026-11-20: no.</em> The prototype
@@ -513,19 +544,22 @@ impl MemBudget for ScfStep {
         let n = bus.dims.n_ao;
         let dev = bus.device_of::&lt;Self&gt;();
         let output = ScfOutput {
-            stream: ForkStream::new(dev),         // the step's own; not budgeted
-            c:    budget.device(dev, n * n),      // summed, this step's own
-            fock: budget.device(dev, n * n),
+            c:    budget.device(dev, n * n),      // summed: the CASSCF reads it
             eps:  budget.heap(n),                 // a fixed-size host slab
             ..
         };
-        budget.scratch(dev, syevd_lwork(n));      // a max per device, lent for run
-        *bus.scf.write() = output;
+        // Dies with the run: the Fock matrix, the DIIS ring, the eigensolve's
+        // work. One region, packed by the final node, lent to run.
+        budget.scratch(dev, Kind::Device,
+            n * n + diis_bytes(bus) + syevd_lwork(n) + eri_jk_scratch(bus, 1));
+        *bus.scf.write() = Some(output);
     }
 }</code></pre>
 
-<p>A sketch, not a signature to hold anyone to. What is fixed is what each
-<code>Budget</code> call does, in order:</p>
+<p>A sketch, not a signature to hold anyone to. The step's <code>ForkStream</code> is not
+in it: the wrapper makes it and keeps it beside the <code>Output</code> in the slot, so it
+can sync it without the step's cooperation (as the prototype found). What is fixed is
+what each <code>Budget</code> call for step-owned memory does, in order:</p>
 
 <ol>
 <li><strong>Add</strong> the bytes to the kind's atomic counter (per device for device
@@ -535,21 +569,24 @@ impl MemBudget for ScfStep {
 <li><strong>Allocate</strong>, unless the flag is set.</li>
 </ol>
 
-<p><strong>The final node of the budget DAG</strong> then: adds each device's
-<a href="#scratch">step scratch</a> (a max) and the fixed BLAS-handle workspace
-(<a href="#workspace">below</a>) to its counter and makes the same check; holds the heap
-and pinned totals against the host's available memory; and, if the flag is set, prints
-the whole table with the totals and exits. Otherwise it allocates the scratch and the
-handle workspace, sets the latter on each BLAS handle, and logs the table.</p>
+<p>A <code>budget.scratch</code> call only records a row (step, device, kind, bytes);
+it charges and allocates nothing. <strong>The final node of the budget DAG</strong> then:
+takes the closure of the DAG and packs each device and kind's scratch rows into one slab
+(<a href="#scratch">step scratch</a>); adds each packed peak and the fixed BLAS-handle
+workspace (<a href="#workspace">below</a>) to its counter and makes the same check; holds
+the heap and pinned totals against the host's available memory; and, if the flag is set,
+prints the whole table with the totals and exits. Otherwise it allocates the scratch slabs
+and the handle workspace, sets the latter on each BLAS handle, records each step's offset,
+and logs the table.</p>
 
 <figure class="fig">
-<svg viewBox="0 0 900 274" role="img" aria-label="One device's counters: step allocations add along a bar toward the cap; scratch declarations take a maximum, which the final node adds at the end">
+<svg viewBox="0 0 900 274" role="img" aria-label="One device's counters: Output allocations add along a bar toward the cap; scratch declarations are packed by the closure of the DAG, and the final node adds the packed peak at the end">
   <defs>
     <marker id="fbh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="hot" d="M0,1 L10,5 L0,9 z"/></marker>
     <marker id="fbg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="grey" d="M0,1 L10,5 L0,9 z"/></marker>
   </defs>
   <text class="b" x="20" y="34">Device 0: the sum counter</text>
-  <text class="m s" x="20" y="85">each step adds</text>
+  <text class="m s" x="20" y="85">each Output adds</text>
   <rect class="f-int" x="150" y="60" width="30" height="40"/>
   <text class="s" x="165" y="52" text-anchor="middle">X</text>
   <rect class="f-int" x="180" y="60" width="300" height="40"/>
@@ -566,8 +603,8 @@ handle workspace, sets the latter on each BLAS handle, and logs the table.</p>
   <path class="f-read" marker-end="url(#fbg)" d="M150,112 L688,112"/>
   <text class="m s" x="150" y="128">charged and allocated step by step, in any order, during the budget DAG</text>
 
-  <text class="b" x="20" y="152">Device 0: the scratch counter</text>
-  <text class="m s" x="20" y="203">each declaration is a max</text>
+  <text class="b" x="20" y="152">Device 0: the scratch slab</text>
+  <text class="m s" x="20" y="203">each declaration a region</text>
   <rect class="f-scf" x="150" y="166" width="60" height="16"/>
   <text class="s" x="218" y="179">X: eigensolve's work at n_ao</text>
   <rect class="f-scf" x="150" y="190" width="60" height="16"/>
@@ -575,14 +612,16 @@ handle workspace, sets the latter on each BLAS handle, and logs the table.</p>
   <rect class="f-scf" x="150" y="214" width="38" height="16"/>
   <text class="s" x="218" y="227">ERI: B's build intermediates</text>
   <path class="f-hot" marker-end="url(#fbh)" d="M400,186 C560,186 720,170 720,104"/>
-  <text class="s" x="470" y="214">the final node adds the max once,</text>
-  <text class="s" x="470" y="230">checks the cap again, then allocates it</text>
+  <text class="s" x="470" y="214">the final node packs them: ordered steps</text>
+  <text class="s" x="470" y="230">share bytes, unordered ones do not</text>
   <text class="m s" x="20" y="262">Over the cap at any point: the flag is set, allocation stops, counting continues, and the final node prints the table and exits.</text>
 </svg>
-<figcaption>What one device's two counters hold. Step-owned memory is a sum; step
-scratch, which holds every library call's work buffer, is a max, known only when every step
-has declared, which is why the final node exists. The bar's scratch segment also carries
-the fixed BLAS-handle workspace. Bars not to scale.</figcaption>
+<figcaption>What one device's two counters hold. <code>Output</code>s are a sum; step
+scratch, which holds every library call's work buffer, is packed, and its peak is known
+only when every step has declared, which is why the final node exists. The SCF follows
+both X and ERI, so its region may overlap either; X and ERI are unordered, so theirs stay
+apart and the two run side by side. The bar's scratch segment also
+carries the fixed BLAS-handle workspace. Bars not to scale.</figcaption>
 </figure>
 
 <ul>
@@ -594,8 +633,8 @@ the fixed BLAS-handle workspace. Bars not to scale.</figcaption>
   <em>report</em> the same every run too, complete and not whichever step crossed the
   line. The only waste on a refusal is what was allocated before the flag flipped, and the
   process is exiting. <span class="tag dec">decided</span></li>
-<li><strong>The device check has two moments</strong>: per step for step-owned memory,
-  and once at the end for step scratch and the handle workspace. A plan can pass every
+<li><strong>The device check has two moments</strong>: per step for <code>Output</code>s,
+  and once at the end for the packed scratch and the handle workspace. A plan can pass every
   step and be refused at the end; the table carries each as its own row so that reads
   plainly.
   <span class="tag dec">decided</span></li>
@@ -603,19 +642,27 @@ the fixed BLAS-handle workspace. Bars not to scale.</figcaption>
   touching the pages of a multi-GB slab is the slow part.</li>
 </ul>
 
-<h3 id="manifest">Manifests: counted in setup, built by the step</h3>
+<h3 id="lengths">Lengths: counted in setup, built by the step</h3>
 
 <p>A kernel cannot walk a <code>BasisSet</code>. It reads flat arrays that say, for
-every unit of work, where its inputs are and where its result goes. A step's
-<strong>manifest</strong> is those arrays: the host builds them from the geometry and
-the bases, stages them in pinned memory and uploads them. The name is provisional
-(2026-11-21); the prototype calls the struct <code>Tables</code>, which collides with
-the budget table a refusal prints.</p>
+every unit of work, where its inputs are and where its result goes; the host builds them
+from the geometry and the bases, stages them in pinned memory and uploads them. They are
+of two kinds. <strong>Records</strong> are data: one entry per primitive, with its centre,
+exponent and weighted coefficient. <strong>Work lists</strong> are indices: one entry per
+unit of kernel work.</p>
 
-<p>A manifest holds two kinds of thing. <strong>Records</strong> are data: one entry per
-primitive, with its centre, exponent and weighted coefficient. <strong>Work
-lists</strong> are indices: one entry per unit of kernel work. The density-fitting
-step's, from <code>experimental/rust/v0.0.2/src/steps/eri.rs</code>, with their sizes on
+<p><span class="tag dec">decided</span> 2026-11-21: <strong>no umbrella name.</strong>
+"Manifest" named them while they were a budget category of their own, counted in setup,
+charged in <code>mem_budget</code>, built in <code>run</code> and kept for the whole
+calculation. A step rebuilds them on every run, so keeping them buys nothing: they are
+<a href="#scratch">step scratch</a>, pinned for the staging and device for what the
+kernels read, and once their step is done their bytes go to later steps. What is left
+of the category is one rule, about lengths, and it covers every array a step allocates,
+<code>Output</code> or scratch. A binding that launches over records and work lists may
+name a struct holding both locally; the prototype's <code>Tables</code> collides with the
+budget table and goes.</p>
+
+<p>The density-fitting step's arrays, from <code>experimental/rust/v0.0.2/src/steps/eri.rs</code>, with their sizes on
 gly10 in cc-pVDZ / cc-pVDZ-JKFIT:</p>
 
 <div class="tablewrap"><table>
@@ -699,35 +746,38 @@ gly10 in cc-pVDZ / cc-pVDZ-JKFIT:</p>
 </svg>
 <figcaption>What a work list entry is. One entry of <code>cells</code> is six integers:
 two ranges into record arrays (the orbital pairs the records step formed, and this
-manifest's own aux records), and where in the slab the kernel writes. The other work
-lists are the same shape with other fields. Nothing in an entry is a pointer, so the
-whole manifest is sized by counting, before anything is built.</figcaption>
+step's own aux records), and where in the slab the kernel writes. The other work
+lists are the same shape with other fields. Nothing in an entry is a pointer, so every
+array is sized by counting, before anything is built.</figcaption>
 </figure>
 
 <p><span class="tag dec">decided</span> 2026-11-21: <strong>setup counts, the step
 builds.</strong></p>
 <ul>
 <li><strong>Setup fills every length.</strong> It has already read the geometry and both
-  bases, and it is outside the DAG and unbudgeted, so it adds the counts a manifest needs
+  bases, and it is outside the DAG and unbudgeted, so it adds the counts the arrays need
   to <code>Dims</code>: <code>n_aux_prim</code>, <code>n_aux_shell</code> and
   <code>n_shell_pair</code> beside the <code>n_col</code> it already derives from the
   orbital <code>RecordTables</code>. Counting is a walk over the shells and builds
   nothing. A <code>mem_budget</code> is then a function of <code>Dims</code> and the
   step's options alone, as <a href="#steps">the step contract</a> says.</li>
-<li><strong>Setup does not build manifests.</strong> The rule for what setup may do:
-  counts, and small host data the dimensions need. Anything that scales with a pair
-  count, or a product of shell counts, belongs to a step and is budgeted.
+<li><strong>Setup counts every length that scales; it builds none of those arrays.</strong>
+  The rule for what setup may do: counts, and small host data the dimensions need. Any
+  array whose length scales with a pair count, or a product of shell counts, has its
+  length counted into <code>Dims</code> by setup, and belongs to a step and is
+  budgeted: B's slab as much as the work lists.
   <code>cells</code> is the case: 1.79&nbsp;GB on gly10, which would otherwise sit on the
   plain heap with nothing counting it.</li>
 <li><strong><code>mem_budget</code> charges, <code>run</code> builds.</strong>
-  <code>mem_budget</code> charges each array at its length from <code>Dims</code>, pinned
-  and device, and allocates unless the plan is over or dry. It builds nothing.
-  <code>run</code> builds the manifest straight into the pinned slab (a counting pass over
-  the shells gives each class's offset, so no temporary <code>Vec</code> is needed),
-  uploads it on the step's stream, and launches.</li>
-<li><strong>A replay builds again, into the same slab.</strong> The records hold
-  coordinates, which move in an optimization or a trajectory; the lengths do not. So
-  every <code>run</code> rebuilds in place and allocates nothing. Rebuilding only the
+  <code>mem_budget</code> declares the records and work lists at their lengths from
+  <code>Dims</code> as scratch, pinned and device. It builds nothing.
+  <code>run</code> builds them straight into its pinned region (a counting pass over the
+  shells gives each class's offset, so no temporary <code>Vec</code> is needed), uploads
+  them on the step's stream into its device region, and launches.</li>
+<li><strong>A replay builds again, into the same regions.</strong> The records hold
+  coordinates, which move in an optimization or a trajectory; the lengths do not, and
+  neither do the offsets. So every <code>run</code> rebuilds in place and allocates
+  nothing. Rebuilding only the
   records (the work lists depend on the bases alone) is to measure.</li>
 <li><strong>A refused or dry budget builds nothing</strong> and still prints exact
   lengths, since they are counts. This is what the prototype could not do: its
@@ -742,7 +792,7 @@ builds.</strong></p>
 </ul>
 
 <figure class="fig">
-<svg viewBox="0 0 900 250" role="img" aria-label="A manifest across the three phases: setup counts its lengths into Dims; budget mode charges and allocates them and builds nothing; execute mode builds into the pinned slab, uploads and launches">
+<svg viewBox="0 0 900 250" role="img" aria-label="Records and work lists across the three phases: setup counts their lengths into Dims; budget mode declares them as scratch and builds nothing; execute mode builds into the pinned region, uploads and launches">
   <defs>
     <marker id="mf-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="grey" d="M0,1 L10,5 L0,9 z"/></marker>
   </defs>
@@ -752,7 +802,7 @@ builds.</strong></p>
   <text x="26" y="44" class="b">Setup</text>
   <text x="80" y="44" class="m s">outside the DAG, unbudgeted</text>
   <text x="26" y="70">reads the geometry and both bases,</text>
-  <text x="26" y="88">and counts; builds no manifest</text>
+  <text x="26" y="88">and counts; builds no array</text>
   <text style="white-space:pre" x="26" y="116" class="mono">n_aux_prim    1,272</text>
   <text style="white-space:pre" x="26" y="134" class="mono">n_aux_shell   1,272</text>
   <text style="white-space:pre" x="26" y="152" class="mono">n_shell_pair  58,653</text>
@@ -760,9 +810,9 @@ builds.</strong></p>
   <text x="26" y="212" class="m">→ Dims, on the bus</text>
   <text x="326" y="44" class="b">Budget mode</text>
   <text x="416" y="44" class="m s">mem_budget, per step</text>
-  <text style="white-space:pre" x="326" y="70">1  charge length × field bytes,</text>
-  <text style="white-space:pre" x="326" y="88">    pinned and device, from Dims</text>
-  <text style="white-space:pre" x="326" y="112">2  allocate, unless over or dry</text>
+  <text style="white-space:pre" x="326" y="70">1  declare length × field bytes,</text>
+  <text style="white-space:pre" x="326" y="88">    pinned and device scratch</text>
+  <text style="white-space:pre" x="326" y="112">2  final node packs and allocates</text>
   <text style="white-space:pre" x="326" y="136">3  build nothing</text>
   <rect class="f-wait" x="326" y="156" width="248" height="62" rx="6"/>
   <text x="338" y="176" class="s">refused, or --budget-only:</text>
@@ -770,7 +820,7 @@ builds.</strong></p>
   <text x="338" y="210" class="s">every length in the table exact</text>
   <text x="636" y="44" class="b">Execute mode</text>
   <text x="742" y="44" class="m s">run, every replay</text>
-  <text style="white-space:pre" x="636" y="70">1  build into the pinned slab</text>
+  <text style="white-space:pre" x="636" y="70">1  build into the pinned region</text>
   <text style="white-space:pre" x="636" y="88" class="m s">     in place: the centres move</text>
   <text style="white-space:pre" x="636" y="112">2  upload on the step's stream</text>
   <text style="white-space:pre" x="636" y="136">3  launch over the work lists</text>
@@ -779,8 +829,9 @@ builds.</strong></p>
   <path class="f-bus" marker-end="url(#mf-b)" d="M280,127 L308,127"/>
   <path class="f-bus" marker-end="url(#mf-b)" d="M590,127 L618,127"/>
 </svg>
-<figcaption>Where a manifest's three facts live: its length in setup, its bytes in budget
-mode, its contents in execute mode. gly10's counts shown.</figcaption>
+<figcaption>Where a step's records and work lists have their three facts: their length
+in setup, their bytes in budget mode, their contents in execute mode. gly10's counts
+shown.</figcaption>
 </figure>
 
 <h2 id="kinds">What is budgeted, by kind</h2>
@@ -789,17 +840,19 @@ mode, its contents in execute mode. gly10's counts shown.</figcaption>
 <tr><th>Kind</th><th>Counter</th><th>What <code>Budget</code> hands back</th>
   <th>Rule</th></tr>
 <tr><td>Device</td><td>Sum, per device</td><td>A fixed-size device buffer</td>
-  <td>Owned by the step's <code>Output</code></td></tr>
+  <td>Owned by the step's <code>Output</code>: read by other steps, or carried over a
+  replay</td></tr>
 <tr><td>Pinned</td><td>Sum, per device</td><td>A fixed-size page-locked slab</td>
   <td>As device</td></tr>
 <tr><td>Heap</td><td>Sum, one for the node</td><td>A <code>HeapSlab&lt;T&gt;</code> over
   a <code>Box&lt;[T]&gt;</code></td>
   <td>Cannot grow; pages touched in <code>mem_budget</code></td></tr>
-<tr><td>Scratch</td><td>Max, per device</td>
-  <td>A device buffer lent for the length of the step's <code>run</code>: build
-  intermediates, and every library call's work buffer</td>
-  <td>Allocated by the final node; one borrower at a time per device
-  (<a href="#scratch">below</a>)</td></tr>
+<tr><td>Scratch</td><td>Packed, per device and kind (device, pinned)</td>
+  <td>A lease on the step's region of the slab, for the length of its <code>run</code>:
+  build intermediates, solver and DIIS state, records and work lists, and every library
+  call's work buffer</td>
+  <td>Packed and allocated by the final node; regions overlap only between steps the
+  DAG orders (<a href="#scratch">below</a>)</td></tr>
 <tr><td>Handle workspace</td><td>A fixed constant, per device</td><td>Nothing: set on
   the device's BLAS handle, the step never sees it</td>
   <td>32&nbsp;MiB, allocated by the final node (<a href="#workspace">below</a>)</td></tr>
@@ -825,12 +878,14 @@ mode, its contents in execute mode. gly10's counts shown.</figcaption>
 
 <h3 id="scratch">Step scratch</h3>
 
-<p><span class="tag dec">decided</span> 2026-11-21. Device memory a step needs
-during its <code>run</code> and that nothing reads afterwards: the build intermediates
-of B, which were 68% of the prototype's <code>eri</code> device bytes on benzene (237 of
-347&nbsp;MiB), and the work buffer of every library call (<code>syevd</code>'s at
-order n, …; <a href="#workspace">below</a>). Without it the only home for them is the
-step's <code>Output</code>, held for the run.</p>
+<p><span class="tag dec">decided</span> 2026-11-21. Memory a step needs during its
+<code>run</code> and that nothing reads afterwards: the build intermediates of B, which
+were 68% of the prototype's <code>eri</code> device bytes on benzene (237 of
+347&nbsp;MiB); the work buffer of every library call (<code>syevd</code>'s at order n,
+…; <a href="#workspace">below</a>); a solver's DIIS ring or Davidson subspace; and the
+records and work lists, staged in pinned memory and read on the device. Without it the
+only home for them is the step's <code>Output</code>, summed for the whole
+calculation.</p>
 
 <ul>
 <li><strong>Why not allocate and free it inside the step.</strong> Two reasons.
@@ -840,22 +895,56 @@ step's <code>Output</code>, held for the run.</p>
   happened up front and counted every step's bytes for the whole run, so what
   <code>eri</code> gives back mid-run was promised to nobody. What lowers the peak is
   sharing scratch between steps, not releasing it.</li>
-<li><strong>One max per device.</strong> A step declares
-  <code>budget.scratch(dev, bytes)</code> in <code>mem_budget</code>; the device's
-  counter takes the max by <code>fetch_max</code>; the final budget node allocates it
-  once per device. The step wrapper lends it to a step for its <code>run</code>, under a
-  per-device scratch lock, and takes it back after the step-end sync. A finished node
-  is finished device work, so the next borrower cannot overlap the last on the card.</li>
+<li><strong>Declared per step, packed by the closure.</strong> A step declares
+  <code>budget.scratch(dev, kind, bytes)</code> in <code>mem_budget</code>, for device or
+  pinned memory; the call records a row and allocates nothing. The final budget node
+  takes the transitive closure of the DAG (a bitset of successors per node, at a few
+  dozen nodes) and packs each device and kind's rows into one slab: two steps' regions
+  may overlap only if one reaches the other. It packs greedily, in a fixed order (size,
+  then step id), so the offsets, and the table, are the same every run. Then it
+  allocates one slab per device and kind and records each step's offset.</li>
+<li><strong>Why the closure is enough.</strong> A finished node is finished device work
+  (the wrapper's step-end sync), so a path in the DAG from A to B is a happens-before on
+  the card as well as on the host: B cannot touch the bytes before A is done with them,
+  under any schedule the executor picks. Unordered steps never share. So, unlike the old
+  assigner, which made reuse possible by <em>adding</em> handoff edges, nothing here
+  constrains the schedule, and work stealing still cannot interact with memory.</li>
+<li><strong>Computed once.</strong> The graph and every length are fixed for the
+  calculation, so the closure and the offsets are made once in budget mode and every
+  replay runs in the same regions. A replayed chain's closure is taken over the loop's
+  body: a module cannot run concurrently with itself, so one iteration ends before the
+  next begins, and two steps unordered within the body stay apart, as they must. Outside
+  the loop, the loop is one node.</li>
+<li><strong>A lease that cannot escape.</strong> The wrapper hands <code>run</code> a
+  lease on its regions that borrows for the length of <code>run</code>, not
+  <code>'static</code>. A step cannot store its scratch in its <code>Output</code>, so
+  "scratch dies with the step" holds by type. The overlapping slices need one
+  <code>unsafe</code>, in the arena, with the closure invariant written beside it.</li>
+<li><strong>A step's inner tasks split its region themselves.</strong> The closure is over
+  the outer graph's nodes, a step being one node; two unordered tasks of one step's
+  subflow share bytes only if the step arranges it. Inner graphs are small and written by
+  hand, so the closure is not taken recursively.</li>
 <li><strong>What it keeps.</strong> Everything allocated in budget mode; nothing
-  allocated in execute mode; accept or refuse independent of order. The peak counts
-  scratch once per device and not once per step.</li>
-<li><strong>What it costs.</strong> Two scratch-using steps on one card serialize on
-  the lock. In DF-RHF those are <code>eri</code>, the orthogonalizer and the SCF; the
-  last two are chained anyway. It is byte reuse between steps, but for one pool with one
-  rule, not the old arena's per-buffer lifetimes.</li>
+  allocated in execute mode; accept or refuse independent of order; no lock, so a
+  scratch-using step never waits on another.</li>
+<li><strong>What it costs.</strong> Bytes in place of time. The packed peak is at least
+  the largest single declaration, and equals it only when every scratch user is chained.
+  In DF-RHF, <code>eri</code> and the orthogonalizer are unordered, so their regions are
+  disjoint and the two overlap on the card; the SCF follows both and may reuse either.
+  Revised 2026-11-21: the first form was one max per device under a lock, which made
+  <code>eri</code> and X serialize.</li>
+<li><strong>The host heap is not packed.</strong> It stays a sum. What a step's
+  <code>run</code> needs on the heap and drops is small, or it is a pinned staging
+  buffer, which is scratch.</li>
 <li><strong>Sizes will change, the mechanism should not.</strong> A batched build
   bounds the scratch to one block, and a multi-GPU build declares scratch on every card
   it spans.</li>
+<li><strong>The same machinery would cover <code>Output</code>s.</strong> An
+  <code>Output</code> only one later step reads still holds its bytes for the whole
+  calculation. Packing it too is the same closure over a different interval, from its
+  producer to its last reader. Held until the measurement (<a href="#open">open
+  questions</a>) says <code>Output</code>s, not scratch, are what stacks.
+  <span class="tag disc">to discuss</span></li>
 </ul>
 
 <h2 id="workspace">BLAS and solver workspace</h2>
@@ -879,7 +968,7 @@ things go by the name, and they are handled apart:</p>
   by the final budget node</td>
   <td><a href="#scratch">Step scratch</a>, lent to the step for its <code>run</code></td></tr>
 <tr><td>Protected by</td><td>The order of the one library stream every BLAS call is
-  on</td><td>The scratch lock and the step-end sync, as for any scratch</td></tr>
+  on</td><td>The closure and the step-end sync, as for any scratch</td></tr>
 </table></div>
 
 <ul>
@@ -893,9 +982,9 @@ things go by the name, and they are handled apart:</p>
   <span class="tag dec">decided</span></li>
 <li><strong>A call's work buffer is the step's, like any kernel's scratch.</strong> The
   step declares it in <code>mem_budget</code> from the size query
-  (<code>budget.scratch(dev, syevd_lwork(n))</code>), and passes a slice of its lent
+  (<code>budget.scratch(dev, Kind::Device, syevd_lwork(n))</code>), and passes a slice of its lent
   scratch to the call in <code>run</code>. There is no pooled library workspace apart
-  from scratch, no <code>fetch_max</code> of its own, and no step-invisible bytes.
+  from scratch, no packing of its own, and no step-invisible bytes.
   <span class="tag dec">decided</span></li>
 <li><strong>The binding checks the slice against the query, before the call.</strong>
   Our own kernels are safe from a short buffer for two reasons: their scratch travels with
@@ -999,6 +1088,12 @@ allocations such as reading the geometry and the basis data.</div>
   mutating methods, within the steps' one crate</td></tr>
 <tr><td>A step reads only the <code>Output</code>s it declared</td><td>By type:
   <code>run</code> receives its <code>View</code>, not the bus</td></tr>
+<tr><td>Scratch dies with its step</td><td>By type: the lease borrows for the length of
+  <code>run</code>, so it cannot be stored in an <code>Output</code></td></tr>
+<tr><td>Two steps share scratch bytes only if the DAG orders them</td><td>By
+  construction: the final node packs from the closure; one <code>unsafe</code>, in the
+  arena, and a test that packs a DAG and checks every overlapping pair against
+  reachability</td></tr>
 <tr><td>A library call's work buffer is at least its size query</td><td>By the
   binding: it repeats the query and checks the slice before the call
   (<a href="#workspace">above</a>); a <code>doc_check</code> test holds every solver
@@ -1067,21 +1162,33 @@ goal, and almost never the first implementation.</p>
 
 <h2 id="cost">What is given up, and what disappears</h2>
 
-<p><strong>Given up: byte reuse between steps.</strong> Every step's buffers stay
-allocated for the run; down a chain, each step's intermediates stack. Reuse
+<p><strong>Given up: byte reuse between <code>Output</code>s.</strong> Every step's
+<code>Output</code> stays allocated for the run; down a chain, they stack. Reuse
 <em>within</em> a step is untouched: a step owns its buffers and may use one for two
 purposes, so where two things should share bytes, the tool is the step boundary
 (<a href="#example">the example</a> has the case that matters, B solved in place). Past
 that, the remedy when a calculation does not fit is that step's batched path, not a
-shared pool. The one exception is <a href="#scratch">step scratch</a>: memory dead after
-a step's <code>run</code>, library work buffers included, charged as a max per device and
-lent to one step at a time.</p>
+shared pool. The exception is <a href="#scratch">step scratch</a>: memory dead after a
+step's <code>run</code>, library work buffers included, packed per device and kind so that
+steps the DAG orders share bytes.</p>
+
+<p><strong>Reuse and batching close different gaps.</strong> There are three numbers per
+calculation: the <em>sum</em> (every buffer alive at once), the <em>fold</em> (the peak
+with bytes reused perfectly) and the cap. Reuse narrows sum toward fold and can never go
+below it; batching lowers the fold itself. So where a chain's fold fits and its sum does
+not, packing is the remedy and batching stays later; where the peak sits inside one step
+(DF-HF's is inside <code>eri</code>: B, its records and work lists, and its build
+intermediates, all live at once), only that step's own design helps, a batched path or a
+kernel that derives its work lists. Packing scratch alone reaches part of the way from
+sum to fold; how far depends on how much of each step is scratch.</p>
 
 <p><strong>Disappears:</strong></p>
 <ul>
-<li>The planner, the table, lifetimes, the assigner and its handoff edges.</li>
-<li><strong>"The peak under stealing".</strong> No bytes are shared, so no order of
-  execution can break memory, and the bytes-against-concurrency search is moot.</li>
+<li>The planner, the table, per-buffer lifetimes, the assigner and its handoff edges.
+  What lifetime there is, a step's run, comes from the DAG as written.</li>
+<li><strong>"The peak under stealing".</strong> Bytes are shared only between steps the
+  DAG orders, so no order of execution can break memory, and the
+  bytes-against-concurrency search is moot.</li>
 <li>The adaptive pass and the question of iterating it.</li>
 <li>The reserve, its floor and its growth.</li>
 <li>Nested regions: a replay reuses its own buffers.</li>
@@ -1093,7 +1200,9 @@ regression</strong> <span class="tag dec">decided</span>: a chain whose steps ea
 alone can be refused on their sum until those steps have batched paths, and building
 those before they are needed would be premature. The ratio is still worth knowing: the
 C++ footprints already give, for each <code>examples/</code> config, the sum of the
-steps' own peaks against the fold's peak. It is information, with no bar attached.</p>
+steps' own peaks against the fold's peak. Split three ways, it says which remedy
+applies: each step's <code>Output</code> bytes, its scratch bytes, and whether the peak
+sits inside one step or across many. It is information, with no bar attached.</p>
 
 <h2 id="stealing">Work stealing: what the one thread was providing</h2>
 
@@ -1173,8 +1282,8 @@ uses all of them where a step can. A step needs no GPU, one, or all of them.</p>
   workspace</td></tr>
 <tr><td>How many</td><td>One per GPU step, per device the step spans</td>
   <td>One per device</td></tr>
-<tr><td>Where it lives</td><td>A private field of the step's <code>Output</code>, made
-  in <code>mem_budget</code></td>
+<tr><td>Where it lives</td><td>The step's slot, beside its <code>Output</code>, made by
+  the wrapper in budget mode; the step never owns it</td>
   <td>The <code>MainBus</code>, behind a plain <code>Mutex</code>, made before budget
   mode</td></tr>
 <tr><td>What goes on it</td><td>The step's own kernels</td>
@@ -1272,8 +1381,9 @@ stream and joins back; B reads A's <code>Output</code>; C is independent of both
   events in the design, and they are inside a step.</li>
 <li><strong>The mutex guards the host side only.</strong> It keeps two threads from
   using one handle at once. The BLAS handle's workspace needs nothing more: every library
-  call is on the one stream, in order. A solver call's work buffer is the calling step's
-  scratch, and the join back to the step's stream puts it under the step-end sync. Like <code>RwLock&lt;Output&gt;</code>, it is never
+  call is on the one stream, in order. A solver call's work buffer is in the calling
+  step's scratch region, and the join back to the step's stream puts it under the
+  step-end sync, so a later step the closure lets reuse those bytes cannot overlap it. Like <code>RwLock&lt;Output&gt;</code>, it is never
   contended on a chain.</li>
 <li><strong>This replaces "a task never syncs the host".</strong> That rule exists
   because a GPU worker was one thread that had to keep enqueueing. At step granularity,
@@ -1316,29 +1426,38 @@ rustflow's (<a href="https://github.com/whatDiracIsCooking/rustflow">README</a>,
 
 <div class="tablewrap"><table>
 <tr><th>In the calculation</th><th>In the <code>Taskflow</code></th></tr>
-<tr><td>A step</td><td>A static task (<code>emplace</code>) whose body is the wrapper
-  around <code>mem_budget</code> or <code>run</code></td></tr>
+<tr><td>A step</td><td>One node of the outer graph: a static task
+  (<code>emplace</code>) whose body is the wrapper around <code>mem_budget</code> or
+  <code>run</code>, or a subflow task when <code>run</code> builds an inner graph</td></tr>
 <tr><td>A step reads another's <code>Output</code></td><td>A dependency
   (<code>precede</code>), made by the builder from the step's declared
   <code>View</code>, and nothing else: the producer synced before its node
   finished</td></tr>
 <tr><td>A GPU step in execute mode</td><td>The wrapper: device current,
   <code>run</code>, sync the step's <code>ForkStream</code></td></tr>
-<tr><td>The end of budget mode</td><td>One final task every step precedes: scratch and the
-  handle workspace, host check, accept or refuse</td></tr>
+<tr><td>The end of budget mode</td><td>One final task every step precedes: the closure,
+  scratch packing and the handle workspace, host check, accept or refuse</td></tr>
 <tr><td>A step's inner work (integral batches, the SCF's iteration)</td><td>The step's
-  own: a subflow (<code>emplace_subflow</code>), a condition loop
-  (<code>emplace_condition</code>), or a <code>Pipeline</code> for a streamed
-  pass</td></tr>
+  own, inside its node: a subflow (<code>emplace_subflow</code>), condition loops built
+  in it (<code>Subflow</code> implements <code>FlowBuilder</code>, so
+  <code>emplace_condition</code> is there; read in source at <code>67a07b9</code>), or a
+  <code>Pipeline</code> for a streamed pass. A subflow joins before its node finishes,
+  so the wrapper's sync stays the last word</td></tr>
 <tr><td>A replayed chain: geometry optimization, AIMD</td><td>The chain as a module task
-  (<code>composed_of</code>) inside an outer condition loop. Where the per-replay reset
-  goes is <a href="#steps">to discuss</a></td></tr>
+  (<code>composed_of</code>) inside an outer condition loop; the scratch closure is over
+  the loop's body, computed once. Where the per-replay reset goes is
+  <a href="#steps">to discuss</a></td></tr>
 </table></div>
 
 <ul>
 <li><strong>A loop's entry is one node.</strong> A condition picks a successor by index,
   so a body with several sources gets one empty entry node ahead of them. An iteration
   limit is the condition's own check.</li>
+<li><strong>A condition loop inside a subflow is untested.</strong> rustflow's tests run
+  a subflow inside an outer loop (<code>tests/subflows.rs</code>), not a loop inside a
+  subflow, and the source read is newer than the prototype's pin
+  (<code>b77e5474</code>). The prototype's SCF was a loop of the outer graph. One small
+  test at the pin closes it.</li>
 <li><strong>A module cannot be run by two tasks at once</strong> (DESIGN.md: upstream's
   rule is that a target must not be run by two threads concurrently). So concurrent
   replays would be copies, each with buffers of its own. None is in scope: the
@@ -1404,9 +1523,11 @@ to show the rules at work, and not sizes the tree commits to.</p>
   triangular solve). Each locks the device's <code>DeviceResources</code> for its calls.
   They are on separate chains, so the lock may be contended here, briefly; nothing is
   wrong when it is.</li>
-<li><strong>The scratch row is one number</strong>: the max of the eigensolve's work at
-  n_ao (X and, later, the SCF) and B's build intermediates. It is allocated once, by the
-  final budget node, beside the fixed 32&nbsp;MiB BLAS-handle workspace.</li>
+<li><strong>The scratch slab is packed</strong>: X's eigensolve work, and B's build
+  intermediates with its records and work lists, are unordered, so their regions are
+  disjoint and X runs beside the three-centre step; the SCF, which follows both, may
+  reuse either. The slab is allocated once, by the final budget node, beside the fixed
+  32&nbsp;MiB BLAS-handle workspace.</li>
 <li><strong>n_pair is budgeted at its bound.</strong> The screening map decides how
   many pairs (μν|P) and B hold, it is a GPU computation and not a parse, and it changes
   from one geometry to the next, while the unscreened count does not. So both are
@@ -1426,15 +1547,18 @@ to show the rules at work, and not sizes the tree commits to.</p>
   build's other intermediates go in <a href="#scratch">step scratch</a>. The batched and multi-GPU paths will change
   these sizes.</li>
 <li><strong>The whole example's budget</strong>, on that molecule, is then
-  9.86&nbsp;GB of device memory: the one slab (7.80), the
-  <a href="#manifest">manifests</a> (1.81, nearly all of it the three-centre step's
-  <code>cells</code>), the metric and its factor (0.21), and 0.04 for everything else,
-  the eigensolve's scratch included; plus the 32&nbsp;MiB handle workspace, and the
-  manifests' 1.81&nbsp;GB pinned. An earlier draft said
-  "the slab plus about 0.25&nbsp;GB": it left the manifests out. The sum, with nothing
-  shared, costs nothing visible here; the manifest is the second-largest charge, and it is
-  a dense cross product a kernel could derive from two short lists
-  (<a href="#open">to measure</a>).</li>
+  9.86&nbsp;GB of device memory: the one slab (7.80), the records and work lists
+  (1.81, nearly all of it the three-centre step's <code>cells</code>), the metric and its
+  factor (0.21), and 0.04 for everything else, the eigensolve's scratch included; plus
+  the 32&nbsp;MiB handle workspace, and the records and work lists' 1.81&nbsp;GB pinned.
+  An earlier draft said "the slab plus about 0.25&nbsp;GB": it left the work lists out.
+  Packing does not lower this: the peak is inside the three-centre step, where its slab,
+  its work lists and its build intermediates are all live at once. Packing frees the
+  1.81&nbsp;GB, on each side, only for the steps after it. The work lists are the
+  second-largest charge, and <code>cells</code> is a dense cross product a kernel could
+  derive from two short lists (<a href="#open">to measure</a>). The metric and its factor
+  are the other case: <code>Output</code>s only B reads, summed for the whole
+  calculation, which packing <code>Output</code>s would cover.</li>
 </ul>
 
 <figure class="fig" id="budgetfig">
@@ -1456,14 +1580,14 @@ handle workspace are not drawn. Hover a bar for its parts.</figcaption>
 <figure class="fig">
 <div class="legend" style="margin:2px 0 6px">
   <span><i class="sw" style="background:var(--c1);border-color:var(--c1)"></i>B's slab 7.80&nbsp;GB</span>
-  <span><i class="sw" style="background:var(--c2);border-color:var(--c2)"></i>manifests 1.81&nbsp;GB</span>
+  <span><i class="sw" style="background:var(--c2);border-color:var(--c2)"></i>records and work lists 1.81&nbsp;GB</span>
   <span><i class="sw" style="background:var(--c3);border-color:var(--c3)"></i>metric and factor 0.21&nbsp;GB</span>
   <span><i class="sw" style="background:var(--c4);border-color:var(--c4)"></i>everything else 0.04&nbsp;GB</span>
 </div>
-<svg viewBox="0 0 900 78" role="img" aria-label="Device 0 on gly10, 9.86 GB in all: B's slab 79 percent, the manifests 18 percent, the metric and its factor 2 percent, everything else under half a percent">
+<svg viewBox="0 0 900 78" role="img" aria-label="Device 0 on gly10, 9.86 GB in all: B's slab 79 percent, the records and work lists 18 percent, the metric and its factor 2 percent, everything else under half a percent">
   <g>
     <rect x="10" y="12" width="688" height="26" rx="4" style="fill:var(--c1)"><title>B's slab: 7.80 GB (79.1%)</title></rect>
-    <rect x="700" y="12" width="157" height="26" style="fill:var(--c2)"><title>Manifests: 1.81 GB (18.4%); cells alone 1.79 GB</title></rect>
+    <rect x="700" y="12" width="157" height="26" style="fill:var(--c2)"><title>Records and work lists: 1.81 GB (18.4%); cells alone 1.79 GB</title></rect>
     <rect x="859" y="12" width="16" height="26" style="fill:var(--c3)"><title>The metric and its factor: 0.21 GB (2.1%)</title></rect>
     <rect x="877" y="12" width="13" height="26" rx="2" style="fill:var(--c4)"><title>Everything else, the eigensolve's scratch included: 0.04 GB (0.4%)</title></rect>
   </g>
@@ -1626,14 +1750,14 @@ shows against the old path at these sizes.</p>
   free them</td>
   <td>Not a second lifetime inside a step: re-taking it on a replay allocates in
   execute mode, and under the sum a release frees bytes no admitted step can use.
-  Instead <a href="#scratch">step scratch</a>, a max per device lent to one step at a
-  time <span class="tag dec">decided</span></td></tr>
+  Instead <a href="#scratch">step scratch</a>, packed by the DAG's closure
+  <span class="tag dec">decided</span></td></tr>
 <tr><td><code>mem_budget</code> is a function of the dimensions and options</td>
   <td>Sizes come from host tables (record counts, kernel table lengths).
   <code>eri</code> builds them twice, since a refused or dry budget hands back empty
   buffers</td>
   <td>Setup counts every length into <code>Dims</code>; <code>run</code> builds the
-  <a href="#manifest">manifest</a> into its pinned slab, once per run
+  <a href="#lengths">records and work lists</a> into its pinned scratch, once per run
   <span class="tag dec">decided</span> 2026-11-21</td></tr>
 <tr><td><a href="#sets">The library stream carries every BLAS and solver call</a></td>
   <td>And every kernel between them. <code>orthogonalizer</code> and <code>scf</code>
@@ -1644,7 +1768,8 @@ shows against the old path at these sizes.</p>
 <tr><td>A manager's internal lock</td>
   <td>Needed, as predicted, but held only while enqueueing. The one library stream is
   what keeps two callers' scratch apart on the card</td>
-  <td>Nothing, while the library stream stays one</td></tr>
+  <td>Nothing, while the library stream stays one; with the manager's scratch in its
+  callers' regions (<a href="#managers">proposed</a>), less still</td></tr>
 <tr><td>Step-end sync cost: to measure</td>
   <td>Under 25 &micro;s over 50 SCF trips: a step that reads a value back has already
   synced. Where a step only enqueues, its device time lands there
@@ -1653,10 +1778,11 @@ shows against the old path at these sizes.</p>
 <tr><td>The <code>ForkStream</code> is a field of the <code>Output</code></td>
   <td>The wrapper makes it, keeps it beside the <code>Output</code> in the slot, and
   syncs it without the step's cooperation</td>
-  <td>The lane is the wrapper's</td></tr>
+  <td>The lane is the wrapper's; taken into <a href="#sets">Streams</a></td></tr>
 <tr><td>No slot is ever read empty</td>
   <td>A runtime assert: the slot is an <code>Option</code> filled by budget mode</td>
-  <td>Say so; the types hold only that a read is declared</td></tr>
+  <td>Said so in <a href="#steps">Steps</a>; the types hold only that a read is
+  declared</td></tr>
 <tr><td>The budget table, device-free</td>
   <td>A dry budget counts every step-owned byte exactly and the library calls' work as
   zero: the size queries need live handles</td>
@@ -1692,12 +1818,13 @@ shows against the old path at these sizes.</p>
   unwinding guard <code>programming_model.md</code> describes. Built in the experiment,
   not tested.</li>
 <li><strong>The budget table is the memory diagnostic</strong>: one row per step and
-  kind, step scratch and the handle workspace their own rows, the totals against the
-  caps. Logged on every run,
+  kind, each step's scratch and the handle workspace their own rows, the packed scratch
+  peak beside the plain sum of the declarations (so packing's gain reads plainly), the
+  totals against the caps. Logged on every run,
   printed in full on a refusal. rustflow's <code>ChromeObserver</code> and
   <code>dump()</code> (Graphviz DOT) sit beside the timing record.</li>
-<li><strong>Determinism.</strong> Results are those of the edges. Accept or refuse, and
-  the table, are the same every run. The order steps were budgeted or timed in is
+<li><strong>Determinism.</strong> Results are those of the edges. Accept or refuse, the
+  scratch offsets, and the table, are the same every run. The order steps were budgeted or timed in is
   not.</li>
 </ul>
 
@@ -1716,15 +1843,17 @@ Rust tree's task layer and not an edit to it.</p>
 <li><strong>The core, device-free.</strong> <code>MainBus</code>, the declared
   <code>View</code> and the builder that makes edges from it, <code>MemBudget</code>,
   <code>Budget</code> with its counters, flag, table and final node, the heap slab, and
-  the two-mode DAG on rustflow. Tests: accept and refuse are deterministic; the table is
-  complete on a refusal; a slab cannot grow; a config that does not close is refused.</li>
+  the closure and the scratch packing, and the two-mode DAG on rustflow. Tests: accept
+  and refuse are deterministic; the table is complete on a refusal; a slab cannot grow;
+  a config that does not close is refused; every pair of overlapping scratch regions is
+  ordered by the DAG; a condition loop inside a subflow, at the pinned rustflow.</li>
 <li><strong>One step on one card, beside the old path.</strong> The DF J/K pass is the
   candidate: the experiment's fourth variant is most of it. The step's
   <code>ForkStream</code> and the wrapper's sync, <code>DeviceResources</code> behind its
-  mutex, step scratch with the solver's work in it, the fixed handle workspace,
+  mutex, its scratch region with the solver's work in it, the fixed handle workspace,
   per-node device selection.</li>
 <li><strong>The DF-RHF chain</strong> as steps: setup, the integrals, X, the guess, the
-  SCF as a condition loop. Held against the old path's energies, which the tree already
+  SCF with its condition loop inside its subflow. Held against the old path's energies, which the tree already
   holds against PySCF.</li>
 <li><strong>Measure</strong>: the budget's total against the planner's block for the
   same runs, and what the step-end sync costs on the SCF iteration.</li>
@@ -1747,7 +1876,8 @@ Rust tree's task layer and not an edit to it.</p>
   or only an <code>Output</code> with methods (if DIIS is not a manager, is ERI?). Then:
   several managers, each owned by one step, and the readers they share; concurrent
   callers and the internal lock; how the scratch is sized across callers with one
-  manager and one B; whether a manager owns streams and handles per card (leaning no
+  manager and one B (proposed: callers declare it, by the manager's size function, in
+  their own regions); whether a manager owns streams and handles per card (leaning no
   since the prototype: a BLAS handle per step is dropped, see there).
   <a href="#managers">Managers</a>. <span class="tag disc">to discuss</span></li>
 <li><strong>What is cleared between replays, and by whom.</strong> A prologue node, an
@@ -1763,20 +1893,29 @@ Rust tree's task layer and not an edit to it.</p>
 <li><strong>The executor's width</strong> against the GPU steps that can be waiting at
   once.</li>
 <li><strong>What the sum costs.</strong> The ratio of summed step peaks to the fold's
-  peak, per <code>examples/</code> config. Not measured; information only, no bar.</li>
+  peak, per <code>examples/</code> config, split per step into <code>Output</code> bytes
+  and scratch bytes, and whether the peak sits inside one step or across many. That says
+  whether packing scratch is enough, whether <code>Output</code>s should be packed too
+  (<a href="#scratch">the same closure</a>), or whether the remedy is a step's batched
+  path. Not measured; information only, no bar.</li>
+<li><strong>Packing quality.</strong> The greedy packing's peak against the lower bound
+  the closure gives (the heaviest set of mutually unordered declarations), on the same
+  configs.</li>
 <li><strong>The margin constant</strong> for a defaulted device cap, and whether the
   kernels' stack should be read per card and not carried as the 3080's number.</li>
 <li><strong>The default limit fraction</strong> for a step with a batched path.</li>
-<li><strong>Step against task granularity.</strong> How much of a step's inner graph is
+<li><strong>Task granularity inside a step.</strong> A step is one node of the outer
+  graph (<a href="#steps">decided</a>); how much of its inner graph is
   rustflow's (a subflow, a pipeline) and how much stays a plain loop on one stream. A
   chain of small launches belongs in one task.</li>
 <li><strong>The <code>cells</code> work list on the device.</strong> It is a dense cross
   product of orbital shell pairs and aux shells, so a kernel could derive each entry from
   two short lists (58,653 and 1,272 entries on gly10) and drop 1.79&nbsp;GB pinned and
   1.79&nbsp;GB device. A kernel change, in FelizJueves; what it costs in the kernel is
-  to measure. <a href="#manifest">Manifests</a>.</li>
-<li><strong>Rebuilding a manifest on a replay.</strong> Every <code>run</code> rebuilds
-  it in place, since the records hold coordinates. Whether rebuilding only the records is
+  to measure. Unlike packing, it lowers DF-HF's peak: the work lists are live inside
+  the step that sets it. <a href="#lengths">Lengths</a>.</li>
+<li><strong>Rebuilding the records and work lists on a replay.</strong> Every
+  <code>run</code> rebuilds them in place, since the records hold coordinates. Whether rebuilding only the records is
   worth a second path depends on what the full rebuild costs per geometry step.</li>
 <li><strong>Collectives.</strong> A multi-GPU step holds a stream per card, so one
   rank's calls within a step stay on one stream. Whether NCCL and RCCL mind a rank moving
@@ -1846,7 +1985,7 @@ const NODES = [
    out:"The molecule's shell list: centre, angular momentum, exponents, normalized coefficients; and the shell-to-function map",
    size:"N_shell; N functions",
    note:"Places each element's shells on every atom of that element and normalizes them."},
-  {id:"abs", ph:'setup', mb:'Not budgeted. Fills n_aux, n_aux_shell and n_aux_prim: the manifests\u2019 lengths, counted',   layer:2, x:9.8, kind:"setup", label:"create auxiliary basis set",
+  {id:"abs", ph:'setup', mb:'Not budgeted. Fills n_aux, n_aux_shell and n_aux_prim: the records\u2019 and work lists\u2019 lengths, counted',   layer:2, x:9.8, kind:"setup", label:"create auxiliary basis set",
    sub:"shells on centres", deps:["read_xyz","read_ab"],
    out:"The fitting shell list and its shell-to-function map",
    size:"N_aux functions, typically 3 to 5 N",
@@ -1887,12 +2026,12 @@ const NODES = [
    sub:"V = (μ|−Σ Z_A/r_A|ν)", deps:["obs","sph","read_xyz"],
    out:"Nuclear attraction matrix", size:"N × N, symmetric",
    note:"The only one-electron integral that needs the nuclei themselves, not just the shell centres."},
-  {id:"mnP", ph:'step', mb:'Device: n_pair × n_aux, n_pair at its bound, built into B\u2019s slab: the largest charge. Pinned and device: its manifest (cells, gather, aux records), the second largest', layer:4, x:7.4, kind:"int", label:"three-centre integrals",
+  {id:"mnP", ph:'step', mb:'Device: n_pair × n_aux, n_pair at its bound, built into B\u2019s slab: the largest charge. Pinned and device scratch: its records and work lists (cells, gather, aux records), the second largest', layer:4, x:7.4, kind:"int", label:"three-centre integrals",
    sub:"(μν|P)", deps:["obs","abs","sph","asph","scr"],
    out:"Coulomb integrals between each orbital pair and each fitting function",
    size:"N_pair × N_aux, N_pair ≤ N(N+1)/2",
    note:"The largest object and the most expensive node in the graph."},
-  {id:"PQ", ph:'step', mb:'Device: n_aux². Pinned and device: its manifest (metric pairs, aux records)', layer:4, x:9.8, kind:"int", label:"fitting metric", sub:"J = (P|Q)",
+  {id:"PQ", ph:'step', mb:'Device: n_aux². Pinned and device scratch: its records and work lists (metric pairs, aux records)', layer:4, x:9.8, kind:"int", label:"fitting metric", sub:"J = (P|Q)",
    deps:["abs","asph"], out:"Coulomb metric of the fitting basis",
    size:"N_aux × N_aux, symmetric positive definite",
    note:"Two-centre, two-electron. Needs no orbital basis."},
@@ -1930,9 +2069,9 @@ const GLY = {
   asph:  {d: 1960, parts: "one matrix per l up to g"},
   S: {d: SQ}, T: {d: SQ}, V: {d: SQ},
   mnP:   {d: 7803297456 + 1794937616, p: 1794937616,
-          parts: "B\u2019s slab 7.80 GB; manifest 1.79 GB on each side (cells 1.79 GB, gather 4.3 MB, aux records 51 kB)"},
+          parts: "B\u2019s slab 7.80 GB; records and work lists 1.79 GB on each side, scratch (cells 1.79 GB, gather 4.3 MB, aux records 51 kB)"},
   PQ:    {d: AUX2 + 19481952, p: 19481952,
-          parts: "the metric 104 MB; manifest 19.5 MB on each side (metric pairs 19.4 MB, aux records 51 kB)"},
+          parts: "the metric 104 MB; records and work lists 19.5 MB on each side, scratch (metric pairs 19.4 MB, aux records 51 kB)"},
   X: {d: SQ, parts: "X 4.3 MB; its eigensolve's work is the scratch row"},
   H: {d: SQ},
   L: {d: AUX2},
