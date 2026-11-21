@@ -15,8 +15,9 @@ nuclei as `PointCharge`s (`point_charges(&molecule)` makes them from a
 molecule's atoms). It returns the **lower triangle** of V over the spherical
 functions, packed: `n (n + 1) / 2` doubles for `n = nao_sphe`, `(μ, ν)` with
 `ν <= μ` at `lower_index(μ, ν) = μ (μ + 1) / 2 + ν`. Only shell pairs
-`A >= B` are visited, one rayon task per shell, whose rows are one
-contiguous slice of the triangle.
+`A >= B` are visited, one rayon task per pair of atoms. Each task writes
+its blocks to a buffer of its own, and one serial pass copies them into the
+triangle.
 
 **McMurchie-Davidson.** Two primitive Cartesian Gaussians multiply into
 Hermite Gaussians on `P = (a A + b B) / p`, and against one point charge
@@ -38,6 +39,24 @@ runs once per primitive pair, not once per nucleus. The nuclei then cost
 one Boys evaluation and one `R` recurrence each. A contracted pair's
 Cartesian block is summed over its primitive pairs, then turned spherical
 once, through the harmonic block's nonzeros alone.
+
+**Every primitive pair once.** `W` depends on the two exponents and the two
+centers, not on the momenta or the coefficients, and a table built to order
+`L` holds every lower one. The carried cc sets are generally contracted and
+stored as segments, so an atom's shells repeat the same exponents: on
+gly10 only 12–20% of kept primitive pairs are distinct. A pair of atoms
+therefore collects its distinct primitive pairs first, each to the highest
+`la + lb` any kept shell pair asks of it. It builds each one's `W` once,
+and every shell pair's block reads from them. This is why a task is a pair
+of atoms: the shells that share a primitive pair are those of the same
+two atoms.
+
+**Far nuclei skip the Boys function.** Once `x = p |P - C|²` is past
+`../df_metric`'s far-field bound, `40 + 4L`, `exp(-x)` is under 1e-17 of
+the Boys values. The seeds of the `R` recurrence then have a closed form,
+`R^n_000 = sqrt(pi / p) / 2 * (-1)^n (2n-1)!! / r^(2n+1)`: no `exp`, no
+`erf`, no series. On gly10 that covers 92% of (primitive pair, nucleus)
+evaluations. The recurrence and the sum into `W` still run for them.
 
 Unlike S and the metric, V is not formed directly in the solid harmonics.
 The Hobson trick those use needs the integral to depend on `A - B` alone,
@@ -138,39 +157,47 @@ Release build, Ryzen 9 5900X (12 cores, 24 threads, shared), best of up to
 the routes agree to 6e-15 (cc-pVDZ) and 1.8e-14 (cc-pVTZ) of `max |V|`; no
 PySCF reference was run for it.
 
-| System | Basis | nao | Negligible pairs | One table, 1 thread | 8 | 24 | Via Cartesian, 1 | 24 | Cartesian / one table, 1 thread |
+| System | Basis | nao | Negligible pairs | Main route, 1 thread | 8 | 24 | Via Cartesian, 1 | 24 | Cartesian / main, 1 thread |
 |---|---|---|---|---|---|---|---|---|---|
-| H2O | cc-pVDZ | 24 | 0% | 0.24 ms | 59 µs | 65 µs | 0.26 ms | 76 µs | 1.1x |
-| CO | cc-pVTZ | 60 | 0% | 1.3 ms | 0.22 ms | 0.22 ms | 1.5 ms | 0.24 ms | 1.2x |
-| gly10 | cc-pVDZ | 734 | 48.5% | 0.92 s | 0.12 s | 64 ms | 4.9 s | 0.40 s | 5.3x |
-| gly10 | cc-pVTZ | 1678 | 45.9% | 4.2 s | 0.54 s | 0.30 s | 23.8 s | 1.8 s | 5.7x |
+| H2O | cc-pVDZ | 24 | 0% | 0.12 ms | 66 µs | 79 µs | 0.29 ms | 76 µs | 2.3x |
+| CO | cc-pVTZ | 60 | 0% | 0.58 ms | 0.28 ms | 0.27 ms | 1.5 ms | 0.25 ms | 2.6x |
+| gly10 | cc-pVDZ | 734 | 48.5% | 0.18 s | 25 ms | 16 ms | 5.1 s | 0.39 s | 29x |
+| gly10 | cc-pVTZ | 1678 | 45.9% | 0.60 s | 79 ms | 52 ms | 25 s | 1.8 s | 42x |
 
-- **V costs far more than S.** gly10 in cc-pVTZ takes 4.2 s on one thread
-  against S's 39 ms (`../s_overlap_host`). Every kept primitive pair pays a
-  Boys evaluation and an `R` recurrence for each of the 73 nuclei, so the
-  work is pairs × nuclei, cubic in the molecule. Folding the nuclei into
-  one table removes the contraction from that product, not the Boys work.
-- **On a small molecule the two routes are close.** With two or three
-  nuclei the per-nucleus work dominates both, and OS's recurrence costs
-  about what `R`'s does. The gap on gly10 is the screening (the textbook
-  route screens nothing) plus the per-nucleus contraction it does and
-  the main route does not.
-- **One task per shell, not per center.** The first version split by
-  center, as the siblings do, and lost to the Cartesian route at 24
-  threads on H2O and CO (0.17 ms against 72 µs; 0.90 ms against 0.29 ms)
-  because two or three centers are two or three tasks. Splitting by
-  shell left gly10 unchanged.
+- **V still costs more than S**, but no longer 100 times more: gly10 in
+  cc-pVTZ takes 0.60 s on one thread against S's 39 ms
+  (`../s_overlap_host`). The work is still distinct primitive pairs ×
+  nuclei, cubic in the molecule.
+- **A small molecule has too few tasks.** One task per pair of atoms is
+  three tasks for CO and six for water. They are 2.3x to 2.6x faster than
+  the Cartesian route on one thread, but at 24 threads they are slightly
+  slower than it (79 µs against 76; 0.27 ms against 0.25), and slower
+  than the version with one task per shell was (65 µs; 0.22 ms). Tens of
+  microseconds; not chased.
 - Not measured: anything larger than gly10.
 
-### Where the time goes (2026-11-21)
+### What each step bought
 
-Experiments only: the crate's code is unchanged. They were made with
-temporary switches and counters in `src/lib.rs`, since reverted. gly10,
-one thread, best of 3 to 5 runs.
+gly10, one thread, each step on top of the one before.
+
+| Step | cc-pVDZ | cc-pVTZ |
+|---|---|---|
+| Every nucleus in one table, one task per shell (the first version) | 0.94 s | 4.06 to 4.34 s |
+| The far closed form in place of the Boys function (timed alone, as an experiment) | 0.57 s | 3.02 s |
+| With every primitive pair once, one task per pair of atoms | 0.18 s | 0.60 s |
+
+The first row's spread is two runs on a shared machine. The two
+optimizations were timed together only after the experiment; sharing
+was not timed on its own.
+
+### Where the time went, before those steps (2026-11-21)
+
+Measured on the first version with temporary switches and counters in
+`src/lib.rs`, since reverted. gly10, one thread, best of 3 to 5 runs.
 
 **The time split, by switching pieces off.** Each row replaces one piece
-with a trivial stand-in; the time it saves is that piece's cost. This is not
-a profiler, and the pieces overlap a little.
+with a trivial stand-in; the time it saves is that piece's cost. This is
+not a profiler, and the pieces overlap a little.
 
 | Piece | cc-pVDZ (0.94 s) | cc-pVTZ (4.06 s) |
 |---|---|---|
@@ -180,9 +207,6 @@ a profiler, and the pieces overlap a little.
 | All three together: the per-nucleus work | 0.82 s, 87% | 3.56 s, 88% |
 | The contraction with `E`, the `E` expansion, the spherical transform | within noise | within noise |
 | What is left: the loops, the screening, `exp(-mu R²)` | 0.12 s | 0.45 s |
-
-So the per-nucleus work is the whole cost. The contraction that folding the
-nuclei into one table moved out of the nucleus loop no longer shows.
 
 **The work, counted.** Over the kept shell pairs:
 
@@ -195,24 +219,14 @@ nuclei into one table moved out of the nucleus loop no longer shows.
 | Distinct (atom A, atom B, `a`, `b`) among the kept primitive pairs | 10.4% | 19.9% | 11.6% |
 | `R`-table work, per kept pair against once per distinct pair at its highest `L` | 5.4x | 3.4x | 4.9x |
 
-- **Most primitive pairs are repeats.** A carried cc set is generally
-  contracted, stored as segments: an atom's s shells (and p shells) repeat
-  the same exponents with different coefficients. `W_tuv` depends on the
-  two exponents and the two centers, not on the momenta or the
-  coefficients, and a table built to the highest `L` holds every lower
-  one. So building each distinct pair's table once would divide the
-  per-nucleus work by the last row, 3.4x to 4.9x on gly10. This is
-  counted, not timed: the shared tables have to be stored and looked up.
-- **Almost every nucleus is far.** On gly10, 92 to 93% of evaluations
-  are past `df_metric`'s far-field bound, where `exp(-x)` is under 1e-17 of
-  what is kept.
+Those two findings are the two steps above. The far closed form was
+first timed alone: it left the printed errors against PySCF and the
+Cartesian route unchanged in every digit, as they still are with
+sharing.
 
-**The far seed, timed.** For a far evaluation the Boys function can be
-replaced by the closed form, `R^n_000 = sqrt(pi / p) / 2 * (-1)^n
-(2n-1)!! / r^(2n+1)`: no `exp`, no `erf`, no series. That alone took gly10
-from 0.94 s to 0.57 s in cc-pVDZ (1.64x) and from 4.34 s to 3.02 s in
-cc-pVTZ (1.44x). The errors against PySCF on the three fixtures and
-against the Cartesian route on gly10 matched the version without it in
-every printed digit; the matrices themselves were not compared bit for bit. It was not kept, because experiments were all this was. The
-`R` recurrence and the sum into `W` still run for a far nucleus, so this
-is the smallest piece of the multipole idea, not the idea.
+**What is left.** With most Boys calls gone and the tables shared, the
+remaining per-nucleus work is the `R` recurrence and the sum into `W`,
+mostly for far nuclei. The next step would be a multipole expansion of
+those far nuclei per pair of atoms, which removes them from the per-pair
+loop altogether. It has not been tried, and the split above has not been
+measured again since the two steps.

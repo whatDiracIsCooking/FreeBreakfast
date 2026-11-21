@@ -25,6 +25,22 @@
 //! once per nucleus, and the nuclei cost a Boys evaluation and a recurrence
 //! each.
 //!
+//! **Every primitive pair once.** `W` depends on the two exponents and the
+//! two centers alone, not on the momenta or the coefficients, and a table
+//! built to order `L` holds every lower one. A carried cc set is generally
+//! contracted, stored as segments, so an atom's shells repeat their
+//! exponents: on gly10 only 12 to 20% of the kept primitive pairs are
+//! distinct. So a pair of centers first collects its distinct primitive
+//! pairs, each to the highest `la + lb` a kept shell pair asks of it,
+//! builds each one's `W` once, and then every shell pair's block reads
+//! them.
+//!
+//! **Far nuclei skip the Boys function.** Once `x = p |P - C|²` is past
+//! `df_metric`'s far-field bound, `exp(-x)` is nothing beside the Boys
+//! values and the seeds of `R` have a closed form (see
+//! `HermiteCoulomb::fill`): no `exp`, no `erf`, no series. On gly10 that is
+//! 92% of the (primitive pair, nucleus) evaluations.
+//!
 //! **The layout.** `V` is over the `2l+1` real solid harmonics of each
 //! shell, through the basis's own Cartesian-to-spherical block
 //! ([`fb_basis::solid_harmonic_block`], scaled by `sqrt((2l-1)!!)` as
@@ -38,8 +54,8 @@
 //! **The lower triangle alone.** `V` is symmetric, and [`potential_en`]
 //! returns it packed: `(μ, ν)`, `ν <= μ`, at [`lower_index`], `n (n + 1) / 2`
 //! values. Only the shell pairs `A >= B` are computed, one rayon task per
-//! shell, whose rows are one contiguous slice of the triangle
-//! (`RAYON_NUM_THREADS` sets the thread count).
+//! pair of centers, each into a buffer of its own that one pass then copies
+//! into the triangle (`RAYON_NUM_THREADS` sets the thread count).
 //!
 //! **Negligible pairs.** The product of two Gaussians carries
 //! `exp(-mu |A - B|²)`, and the Coulomb integral of what is left is at most
@@ -244,6 +260,9 @@ struct ShellData {
     row0: usize,
     /// Each primitive's exponent and coefficient.
     primitives: Vec<(f64, f64)>,
+    /// Each primitive's exponent's place in its [`Center`]'s distinct
+    /// exponents; set by [`centers`].
+    slots: Vec<usize>,
     /// The smallest exponent.
     min_exponent: f64,
     /// The largest `|c|`.
@@ -266,6 +285,7 @@ impl ShellData {
             row0: basis.ao_offset_sphe(index as u32) as usize,
             min_exponent: primitives.iter().fold(f64::INFINITY, |m, p| m.min(p.0)),
             max_coefficient: primitives.iter().fold(0.0, |m, p| m.max(p.1.abs())),
+            slots: Vec::new(),
             primitives,
         }
     }
@@ -288,6 +308,57 @@ fn pair_is_negligible(a: &ShellData, b: &ShellData, r2: f64, charge_sum: f64) ->
 /// `sum |Z|` over `charges`.
 fn charge_sum(charges: &[PointCharge]) -> f64 {
     charges.iter().map(|c| c.charge.abs()).sum()
+}
+
+/// A run of consecutive shells on one center, an atom's: its shells, its
+/// distinct exponents and where it sits.
+struct Center {
+    /// The shells.
+    shells: std::ops::Range<usize>,
+    /// The exponents its shells hold, each once (equal to the bit).
+    exponents: Vec<f64>,
+    /// The position, in bohr.
+    at: [f64; 3],
+}
+
+/// The shells of `data` grouped into [`Center`]s, in order, each shell's
+/// [`ShellData::slots`] set to its center's exponents.
+fn centers(data: &mut [ShellData]) -> Vec<Center> {
+    let mut out: Vec<Center> = Vec::new();
+    for (index, shell) in data.iter_mut().enumerate() {
+        let at = shell.center;
+        match out.last_mut() {
+            Some(last) if last.at == at => last.shells.end = index + 1,
+            _ => out.push(Center {
+                shells: index..index + 1,
+                exponents: Vec::new(),
+                at,
+            }),
+        }
+        let center = out.last_mut().expect("just pushed");
+        shell.slots = shell
+            .primitives
+            .iter()
+            .map(|&(a, _)| {
+                center
+                    .exponents
+                    .iter()
+                    .position(|&e| e.to_bits() == a.to_bits())
+                    .unwrap_or_else(|| {
+                        center.exponents.push(a);
+                        center.exponents.len() - 1
+                    })
+            })
+            .collect();
+    }
+    out
+}
+
+/// Whether the Boys function's `exp(-x)` is nothing beside what is kept, at
+/// `x = p |P - C|²` and highest order `l`: `df_metric`'s far-field bound,
+/// where the dropped term is under 1e-17 of `F_n` for every order to 20.
+fn is_far(x: f64, l: usize) -> bool {
+    x >= 40.0 + 4.0 * l as f64
 }
 
 /// The Hermite Coulomb integrals `R^n_tuv` of total order up to `l` at
@@ -319,14 +390,28 @@ impl HermiteCoulomb {
     }
 
     /// Fill `R^n_tuv` for `n + t + u + v <= l`, `l` at most the table's.
+    ///
+    /// A far separation ([`is_far`]) takes the seeds in closed form, with
+    /// no Boys function: there `F_n(x) = (2n-1)!! / (2x)^n sqrt(pi / x) / 2`,
+    /// so `R^n_000 = sqrt(pi / p) / 2 * (-1)^n (2n-1)!! / r^(2n+1)`.
     fn fill(&mut self, l: usize, p: f64, r: [f64; 3]) {
         let d = l + 1;
         self.d = d;
-        boys(p * norm2(r), &mut self.f[..=l]);
-        let mut power = 1.0;
-        for n in 0..=l {
-            self.r[n * d * d * d] = power * self.f[n];
-            power *= -2.0 * p;
+        let r2 = norm2(r);
+        if is_far(p * r2, l) {
+            let inverse = 1.0 / r2;
+            let mut value = 0.5 * (PI / p).sqrt() * inverse.sqrt();
+            for n in 0..=l {
+                self.r[n * d * d * d] = value;
+                value *= -((2 * n + 1) as f64) * inverse;
+            }
+        } else {
+            boys(p * r2, &mut self.f[..=l]);
+            let mut power = 1.0;
+            for n in 0..=l {
+                self.r[n * d * d * d] = power * self.f[n];
+                power *= -2.0 * p;
+            }
         }
         let at = |n: usize, t: usize, u: usize, v: usize| ((n * d + t) * d + u) * d + v;
         let stride = d * d * d;
@@ -391,21 +476,38 @@ fn hermite_expansion(la: usize, lb: usize, p: f64, pa: f64, pb: f64, e: &mut [f6
     }
 }
 
-/// What a block is built in, one per task, sized for the basis's largest
-/// momentum.
+/// One distinct primitive pair of a pair of centers, its exponent pair
+/// `(a, b)`: what every shell pair holding it shares.
+#[derive(Clone, Copy, Default)]
+struct PrimitivePair {
+    /// The highest `la + lb` a shell pair asks of it, or `None` if none
+    /// does.
+    order: Option<usize>,
+    /// `p = a + b`.
+    p: f64,
+    /// `P`, in bohr.
+    at: [f64; 3],
+    /// `2 pi / p exp(-mu |A - B|²)`.
+    prefactor: f64,
+    /// Where its `W` starts in [`Scratch::w`]; its side is `order + 1`.
+    offset: usize,
+}
+
+/// What one pair of centers is built in, one per rayon job, sized for the
+/// basis's largest momentum except the shared tables, which grow.
 struct Scratch {
     /// The three axes' Hermite expansions, each `(l_max + 1)² (2 l_max + 1)`.
     e: [Vec<f64>; 3],
     /// One nucleus's Hermite Coulomb integrals.
     table: HermiteCoulomb,
-    /// `W_tuv = -sum_C Z_C R_tuv`, `t + u + v <= la + lb`, at
-    /// `(t * d + u) * d + v`, `d = la + lb + 1`.
+    /// The pair of centers' distinct primitive pairs, `a`'s slot by `b`'s.
+    pairs: Vec<PrimitivePair>,
+    /// Every distinct primitive pair's `W_tuv = -sum_C Z_C R_tuv`,
+    /// `t + u + v <= order`, at `offset + (t * d + u) * d + v`,
+    /// `d = order + 1`.
     w: Vec<f64>,
     /// The contracted Cartesian block, `ncart_a` rows by `ncart_b` columns.
     cartesian: Vec<f64>,
-    /// The spherical block, `nsph_a` rows by `nsph_b` columns at
-    /// `ia * nsph_b + ib`.
-    out: Vec<f64>,
 }
 
 impl Scratch {
@@ -418,116 +520,177 @@ impl Scratch {
         Scratch {
             e: [axis(), axis(), axis()],
             table: HermiteCoulomb::new(2 * l_max),
-            w: vec![0.0; d * d * d],
+            pairs: Vec::new(),
+            w: Vec::new(),
             cartesian: vec![0.0; ncart * ncart],
-            out: vec![0.0; d * d],
         }
     }
 }
 
-/// The spherical block `<a|V|b>` of two shells, into `scratch.out`: the
-/// module's "The integral" with every nucleus in one table, the Cartesian
-/// block summed over the primitive pairs and turned spherical once. A
-/// primitive pair [`is_negligible`] calls negligible is skipped; the shell
-/// pair itself is not screened here.
-fn block(
-    a: &ShellData,
-    va: &ShellView,
-    b: &ShellData,
-    vb: &ShellView,
+/// The shell pairs of centers `ca >= cb` in the order [`potential_en`]
+/// lays out their blocks: `a` over `ca`'s shells, `b` over `cb`'s, and of a
+/// center with itself only `b <= a`.
+fn shell_pairs(centers: &[Center], ca: usize, cb: usize) -> impl Iterator<Item = (usize, usize)> {
+    let (a_shells, b_shells) = (centers[ca].shells.clone(), centers[cb].shells.clone());
+    a_shells.flat_map(move |sa| {
+        let last = if ca == cb { sa + 1 } else { b_shells.end };
+        (b_shells.start..last).map(move |sb| (sa, sb))
+    })
+}
+
+/// Every spherical block of the shell pairs of centers `ca >= cb`, one
+/// after another in [`shell_pairs`]' order, `nsph_a × nsph_b` each at
+/// `ia * nsph_b + ib`; a negligible pair's block is zero.
+///
+/// First the distinct primitive pairs the kept shell pairs ask for, each
+/// to the highest order one asks, then each one's `W` (the module's "Every
+/// primitive pair once"), then the blocks from them.
+#[allow(clippy::too_many_arguments)]
+fn center_pair(
+    data: &[ShellData],
+    views: &[ShellView],
+    centers: &[Center],
+    ca: usize,
+    cb: usize,
     charges: &[PointCharge],
     charge_sum: f64,
     scratch: &mut Scratch,
-) {
+) -> Vec<f64> {
     let Scratch {
         e,
         table,
+        pairs,
         w,
         cartesian,
-        out,
     } = scratch;
-    let order = a.l + b.l;
-    let d = order + 1;
-    let db = b.l + 1;
-    let r = sub(a.center, b.center);
-    let r2 = norm2(r);
-    let (nca, ncb) = (va.ncart(), vb.ncart());
-    let cartesian = &mut cartesian[..nca * ncb];
-    cartesian.fill(0.0);
-    let w = &mut w[..d * d * d];
-    let mut f = [0.0];
-    for &(ax, ca) in &a.primitives {
-        for &(bx, cb) in &b.primitives {
-            let p = ax + bx;
-            let mu = ax * bx / p;
-            let coefficient = ca * cb;
-            let prefactor = 2.0 * PI / p;
-            if is_negligible(mu, r2, order, charge_sum * prefactor * coefficient.abs()) {
-                continue;
-            }
-            let weight = coefficient * prefactor * (-mu * r2).exp();
-            let at = [0, 1, 2].map(|k| (ax * a.center[k] + bx * b.center[k]) / p);
-            if order == 0 {
-                let mut sum = 0.0;
-                for charge in charges {
-                    boys(p * norm2(sub(at, charge.position)), &mut f);
-                    sum = (-charge.charge).mul_add(f[0], sum);
+    let (center_a, center_b) = (&centers[ca], &centers[cb]);
+    let (at_a, at_b) = (center_a.at, center_b.at);
+    let r2 = norm2(sub(at_a, at_b));
+    let nb = center_b.exponents.len();
+    pairs.clear();
+    pairs.resize(center_a.exponents.len() * nb, PrimitivePair::default());
+
+    // Which primitive pairs the kept shell pairs ask for, and to what order.
+    for (sa, sb) in shell_pairs(centers, ca, cb) {
+        let (a, b) = (&data[sa], &data[sb]);
+        if pair_is_negligible(a, b, r2, charge_sum) {
+            continue;
+        }
+        let order = a.l + b.l;
+        for (&(ax, c_a), &slot_a) in a.primitives.iter().zip(&a.slots) {
+            for (&(bx, c_b), &slot_b) in b.primitives.iter().zip(&b.slots) {
+                let p = ax + bx;
+                let scale = charge_sum * 2.0 * PI / p * (c_a * c_b).abs();
+                if !is_negligible(ax * bx / p, r2, order, scale) {
+                    let pair = &mut pairs[slot_a * nb + slot_b];
+                    pair.order = Some(pair.order.map_or(order, |o| o.max(order)));
                 }
-                cartesian[0] = weight.mul_add(sum, cartesian[0]);
-                continue;
             }
-            for (k, axis) in e.iter_mut().enumerate() {
-                hermite_expansion(a.l, b.l, p, at[k] - a.center[k], at[k] - b.center[k], axis);
-            }
-            w.fill(0.0);
-            for charge in charges {
-                table.fill(order, p, sub(at, charge.position));
-                let z = -charge.charge;
-                for t in 0..=order {
-                    for u in 0..=order - t {
-                        let row = (t * d + u) * d;
-                        for v in 0..=order - t - u {
-                            w[row + v] = z.mul_add(table.get(t, u, v), w[row + v]);
-                        }
+        }
+    }
+
+    // Each one's W, every nucleus summed in.
+    w.clear();
+    for (slot, pair) in pairs.iter_mut().enumerate() {
+        let Some(order) = pair.order else { continue };
+        let (ax, bx) = (center_a.exponents[slot / nb], center_b.exponents[slot % nb]);
+        let p = ax + bx;
+        pair.p = p;
+        pair.at = [0, 1, 2].map(|k| (ax * at_a[k] + bx * at_b[k]) / p);
+        pair.prefactor = 2.0 * PI / p * (-ax * bx / p * r2).exp();
+        pair.offset = w.len();
+        let d = order + 1;
+        w.resize(w.len() + d * d * d, 0.0);
+        let w = &mut w[pair.offset..];
+        for charge in charges {
+            table.fill(order, p, sub(pair.at, charge.position));
+            let z = -charge.charge;
+            for t in 0..=order {
+                for u in 0..=order - t {
+                    let row = (t * d + u) * d;
+                    for v in 0..=order - t - u {
+                        w[row + v] = z.mul_add(table.get(t, u, v), w[row + v]);
                     }
                 }
             }
-            let [ex, ey, ez] = &*e;
-            for (ia, &[i, j, k]) in va.powers.iter().enumerate() {
-                for (ib, &[l, m, n]) in vb.powers.iter().enumerate() {
-                    let (x, y, z) = ((i * db + l) * d, (j * db + m) * d, (k * db + n) * d);
-                    let mut sum = 0.0;
-                    for t in 0..=i + l {
-                        let wx = ex[x + t];
-                        for u in 0..=j + m {
-                            let wxy = wx * ey[y + u];
-                            let row = (t * d + u) * d;
-                            for v in 0..=k + n {
-                                sum = (wxy * ez[z + v]).mul_add(w[row + v], sum);
+        }
+    }
+
+    // The blocks.
+    let mut out = Vec::new();
+    for (sa, sb) in shell_pairs(centers, ca, cb) {
+        let (a, b) = (&data[sa], &data[sb]);
+        let (va, vb) = (&views[a.l], &views[b.l]);
+        let (nsa, nsb) = (va.nsph(), vb.nsph());
+        let start = out.len();
+        out.resize(start + nsa * nsb, 0.0);
+        if pair_is_negligible(a, b, r2, charge_sum) {
+            continue;
+        }
+        let order = a.l + b.l;
+        let db = b.l + 1;
+        let de = order + 1;
+        let (nca, ncb) = (va.ncart(), vb.ncart());
+        let cartesian = &mut cartesian[..nca * ncb];
+        cartesian.fill(0.0);
+        for (&(ax, c_a), &slot_a) in a.primitives.iter().zip(&a.slots) {
+            for (&(bx, c_b), &slot_b) in b.primitives.iter().zip(&b.slots) {
+                let p = ax + bx;
+                let coefficient = c_a * c_b;
+                let scale = charge_sum * 2.0 * PI / p * coefficient.abs();
+                if is_negligible(ax * bx / p, r2, order, scale) {
+                    continue;
+                }
+                let pair = &pairs[slot_a * nb + slot_b];
+                let side = pair.order.expect("asked for above") + 1;
+                let w = &w[pair.offset..pair.offset + side * side * side];
+                let weight = coefficient * pair.prefactor;
+                if order == 0 {
+                    cartesian[0] = weight.mul_add(w[0], cartesian[0]);
+                    continue;
+                }
+                for (k, axis) in e.iter_mut().enumerate() {
+                    let (pa, pb) = (pair.at[k] - at_a[k], pair.at[k] - at_b[k]);
+                    hermite_expansion(a.l, b.l, p, pa, pb, axis);
+                }
+                let [ex, ey, ez] = &*e;
+                for (ia, &[i, j, k]) in va.powers.iter().enumerate() {
+                    for (ib, &[l, m, n]) in vb.powers.iter().enumerate() {
+                        let (x, y, z) = ((i * db + l) * de, (j * db + m) * de, (k * db + n) * de);
+                        let mut sum = 0.0;
+                        for t in 0..=i + l {
+                            let wx = ex[x + t];
+                            for u in 0..=j + m {
+                                let wxy = wx * ey[y + u];
+                                let row = (t * side + u) * side;
+                                for v in 0..=k + n {
+                                    sum = (wxy * ez[z + v]).mul_add(w[row + v], sum);
+                                }
                             }
                         }
+                        let to = &mut cartesian[ia * ncb + ib];
+                        *to = weight.mul_add(sum, *to);
                     }
-                    let to = &mut cartesian[ia * ncb + ib];
-                    *to = weight.mul_add(sum, *to);
                 }
             }
         }
-    }
-    let nsb = vb.nsph();
-    for (ia, row) in out[..va.nsph() * nsb].chunks_exact_mut(nsb).enumerate() {
-        let column_a = va.column(ia);
-        for (jb, value) in row.iter_mut().enumerate() {
-            let mut sum = 0.0;
-            for &(pa, c_a) in column_a {
-                let mut inner = 0.0;
-                for &(pb, c_b) in vb.column(jb) {
-                    inner = c_b.mul_add(cartesian[pa * ncb + pb], inner);
+        let block = &mut out[start..];
+        for (ia, row) in block.chunks_exact_mut(nsb).enumerate() {
+            let column_a = va.column(ia);
+            for (jb, value) in row.iter_mut().enumerate() {
+                let mut sum = 0.0;
+                for &(pa, c_a) in column_a {
+                    let mut inner = 0.0;
+                    for &(pb, c_b) in vb.column(jb) {
+                        inner = c_b.mul_add(cartesian[pa * ncb + pb], inner);
+                    }
+                    sum = c_a.mul_add(inner, sum);
                 }
-                sum = c_a.mul_add(inner, sum);
+                *value = sum;
             }
-            *value = sum;
         }
     }
+    out
 }
 
 /// The lower triangle of the nuclear attraction
@@ -536,16 +699,15 @@ fn block(
 /// `n = nao_sphe`, `(μ, ν)`, `ν <= μ`, at [`lower_index`]`(μ, ν)`. `V` is
 /// symmetric, so the upper triangle is never computed and never stored.
 ///
-/// Every nucleus is summed into one Hermite table per primitive pair (the
-/// module's "Every nucleus in one table"); a negligible pair is left zero.
-/// The coefficients are used as `basis` holds them; place it
+/// Every nucleus is summed into one Hermite table per distinct primitive
+/// pair of a pair of centers (the module's "Every nucleus in one table" and
+/// "Every primitive pair once"); a negligible pair is left zero. The
+/// coefficients are used as `basis` holds them; place it
 /// `primitive_normalized()`.
 ///
-/// One rayon task per shell, not per center as in the overlap: a pair's
-/// cost grows with the nuclei, so two or three centers were too few tasks
-/// for a small molecule. A shell's rows are one contiguous slice of the
-/// packed triangle, so the tasks write disjoint `&mut` slices and share
-/// only what they read.
+/// One rayon task per pair of centers, since the shells sharing a
+/// primitive pair are those of the two centers. Each writes its blocks to
+/// a buffer of its own; one pass then copies them into the triangle.
 ///
 /// # Panics
 ///
@@ -554,42 +716,43 @@ fn block(
 pub fn potential_en(basis: &BasisSet, charges: &[PointCharge]) -> Vec<f64> {
     let n = basis.nao_sphe() as usize;
     let views = views(basis);
-    let data: Vec<ShellData> = (0..basis.shells().len())
+    let mut data: Vec<ShellData> = (0..basis.shells().len())
         .map(|index| ShellData::new(basis, index))
         .collect();
+    let centers = centers(&mut data);
     let charge_sum = charge_sum(charges);
-    let mut v = vec![0.0; lower_index(n, 0)];
-    let row_end = |sa: usize| data.get(sa + 1).map_or(n, |next| next.row0);
-    let rows = split_rows(&mut v, (0..data.len()).map(|sa| data[sa].row0..row_end(sa)));
-
     let l_max = views.len() - 1;
-    rows.into_par_iter().enumerate().for_each(|(sa, rows)| {
-        let mut scratch = Scratch::new(l_max);
-        let a = &data[sa];
-        let start = lower_index(a.row0, 0);
-        for (sb, b) in data[..=sa].iter().enumerate() {
-            if pair_is_negligible(a, b, norm2(sub(a.center, b.center)), charge_sum) {
-                continue;
-            }
-            block(
-                a,
-                &views[a.l],
-                b,
-                &views[b.l],
-                charges,
-                charge_sum,
-                &mut scratch,
-            );
+    let center_pairs: Vec<(usize, usize)> = (0..centers.len())
+        .flat_map(|ca| (0..=ca).map(move |cb| (ca, cb)))
+        .collect();
+    let blocks: Vec<Vec<f64>> = center_pairs
+        .par_iter()
+        .map_init(
+            || Scratch::new(l_max),
+            |scratch, &(ca, cb)| {
+                center_pair(
+                    &data, &views, &centers, ca, cb, charges, charge_sum, scratch,
+                )
+            },
+        )
+        .collect();
+
+    let mut v = vec![0.0; lower_index(n, 0)];
+    for (&(ca, cb), blocks) in center_pairs.iter().zip(&blocks) {
+        let mut from = 0;
+        for (sa, sb) in shell_pairs(&centers, ca, cb) {
+            let (a, b) = (&data[sa], &data[sb]);
             let nsb = b.nsph();
             for ia in 0..a.nsph() {
                 // Shells are laid out in order, so an earlier shell's
                 // columns are all below the diagonal.
                 let cols = if sa == sb { ia + 1 } else { nsb };
-                let at = lower_index(a.row0 + ia, b.row0) - start;
-                rows[at..at + cols].copy_from_slice(&scratch.out[ia * nsb..ia * nsb + cols]);
+                let at = lower_index(a.row0 + ia, b.row0);
+                v[at..at + cols].copy_from_slice(&blocks[from + ia * nsb..from + ia * nsb + cols]);
             }
+            from += a.nsph() * nsb;
         }
-    });
+    }
     v
 }
 
