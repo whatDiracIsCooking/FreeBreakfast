@@ -1,12 +1,14 @@
 # ruff: noqa: E501 -- the SVG and HTML templates are long lines by nature
-"""Build report.html from df-batched's JSON and timeline.py's export.
+"""Build report.html from df-batched's JSON and the nsys extracts.
 
     python3 make_report.py <data dir> <out.html>
 
-<data dir> holds scale_gly{5,10,15,20}.json (one run each at the card's free
-memory), sweep_gly10.json (one process, several rooms, --compare) and
-timeline_gly10.json (timeline.py's output). Every number on the page is read
-from those files; the page carries no hand-typed measurement.
+<data dir> holds before/ (the Cartesian-aux path) and after/ (#1736's
+spherical aux), each with scale_gly{5,10,15,20}.json (one run each at the
+card's free memory), sweep_gly10.json (one process, several rooms,
+--compare), timeline_gly10.json (timeline.py), timeline_gly10.meta.json and
+kernels_gly10.json (kernels.py). Every number on the page is read from those
+files; the page carries no hand-typed measurement.
 """
 
 import html
@@ -441,6 +443,83 @@ document.querySelectorAll('[data-tip]').forEach(el => {
 """
 
 
+def paired_bars(before: dict, after: dict) -> str:
+    """Per molecule: B build's time by stage, before #1736 above, after below."""
+    W, left, right, bar, gap, top = 760, 120, 120, 16, 14, 16
+    rows = []
+    for n in SIZES:
+        for tag, d in (("before", before), ("after", after)):
+            rows.append((n, tag, stages(d[n]["runs"][0]), d[n]["runs"][0]["build_s"]))
+    vmax = max(sum(s.values()) for *_, s, _ in rows) * 1.02
+    pair = 2 * bar + 4 + gap
+    H = top + pair * len(SIZES) + 34
+    x = lambda v: left + (W - left - right) * v / vmax  # noqa: E731
+    p = [
+        f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Device time by stage per molecule, before and after spherical aux">'
+    ]
+    for t in nice_ticks(0, vmax):
+        p.append(
+            f'<line class="grid" x1="{x(t):.1f}" x2="{x(t):.1f}" y1="{top - 4}" y2="{top + pair * len(SIZES) - gap}"/>'
+        )
+        p.append(
+            f'<text class="ax" x="{x(t):.1f}" y="{top + pair * len(SIZES) - gap + 16}" text-anchor="middle">{t:g}</text>'
+        )
+    p.append(
+        f'<text class="ax" x="{(left + W - right) / 2:.0f}" y="{H - 4}" text-anchor="middle">seconds (device time per stage; host stages host time)</text>'
+    )
+    for i, (n, tag, s, build) in enumerate(rows):
+        y = top + (i // 2) * pair + (i % 2) * (bar + 4)
+        label = f"gly{n} · {tag}" if tag == "before" else "after"
+        p.append(
+            f'<text class="lb{" mut" if tag == "after" else ""}" x="{left - 10}" y="{y + 12}" text-anchor="end">{label}</text>'
+        )
+        acc = 0.0
+        for key, lbl, var in STAGES:
+            v = s[key]
+            if v <= 0:
+                continue
+            x0, x1 = x(acc), x(acc + v)
+            p.append(
+                f'<rect class="hit" x="{x0:.1f}" y="{y}" width="{max(x1 - x0, 0.5):.1f}" height="{bar}" '
+                f'style="fill:var({var})" data-tip="gly{n} {tag} · {esc(lbl)}: {fmt_s(v)}"/>'
+            )
+            acc += v
+        p.append(
+            f'<text class="lb mut" x="{x(acc) + 6:.1f}" y="{y + 12}">{fmt_s(build)}</text>'
+        )
+    p.append("</svg>")
+    return "".join(p)
+
+
+def class_rows(kb: dict, ka: dict) -> tuple[str, list]:
+    """The per-class table: peri3 (before) against speri3 (after), gly10."""
+    keys = sorted(
+        set(kb["classes"]) | set(ka["classes"]),
+        key=lambda k: tuple(int(c) for c in k.split(",")),
+    )
+    lname = "spdfghi"
+    out, slower = [], []
+    for k in keys:
+        b = kb["classes"].get(k, {}).get("ms", 0.0)
+        a = ka["classes"].get(k, {}).get("ms", 0.0)
+        la, lb, lp = (lname[int(c)] for c in k.split(","))
+        ratio = a / b if b > 0 else float("nan")
+        # Beyond 5%: run-to-run noise at a few-ms class is a few percent.
+        if ratio > 1.05:
+            slower.append((f"({la}{lb}|{lp})", ratio))
+        mark = ' style="color:var(--bad)"' if ratio > 1.05 else ""
+        out.append(
+            f"<tr><td>({la}{lb}|{lp})</td><td class=num>{b:.1f}</td><td class=num>{a:.1f}</td>"
+            f"<td class=num{mark}>{ratio:.2f}×</td></tr>"
+        )
+    tb = sum(c["ms"] for c in kb["classes"].values())
+    ta = sum(c["ms"] for c in ka["classes"].values())
+    out.append(
+        f"<tr><th>all</th><th class=num>{tb:.1f}</th><th class=num>{ta:.1f}</th><th class=num>{ta / tb:.2f}×</th></tr>"
+    )
+    return "".join(out), slower
+
+
 def legend(items) -> str:
     return (
         '<div class="legend">'
@@ -452,11 +531,84 @@ def legend(items) -> str:
     )
 
 
+def loop_only(doc: dict) -> dict:
+    """Each full run's tasks less the prefix plan's (records, metric, its
+    spherical transform, Cholesky), so a stage holds the B loop alone. The
+    metric's transform shares the name "spherical transform" with the loop's,
+    and is about 0.5 s on gly10: left in, it was charged to the loop."""
+    pre = doc["prefix"]["tasks"]
+    for run in doc["runs"]:
+        for name, t in run["tasks"].items():
+            p = pre.get(name)
+            if p:
+                t["count"] -= p["count"]
+                t["host_s"] = max(t["host_s"] - p["host_s"], 0.0)
+                t["device_s"] = max(t["device_s"] - p["device_s"], 0.0)
+    return doc
+
+
+def load(d: Path) -> tuple[dict, dict, dict, dict, dict]:
+    scale = {n: loop_only(json.load(open(d / f"scale_gly{n}.json"))) for n in SIZES}
+    sweep = loop_only(json.load(open(d / "sweep_gly10.json")))
+    tl = json.load(open(d / "timeline_gly10.json"))
+    meta = json.load(open(d / "timeline_gly10.meta.json"))
+    kern = json.load(open(d / "kernels_gly10.json"))
+    return scale, sweep, tl, meta, kern
+
+
 def main(data: Path, out: Path) -> None:
-    scale = {n: json.load(open(data / f"scale_gly{n}.json")) for n in SIZES}
-    sweep = json.load(open(data / "sweep_gly10.json"))
-    tl = json.load(open(data / "timeline_gly10.json"))
-    meta = json.load(open(data / "timeline_gly10.meta.json"))
+    scale, sweep, tl, meta, kern_b = load(data / "before")
+    a_scale, a_sweep, a_tl, a_meta, kern_a = load(data / "after")
+
+    # Before against after (#1736).
+    pairs = paired_bars(scale, a_scale)
+    speed = {
+        n: scale[n]["runs"][0]["build_s"] / a_scale[n]["runs"][0]["build_s"]
+        for n in SIZES
+    }
+    a_tlsvg, a_tl_tot = timeline_chart(a_tl, a_meta["window_ms"])
+    a_tl_dev = sum(a_tl_tot.values())
+    a_share = {k: v / a_tl_dev for k, v in a_tl_tot.items()}
+    krows, slower = class_rows(kern_b, kern_a)
+    ktot_b = sum(c["ms"] for c in kern_b["classes"].values())
+    ktot_a = sum(c["ms"] for c in kern_a["classes"].values())
+    a20 = stages(a_scale[20]["runs"][0])
+    a_dev20 = sum(v for k, v in a20.items() if k != "host")
+    ba_rows = "".join(
+        f"<tr><td>gly{n}</td>"
+        f"<td class=num>{fmt_s(scale[n]['runs'][0]['build_s'])}</td><td class=num>{fmt_s(a_scale[n]['runs'][0]['build_s'])}</td>"
+        f"<td class=num>{speed[n]:.2f}×</td>"
+        f"<td class=num>{sum(scale[n]['runs'][0]['trips'])}</td><td class=num>{sum(a_scale[n]['runs'][0]['trips'])}</td>"
+        f"<td class=num>{fmt_s(stages(scale[n]['runs'][0])['transform'])}</td><td class=num>{fmt_s(stages(a_scale[n]['runs'][0])['transform'])}</td>"
+        f"<td class=num>{fmt_s(stages(scale[n]['runs'][0])['integrals'])}</td><td class=num>{fmt_s(stages(a_scale[n]['runs'][0])['integrals'])}</td>"
+        f"<td class=num>{fmt_s(stages(scale[n]['runs'][0])['fit'])}</td><td class=num>{fmt_s(stages(a_scale[n]['runs'][0])['fit'])}</td></tr>"
+        for n in SIZES
+    )
+    a_sweep_rows = ""
+    for rb, ra in zip(sweep["runs"], a_sweep["runs"], strict=True):
+        wa = ra["width_line"].split(":")[1].split(" of ")[0].strip()
+        cmp = ra["compare"]
+        cmp_s = (
+            "reference"
+            if cmp is None
+            else ("bitwise" if cmp["bitwise"] else f"{cmp['max_abs_diff']:.1e}")
+        )
+        a_sweep_rows += (
+            f"<tr><td class=num>{ra['room_bytes'] >> 20}</td><td class=num>{wa}</td>"
+            f"<td class=num>{sum(rb['trips'])}</td><td class=num>{sum(ra['trips'])}</td>"
+            f"<td class=num>{fmt_s(rb['build_s'])}</td><td class=num>{fmt_s(ra['build_s'])}</td>"
+            f"<td class=num>{cmp_s}</td></tr>"
+        )
+    a_fast = min(a_sweep["runs"], key=lambda r: r["build_s"])
+    if slower:
+        worst = max(slower, key=lambda s: s[1])
+        slower_text = (
+            f"{len(slower)} of {len(kern_a['classes'])} classes got more than 5% slower, "
+            f"the worst {worst[0]} at {worst[1]:.2f}× its Cartesian time, and the "
+            f"integrals as a whole {ktot_a / ktot_b:.2f}×"
+        )
+    else:
+        slower_text = "No class got more than 5% slower"
 
     g20 = scale[20]
     s20 = stages(g20["runs"][0])
@@ -521,10 +673,61 @@ def main(data: Path, out: Path) -> None:
 <header style="display:flex;flex-direction:column;gap:12px">
   <div class="eyebrow">Measurement · 2026-11-21 · RTX 3080, one card · glycine chains, cc-pVDZ / cc-pVDZ-JKFIT, Schwarz 1e-12</div>
   <h1>Batched DF factor B on one GPU</h1>
-  <p class="lede">rust/'s <code>add_packed_b</code> already runs the fused loop: (P|mn) for every P over a batch of shell pairs, fitted against a resident L, downloaded as B. It never puts a whole (mn|P) or B on the card. The build is compute-bound on one stream, and two thirds of its time is the spherical transform.</p>
+  <p class="lede">rust/'s <code>add_packed_b</code> runs the fused loop: (P|mn) for every P over a batch of shell pairs, fitted against a resident L, downloaded as B. It never puts a whole (mn|P) or B on the card. On the Cartesian-aux path, two thirds of the build was the spherical transform. With the spherical-aux kernels of #1736 it builds gly20's B {speed[20]:.2f}× faster.</p>
 </header>
 
 <section>
+  <h2>Spherical aux (#1736): before and after</h2>
+  <div class="tiles">
+    <div class="tile"><b>{speed[20]:.2f}×</b><span>gly20's B build, {fmt_s(scale[20]["runs"][0]["build_s"])} → {fmt_s(a_scale[20]["runs"][0]["build_s"])}</span></div>
+    <div class="tile"><b>{speed[10]:.2f}×</b><span>gly10's, {fmt_s(scale[10]["runs"][0]["build_s"])} → {fmt_s(a_scale[10]["runs"][0]["build_s"])}</span></div>
+    <div class="tile"><b>{100 * a20["fit"] / a_dev20:.0f}%</b><span>of gly20's device time is now the trsm; the transform is {100 * a20["transform"] / a_dev20:.0f}%, the integrals {100 * a20["integrals"] / a_dev20:.0f}%</span></div>
+    <div class="tile"><b>{ktot_a / ktot_b:.2f}×</b><span>the integrals' own time on gly10, <code>speri3</code> against <code>peri3</code> ({ktot_b / 1e3:.2f} → {ktot_a / 1e3:.2f} s)</span></div>
+  </div>
+  <p><code>peri3</code> wrote (mn|P) with Cartesian P, and a dense GEMM against the block-diagonal U_aux turned it spherical. <code>speri3</code> (FelizJueves #743) writes Q spherical directly, by Hobson's theorem, so that GEMM is gone (#1753). Everything else is the same: the loop, the trsm, the download, and the same molecules, rooms and repetitions on the same card.</p>
+  <figure>
+    {legend(STAGES)}
+    <div class="scroll">{pairs}</div>
+    <figcaption>Per-stage time from each run's timing record, before (Cartesian aux, <code>{esc(meta["commit"])}</code>) and after (<code>{esc(a_meta["commit"])}</code>). Median of 3 warm runs at the card's free memory.</figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <tr><th></th><th class=num>before</th><th class=num>after</th><th class=num>speedup</th><th class=num>trips</th><th class=num>trips</th><th class=num>transform</th><th class=num>transform</th><th class=num>integrals</th><th class=num>integrals</th><th class=num>trsm</th><th class=num>trsm</th></tr>
+    {ba_rows}
+  </table></div>
+  <p class="note">Each pair of columns is before, then after. The after runs plan wider batches in the same room, so fewer trips, because the kernel's output row and the transform's scratch are sized on spherical rather than Cartesian aux functions.</p>
+</section>
+
+<section>
+  <h2>Per class: <code>speri3</code> against <code>peri3</code></h2>
+  <p>{slower_text}. <code>speri3</code> exists only in FelizJueves' low-stack form, and the old <code>peri3</code> was unrolled at some low classes, so a class can lose time even though it does less work. This table is where that would show.</p>
+  <div class="tbl"><table>
+    <tr><th>class (ab|P)</th><th class=num>peri3, ms</th><th class=num>speri3, ms</th><th class=num>ratio</th></tr>
+    {krows}
+  </table></div>
+  <p class="note">Device time per class summed over gly10's whole B build at a {meta["room_mib"]} MiB room, from the two nsys traces (<code>report/kernels.py</code>). The two runs cut their batches differently, so the per-class totals compare the same work, not the same launches.</p>
+</section>
+
+<section>
+  <h2>One trip, after</h2>
+  <figure>
+    {legend([k for k in TL_KINDS[:7] if k[0] != "transform aux"])}
+    <div class="scroll">{a_tlsvg}</div>
+    <figcaption>nsys trace of gly10 at a {a_meta["room_mib"]} MiB room ({a_meta["trips"]} trips), the first {a_meta["window_ms"]:.0f} ms of the last full run. Over the whole build: trsm {100 * a_share.get("fit", 0):.0f}%, integrals {100 * a_share.get("integrals", 0):.0f}%, bra/ket GEMMs {100 * a_share.get("transform bra/ket", 0):.1f}%, download {100 * a_share.get("d2h", 0):.1f}%, table upload {100 * a_share.get("h2d", 0):.1f}%.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>Batch width, after</h2>
+  <div class="tbl"><table>
+    <tr><th class=num>room MiB</th><th class=num>width after</th><th class=num>trips before</th><th class=num>trips after</th><th class=num>build before</th><th class=num>build after</th><th class=num>B after vs first</th></tr>
+    {a_sweep_rows}
+  </table></div>
+  <p class="note">gly10, one process per series. Fastest after: {fmt_s(a_fast["build_s"])} at {sum(a_fast["trips"])} trips. "B after vs first" compares within the after process, as before.</p>
+</section>
+
+<section>
+  <h2>Baseline: the Cartesian-aux path</h2>
+  <p>The sections below are the measurement before #1736, from the data published in #1749. One correction since then: the stage times now leave out the prefix's own tasks. The metric's spherical transform shares its task name with the loop's, and #1749 charged it to the loop. That was about 0.5 s on gly10 and 3.9 s on gly20, which moved gly20's transform share from 67% to 66%. The B build times were always net of the prefix and are unchanged.</p>
   <div class="tiles">
     <div class="tile"><b>{gb(g20["b_bytes"])}</b><span>gly20's B, built on a 10 GB card in {fmt_s(g20["runs"][0]["build_s"])} ({sum(g20["runs"][0]["trips"])} trips)</span></div>
     <div class="tile"><b>{100 * s20["transform"] / dev20:.0f}%</b><span>of gly20's device time is the spherical transform; the trsm is {100 * s20["fit"] / dev20:.0f}%, the integrals {100 * s20["integrals"] / dev20:.0f}%</span></div>
@@ -568,7 +771,7 @@ def main(data: Path, out: Path) -> None:
     <figcaption>nsys trace of gly10 at a {meta["room_mib"]} MiB room ({meta["trips"]} trips), the first {trip_ms:.0f} ms of the last full run. The plan has no NVTX ranges, so each kernel is classed by name and by its place in the trip; <code>report/timeline.py</code> has the rule. Over the whole build: dense U_aux GEMM {100 * aux_share:.0f}%, bra/ket GEMMs {100 * orb_share:.1f}%, trsm {100 * fit_share:.0f}%, integrals {100 * int_share:.0f}%, download {100 * d2h_share:.1f}%.</figcaption>
   </figure>
   <p>Everything runs on {"one stream" if len(streams) == 1 else f"{len(streams)} streams"}. The ring of depth 2 overlaps the host's table building and unstaging with the device. On the device, the download queues behind the trip's compute rather than under the next trip's. So does each trip's upload of its packed three-center cell tables, which is about as large as the B batch it downloads. Both copies together are {100 * (tl_tot.get("d2h", 0) + tl_tot.get("h2d", 0)) / tl_dev:.1f}% of device time, so a copy lane would win back at most that much.</p>
-  <p>The dense aux GEMM is the lever. U_aux is block-diagonal by shell, so almost all of that GEMM multiplies zeros. FelizJueves #743 (upstream <code>6e1c341</code>, newer than the pinned submodule) emits <code>speri3</code>, which writes Q already spherical by Hobson's theorem. FreeBreakfast #1736 takes it into rust/. That removes this GEMM outright, and the bra/ket GEMMs and the kernel's output shrink by the Cartesian-to-spherical ratio of the aux set. It is left to its own PR. This page measures the current path as the baseline.</p>
+  <p>The dense aux GEMM is the lever. U_aux is block-diagonal by shell, so almost all of that GEMM multiplies zeros. FelizJueves #743 (upstream <code>6e1c341</code>, newer than the pinned submodule) emits <code>speri3</code>, which writes Q already spherical by Hobson's theorem. FreeBreakfast #1736 takes it into rust/. That removes this GEMM outright, and the bra/ket GEMMs and the kernel's output shrink by the Cartesian-to-spherical ratio of the aux set. #1753 merged it; the sections at the top measure it.</p>
 </section>
 
 <section>
@@ -612,9 +815,9 @@ def main(data: Path, out: Path) -> None:
 <section>
   <h2>How it was run</h2>
   <ul>
-    <li>Driver <code>df-batched</code> (this crate), release build, against <code>rust/build-cuda</code>. Commit <code>{esc(meta["commit"])}</code>, FelizJueves <code>826b69e</code>.</li>
+    <li>Driver <code>df-batched</code> (this crate), release build, against <code>rust/build-cuda</code>. Before: commit <code>{esc(meta["commit"])}</code>, FelizJueves <code>826b69e</code>, <code>peri3</code>. After: commit <code>{esc(a_meta["commit"])}</code>, FelizJueves <code>6e1c341</code>, <code>speri3</code>. Data in <code>report/data/before</code> and <code>report/data/after</code>.</li>
     <li>Each run: one warm-up, then 3 timed runs, median. Both CUDA locks held, the card otherwise idle.</li>
-    <li>Timeline: <code>nsys profile -t cuda</code>, exported to SQLite, then <code>report/timeline.py</code>.</li>
+    <li>Timeline: <code>nsys profile -t cuda</code>, exported to SQLite, then <code>report/timeline.py</code>; per-class kernel time from the same export by <code>report/kernels.py</code>.</li>
     <li>Page: <code>report/make_report.py</code> over the JSON files. No number here is typed by hand.</li>
   </ul>
 </section>

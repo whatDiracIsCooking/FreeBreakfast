@@ -75,12 +75,22 @@ flock $L/cuda.0.lock flock $L/cuda.1.lock df-batched --xyz gly10.xyz
 
 ## The report
 
-`report.html` is generated from `report/data/`: the JSON of the runs
-behind it, and `timeline_gly10.json`, which `report/timeline.py` extracted
-from an nsys trace. Every number on the page is read from those files.
+`report.html` is generated from `report/data/`, which holds two series:
+
+- `before/`: the Cartesian-aux path (`peri3` plus a dense U_aux GEMM), at
+  `cb30cc80`.
+- `after/`: #1736's spherical-aux kernels (`speri3`), at `40afb73b`.
+
+Each holds the JSON of the runs, `timeline_gly10.json` (extracted by
+`report/timeline.py` from an nsys trace) and `kernels_gly10.json`, the
+per-class device time of the three-center kernels (extracted by
+`report/kernels.py` from the same trace). Every number on the page is read
+from those files.
 
 ```bash
-python3 report/timeline.py run.sqlite report/data/timeline_gly10.json   # from `nsys export -t sqlite`
+nsys export -t sqlite -o run.sqlite run.nsys-rep
+python3 report/timeline.py run.sqlite report/data/after/timeline_gly10.json
+python3 report/kernels.py run.sqlite report/data/after/kernels_gly10.json
 python3 report/make_report.py report/data report.html
 ```
 
@@ -88,12 +98,20 @@ What it found, on the RTX 3080 with glycine chains in cc-pVDZ /
 cc-pVDZ-JKFIT:
 
 - The build is compute-bound on one stream. At gly20, B is 11.6 GB, built
-  in 90 s on a 10 GB card, and the download is 1% of device time.
-- The spherical transform is about two thirds of the time, nearly all of
-  it the dense `U_auxᵀ X` GEMM against a block-diagonal U_aux (60% of
-  gly10's device time). FreeBreakfast #1736, with FelizJueves #743's
-  spherical-aux `speri3` kernels, removes it.
-- Width stops mattering past about 24 trips. Width 1 costs 5.6×.
+  on a 10 GB card, and the download is 1.1% of device time before #1736
+  and 3.3% after.
+- Before #1736, the spherical transform was two thirds of the time, nearly
+  all of it the dense `U_auxᵀ X` GEMM against a block-diagonal U_aux. With
+  #1736's `speri3` kernels that GEMM is gone: gly20's B builds in 31.5 s
+  instead of 90.2 s (2.86×), gly10's in 5.2 s instead of 12.4 s (2.40×).
+  The gain grows with size.
+- The trsm against L is now about four fifths of device time, and the next
+  lever.
+- `speri3`, low-stack only, makes the integrals 1.11× slower overall.
+  Several low classes lost to the old unrolled `peri3` by up to 2.3×.
+  That is small beside the GEMM it replaced.
+- Width stops mattering past about 20 trips. Width 1 costs 5.6× before and
+  11.6× after, because each trip's fixed cost now weighs more.
 - Compared with two passes ((mn|P) to the host, then fitted), the fused
   loop's gain is mostly host memory, |B| against 2·|B|. The extra PCIe
   traffic would add only a few percent to a compute-bound build.
