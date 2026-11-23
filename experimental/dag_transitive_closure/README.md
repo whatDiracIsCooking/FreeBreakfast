@@ -39,4 +39,5 @@ The second round checks the rule itself, not just the packer against it:
   conservative); packing them as exclusive is also safe, and not adopted.
 - First fit over a fixed set of four orders, keeping the lowest peak, reaches the
   bound on 99.2% (worst 1.174). On 4000 small DAGs solved exactly, the optimum
-  always equals the bound.
+  always equals the bound. That is empirical, at most 8 regions: in general it
+  cannot hold (the page's "Correctness and better packing" has why).

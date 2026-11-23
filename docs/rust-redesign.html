@@ -172,13 +172,15 @@ workspace after <code>experimental/library_handle_workspace</code>; then step sc
 packed by the closure of the DAG, a step as one node of the outer graph, and the records
 and work lists as scratch with no umbrella name).
 <span class="tag prop">proposed</span> this document's suggestion, not yet agreed
-(two remain, in the <a href="#managers">managers</a> discussion: the device's
+(three remain: in the <a href="#managers">managers</a> discussion, the device's
 mutex held per library call with one contention check, and a manager's scratch declared
-by its callers).
+by its callers; in <a href="#scratch">step scratch</a>, packing by the best of four
+fixed orders).
 <span class="tag disc">to discuss</span> raised in review and set aside for a fuller
 discussion; <a href="#open">collected at the end</a>.
-<span class="tag run">run</span> measured by the one experiment, under the old memory
-model. Everything is unbuilt unless marked run. "Verify" marks a claim recalled from
+<span class="tag run">run</span> measured or checked by an experiment, each section
+naming its own: the executor experiment (under the old memory model), the prototype, the
+library-workspace probe, and the closure model. Everything is unbuilt unless marked run. "Verify" marks a claim recalled from
 vendor or rustflow documentation and not checked against source.
 </p>
 
@@ -187,7 +189,8 @@ vendor or rustflow documentation and not checked against source.
 <li><a href="#changes">What changes</a></li>
 <li><a href="#steps">Steps and the MainBus</a></li>
 <li><a href="#budget">The memory budget</a> (and <a href="#lengths">setup's lengths</a>)</li>
-<li><a href="#kinds">What is budgeted, by kind</a></li>
+<li><a href="#kinds">What is budgeted, by kind</a> (and <a href="#closure-model">what
+  the closure model showed</a>)</li>
 <li><a href="#workspace">BLAS and solver workspace</a></li>
 <li><a href="#caps">Caps, and what the limit covers</a></li>
 <li><a href="#enforce">Enforcement</a></li>
@@ -503,6 +506,9 @@ later for CASSCF and the response solvers.</p>
     caller's region, since it runs during the caller's <code>run</code>. Packing then
     covers the SCF, a state average and a response solve with no new rule, and the
     internal lock is left guarding almost nothing, which bears on the opening question.
+    The <a href="#closure-model">closure model</a> checked both forms with two unordered
+    callers: declared by the callers, safe in every simulated run; owned by the manager,
+    one region used during both callers' runs, a collision in every one of 300.
     <span class="tag prop">proposed</span></li>
   <li>Whether a manager owns its own streams and BLAS handles per card, which would
     take its <code>gemm</code> calls off the device's one library stream.
@@ -900,21 +906,58 @@ calculation.</p>
   pinned memory; the call records a row and allocates nothing. The final budget node
   takes the transitive closure of the DAG (a bitset of successors per node, at a few
   dozen nodes) and packs each device and kind's rows into one slab: two steps' regions
-  may overlap only if one reaches the other. It packs greedily, in a fixed order (size,
-  then step id), so the offsets, and the table, are the same every run. Then it
-  allocates one slab per device and kind and records each step's offset.</li>
+  may overlap only if one reaches the other. It packs by first fit, each region at the
+  lowest offset clear of every unordered region already placed, in a fixed order, so the
+  offsets, and the table, are the same every run. Then it allocates one slab per device
+  and kind and records each step's offset.</li>
+<li><strong>The order: the best of four, fixed.</strong> First fit largest-first (size,
+  then step id) was the first form. The <a href="#closure-model">closure model</a> found
+  that trying four fixed orders (largest first; most constrained, by size plus the sizes
+  of the regions it may not share with; size times conflicts; topological) and keeping
+  the lowest peak, ties to the earlier order, reaches the lower bound on 99.2% of random
+  DAGs against 98.1%, and cuts the worst case from 1.281&times; the bound to 1.174&times;.
+  Four packings of a few dozen rows cost nothing, and the result is as deterministic as
+  one order. <span class="tag prop">proposed</span></li>
+<li><strong>Safe whatever the packer's quality.</strong> Safety is the packer's
+  constraint, not its objective: any placement that keeps unordered regions apart is
+  safe, the best and the worst alike. A poorer packing costs bytes, and at worst refuses a
+  plan a better one would have admitted: a refusal at init, never a collision in a
+  run.</li>
 <li><strong>Why the closure is enough.</strong> A finished node is finished device work
   (the wrapper's step-end sync), so a path in the DAG from A to B is a happens-before on
   the card as well as on the host: B cannot touch the bytes before A is done with them,
   under any schedule the executor picks. Unordered steps never share. So, unlike the old
   assigner, which made reuse possible by <em>adding</em> handoff edges, nothing here
-  constrains the schedule, and work stealing still cannot interact with memory.</li>
+  constrains the schedule, and work stealing still cannot interact with memory.
+  The model's simulated runs on a stealing pool agree, and its negative control shows the
+  sync is what carries it (<a href="#closure-model">below</a>).</li>
+<li><strong>The step-end sync now carries memory safety.</strong> It was introduced to
+  order the card between dependent steps (<a href="#sets">streams</a>); with scratch
+  packed, it is also what keeps bytes shared along a path from being used twice at once.
+  Pinned scratch needs both of its halves: the host writes it inside <code>run</code>,
+  before the node finishes, and the device reads it through copies on the step's stream,
+  done by the time the wrapper's sync returns. So a cheaper replacement is not free.
+  Event chaining (each step's stream waiting on its predecessors' join events, forwarded
+  by host-only nodes) still orders device work along every path, which keeps device
+  scratch safe; it does not order a host write in B after a copy A enqueued from the same
+  pinned bytes. Any change to the sync is a change to the scratch rule, and is decided
+  with it.</li>
 <li><strong>Computed once.</strong> The graph and every length are fixed for the
   calculation, so the closure and the offsets are made once in budget mode and every
-  replay runs in the same regions. A replayed chain's closure is taken over the loop's
-  body: a module cannot run concurrently with itself, so one iteration ends before the
-  next begins, and two steps unordered within the body stay apart, as they must. Outside
-  the loop, the loop is one node.</li>
+  replay runs in the same regions. A replayed chain's closure is taken over one iteration
+  of its body, laid flat into the outer DAG with the steps before and after it: a module
+  cannot run concurrently with itself, so one iteration ends before the next begins, two
+  steps unordered within the body stay apart, as they must, and so does a step outside
+  the loop that no path orders against it. The model packs once and runs three
+  iterations unrolled: safe statically and in simulated runs.</li>
+<li><strong>A condition's exclusive branches are packed as unordered.</strong> Two
+  branches of which only one runs never use their regions at once, so they could share
+  bytes. The closure does not know that, and keeps them apart: safe, and the branches'
+  sum rather than their max (in the model, 220 against 120&nbsp;MiB). Packing them as
+  exclusive is also safe, and is not adopted: a choice made in the config never enters
+  the DAG, and a runtime condition, such as a convergence loop, lives inside a step's
+  subflow, so exclusive branches of the outer graph should be rare.
+  <span class="tag dec">decided</span></li>
 <li><strong>A lease that cannot escape.</strong> The wrapper hands <code>run</code> a
   lease on its regions that borrows for the length of <code>run</code>, not
   <code>'static</code>. A step cannot store its scratch in its <code>Output</code>, so
@@ -945,6 +988,227 @@ calculation.</p>
   producer to its last reader. Held until the measurement (<a href="#open">open
   questions</a>) says <code>Output</code>s, not scratch, are what stacks.
   <span class="tag disc">to discuss</span></li>
+</ul>
+
+<h3 id="closure-model">What the closure model showed</h3>
+
+<p><span class="tag run">run</span> 2026-11-21,
+<a href="../experimental/dag_transitive_closure/"><code>experimental/dag_transitive_closure</code></a>
+(its README and page have the detail; <code>model.py</code> pins every number below). A
+model in plain Python, with no GPU and nothing built: a fixed dummy DAG, loosely
+gly10-shaped, with sizes in MiB that are <em>not measurements</em>, and seeded random
+DAGs. Two kinds of check. Static ones hold the packing against the closure: no two
+regions of unordered steps intersect. Those cannot show the closure is the right rule,
+so the execution checks simulate runs on a pool of one to eight workers taking any ready
+step at random, as stealing would, and look for two regions that share bytes while both
+are in use.</p>
+
+<figure class="fig">
+<svg viewBox="0 0 900 400" role="img" aria-label="Left: the dummy DAG of twelve steps with each step's scratch in MiB; T, V, X and eri, mutually unordered, are outlined as the heaviest antichain, 2049 MiB. Right: device 0's slab as packed; eri, nevpt2, casscf, scf, metric and factor all start at offset 0, since the DAG orders them; X, S, V and T are placed above 2040. Below: the plain sum 3318, the lock's max 2040, the packed peak 2049.">
+  <defs>
+    <marker id="cmg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="grey" d="M0,1 L10,5 L0,9 z"/></marker>
+  </defs>
+  <text class="b" x="20" y="24">The dummy DAG: scratch per step, MiB</text>
+  <!-- edges -->
+  <path class="f-bus" marker-end="url(#cmg)" d="M62,80 L62,98"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M132,80 L160,98"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M202,80 L174,98"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M362,80 L362,98"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M362,134 L362,152"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M62,134 L196,228"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M167,134 L206,228"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M272,80 L218,228"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M362,188 L232,228"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M212,264 L212,288"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M212,324 L212,348"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M394,171 C440,171 440,307 246,307"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M394,180 C462,180 462,367 246,367"/>
+  <!-- nodes -->
+  <rect class="f-setup" x="30" y="46" width="64" height="34" rx="6"/>
+  <text class="b" x="62" y="61" text-anchor="middle">S</text><text class="m s" x="62" y="75" text-anchor="middle">1</text>
+  <rect class="f-setup" x="100" y="46" width="64" height="34" rx="6"/>
+  <text class="b" x="132" y="61" text-anchor="middle">T</text><text class="m s" x="132" y="75" text-anchor="middle">1</text>
+  <rect class="f-setup" x="170" y="46" width="64" height="34" rx="6"/>
+  <text class="b" x="202" y="61" text-anchor="middle">V</text><text class="m s" x="202" y="75" text-anchor="middle">2</text>
+  <rect class="f-setup" x="240" y="46" width="64" height="34" rx="6"/>
+  <text class="b" x="272" y="61" text-anchor="middle">guess</text><text class="m s" x="272" y="75" text-anchor="middle">0</text>
+  <rect class="f-int" x="330" y="46" width="64" height="34" rx="6"/>
+  <text class="b" x="362" y="61" text-anchor="middle">metric</text><text class="m s" x="362" y="75" text-anchor="middle">20</text>
+  <rect class="f-la" x="30" y="100" width="64" height="34" rx="6"/>
+  <text class="b" x="62" y="115" text-anchor="middle">X</text><text class="m s" x="62" y="129" text-anchor="middle">6</text>
+  <rect class="f-setup" x="135" y="100" width="64" height="34" rx="6"/>
+  <text class="b" x="167" y="115" text-anchor="middle">H</text><text class="m s" x="167" y="129" text-anchor="middle">0</text>
+  <rect class="f-int" x="330" y="100" width="64" height="34" rx="6"/>
+  <text class="b" x="362" y="115" text-anchor="middle">factor</text><text class="m s" x="362" y="129" text-anchor="middle">8</text>
+  <rect class="f-int" x="330" y="154" width="64" height="34" rx="6"/>
+  <text class="b" x="362" y="169" text-anchor="middle">eri</text><text class="m s" x="362" y="183" text-anchor="middle">2040</text>
+  <rect class="f-scf" x="180" y="230" width="64" height="34" rx="6"/>
+  <text class="b" x="212" y="245" text-anchor="middle">scf</text><text class="m s" x="212" y="259" text-anchor="middle">40</text>
+  <rect class="f-scf" x="180" y="290" width="64" height="34" rx="6"/>
+  <text class="b" x="212" y="305" text-anchor="middle">casscf</text><text class="m s" x="212" y="319" text-anchor="middle">300</text>
+  <rect class="f-scf" x="180" y="350" width="64" height="34" rx="6"/>
+  <text class="b" x="212" y="365" text-anchor="middle">nevpt2</text><text class="m s" x="212" y="379" text-anchor="middle">900</text>
+  <!-- the heaviest antichain -->
+  <rect class="f-hot" x="97" y="43" width="140" height="40" rx="8" stroke-width="2.2"/>
+  <rect class="f-hot" x="27" y="97" width="70" height="40" rx="8" stroke-width="2.2"/>
+  <rect class="f-hot" x="327" y="151" width="70" height="40" rx="8" stroke-width="2.2"/>
+  <text class="s" x="20" y="290">outlined: T, V, X, eri,</text>
+  <text class="s" x="20" y="305">no two ordered by a path;</text>
+  <text class="s" x="20" y="320">1 + 2 + 6 + 2040 = 2049,</text>
+  <text class="s" x="20" y="335">the lower bound</text>
+
+  <text class="b" x="480" y="24">Device 0's slab, as packed</text>
+  <text class="m s" x="480" y="42">offset in MiB; the axis is ×16 wider past 2040</text>
+  <line class="f-rule" x1="740" y1="54" x2="740" y2="286" stroke-dasharray="3 3"/>
+  <text class="s" x="480" y="76">eri</text><rect class="f-int" x="540" y="64" width="200" height="16"/>
+  <text class="s" x="480" y="98">nevpt2</text><rect class="f-scf" x="540" y="86" width="88" height="16"/>
+  <text class="s" x="480" y="120">casscf</text><rect class="f-scf" x="540" y="108" width="29" height="16"/>
+  <text class="s" x="480" y="142">scf</text><rect class="f-scf" x="540" y="130" width="4" height="16"/>
+  <text class="s" x="480" y="164">metric</text><rect class="f-int" x="540" y="152" width="2" height="16"/>
+  <text class="s" x="480" y="186">factor</text><rect class="f-int" x="540" y="174" width="2" height="16"/>
+  <text class="s" x="480" y="208">X</text><rect class="f-la" x="740" y="196" width="96" height="16"/>
+  <text class="s" x="480" y="230">S</text><rect class="f-setup" x="740" y="218" width="16" height="16"/>
+  <text class="s" x="480" y="252">V</text><rect class="f-setup" x="836" y="240" width="32" height="16"/>
+  <text class="s" x="480" y="274">T</text><rect class="f-setup" x="868" y="262" width="16" height="16"/>
+  <text class="m s" x="636" y="98">0–900</text>
+  <text class="m s" x="577" y="120">0–300</text>
+  <text class="m s" x="552" y="142">0–40</text>
+  <text class="m s" x="552" y="164">0–20</text>
+  <text class="m s" x="552" y="186">0–8: all six chained, all at 0</text>
+  <text class="m s" x="734" y="208" text-anchor="end">2040–2046</text>
+  <text class="m s" x="762" y="230">2040–2041</text>
+  <text class="m s" x="830" y="252" text-anchor="end">2046–2048</text>
+  <text class="m s" x="862" y="274" text-anchor="end">2048–2049</text>
+  <line class="f-rule" x1="540" y1="288" x2="884" y2="288"/>
+  <text class="m s" x="540" y="302" text-anchor="middle">0</text>
+  <text class="m s" x="740" y="302" text-anchor="middle">2040</text>
+  <line class="f-cap" x1="884" y1="54" x2="884" y2="292"/>
+  <text class="s" x="884" y="302" text-anchor="end">peak 2049</text>
+
+  <text class="b" x="480" y="332">The same declarations, three ways (linear)</text>
+  <text class="s" x="480" y="352">plain sum</text>
+  <rect class="f-plain" x="560" y="341" width="320" height="14"/>
+  <text class="s" x="874" y="352" text-anchor="end">3318</text>
+  <text class="s" x="480" y="372">lock's max</text>
+  <rect class="f-plain" x="560" y="361" width="197" height="14"/>
+  <text class="s" x="763" y="372">2040, with waits</text>
+  <text class="s" x="480" y="392">packed</text>
+  <rect class="f-scf" x="560" y="381" width="198" height="14"/>
+  <text class="s" x="764" y="392">2049, none</text>
+</svg>
+<figcaption>The dummy DAG and its packing (MiB, not measurements). Every step from
+<code>metric</code> to <code>nevpt2</code> lies on one path, so all six start at offset 0
+and share the bottom 2040&nbsp;MiB. S, T, V and X are unordered with <code>eri</code>, so
+they go above it; S may share with X, which it precedes, and does. The peak equals the
+heaviest antichain, so no packing that keeps unordered regions apart does better. Against
+the first form, one max per device under a lock, packing costs 9&nbsp;MiB and removes
+the wait between <code>eri</code> and X.</figcaption>
+</figure>
+
+<figure class="fig">
+<svg viewBox="0 0 900 318" role="img" aria-label="Three timelines of step A followed by step B, whose scratch shares bytes. With the step-end sync, B starts after A's kernels end. Without it, A's node finishes after its host part, and B's kernels run on the shared bytes while A's are still running. With event chaining, B's kernels wait on A's event and are safe, but B's host write to pinned scratch overlaps A's pending copy from it.">
+  <defs>
+    <marker id="cmh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="hot" d="M0,1 L10,5 L0,9 z"/></marker>
+  </defs>
+  <!-- panel 1: with the sync -->
+  <text class="b" x="20" y="16">With the step-end sync: safe</text>
+  <text class="m s" x="20" y="38">host</text>
+  <text class="m s" x="20" y="62">A's stream</text>
+  <text class="m s" x="20" y="86">B's stream</text>
+  <rect class="f-int" x="160" y="26" width="90" height="18"/><text class="s" x="205" y="39" text-anchor="middle">run A</text>
+  <rect class="f-wait" x="250" y="26" width="180" height="18"/><text class="m s" x="340" y="39" text-anchor="middle">wrapper syncs A's stream</text>
+  <rect class="f-int" x="190" y="50" width="240" height="18"/><text class="s" x="310" y="63" text-anchor="middle">A's kernels, on the shared bytes</text>
+  <line class="f-cap" x1="430" y1="22" x2="430" y2="94"/>
+  <text class="s" x="436" y="20">A's node finishes</text>
+  <rect class="f-la" x="440" y="26" width="90" height="18"/><text class="s" x="485" y="39" text-anchor="middle">run B</text>
+  <rect class="f-la" x="470" y="74" width="230" height="18"/><text class="s" x="585" y="87" text-anchor="middle">B's kernels, the same bytes</text>
+
+  <!-- panel 2: without -->
+  <text class="b" x="20" y="122">Without it, the negative control: 2395 of 3000 runs collide</text>
+  <text class="m s" x="20" y="144">host</text>
+  <text class="m s" x="20" y="168">A's stream</text>
+  <text class="m s" x="20" y="192">B's stream</text>
+  <rect class="f-int" x="160" y="132" width="90" height="18"/><text class="s" x="205" y="145" text-anchor="middle">run A</text>
+  <rect class="f-int" x="190" y="156" width="240" height="18"/><text class="s" x="250" y="169" text-anchor="middle">A's kernels</text>
+  <line class="f-cap" x1="250" y1="128" x2="250" y2="200"/>
+  <text class="s" x="358" y="145">A's node finished at the line; its kernels run on</text>
+  <rect class="f-la" x="260" y="132" width="90" height="18"/><text class="s" x="305" y="145" text-anchor="middle">run B</text>
+  <rect class="f-la" x="290" y="180" width="230" height="18"/><text class="s" x="470" y="193" text-anchor="middle">B's kernels</text>
+  <rect class="f-hot" x="290" y="154" width="140" height="46" stroke-width="2.2"/>
+  <text class="s" x="530" y="168">both in use on the same bytes</text>
+
+  <!-- panel 3: event chaining, pinned -->
+  <text class="b" x="20" y="228">Event chaining instead: device scratch safe, pinned not</text>
+  <text class="m s" x="20" y="250">host</text>
+  <text class="m s" x="20" y="274">A's stream</text>
+  <text class="m s" x="20" y="298">B's stream</text>
+  <rect class="f-int" x="160" y="238" width="90" height="18"/><text class="s" x="205" y="251" text-anchor="middle">A writes pinned</text>
+  <rect class="f-int" x="190" y="262" width="250" height="18"/><text class="s" x="300" y="275" text-anchor="middle">kernels, then the copy from pinned</text>
+  <line class="f-cap" x1="250" y1="234" x2="250" y2="306"/>
+  <rect class="f-la" x="260" y="238" width="110" height="18"/><text class="s" x="315" y="251" text-anchor="middle">B writes pinned</text>
+  <rect class="f-wait" x="290" y="286" width="150" height="18"/><text class="m s" x="365" y="299" text-anchor="middle">waits on A's event</text>
+  <rect class="f-la" x="440" y="286" width="200" height="18"/><text class="s" x="540" y="299" text-anchor="middle">B's kernels: after A's, safe</text>
+  <rect class="f-hot" x="258" y="236" width="182" height="46" stroke-width="2.2"/>
+  <path class="f-hot" marker-end="url(#cmh)" d="M560,252 L446,252"/>
+  <text class="s" x="566" y="256">the host write is on no stream: it overtakes A's copy</text>
+</svg>
+<figcaption>A and B share scratch bytes, which the closure allows since a path orders
+them. What makes that safe is the wrapper's sync: a finished node is finished device
+work. The model's negative control drops it and finds two byte-sharing regions in use at
+once in 2395 of 3000 runs, so the simulation can see a collision, and sees none in 3500
+runs with the sync. The third row is not in the model: the reason a cheaper replacement for
+the sync is a change to the scratch rule too (<a href="#scratch">above</a>).</figcaption>
+</figure>
+
+<div class="tablewrap"><table>
+<tr><th>Check</th><th>Result</th></tr>
+<tr><td>The closure</td><td>The bitset closure equals reachability by plain depth-first
+  search on 1000 random DAGs of 1 to 60 steps</td></tr>
+<tr><td>Determinism</td><td>Offsets unchanged over 200 shuffles of the dummy DAG's
+  declaration order and every permutation of six of its steps, for largest first and for
+  the best of four</td></tr>
+<tr><td>The dummy DAG</td><td>Packed peak 2049&nbsp;MiB, equal to the lower bound;
+  plain sum 3318; the lock's max 2040</td></tr>
+<tr><td>Random DAGs, 2 to 16 steps</td><td>2994 with scratch, every one safe, and max
+  &le; bound &le; packed &le; sum on each</td></tr>
+<tr><td>&emsp;largest first</td><td>At the bound on 2938 (98.1%), worst 1.281&times;,
+  mean 1.0014. On each of the 56 misses some other first-fit order reaches the bound: the
+  shortfall is the order, not the bound</td></tr>
+<tr><td>&emsp;best of four orders</td><td>At the bound on 2970 (99.2%), worst
+  1.174&times;, mean 1.0003; never worse than largest first</td></tr>
+<tr><td>Exact optimum, 4000 small DAGs</td><td>At most 8 regions, small integer sizes:
+  the optimum equals the bound on every one (but see below). Largest first optimal on
+  3769, the best of four on 3953</td></tr>
+<tr><td>Simulated runs</td><td>3500 runs, 1 to 8 workers, random ready steps: no two
+  byte-sharing regions in use at once. Without the step-end sync: 2395 of 3000 runs
+  collide</td></tr>
+<tr><td>Devices and kinds</td><td>1777 slabs over 500 random DAGs on two cards, device
+  and pinned memory each: all safe. A slab's offsets do not move when another slab's
+  regions change; a multi-GPU step declares on each card it spans</td></tr>
+<tr><td>A manager's scratch</td><td>Declared by its two unordered callers: safe, peak
+  500. Owned by the manager and used during its callers' runs: 450, and a collision in
+  every one of 300 runs</td></tr>
+<tr><td>Exclusive branches</td><td>Packed by the closure: 220, safe. Packed as exclusive:
+  120, also safe; not adopted (<a href="#scratch">above</a>)</td></tr>
+<tr><td>Replay</td><td>Packed once over one iteration; three iterations unrolled: no
+  unsafe pair, and safe in simulated runs</td></tr>
+</table></div>
+
+<ul>
+<li><strong>The bound is a floor, not a promise.</strong> It was reached on every small
+  DAG solved exactly, but not in principle: packing regions apart along a conflict graph
+  is NP-hard even when the lifetimes are intervals, and interval orders are step DAGs
+  too, while the heaviest antichain is found in polynomial time. So some DAG has its
+  optimum above the bound; at a few dozen steps, the gap the model found is the order's
+  and it is small.</li>
+<li><strong>The budget table shows it.</strong> Beside the packed peak and the plain sum,
+  the table prints the lower bound and the steps that make it, so how far packing is from
+  the best any packing could do reads plainly. A branch and bound over a few dozen rows
+  is instant. <span class="tag prop">proposed</span></li>
+<li><strong>What it does not show.</strong> The sizes are dummies, so nothing here says
+  how much packing saves on a real calculation: that is still <a href="#open">to
+  measure</a>, on the <code>examples/</code> configs. And the simulation models the sync;
+  it does not test wwr's.</li>
 </ul>
 
 <h2 id="workspace">BLAS and solver workspace</h2>
@@ -1093,7 +1357,7 @@ allocations such as reading the geometry and the basis data.</div>
 <tr><td>Two steps share scratch bytes only if the DAG orders them</td><td>By
   construction: the final node packs from the closure; one <code>unsafe</code>, in the
   arena, and a test that packs a DAG and checks every overlapping pair against
-  reachability</td></tr>
+  reachability (the shape of the closure model's <code>unsafe_pairs</code>)</td></tr>
 <tr><td>A library call's work buffer is at least its size query</td><td>By the
   binding: it repeats the query and checks the slice before the call
   (<a href="#workspace">above</a>); a <code>doc_check</code> test holds every solver
@@ -1819,8 +2083,9 @@ shows against the old path at these sizes.</p>
   not tested.</li>
 <li><strong>The budget table is the memory diagnostic</strong>: one row per step and
   kind, each step's scratch and the handle workspace their own rows, the packed scratch
-  peak beside the plain sum of the declarations (so packing's gain reads plainly), the
-  totals against the caps. Logged on every run,
+  peak beside the plain sum of the declarations (so packing's gain reads plainly) and the
+  lower bound with the steps that make it (so its distance from the best reads plainly),
+  the totals against the caps. Logged on every run,
   printed in full on a refusal. rustflow's <code>ChromeObserver</code> and
   <code>dump()</code> (Graphviz DOT) sit beside the timing record.</li>
 <li><strong>Determinism.</strong> Results are those of the edges. Accept or refuse, the
@@ -1845,8 +2110,11 @@ Rust tree's task layer and not an edit to it.</p>
   <code>Budget</code> with its counters, flag, table and final node, the heap slab, and
   the closure and the scratch packing, and the two-mode DAG on rustflow. Tests: accept
   and refuse are deterministic; the table is complete on a refusal; a slab cannot grow;
-  a config that does not close is refused; every pair of overlapping scratch regions is
-  ordered by the DAG; a condition loop inside a subflow, at the pinned rustflow.</li>
+  a config that does not close is refused; the closure equals reachability by a plain
+  search; every pair of overlapping scratch regions is ordered by the DAG, and the
+  offsets do not depend on declaration order (each as the
+  <a href="#closure-model">closure model</a> checks it); a condition loop inside a
+  subflow, at the pinned rustflow.</li>
 <li><strong>One step on one card, beside the old path.</strong> The DF J/K pass is the
   candidate: the experiment's fourth variant is most of it. The step's
   <code>ForkStream</code> and the wrapper's sync, <code>DeviceResources</code> behind its
@@ -1889,7 +2157,9 @@ Rust tree's task layer and not an edit to it.</p>
 <h3>To measure, verify or pick a value for</h3>
 <ul>
 <li><strong>The blocking sync.</strong> Which scheduling flag makes a worker waiting on
-  its step's stream sleep, on each backend.</li>
+  its step's stream sleep, on each backend. If what it costs on the SCF iteration argues
+  for a cheaper replacement, the replacement has to keep pinned scratch safe as well as
+  device scratch (<a href="#scratch">step scratch</a>).</li>
 <li><strong>The executor's width</strong> against the GPU steps that can be waiting at
   once.</li>
 <li><strong>What the sum costs.</strong> The ratio of summed step peaks to the fold's
@@ -1898,9 +2168,11 @@ Rust tree's task layer and not an edit to it.</p>
   whether packing scratch is enough, whether <code>Output</code>s should be packed too
   (<a href="#scratch">the same closure</a>), or whether the remedy is a step's batched
   path. Not measured; information only, no bar.</li>
-<li><strong>Packing quality.</strong> The greedy packing's peak against the lower bound
-  the closure gives (the heaviest set of mutually unordered declarations), on the same
-  configs.</li>
+<li><strong>Packing quality.</strong> The packed peak against the lower bound the
+  closure gives (the heaviest set of mutually unordered declarations), on the same
+  configs. On the model's dummy and random DAGs it is answered
+  (<a href="#closure-model">there</a>): at the bound on 98.1% largest first, 99.2% the
+  best of four; real configs remain.</li>
 <li><strong>The margin constant</strong> for a defaulted device cap, and whether the
   kernels' stack should be read per card and not carried as the 3080's number.</li>
 <li><strong>The default limit fraction</strong> for a step with a batched path.</li>
