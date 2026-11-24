@@ -111,7 +111,8 @@ and the 512 bytes neither.
 n" ...`) asks the same of the other calls the Rust tree makes, and of those
 the ports will bring. One routine at one order per process, 40 readings: each
 routine at an order that is a multiple of 128 and one that is not, and a
-third only where the first two showed a need. HIP only.
+third only where the first two showed a need. HIP below; the same sweep on
+CUDA follows it.
 
 ### BLAS: what the call uses of the handle's workspace
 
@@ -205,10 +206,75 @@ three readings that looked odd were run twice more and held to the others
   GPU work, not every process on the host, so something else moved the
   card's free memory during those calls.
 
+## The same sweep on cuBLAS and cuSOLVER
+
+RTX 3080, CUDA 13, every routine above at the same orders, 67 processes,
+then the disturbed readings (below) twice more.
+
+### BLAS
+
+| Routine | Used, n = 4096 / 4100 (/ 8192) | 256-byte workspace | Trend |
+|---|---|---|---|
+| `dtrsm`, right, transposed | 2,048 / 2,080 B | success, nothing taken | none: the same at both orders |
+| `strsm`, `ztrsm` | 0 / 0, and 0 / 516 B | success, nothing taken | none |
+| `dtrmm`, `dgemm_strided_batched`, `dsyrk`, `dgemv`, `dgeam`, `ddgmm` | 0 | success, nothing taken | none |
+| `dtrsv` | 8 B | success, nothing taken | none |
+| `ddot`, `dnrm2`, `dasum` | 6,528 to 6,536 B at every length | success, nothing taken | none: a fixed size, 16.8 to 67 million elements |
+| `idamax`, `izamax`, `zdotc` | 2,460, 828 and 17,408 B at every length | success, nothing taken | none |
+| `daxpy`, `dscal`, `dcopy` | 0 | success, nothing taken | none |
+
+- **No cuBLAS call's need grows with its operands.** The reductions keep a
+  fixed few kilobytes of partial results, where rocBLAS keeps one per 1024
+  elements.
+- **A 256-byte workspace is never an error and never a growth.** Every call
+  succeeded on it and took nothing measurable, the reductions included,
+  though they use more than 256 bytes of a large one. Where they put their
+  partials then is cuBLAS's own business, inside memory it holds from
+  handle creation.
+
+### Solvers
+
+| Routine | Size query | Beyond the work buffer |
+|---|---|---|
+| `dsyevd`, n = 2048, 2100, 4100 | 17.1 M, 17.9 M, 67.8 M doubles (130, 137, 517 MiB) | 0 to 2 MiB |
+| `zheevd`, `zheevdx` (range all), same orders | 17.1 M, 17.9 M, 67.8 M complex doubles (260, 274, 1034 MiB) | 0 to 2 MiB |
+| `dpotrf`, n = 4096, 4100 | 8208, 8340 doubles | 0 |
+| `dgetrf`, n = 4096, 4100, 8192 | 13,344, 13,376, 40,992 doubles | 0 |
+| `dgesvd`, n = 1024, 1030, 2048 | 3.48 M, 3.52 M, 13.2 M doubles (27, 27, 101 MiB) | 0 |
+| `dpotrs`, `dgetrs`, n = nrhs = 4096, 4100, 8192 | take no buffer | **0** |
+
+- **`potrs` and `getrs` take nothing on CUDA.** Up to 512 MiB of
+  right-hand sides, where hipSOLVER takes B plus 42 MiB.
+- **Every call with a size query stays inside it**, as on HIP. The queries
+  are larger than hipSOLVER's for the eigensolvers (about 4.07 n² against
+  3.26 n² for `syevd`) and far smaller for the factorizations (`getrf`'s is
+  a panel, not a copy of A).
+- **`zheevd` and `zheevdx` ask for the same count as `dsyevd`**, in complex
+  elements, so twice its bytes. `heevdx` over the whole range costs nothing
+  more than `heevd` here.
+
+### Readings that did not reproduce
+
+The card was shared with another session's GPU tests during the run, so the
+free memory moved under some calls. Each of these was rerun twice and gave
+0 at least once on the measured call:
+
+- `dgetrs` at 8192: the factorization before the solves "took" 1194 and then
+  1189 MiB on two of three runs, and 0 on the third; `dgetrf` at 8192 alone
+  took 0. A second solve took 32 MiB once, 0 twice.
+- `dpotrs` at 4096: 13.5 MiB on the first call once, 0 on two reruns; the
+  factorization before it "gave back" 815 MiB once.
+- `dgesvd` at 2048: 14 MiB on the second call once, 0 on two reruns.
+- `dtrmm` and `dsyrk` at 4096 gained 1.8 MiB once each.
+
+Nothing that reproduced is above 2 MiB.
+
 ## What it means for the fixed workspace
 
-1. **On CUDA the size does not matter for `dtrsm`.** Any constant covers it;
-   what cuBLAS takes by itself stayed under 30 MiB up to 8 GiB of B.
+1. **On CUDA nothing measured grows.** No cuBLAS call's need depends on its
+   operands, `trsm` included, and cuSOLVER's `potrs` and `getrs` take
+   nothing; any constant workspace covers them all. What cuBLAS takes by
+   itself stayed under 30 MiB up to 8 GiB of B, with no relation to its size.
 2. **On HIP no constant covers `dtrsm`.** The need is a function of the
    call: about B's own size when L's order is not a multiple of 128, and 1/32
    of B when it is. n_aux is whatever the basis gives (3606 on gly10), so the
@@ -231,8 +297,8 @@ three readings that looked odd were run twice more and held to the others
    to 17 billion elements (`iamax` and `zdotc` to 8.6), and the calls that
    take none. With the last of the C++ tree's calls measured, `trsm`,
    `potrs` and `getrs` are the only ones that take memory outside the
-   caller's by themselves.
+   caller's by themselves, and only on HIP.
 
 Not measured: plain `gemm` beyond `handle_ring`'s 4096, upper solves,
-rectangular `syrk` and `gemv`, the batched solver calls, hipBLASLt, and any
-of the sweep on CUDA.
+rectangular `syrk` and `gemv`, the batched solver calls, hipBLASLt and
+cuBLASLt.
