@@ -2109,7 +2109,10 @@ form:</p>
 <p>One graph is written, over steps, and built twice from the same description: once with
 each node's body calling <code>mem_budget</code>, once calling <code>run</code>. Names are
 rustflow's (<a href="https://github.com/whatDiracIsCooking/rustflow">README</a>,
-<a href="https://github.com/whatDiracIsCooking/rustflow/blob/main/DESIGN.md">DESIGN.md</a>).</p>
+<a href="https://github.com/whatDiracIsCooking/rustflow/blob/main/DESIGN.md">DESIGN.md</a>).
+rustflow is pinned at <code>f184bcab</code> (its head on 2026-11-24), in
+<code>rust/Cargo.toml</code>'s <code>[workspace.dependencies]</code>; see
+<a href="#open">the dependency</a>.</p>
 
 <div class="tablewrap"><table>
 <tr><th>In the calculation</th><th>In the <code>Taskflow</code></th></tr>
@@ -2127,7 +2130,8 @@ rustflow's (<a href="https://github.com/whatDiracIsCooking/rustflow">README</a>,
 <tr><td>A step's inner work (integral batches, the SCF's iteration)</td><td>The step's
   own, inside its node: a subflow (<code>emplace_subflow</code>), condition loops built
   in it (<code>Subflow</code> implements <code>FlowBuilder</code>, so
-  <code>emplace_condition</code> is there; read in source at <code>67a07b9</code>), or a
+  <code>emplace_condition</code> is there; read in source at <code>67a07b9</code> and
+  <code>f184bcab</code>), or a
   <code>Pipeline</code> for a streamed pass. A subflow joins before its node finishes,
   so the wrapper's sync stays the last word</td></tr>
 <tr><td>A replayed chain: geometry optimization, AIMD</td><td>The chain as a module task
@@ -2137,14 +2141,19 @@ rustflow's (<a href="https://github.com/whatDiracIsCooking/rustflow">README</a>,
 </table></div>
 
 <ul>
-<li><strong>A loop's entry is one node.</strong> A condition picks a successor by index,
-  so a body with several sources gets one empty entry node ahead of them. An iteration
-  limit is the condition's own check.</li>
-<li><strong>A condition loop inside a subflow is untested.</strong> rustflow's tests run
-  a subflow inside an outer loop (<code>tests/subflows.rs</code>), not a loop inside a
-  subflow, and the source read is newer than the prototype's pin
-  (<code>b77e5474</code>). The prototype's SCF was a loop of the outer graph. One small
-  test at the pin closes it.</li>
+<li><strong>A loop needs no entry node.</strong> A condition picks one successor by
+  index, but a multi-condition (<code>emplace_multi_condition</code>, a body returning
+  <code>Vec&lt;i32&gt;</code>) names as many as it likes, so the back edge names each
+  source of a body of several, and the SCF's empty entry node goes. Each trip runs the
+  sources once and their join after them. An iteration limit is the condition's own
+  check. <span class="tag run">run</span> (<code>experimental/rust/v0.0.2</code>'s
+  <code>tests/rustflow_pin.rs</code>, at <code>f184bcab</code>)</li>
+<li><strong>A condition loop inside a subflow runs</strong>, and joins before its node
+  finishes: the node after the step sees the loop done. rustflow's own tests still run
+  only a subflow inside an outer loop (<code>tests/subflows.rs</code>); the case is the
+  prototype's <code>tests/rustflow_pin.rs</code>, which passes at <code>f184bcab</code>
+  and at the prototype's old pin <code>b77e5474</code> alike.
+  <span class="tag run">run</span></li>
 <li><strong>A module cannot be run by two tasks at once</strong> (DESIGN.md: upstream's
   rule is that a target must not be run by two threads concurrently). So concurrent
   replays would be copies, each with buffers of its own. None is in scope: the
@@ -2154,8 +2163,10 @@ rustflow's (<a href="https://github.com/whatDiracIsCooking/rustflow">README</a>,
   streamed pass still needs device events. <span class="tag run">run</span></li>
 <li><strong>Budget mode needs no order</strong>, but it runs the same edges anyway; the
   cost is nothing and the graph is one.</li>
-<li><strong>A serial mode</strong>, if ever wanted for debugging, would be a one-worker
-  executor. Whether rustflow supports that explicitly was not confirmed.</li>
+<li><strong>A serial mode</strong>, if ever wanted for debugging, is a one-worker
+  executor: <code>Executor::new(1)</code> (zero workers panics). Both cases of
+  <code>tests/rustflow_pin.rs</code> run on one worker and on four.
+  <span class="tag run">run</span></li>
 </ul>
 
 <h2 id="example">Example: the DF-HF setup DAG</h2>
@@ -2491,12 +2502,16 @@ shows against the old path at these sizes.</p>
   (<code>fb_sad::sad_density</code>)</td>
   <td>The host layer writes into slices</td></tr>
 <tr><td>The port (<a href="#retire">order of work</a>)</td>
-  <td>wwr's <code>Stream</code> and handles are <code>!Send</code> (two
-  <code>unsafe impl</code>s). All of <code>fb-integrals-sys</code>'s task layer is
-  rewritten; <code>RecordTables</code> and <code>fb-recipes-sys</code>'s slice-taking
-  functions carry over. A step touches four places, and <code>Reads</code> stops at
-  eight</td>
-  <td><code>Send</code> handles in <code>fb-core-wwr</code> first</td></tr>
+  <td>wwr's <code>Stream</code> and handles were <code>!Send</code>, and the prototype
+  carried two <code>unsafe impl</code>s for them. All of <code>fb-integrals-sys</code>'s
+  task layer is rewritten; <code>RecordTables</code> and <code>fb-recipes-sys</code>'s
+  slice-taking functions carry over. A step touches four places, and <code>Reads</code>
+  stops at eight</td>
+  <td>Settled in <code>fb-core-wwr</code> itself (#1784): <code>Stream</code> and
+  <code>Event</code> are <code>Send + Sync</code>, <code>BlasHandle</code> and
+  <code>SolverHandle</code> are <code>Send</code> and not <code>Sync</code>, and a library
+  handle takes an <code>Arc&lt;Stream&gt;</code>; the CCL rank stays <code>!Send</code>.
+  <code>v0.0.2</code> carries no shim. <span class="tag dec">decided</span></td></tr>
 </table></div>
 
 <h2 id="failure">Failure, diagnostics, determinism</h2>
@@ -2560,8 +2575,9 @@ Rust tree's task layer and not an edit to it.</p>
   a config that does not close is refused; the closure equals reachability by a plain
   search; every pair of overlapping scratch regions is ordered by the DAG, and the
   offsets do not depend on declaration order (each as the
-  <a href="#closure-model">closure model</a> checks it); a condition loop inside a
-  subflow, at the pinned rustflow.</li>
+  <a href="#closure-model">closure model</a> checks it). (A condition loop inside a
+  subflow, at the pinned rustflow, is checked already: <code>tests/rustflow_pin.rs</code>
+  in <code>experimental/rust/v0.0.2</code>.)</li>
 <li><strong>One step, batched, on <code>num_gpus</code> cards, beside the old
   path.</strong> The DF J/K pass over batches of P is the candidate: the experiment's
   fourth variant is most of it, on one card. The step's
@@ -2674,9 +2690,21 @@ Rust tree's task layer and not an edit to it.</p>
   allocated and touched by whichever worker runs that step's <code>mem_budget</code>.</li>
 <li><strong>The large-allocation check and C libraries.</strong> The allocator wrapper
   does not see a library's own <code>malloc</code>.</li>
-<li><strong>The dependency.</strong> rustflow is unpublished; the experiment pinned a git
-  revision. Where the pin lives and what <code>doc_check</code>'s dependency rules say of
-  it are to write.</li>
+<li><strong>The dependency.</strong> Settled: rustflow is unpublished, so it is a git
+  dependency pinned once, by its full commit (<code>f184bcab…</code>, its head on
+  2026-11-24), in <code>rust/Cargo.toml</code>'s <code>[workspace.dependencies]</code>; a
+  member inherits it with <code>workspace = true</code>, and a prototype under
+  <code>experimental/rust/</code> names the same <code>rev</code>
+  (<code>v0.0.2</code> builds at it). The rule is in <code>rust/docs/testing.md</code>,
+  "What runs when", and <code>doc_check/tests/git_dependencies.rs</code> checks it.
+  Cargo locks a workspace dependency only once a member uses it, so
+  <code>rust/Cargo.lock</code> has no rustflow entry yet. <span class="tag disc">to
+  discuss</span>: rustflow depends on <code>crossbeam-deque</code>, which
+  <code>doc_check</code>'s thread-pool rule (<code>rust/docs/programming_model.md</code>,
+  "CPU workers") forbids any member to reach. The first member of <code>rust/</code> on
+  rustflow, the executor's port or <code>v0.0.3</code> if it joins the workspace, changes
+  that rule with it; a <code>v0.0.3</code> that is a workspace of its own, as
+  <code>v0.0.2</code> is, needs no change and locks the pin's <code>rev</code>.</li>
 <li><strong>Deferred by decision</strong>: AVAS, the semi-numerical Hessian,
   semi-numerical gradients.</li>
 </ul>

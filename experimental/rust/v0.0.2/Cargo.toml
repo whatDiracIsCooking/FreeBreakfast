@@ -14,7 +14,7 @@ name = "fb_v02"
 path = "src/lib.rs"
 
 [dependencies]
-rustflow = { git = "https://github.com/whatDiracIsCooking/rustflow", rev = "b77e5474091d84bc49808245b9ac3f9004070a3f" }
+rustflow = { git = "https://github.com/whatDiracIsCooking/rustflow", rev = "f184bcabac5ab01dec0def8c3f369d1bbdb3bbaf" }
 log = { version = "0.4", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1"

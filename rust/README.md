@@ -245,7 +245,10 @@ that day ([`testing.md`](docs/testing.md), "What runs when"). After
 changing a requirement in a `Cargo.toml`, run any cargo command without
 `--locked` (`cargo metadata` is the quickest) and commit the lock with it.
 A `[workspace.dependencies]` requirement is a plain caret one; the lock,
-not an `=` pin, holds the exact version.
+not an `=` pin, holds the exact version. A git dependency (rustflow) is the
+exception: it is pinned there alone by its full commit `rev`, and a
+prototype under `experimental/rust/` names the same one
+([`testing.md`](docs/testing.md), "What runs when").
 
 A device case is `#[ignore = "tier 4: needs a GPU"]`, so a plain `cargo
 test` lists it as ignored, and `-- --include-ignored` runs it; `#[ignore]`

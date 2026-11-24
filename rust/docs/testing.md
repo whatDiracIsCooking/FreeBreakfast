@@ -236,6 +236,16 @@ go with the table:
   committed without its lock update fails the gate rather than resolving
   that day's crates.io. A lock change affects every crate ("Selection: the
   workspace graph is the selection graph", below).
+- **A git dependency is pinned once, by its commit.** One that is not on
+  crates.io (rustflow) is written in `rust/Cargo.toml`'s
+  `[workspace.dependencies]` alone, with `rev` its full 40-hex commit,
+  never a `branch` or `tag`, which `cargo update` would move; a member
+  inherits it with `workspace = true` and never names `git` itself. A
+  prototype under `experimental/rust/`, a workspace of its own outside
+  these gates, names the same `rev`, so moving the pin moves or retires
+  every prototype on it. Cargo locks a workspace dependency only once a
+  member depends on it, and the full `rev` is what makes that first lock
+  update deterministic.
 - **A diff under `rust/` fires the cargo half of the gates and nothing
   else.** `test.py push` and `test.py pr` pick it through the diff dispatch
   they have for `.py` and C++: any path under `rust/`, its `.cu` files and

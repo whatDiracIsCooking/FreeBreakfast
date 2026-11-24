@@ -11,3 +11,5 @@ workspace = true
 [dev-dependencies]
 # tests/workspace_graph.rs: the package graph, read through cargo metadata.
 guppy.workspace = true
+# tests/git_dependencies.rs: the manifests, parsed.
+toml.workspace = true
