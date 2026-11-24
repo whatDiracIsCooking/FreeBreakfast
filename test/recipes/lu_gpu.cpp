@@ -1,10 +1,12 @@
 // GPU cases for recipes.lu: lu_solve against a host pivoted elimination on
 // random symmetric indefinite and general matrices, at orders from one to
-// past a hundred, with several right-hand sides; bitwise repeatable over
-// repeated runs (what a race in the factorization, as rocSOLVER's potf2 had,
-// would break); an exactly singular U flagged at its first zero pivot with B
-// left as it was; the empty and negative shapes; and lu_solve_footprint,
-// held to the workspace a solve grows and to its pool peak (#1159).
+// past a hundred, with several right-hand sides; at order 300 with 40
+// right-hand sides, past the trsm recipe's blocks, held to GEPP's
+// backward-error bound; bitwise repeatable over repeated runs (what a race in
+// the factorization, as rocSOLVER's potf2 had, would break); an exactly
+// singular U flagged at its first zero pivot with B left as it was; the empty
+// and negative shapes; and lu_solve_footprint, held to the workspace a solve
+// grows and to its pool peak (#1159).
 
 #include <gtest/gtest.h>
 
@@ -147,6 +149,64 @@ TEST(Lu, MatchesHostOnIndefiniteAndGeneralMatrices) {
       EXPECT_LE(worst, 1e-12 * std::max(scale, 1.0))
           << "n = " << n << (symmetric ? " indefinite" : " general");
     }
+  }
+}
+
+// Past the trsm recipe's 64-row block and its 16-column tile, at a general
+// matrix with no diagonal weight, so partial pivoting moves most rows: the
+// row interchanges and both triangular solves over several blocks each.
+// Held to GEPP's backward error (Higham, Thm 9.4): the computed X solves
+// (A + dA) X = B column by column with |dA| <= gamma_3n |L||U|, so each
+// residual column satisfies |r|_inf <= gamma_3n || |L||U| ||_inf |x|_inf,
+// gamma_3n = 3nu / (1 - 3nu), u = 2^-53, with L and U the factors the device
+// returned. The residual and |L||U| are formed in long double, so the host's
+// own rounding stays below the bar's.
+TEST(Lu, BackwardStableAtLargeOrderAndManyRightHandSides) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
+  constexpr std::int32_t kN = 300;
+  constexpr std::int32_t kRhs = 40;
+  constexpr auto n = static_cast<std::size_t>(kN);
+  const auto a = random_matrix(kN, kN, 300U);
+  const auto b = random_matrix(kN, kRhs, 301U);
+  auto d_a = to_device(res, a);
+  auto d_b = to_device(res, b);
+  const auto flag = fb::lu_solve(res, kN, kRhs, d_a.data(), d_b.data());
+  ASSERT_TRUE(flag.has_value()) << flag.error().message;
+  ASSERT_EQ(*flag, 0);
+  const auto lu = to_host(res, d_a);
+  const auto x = to_host(res, d_b);
+
+  // || |L||U| ||_inf, L unit lower and U upper, both in lu.
+  long double lu_norm = 0.0L;
+  for (std::size_t i = 0; i < n; ++i) {
+    long double row = 0.0L;
+    for (std::size_t j = 0; j < n; ++j) {
+      long double e = 0.0L;
+      for (std::size_t k = 0; k <= std::min(i, j); ++k) {
+        const long double l = k == i ? 1.0L : std::abs(static_cast<long double>(lu[i + (n * k)]));
+        e += l * std::abs(static_cast<long double>(lu[k + (n * j)]));
+      }
+      row += e;
+    }
+    lu_norm = std::max(lu_norm, row);
+  }
+  constexpr long double kU = std::numeric_limits<double>::epsilon() / 2.0L;
+  constexpr long double kGamma = 3.0L * kN * kU / (1.0L - (3.0L * kN * kU));
+  const long double bar = kGamma * lu_norm;
+
+  for (std::size_t c = 0; c < static_cast<std::size_t>(kRhs); ++c) {
+    long double r_norm = 0.0L;
+    long double x_norm = 0.0L;
+    for (std::size_t i = 0; i < n; ++i) {
+      long double r = b[i + (n * c)];
+      for (std::size_t j = 0; j < n; ++j) {
+        r -= static_cast<long double>(a[i + (n * j)]) * x[j + (n * c)];
+      }
+      r_norm = std::max(r_norm, std::abs(r));
+      x_norm = std::max(x_norm, std::abs(static_cast<long double>(x[i + (n * c)])));
+    }
+    EXPECT_LE(r_norm, bar * x_norm) << "column " << c;
   }
 }
 

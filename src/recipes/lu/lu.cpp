@@ -1,15 +1,23 @@
 /// @file
-/// @brief lu_solve: getrf, its flag read, then getrs.
+/// @brief lu_solve: getrf, its flag read, then the solve of our own: lu.cu's
+/// row interchanges and two trsm recipe calls.
+
+module;
+
+// The launcher, defined in lu.cu: declared in the GMF so it keeps external
+// linkage (see the header).
+#include "lu_bridge.h"
 
 module free_breakfast.recipes.lu;
 
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // getrf, getrs, ScopedDeviceIndex, gpu_status
+import free_breakfast.core.wwr; // getrf, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.core.footprint;
 import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.recipes.trsm;
 
 #include "diagnostics.h"
 
@@ -40,11 +48,14 @@ Result<int32_t> lu_solve(DeviceResources &res, const int32_t n, const int32_t nr
   if (factored > 0 || nrhs == 0) {
     return factored;
   }
-  FBF_TRY(gpu_status(wwr::getrs<double>(solver, wwr::WWRBLAS_OP_N, n, nrhs, a, n, pivots, b, n,
-                                        res.info().data())));
-  if (const int32_t solved = FBF_TRY(res.fetch_info()); solved != 0) {
-    return err_gpu("lu_solve: getrs rejected argument {}", -solved);
-  }
+  // getrs, by hand: B <- P B, then L^-1 B (unit diagonal), then U^-1 B. The
+  // library's getrs is not used because hipSOLVER's allocates past its size
+  // query and keeps it (the README).
+  FBF_TRY(gpu_status(device::lu_row_interchanges(res.stream(), n, nrhs, pivots, b, n)));
+  FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
+                       wwr::WWRBLAS_DIAG_UNIT, n, nrhs, 1.0, a, n, b, n));
+  FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_UPPER, wwr::WWRBLAS_OP_N,
+                       wwr::WWRBLAS_DIAG_NON_UNIT, n, nrhs, 1.0, a, n, b, n));
   return 0;
 }
 
@@ -62,7 +73,9 @@ MemoryFootprint lu_solve_footprint(const int32_t n, const size_t lwork) {
   if (n <= 0) {
     return {};
   }
-  // device_regions' carve: each region rounded up to the alignment.
+  // device_regions' carve: each region rounded up to the alignment. The solve
+  // after getrf adds nothing: its kernel takes no scratch, and the trsm
+  // recipe only the gemm the BLAS handle's fixed workspace serves.
   constexpr size_t kAlign = DeviceResources::kWorkspaceAlignment;
   MemoryFootprint out;
   out.device.workspace = math::align_up(lwork * sizeof(double), kAlign) +

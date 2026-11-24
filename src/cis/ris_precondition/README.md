@@ -48,7 +48,7 @@ On the device, per column: Dt⁻¹ (the kernel over a vector of ones), Lᵀ Dt�
 side (a gemv-shaped gemm) and `lu_solve`. Then over the whole block: r copied
 into the correction (unless it is already there), L Y added (one gemm) and
 Dt⁻¹ applied in place (the kernel). `lu_solve` takes the device workspace and
-synchronizes twice per column, so every buffer the correction holds across it
+synchronizes once per column, so every buffer the correction holds across it
 is the preconditioner's own, allocated by `create`.
 
 ## RIS-JK: the exchange term
