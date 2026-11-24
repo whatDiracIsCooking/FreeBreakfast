@@ -164,6 +164,47 @@ every case.
   42 MiB, at multiples of 128 as well as not, and the handle keeps it (the
   second call takes nothing more). There is no way to hand them a buffer.
 
+### The rest of the C++ tree's calls
+
+`src/` also calls `iamax` (`recipes::norm`, `recipes::expm`), `asum`
+(`recipes::norm`), `dotc` (`recipes::cg_unitary`), `axpy`, `scal`, `copy`,
+and `heevd`/`heevdx` (`recipes::expm`, `heevdx` over the whole range on HIP).
+The same two readings, on the same card and release, at n = 4096, 4100 and
+8192 (vectors of n² elements: 16.8, 16.8 and 67.1 million) for BLAS, and
+n = 2048, 2100 and 4100 for the solvers. Each process was run once; the
+three readings that looked odd were run twice more and held to the others
+(below).
+
+| Routine | Used, n = 4096 / 4100 / 8192 | 256-byte workspace | Trend |
+|---|---|---|---|
+| `idamax`, `izamax` | 262,148 / 262,676 / 1,048,580 B | `ALLOC_FAILED`, nothing taken | 16 bytes per 1024 elements, plus 4: a value and an index per block |
+| `dasum` | 131,080 / 131,344 / 524,296 B | `ALLOC_FAILED`, nothing taken | 8 bytes per 1024 elements, plus 8, as `ddot` |
+| `zdotc` | 262,160 / 262,688 / 1,048,592 B | `ALLOC_FAILED`, nothing taken | 16 bytes per 1024 elements, plus 16: `ddot`'s at a complex element |
+| `daxpy`, `dscal`, `dcopy` | 0 / 0 / 0 | success, nothing taken | none |
+
+| Routine | Size query (complex doubles) | Beyond the work buffer, call 1 / call 2 | Trend |
+|---|---|---|---|
+| `zheevd`, n = 2048, 2100, 4100 | 9.50 M, 9.98 M, 37.9 M (145, 152, 579 MiB) | +24 / 0 MiB at every order | the query is about 2.26 n²; nothing beyond it |
+| `zheevdx`, range all, n = 2048, 2100, 4100 | 13.7 M, 14.4 M, 54.7 M (209, 219, 835 MiB) | +24 / 0 MiB at every order | the query is about 3.26 n²; nothing beyond it |
+
+- **None of them grows silently.** The reductions behave as `ddot` and
+  `dnrm2` do: a little workspace, linear in the vector, and `ALLOC_FAILED`
+  with nothing taken when the handle's is too small. The fixed 128 MiB
+  covers `iamax` and `zdotc` to about 8.6 billion elements and `asum` to
+  about 17 billion. `axpy`, `scal` and `copy` use none.
+- **`heevd` and `heevdx` stay inside their size query**, like `syevd`. The
+  +24 MiB is the same at every order and gone at the second call: first-call
+  growth.
+- **The `heevdx` query is 1.44 times `heevd`'s.** Not a growth, but a cost
+  of the #999 workaround that `recipes::expm` pays on HIP.
+- **Three readings of the first run did not reproduce.** `zdotc` at 4100
+  lost 356 MiB of free memory over its large-workspace call, while touching
+  0.25 MiB of it; `zheevd` lost 56 MiB at 2100, and gained 122 and 162 MiB
+  at 4100. Rerun twice each, all six gave the table's numbers. `rocm-smi`
+  listed no other process afterwards. The card lock serializes the gates'
+  GPU work, not every process on the host, so something else moved the
+  card's free memory during those calls.
+
 ## What it means for the fixed workspace
 
 1. **On CUDA the size does not matter for `dtrsm`.** Any constant covers it;
@@ -187,7 +228,10 @@ every case.
    step that needs a solve against a factor has to make it from two `trsm`
    calls with a declared workspace, or by the tree's own recipe.
 5. **The fixed 128 MiB covers everything else measured**: the reductions up
-   to 17 billion elements, and the calls that take none.
+   to 17 billion elements (`iamax` and `zdotc` to 8.6), and the calls that
+   take none. With the last of the C++ tree's calls measured, `trsm`,
+   `potrs` and `getrs` are the only ones that take memory outside the
+   caller's by themselves.
 
 Not measured: plain `gemm` beyond `handle_ring`'s 4096, upper solves,
 rectangular `syrk` and `gemv`, the batched solver calls, hipBLASLt, and any

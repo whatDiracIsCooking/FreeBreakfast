@@ -7,13 +7,15 @@
 //! ```
 //!
 //! BLAS routines (`dtrsm_rt strsm ztrsm dtrmm dtrsv dgemm_sb dsyrk dgemv
-//! dgeam ddgmm ddot dnrm2`): matrices are n x n, vectors n (`ddot`, `dnrm2`:
-//! n^2; `dgemm_sb`: 16 products of order n/4). Read as in main.rs:
+//! dgeam ddgmm ddot dnrm2 idamax izamax dasum zdotc daxpy dscal dcopy`):
+//! matrices are n x n, vectors n (the level-1 calls from `ddot` on: n^2;
+//! `dgemm_sb`: 16 products of order n/4). Read as in main.rs:
 //! `touched_bytes` of a large 0xFF-filled workspace, and `own_mib`, the free
 //! memory lost over a second call on a 256-byte workspace.
 //!
-//! Solver routines (`dsyevd dpotrf dpotrs dgetrf dgetrs dgesvd`): the call is
-//! handed a work buffer of exactly its size query (`work_mib`; `dpotrs` and
+//! Solver routines (`dsyevd dpotrf dpotrs dgetrf dgetrs dgesvd zheevd
+//! zheevdx`; `zheevdx` over the whole range, as recipes::expm calls it on
+//! HIP): the call is handed a work buffer of exactly its size query (`work_mib`; `dpotrs` and
 //! `dgetrs` take none), and made twice on fresh inputs. `call1_mib` and
 //! `call2_mib` are the free memory lost over each: what the call took beyond
 //! its work buffer. The first includes the library's once-per-process
@@ -329,6 +331,63 @@ fn blas_routine(routine: &str, n: i32) {
                 wwr_blas_dnrm2(h, len, x, 1, &mut r)
             });
         }
+        "idamax" => {
+            let x = upload(&random(nu * nu, 1));
+            let len = (nu * nu) as i32;
+            blas(routine, n, square, &|h| unsafe {
+                let mut r = 0i32;
+                wwr_blas_idamax(h, len, x, 1, &mut r)
+            });
+        }
+        "izamax" => {
+            let x = upload(&random(2 * nu * nu, 1)).cast::<wwr_complex128>();
+            let len = (nu * nu) as i32;
+            blas(routine, n, 2 * square, &|h| unsafe {
+                let mut r = 0i32;
+                wwr_blas_izamax(h, len, x, 1, &mut r)
+            });
+        }
+        "dasum" => {
+            let x = upload(&random(nu * nu, 1));
+            let len = (nu * nu) as i32;
+            blas(routine, n, square, &|h| unsafe {
+                let mut r = 0.0f64;
+                wwr_blas_dasum(h, len, x, 1, &mut r)
+            });
+        }
+        "zdotc" => {
+            let (x, y) = (
+                upload(&random(2 * nu * nu, 1)).cast::<wwr_complex128>(),
+                upload(&random(2 * nu * nu, 2)).cast::<wwr_complex128>(),
+            );
+            let len = (nu * nu) as i32;
+            blas(routine, n, 2 * square, &|h| unsafe {
+                let mut r = wwr_complex128 { re: 0.0, im: 0.0 };
+                wwr_blas_zdotc(h, len, x, 1, y, 1, &mut r)
+            });
+        }
+        "daxpy" => {
+            let (x, y) = (upload(&random(nu * nu, 1)), upload(&random(nu * nu, 2)));
+            let len = (nu * nu) as i32;
+            blas(routine, n, square, &|h| unsafe {
+                wwr_blas_daxpy(h, len, &one, x, 1, y, 1)
+            });
+        }
+        "dscal" => {
+            let x = upload(&random(nu * nu, 1));
+            let len = (nu * nu) as i32;
+            blas(routine, n, square, &|h| unsafe {
+                wwr_blas_dscal(h, len, &one, x, 1)
+            });
+        }
+        "dcopy" => {
+            let x = upload(&random(nu * nu, 1));
+            let y = dalloc(square).cast::<f64>();
+            let len = (nu * nu) as i32;
+            blas(routine, n, square, &|h| unsafe {
+                wwr_blas_dcopy(h, len, x, 1, y, 1)
+            });
+        }
         _ => die(&format!("unknown routine {routine}")),
     }
 }
@@ -351,8 +410,28 @@ fn solver_routine(routine: &str, n: i32) {
         }
         a
     };
+    // A Hermitian matrix as interleaved (re, im) doubles: spd's real part,
+    // and an antisymmetric imaginary part off the diagonal.
+    let hermitian = || {
+        let (re, im) = (spd(nu), random(nu * nu, 6));
+        let mut z = vec![0.0f64; 2 * nu * nu];
+        for j in 0..nu {
+            for i in 0..nu {
+                let k = i + j * nu;
+                z[2 * k] = re[k];
+                z[2 * k + 1] = match i.cmp(&j) {
+                    std::cmp::Ordering::Greater => im[k],
+                    std::cmp::Ordering::Less => -im[j + i * nu],
+                    std::cmp::Ordering::Equal => 0.0,
+                };
+            }
+        }
+        z
+    };
+    let elem: usize = if routine.starts_with('z') { 16 } else { 8 };
     let host = match routine {
         "dsyevd" | "dpotrf" | "dpotrs" => spd(nu),
+        "zheevd" | "zheevdx" => hermitian(),
         _ => general(),
     };
     let a = [upload(&host), upload(&host)];
@@ -435,12 +514,43 @@ fn solver_routine(routine: &str, n: i32) {
                 )
             })
         }
+        "zheevd" | "zheevdx" => {
+            let jobz = wwr_solver_eig_mode::WWR_SOLVER_EIG_MODE_VECTOR;
+            let all = wwr_solver_eig_range::WWR_SOLVER_EIG_RANGE_ALL;
+            let za = [a[0].cast::<wwr_complex128>(), a[1].cast::<wwr_complex128>()];
+            let w = dalloc(nu * 8).cast::<f64>();
+            let meig: *mut i32 = Box::leak(Box::new(0i32));
+            solver_ok(
+                unsafe {
+                    if routine == "zheevd" {
+                        wwr_solver_dn_zheevd_buffer_size(h, jobz, lo, n, za[0], n, w, &mut lwork)
+                    } else {
+                        wwr_solver_dn_zheevdx_buffer_size(
+                            h, jobz, all, lo, n, za[0], n, 0.0, 0.0, 0, 0, meig, w, &mut lwork,
+                        )
+                    }
+                },
+                "size query",
+            );
+            let work = dalloc(lwork as usize * 16).cast::<wwr_complex128>();
+            if routine == "zheevd" {
+                Box::new(move |i| unsafe {
+                    wwr_solver_dn_zheevd(h, jobz, lo, n, za[i], n, w, work, lwork, info)
+                })
+            } else {
+                Box::new(move |i| unsafe {
+                    wwr_solver_dn_zheevdx(
+                        h, jobz, all, lo, n, za[i], n, 0.0, 0.0, 0, 0, meig, w, work, lwork, info,
+                    )
+                })
+            }
+        }
         _ => die(&format!("unknown routine {routine}")),
     };
     print!(
         "routine={routine} n={n} operand_mib={:.1} lwork={lwork} work_mib={:.3} prep_mib={prep_mib:.2}",
-        (nu * nu * 8) as f64 / MIB as f64,
-        lwork as f64 * 8.0 / MIB as f64
+        (nu * nu * elem) as f64 / MIB as f64,
+        lwork as f64 * elem as f64 / MIB as f64
     );
     for i in 0..2 {
         let before = free_bytes();
@@ -471,7 +581,7 @@ fn main() {
         rt(wwr_free(null_mut()), "context");
     }
     match routine {
-        "dsyevd" | "dpotrf" | "dpotrs" | "dgetrf" | "dgetrs" | "dgesvd" => {
+        "dsyevd" | "dpotrf" | "dpotrs" | "dgetrf" | "dgetrs" | "dgesvd" | "zheevd" | "zheevdx" => {
             solver_routine(routine, n)
         }
         _ => blas_routine(routine, n),
