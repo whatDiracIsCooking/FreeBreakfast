@@ -1400,18 +1400,23 @@ took by itself. Solver calls are handed a work buffer of exactly their size quer
 <tr><td><code>trsm</code>'s side, transpose and type</td>
   <td>Change nothing but s: single, double and complex, left and right, plain and
   transposed all follow the two forms</td></tr>
-<tr><td><code>dot</code>, <code>nrm2</code></td>
-  <td>8 bytes per 1024 elements: 8&nbsp;MB per billion. With too small a workspace they
-  return <code>ALLOC_FAILED</code>, where <code>trsm</code> grows silently</td></tr>
+<tr><td><code>dot</code>, <code>nrm2</code>, <code>asum</code>; <code>iamax</code>,
+  <code>dotc</code></td>
+  <td>8 bytes per 1024 elements: 8&nbsp;MB per billion; 16 for <code>iamax</code> and
+  complex <code>dotc</code>. With too small a workspace they return
+  <code>ALLOC_FAILED</code>, where <code>trsm</code> grows silently</td></tr>
 <tr><td><code>trmm</code>, <code>trsv</code>, <code>gemm_strided_batched</code>,
-  <code>syrk</code>, <code>gemv</code>, <code>geam</code>, <code>dgmm</code></td>
+  <code>syrk</code>, <code>gemv</code>, <code>geam</code>, <code>dgmm</code>,
+  <code>axpy</code>, <code>scal</code>, <code>copy</code></td>
   <td>Nothing</td></tr>
 <tr><td><code>syevd</code>, <code>potrf</code>, <code>getrf</code>,
-  <code>gesvd</code></td>
+  <code>gesvd</code>, <code>heevd</code>, <code>heevdx</code></td>
   <td>Nothing that grows beyond the size query (3.26&nbsp;n&sup2; doubles for
   <code>syevd</code>, with no step at an odd order; a constant 128 for
   <code>potrf</code>; about a copy of A for <code>getrf</code>; about n&sup2;/2 for
-  <code>gesvd</code>). 2 to 22&nbsp;MiB once, at the first call</td></tr>
+  <code>gesvd</code>; about 2.26 and 3.26&nbsp;n&sup2; complex doubles for
+  <code>heevd</code> and <code>heevdx</code>). 2 to 24&nbsp;MiB once, at the first
+  call</td></tr>
 <tr><td><code>potrs</code>, <code>getrs</code></td>
   <td>B's size plus about 42&nbsp;MiB, taken by the library itself at any order: 170
   and 554&nbsp;MiB for 128 and 512&nbsp;MiB of right-hand sides</td></tr>
@@ -1420,7 +1425,9 @@ took by itself. Solver calls are handed a work buffer of exactly their size quer
 <p>On cuBLAS <code>dtrsm</code> used none of the handle's workspace up to 8&nbsp;GiB of
 B; the rest of the sweep was not run on CUDA. So the fixed 128&nbsp;MiB covers every
 call measured except <code>trsm</code> on HIP, and the reductions up to 17 billion
-elements. The formulas are read from rocBLAS 5.6.0 and may change with a release.</p>
+elements (8.6 for <code>iamax</code> and <code>dotc</code>). Every BLAS and solver
+call the C++ tree makes is now measured: <code>trsm</code>, <code>potrs</code> and
+<code>getrs</code> are the only ones that take memory by themselves. The formulas are read from rocBLAS 5.6.0 and may change with a release.</p>
 
 <h2 id="caps">Caps, and what the limit covers</h2>
 
