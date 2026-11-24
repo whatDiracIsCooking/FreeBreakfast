@@ -1,7 +1,8 @@
-# The module. Host code over recipes/cholesky, recipes/orthogonalize and wwr's
-# BLAS, with no kernels of its own: the metric's Cholesky factor and one trsm,
-# or with lindep its inverse square root and a gemm per slab. DeviceResources
-# is in its signature, so core::resources is PUBLIC.
+# The module. Host code over recipes/cholesky, recipes/trsm,
+# recipes/orthogonalize and wwr's BLAS, with no kernels of its own: the
+# metric's Cholesky factor and one trsm, or with lindep its inverse square root
+# and a gemm per slab. DeviceResources is in its signature, so core::resources
+# is PUBLIC.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.eri.density_fitting.fit
@@ -21,6 +22,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::blas
+  free_breakfast::recipes::trsm
   free_breakfast::recipes::cholesky
   free_breakfast::recipes::orthogonalize
 )

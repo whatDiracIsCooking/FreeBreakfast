@@ -48,7 +48,9 @@ Right-looking and blocked, `kCholeskyBlock` (64) columns at a time:
 1. the 64 x 64 diagonal block, in shared memory, by `cholesky.cu`'s one-block
    kernel: per column, read the pivot, barrier, scale the column, barrier,
    rank-1 update of the trailing triangle, barrier;
-2. the panel below it, `A21 <- A21 L11^-T` (a trsm);
+2. the panel below it, `A21 <- A21 L11^-T` (`recipes/trsm`, right, lower,
+   `OP_T`: not the BLAS library's, whose workspace on HIP grows with the
+   panel, `recipes/trsm/README.md`);
 3. the trailing matrix, `A22 <- A22 - L21 L21^T` (a syrk, lower).
 
 The flag lives in `res.info()`. A diagonal block that finds it already set

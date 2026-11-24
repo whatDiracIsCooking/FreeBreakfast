@@ -32,6 +32,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::blas
+  free_breakfast::recipes::trsm
   free_breakfast::integrals::one_electron::gradient
   free_breakfast::integrals::eri::density_fitting::gradient
   free_breakfast::integrals::eri::density_fitting::mo

@@ -15,7 +15,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kNegOne, kTwo, kNegTwo, kHalf, kNegHalf
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, gemmStridedBatched, gemv, geam, axpy, scal, dgmm, trsm, nrm2
+import free_breakfast.core.wwr; // gemm, gemmStridedBatched, gemv, geam, axpy, scal, dgmm, nrm2
 import free_breakfast.core.resources;
 import free_breakfast.core.primitives; // math::align_up, math::binomial
 import free_breakfast.core.footprint;
@@ -30,6 +30,7 @@ import free_breakfast.integrals.eri.density_fitting.mo;
 import free_breakfast.recipes.blas;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.recipes.diagonalize;
+import free_breakfast.recipes.trsm;
 import free_breakfast.ci.strings;
 import free_breakfast.ci.sigma;
 import free_breakfast.ci.rdm;
@@ -325,9 +326,9 @@ Result<Derivatives> df_derivatives(DeviceResources &res, const Molecule &molecul
     Buffers::device<double> cpa(naux * n_act * nao, res.device());
     FBF_TRY(b_mo(res, q, n, n, b.data(), cm, OrbitalRange{ncore, ncas}, OrbitalRange{0, n},
                  cpa.data()));
-    FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-        blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-        wwr::WWRBLAS_DIAG_NON_UNIT, q, na * n, &kOne<double>, l, q, cpa.data(), q)));
+    FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER,
+                         wwr::WWRBLAS_OP_T, wwr::WWRBLAS_DIAG_NON_UNIT, q, na * n, kOne<double>, l,
+                         q, cpa.data(), q));
     const double *const c_aa = cpa.data() + (naux * n_act * n_core);
     const auto qa2 = static_cast<int32_t>(naux * na2);
     const auto a2 = static_cast<int32_t>(na2);
@@ -529,15 +530,15 @@ Result<Derivatives> df_derivatives(DeviceResources &res, const Molecule &molecul
       Buffers::device<double> cpa_rot(naux * n_act * nao, res.device());
       FBF_TRY(b_mo(res, q, n, n_ext, b.data(), ext.data(), OrbitalRange{n, na}, OrbitalRange{0, n},
                    cpa_rot.data()));
-      FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-          blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-          wwr::WWRBLAS_DIAG_NON_UNIT, q, na * n, &kOne<double>, l, q, cpa_rot.data(), q)));
+      FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER,
+                           wwr::WWRBLAS_OP_T, wwr::WWRBLAS_DIAG_NON_UNIT, q, na * n, kOne<double>,
+                           l, q, cpa_rot.data(), q));
       Buffers::device<double> c_dot(naux * na2, res.device());
       FBF_TRY(b_mo(res, q, n, n_ext, b.data(), ext.data(), OrbitalRange{ncore, na},
                    OrbitalRange{n, na}, c_dot.data()));
-      FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-          blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-          wwr::WWRBLAS_DIAG_NON_UNIT, q, a2, &kOne<double>, l, q, c_dot.data(), q)));
+      FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER,
+                           wwr::WWRBLAS_OP_T, wwr::WWRBLAS_DIAG_NON_UNIT, q, a2, kOne<double>, l, q,
+                           c_dot.data(), q));
       FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(
           blas, qa2, &kOne<double>, cpa_rot.data() + (naux * n_act * n_core), 1, c_dot.data(), 1)));
       Buffers::device<double> y_rot(naux * na2, res.device());

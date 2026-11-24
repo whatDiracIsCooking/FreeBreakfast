@@ -15,7 +15,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kNegOne
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // trsm, syrk, wwrMemsetAsync, ScopedDeviceIndex, gpu_status
+import free_breakfast.core.wwr; // syrk, wwrMemsetAsync, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.recipes.trsm;
 
@@ -49,9 +49,9 @@ Result<int32_t> cholesky(DeviceResources &res, const int32_t n, double *a) {
       break;
     }
     double *const panel = diagonal + jb;
-    FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-        res.blas().get(), wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-        wwr::WWRBLAS_DIAG_NON_UNIT, rest, jb, &kOne<double>, diagonal, n, panel, n)));
+    FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER,
+                         wwr::WWRBLAS_OP_T, wwr::WWRBLAS_DIAG_NON_UNIT, rest, jb, kOne<double>,
+                         diagonal, n, panel, n));
     FBF_TRY(gpu_status(wwr::syrk<double, int32_t>(res.blas().get(), wwr::WWRBLAS_FILL_MODE_LOWER,
                                                   wwr::WWRBLAS_OP_N, rest, jb, &kNegOne<double>,
                                                   panel, n, &kOne<double>, panel + (jb * ld), n)));

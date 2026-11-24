@@ -11,7 +11,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero, kNegOne, kHalf, kNegHalf, kTwo
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemmStridedBatched, geam, dgmm, trsm, scal, axpy, memcpys
+import free_breakfast.core.wwr; // gemmStridedBatched, geam, dgmm, scal, axpy, memcpys
 import free_breakfast.core.resources;
 import free_breakfast.core.primitives; // math::align_up
 import free_breakfast.core.footprint;  // MemoryFootprint, then, drop, kPoolHeadroomBytes
@@ -22,6 +22,7 @@ import free_breakfast.integrals.one_electron.gradient;
 import free_breakfast.integrals.eri.density_fitting.gradient;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.recipes.blas; // gemm
+import free_breakfast.recipes.trsm;
 import free_breakfast.ci.sigma;
 import free_breakfast.response.orbital_pairs;
 
@@ -318,9 +319,9 @@ Status df_integral_derivatives(
         FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
             blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n, n, n, &kOne<double>, ident, n, 0, copy,
             n, s_nn, &kOne<double>, slab(x), n, s_nn, q)));
-        FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-            blas, wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-            wwr::WWRBLAS_DIAG_NON_UNIT, n * n, q, &kOne<double>, l, q, slab(x), n * n)));
+        FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER,
+                             wwr::WWRBLAS_OP_T, wwr::WWRBLAS_DIAG_NON_UNIT, n * n, q, kOne<double>,
+                             l, q, slab(x), n * n));
       }
       FBF_TRY(res.sync());
     }
@@ -342,12 +343,12 @@ Status df_integral_derivatives(
         FBF_TRY(
             gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, q, q,
                                                   &kOne<double>, e, q, &kOne<double>, e, q, g, q)));
-        FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-            blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
-            wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kOne<double>, l, q, g, q)));
-        FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-            blas, wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-            wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kOne<double>, l, q, g, q)));
+        FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER,
+                             wwr::WWRBLAS_OP_N, wwr::WWRBLAS_DIAG_NON_UNIT, q, q, kOne<double>, l,
+                             q, g, q));
+        FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER,
+                             wwr::WWRBLAS_OP_T, wwr::WWRBLAS_DIAG_NON_UNIT, q, q, kOne<double>, l,
+                             q, g, q));
         FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N,
                                                       n * n, q, q, &kNegHalf<double>, l_mo.data(),
                                                       n * n, g, q, &kOne<double>, slab(x), n * n)));
