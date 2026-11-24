@@ -6,7 +6,8 @@
 #
 #   experimental/rust/blas_workspace_scaling/run_all.sh cuda   # rust/build-cuda
 #   experimental/rust/blas_workspace_scaling/run_all.sh hip    # rust/build-hip
-#   ... run_all.sh hip "right 1024 4096"                       # other shapes
+#   ... run_all.sh hip "right 262144 4096 1024"                # other shapes,
+#                                    a fourth word: the large workspace, MiB
 set -uo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd "$here/../../.." && pwd)
@@ -32,7 +33,7 @@ bin=$CARGO_TARGET_DIR/release/blas-workspace-scaling
 run_shapes() {
   local shape
   for shape in "${shapes[@]}"; do
-    # shellcheck disable=SC2086  # a shape is three words
+    # shellcheck disable=SC2086  # a shape is three or four words
     "$bin" $shape 2>&1 || echo "shape=\"$shape\" exit=$?"
   done
 }

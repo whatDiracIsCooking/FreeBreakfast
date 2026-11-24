@@ -4,7 +4,7 @@
 //! run_all.sh runs the shapes under the card's lock.
 //!
 //! ```text
-//! blas-workspace-scaling <left|right> <m> <n>
+//! blas-workspace-scaling <left|right> <m> <n> [big_ws_mib]
 //! ```
 //!
 //! B is m x n; L is lower, of order m (`left`: B <- L^-1 B) or n (`right`:
@@ -13,9 +13,11 @@
 //! - `touched_bytes`: the handle is given a 0xFF-filled workspace larger than
 //!   any plausible need; the highest byte the call changed, plus one, is what
 //!   the call used of it. `big_call_mib` is the card's free memory lost over
-//!   that call, and should be 0: the workspace covered it.
+//!   that call, and should be 0: the workspace covered it. The workspace is
+//!   three copies of B plus 64 MiB, or `big_ws_mib` where that does not fit.
 //! - `own_mib`: the handle is given a 256-byte workspace; the free memory lost
 //!   over the call is what the library took by itself, outside the caller's.
+//!   A call the library refuses prints its status as `own_status`.
 //!
 //! Free memory is read after a device sync. Positive means memory taken.
 
@@ -120,9 +122,9 @@ struct Shape {
 }
 
 impl Shape {
-    /// A new handle with `ws` set, one solve in place on `b`; the free memory
-    /// lost over the call, in MiB.
-    fn call(&self, ws: *mut c_void, len: usize, b: *mut f64) -> f64 {
+    /// A new handle with `ws` set, one solve in place on `b`; the call's
+    /// status and the free memory lost over it, in MiB.
+    fn call(&self, ws: *mut c_void, len: usize, b: *mut f64) -> (wwr_blas_status, f64) {
         let mut h = null_mut();
         let one = 1.0f64;
         // SAFETY: valid out-pointer; ws is at least len bytes; l is k x k and
@@ -131,31 +133,28 @@ impl Shape {
             blas_ok(wwr_blas_create(&mut h), "blas create");
             blas_ok(wwr_blas_set_workspace(h, ws, len), "set workspace");
             let before = free_bytes();
-            blas_ok(
-                wwr_blas_dtrsm(
-                    h,
-                    self.side,
-                    wwr_blas_fill_mode::WWR_BLAS_FILL_MODE_LOWER,
-                    wwr_blas_operation::WWR_BLAS_OP_N,
-                    wwr_blas_diag_type::WWR_BLAS_DIAG_NON_UNIT,
-                    self.m,
-                    self.n,
-                    &one,
-                    self.l,
-                    self.k,
-                    b,
-                    self.m,
-                ),
-                "dtrsm",
+            let status = wwr_blas_dtrsm(
+                h,
+                self.side,
+                wwr_blas_fill_mode::WWR_BLAS_FILL_MODE_LOWER,
+                wwr_blas_operation::WWR_BLAS_OP_N,
+                wwr_blas_diag_type::WWR_BLAS_DIAG_NON_UNIT,
+                self.m,
+                self.n,
+                &one,
+                self.l,
+                self.k,
+                b,
+                self.m,
             );
-            mib(before, free_bytes())
+            (status, mib(before, free_bytes()))
         }
     }
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: blas-workspace-scaling <left|right> <m> <n>";
+    let usage = "usage: blas-workspace-scaling <left|right> <m> <n> [big_ws_mib]";
     let dim = |i: usize| -> i32 {
         args.get(i)
             .and_then(|s| s.parse().ok())
@@ -191,24 +190,32 @@ fn main() {
     };
     drop(l);
     let rhs = random(mu * nu, 4);
-    let (b_big, b_tiny) = (upload(&rhs), upload(&rhs));
+    // One B for both calls, solved in place twice: only the memory is read.
+    let b = upload(&rhs);
+    drop(rhs);
 
     // Larger than three copies of B, so a temporary the size of B still fits.
-    let big = 3 * mu * nu * 8 + 64 * MIB;
+    let big = match args.get(3) {
+        Some(s) => s.parse::<usize>().unwrap_or_else(|_| die(usage)) * MIB,
+        None => 3 * mu * nu * 8 + 64 * MIB,
+    };
     let ws = dalloc(big);
     // SAFETY: ws is a big-byte allocation.
     rt(unsafe { wwr_memset(ws, 0xFF, big) }, "memset");
-    let big_call_mib = shape.call(ws, big, b_big);
+    let (big_status, big_call_mib) = shape.call(ws, big, b);
+    blas_ok(big_status, "dtrsm on the large workspace");
     let touched = touched_bytes(ws, big);
     // SAFETY: nothing uses ws after the sync in `call`.
     rt(unsafe { wwr_free(ws) }, "free workspace");
 
-    let own_mib = shape.call(dalloc(TINY_BYTES), TINY_BYTES, b_tiny);
+    let (own_status, own_mib) = shape.call(dalloc(TINY_BYTES), TINY_BYTES, b);
 
     println!(
-        "side={} m={m} n={n} k={k} touched_bytes={touched} touched_mib={:.3} \
-         big_call_mib={big_call_mib:.2} own_mib={own_mib:.2} big_ws_mib={}",
+        "side={} m={m} n={n} k={k} b_mib={:.1} touched_bytes={touched} touched_mib={:.3} \
+         big_call_mib={big_call_mib:.2} own_mib={own_mib:.2} own_status={own_status:?} \
+         big_ws_mib={}",
         args[0],
+        (mu * nu * 8) as f64 / MIB as f64,
         touched as f64 / MIB as f64,
         big / MIB
     );

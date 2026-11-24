@@ -5,7 +5,8 @@ each card's BLAS handle a fixed 128 MiB workspace.
 `experimental/rust/handle_ring` had one reading behind that number: a
 4096 × 4096 `dtrsm` on hipBLAS writes 8 MiB of its workspace, and takes 8 MiB
 of its own when the workspace is too small. This probe asks how that need
-grows with the shape, on both backends, in nine readings.
+grows with the shape, on both backends: nine readings up to 128 MiB of B,
+then nine more at 2, 4 and 8 GiB.
 
 It goes through `wwr-sys` (on HIP, hipBLAS over rocBLAS).
 
@@ -17,11 +18,14 @@ cmake --preset hip  && cmake --build build-hip  --target wwr.capi.runtime_api ww
 experimental/rust/blas_workspace_scaling/run_all.sh cuda
 experimental/rust/blas_workspace_scaling/run_all.sh hip
 experimental/rust/blas_workspace_scaling/run_all.sh hip "right 4096 4100"
+# a fourth word sets the large workspace in MiB, for a B three copies of
+# which do not fit the card
+experimental/rust/blas_workspace_scaling/run_all.sh hip "right 262144 4096 1024"
 ```
 
 One process per shape. B is m × n, and L is lower, of order k = m (`left`,
 B ← L⁻¹B) or k = n (`right`, B ← BL⁻¹). Each process makes two calls, each on
-a fresh handle. `main.rs`'s header says what each prints:
+a fresh handle, on the same B. `main.rs`'s header says what each prints:
 
 - **used**: the handle has a 0xFF-filled workspace larger than three copies
   of B. The highest byte the call changed is what it used.
@@ -52,7 +56,7 @@ RTX 3080 (CUDA 13) and RX 9060 XT (gfx1200, ROCm), each card held by
   4096 × 4100 use the same number of bytes.
 - **When k is a multiple of 128, the need is small but still grows with B.**
   The three readings equal 1024·k + m·n/4 bytes exactly: 128 doubles per row
-  of L, plus 1/32 of B. Three points fit that form and do not prove it.
+  of L, plus 1/32 of B. The large shapes below hold the same form.
 - **"Own" agrees with "used".** With a 256-byte workspace the library took
   the same amount by itself, rounded up to 2 MiB, with no error. That is the
   growth outside the budget `handle_ring` found, now at every shape.
@@ -60,21 +64,50 @@ RTX 3080 (CUDA 13) and RX 9060 XT (gfx1200, ROCm), each card held by
   memory.** That is the once-per-process first-call growth `handle_ring`
   measured at +10, not workspace.
 
+### hipBLAS, B of 2, 4 and 8 GiB
+
+Right side, so L stays small (k = n) while B grows with m.
+
+| m × n | k | B (MiB) | Used (bytes) | Used (MiB) | Own (MiB) |
+|---|---|---|---|---|---|
+| 65536 × 4096 | 4096 | 2048 | 71,303,168 | 68.0 | 68 |
+| 131072 × 4096 | 4096 | 4096 | 138,412,032 | 132.0 | 132 |
+| 262144 × 4096 | 4096 | 8192 | 272,629,760 | 260.0 | 260 |
+| 65536 × 4100 | 4100 | 2050 | 2,153,778,208 | **2054.0** | 2056 |
+| 131072 × 4100 | 4100 | 4100 | 4,303,359,008 | **4104.0** | 4106 |
+| 262144 × 4100 | 4100 | 8200 | | `ALLOC_FAILED` | |
+
+- **Both forms hold, linear in B, over a factor of 64 in its size.** A
+  multiple of 128: 1024·k + m·n/4 bytes, exact on all three, so B/32 plus
+  4 MiB here. Not a multiple: 8·m·n + 1024·k bytes less 992, on both, so B
+  plus 4 MiB.
+- **A need the card cannot meet is an error, not a crash.** At 8.2 GiB of B
+  with k = 4100 the call wants 8.2 GiB more, the 16 GiB card has 7.7 free,
+  and the call returns `ALLOC_FAILED` (given a 64 MiB workspace, so the
+  library tried to take its own). That is the one case where growth outside
+  the caller's workspace is not silent.
+
 ### cuBLAS
 
-| Side | m × n | Used (bytes) | Own (MiB) |
-|---|---|---|---|
-| left | 4096 × 4096 | 0 | 0 |
-| left | 4100 × 4096 | 0 | 0 |
-| left | 16400 × 1024 | 512 | −0.6 |
+| Side | m × n | B (MiB) | Used (bytes) | Free memory lost over a call (MiB) |
+|---|---|---|---|---|
+| left | 4096 × 4096 | 128 | 0 | 0, 0 |
+| left | 4100 × 4096 | 128 | 0 | 0, 0 |
+| left | 16400 × 1024 | 128 | 512 | 0, −0.6 |
+| right | 65536 × 4100 | 2050 | 0 | 0, 0 |
+| right | 131072 × 4100 | 4100 | 0 | +29.3, −4.8 |
+| right | 262144 × 4100 | 8200 | 0 | 0, +26.6 |
 
-cuBLAS's `dtrsm` uses none of the handle's workspace and takes nothing at
-any of the three shapes. The 512 bytes and the −0.6 MiB (memory freed) are
-not explained.
+cuBLAS's `dtrsm` uses none of the handle's workspace at any shape. Over the
+two calls of each process (a 448 or 64 MiB workspace, then 256 bytes) the
+card's free memory moved by at most 30 MiB, in either direction and with no
+relation to the size of B: something cuBLAS keeps of its own, not explained,
+and the 512 bytes neither.
 
 ## What it means for the fixed workspace
 
-1. **On CUDA the size does not matter for `dtrsm`.** Any constant covers it.
+1. **On CUDA the size does not matter for `dtrsm`.** Any constant covers it;
+   what cuBLAS takes by itself stayed under 30 MiB up to 8 GiB of B.
 2. **On HIP no constant covers `dtrsm`.** The need is a function of the
    call: about B's own size when L's order is not a multiple of 128, and 1/32
    of B when it is. n_aux is whatever the basis gives (3606 on gly10), so the
@@ -92,4 +125,4 @@ not explained.
 
 Not measured: `gemm`, `syrk` and `gemv` at production shapes (`handle_ring`
 found `gemm` takes none at 4096), transposed or upper solves, other types
-than double, and whether the formulas hold past these six shapes.
+than double, and shapes between these twelve.
