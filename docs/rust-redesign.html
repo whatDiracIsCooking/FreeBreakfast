@@ -179,12 +179,15 @@ handle set per card under one lock, held for a step's run, with a fixed 128&nbsp
 BLAS workspace; then scratch packed by the closure alone and largest first, the lower
 bound in the budget table, one layout function per step, small host scratch as a policy,
 a default host cap checked at every call, and B's slab kept at the unscreened pair
-bound; then <code>trsm</code>'s workspace sized per call on HIP, after
-<code>experimental/rust/blas_workspace_scaling</code>).
+bound; then, after <code>experimental/rust/blas_workspace_scaling</code>, no vendor
+<code>trsm</code>, <code>potrs</code> or <code>getrs</code>: the tree's own recipes, as
+the C++ tree has them; then the kernels' stack left out of the budget, the two default
+margins given values, every cap clamped to what the machine has at init, and the
+free-memory check dropped).
 <span class="tag prop">proposed</span> this document's suggestion, not yet agreed
-(three remain: in <a href="#lock">one handle set per card</a>, the free-memory check; in
-<a href="#workspace">workspace</a>, no <code>potrs</code> or <code>getrs</code> on HIP; in
-<a href="#shared">shared code</a>, batches of B kept on the cards between passes).
+(two remain: in <a href="#workspace">workspace</a>, a nightly sentinel test per vendor
+binding; in <a href="#shared">shared code</a>, batches of B kept on the cards between
+passes).
 <span class="tag disc">to discuss</span> raised in review and set aside for a fuller
 discussion; <a href="#open">collected at the end</a>.
 <span class="tag run">run</span> measured or checked by an experiment, each section
@@ -886,8 +889,8 @@ shown.</figcaption>
   larger than the host sets the flag and is never touched, where a check in the final
   node alone would come after the OOM killer. The final node repeats the check with the
   packed pinned scratch added. The default cap is the cgroup-aware reading that exists
-  today (<code>fb_core_arena::host_available</code>), taken once in setup
-  (<a href="#caps">caps</a>). <span class="tag dec">decided</span> 2026-11-24; the
+  today (<code>fb_core_arena::host_available</code>), taken once in setup, less its
+  margin (<a href="#caps">caps</a>). <span class="tag dec">decided</span> 2026-11-24; the
   first form checked in the final node only.</li>
 </ul>
 
@@ -1276,8 +1279,8 @@ things go by the name, and they are handled apart:</p>
 <tr><td>Libraries</td><td>cuBLAS, hipBLAS over rocBLAS</td>
   <td>cuSOLVER; hipSOLVER, which attaches it to its internal rocBLAS handle for the
   call</td></tr>
-<tr><td>Size</td><td>A fixed constant per device: 128&nbsp;MiB. The exception is
-  <code>trsm</code> on HIP, sized per call (below)</td>
+<tr><td>Size</td><td>A fixed constant per device: 128&nbsp;MiB, with no exception:
+  the calls it would not cover are not made (below)</td>
   <td>The query at the call's arguments, declared in <code>mem_budget</code></td></tr>
 <tr><td>Home</td><td>The device's <code>DeviceResources</code>, allocated by the final
   budget node, set on its BLAS handle at every acquisition of the card's lock</td>
@@ -1294,31 +1297,38 @@ things go by the name, and they are handled apart:</p>
   RTX 3080 and 0.8% of a 16&nbsp;GB RX 9060 XT, paid once per card. On cuBLAS the size
   only picks the algorithm (a 256-byte workspace still ran, by another algorithm); on
   rocBLAS it is a hard need: a call that needs more than it was given takes memory of its
-  own, outside the budget, with no error (<a href="#lock">the measurements</a>: a
-  4096&nbsp;&times;&nbsp;4096 <code>dtrsm</code> needs 8&nbsp;MiB). Setting it on hipBLAS
+  own, outside the budget, with no error (<a href="#lock">the measurements</a>: rocBLAS's
+  own <code>dtrsm</code> at 4096&nbsp;&times;&nbsp;4096 took 8&nbsp;MiB). Setting it on hipBLAS
   also frees rocBLAS's own 32&nbsp;MiB default pool. It is a fixed row of the budget
   table, not an exclusion. <span class="tag dec">decided</span></li>
-<li><strong><code>trsm</code>'s workspace is per call, like a solver's work
-  buffer.</strong> On rocBLAS 5.6.0 a <code>trsm</code> needs workspace that grows with
-  its right-hand sides, so no constant covers it (<a href="#scaling">below</a>): about
-  B's own size when the triangular order is not a multiple of 128, and 1/32 of it when
-  it is. n_aux is whatever the basis gives, so the density-fitting solve is the first
-  case. So <code>trsm</code> gets what <code>syevd</code> has: a size function
-  (<code>trsm_lwork</code>, zero on CUDA) that the step calls in <code>mem_budget</code>
-  to declare step scratch, and a binding that checks the slice against it before the
-  call. <code>trsm</code> has no work argument, so the binding sets the slice on the
-  handle with <code>SetWorkspace</code>, makes the call, and puts the card's fixed
-  workspace back, in one function that nothing else reorders; the step holds the card's
-  lock throughout. Padding the triangular matrix to a multiple of 128 is the step's
-  choice: at most 127 rows, for a workspace 32 times smaller.
-  <span class="tag dec">decided</span> 2026-11-24. Where the size comes from is
-  <a href="#open">open</a>.</li>
-<li><strong>No <code>potrs</code> or <code>getrs</code> on HIP.</strong> They take no
-  work buffer, and hipSOLVER's internal rocBLAS handle takes a copy of the right-hand
-  sides by itself for the triangular solves inside: B's size plus about 42&nbsp;MiB,
-  outside the budget, kept by the handle afterwards. A step that solves against a factor
-  makes it from two <code>trsm</code> calls with a declared workspace, or by the tree's
-  own recipe. <span class="tag prop">proposed</span></li>
+<li><strong>No vendor <code>trsm</code>, <code>potrs</code> or <code>getrs</code>, on
+  either backend.</strong> On rocBLAS 5.6.0 a <code>trsm</code> takes workspace that
+  grows with its right-hand sides, up to a copy of B, and hipSOLVER's
+  <code>potrs</code> and <code>getrs</code> take B's size plus about 42&nbsp;MiB by
+  themselves and keep it (<a href="#scaling">below</a>): no constant covers either, and
+  none of the three takes a work buffer a binding could check. So the triangular solve
+  is the tree's own: the C++ <code>recipes/trsm</code>, blocked as its Cholesky is, each
+  diagonal block solved by a kernel and the rest updated by one <code>gemm</code>, which
+  needs only the handle's fixed workspace. The solve against a Cholesky factor is two
+  of those; the solve after <code>getrf</code> is a pivot kernel and two. The C++ tree
+  made the change on 2026-11-24, on both backends (<code>recipes/trsm</code>,
+  <code>cholesky_solve</code>, <code>lu_solve</code>, and every <code>wwr::trsm</code>
+  call in <code>src/</code>); the Rust tree binds the same recipes and wraps none of the
+  three vendor calls. One path on both backends, so CUDA runs the recipe as well. What
+  it replaces, a size function for <code>trsm</code> and a binding that swapped a slice
+  of the step's scratch onto the handle for the call (decided earlier the same day),
+  goes, and with it the question of where the size would come from. To measure: the
+  recipe against rocBLAS's and cuBLAS's <code>trsm</code> at the density-fitting solve's
+  shape. <span class="tag dec">decided</span> 2026-11-24</li>
+<li><strong>A sentinel test per vendor binding, in the nightly.</strong> What is left
+  of the vendor libraries (<code>gemm</code> and the other BLAS calls, <code>syevd</code>,
+  <code>potrf</code>, <code>getrf</code>) was measured to stay inside the fixed workspace
+  or the size query, on one release of each. A test per binding, the workspace scaling
+  probe's shape: the call on a sentinel-filled workspace or work buffer at a size where
+  growth would show, twice, with the card's free memory read around it. A toolkit bump
+  that changes what a call takes then fails there, and it is the only check that
+  would see it: the step-end free-memory read is not taken
+  (<a href="#lock">below</a>). <span class="tag prop">proposed</span></li>
 <li><strong>A call's work buffer is the step's, like any kernel's scratch.</strong> The
   step declares it in <code>mem_budget</code> from the size query
   (<code>budget.scratch(dev, Kind::Device, syevd_lwork(n))</code>), and passes a slice of its lent
@@ -1377,7 +1387,8 @@ hipSOLVER and hipBLAS over rocSOLVER and rocBLAS), at n = 2048.</p>
 non-null work buffer both rule out; and the only silent failure is cuSOLVER's unchecked
 <code>lwork</code>, which the binding's check rules out. Not covered: <code>getrf</code>
 (it takes no length, so nothing can check one) and hipBLASLt. rocBLAS's
-<code>trsm</code> against a small set workspace, not covered here, is measured below.</p>
+<code>trsm</code> against a small set workspace, not covered here, is measured below;
+the design no longer calls it (<a href="#workspace">above</a>).</p>
 
 <h3 id="scaling">What the workspace scaling probe showed</h3>
 
@@ -1428,10 +1439,12 @@ the handle's workspace up to 8&nbsp;GiB of B, the other BLAS calls use at most
 stays inside its size query, and cuSOLVER's <code>potrs</code> and <code>getrs</code>
 take nothing. So the fixed 128&nbsp;MiB covers every call measured except
 <code>trsm</code> on HIP, and on HIP the reductions up to 17 billion elements (8.6 for
-<code>iamax</code> and <code>dotc</code>). Every BLAS and solver call the C++ tree makes
-is now measured on both backends: <code>trsm</code>, <code>potrs</code> and
-<code>getrs</code> on HIP are the only ones that take memory by themselves. The
-formulas are read from rocBLAS 5.6.0 and may change with a release.</p>
+<code>iamax</code> and <code>dotc</code>). Every BLAS and solver call the C++ tree made
+when the probe ran is measured on both backends: <code>trsm</code>, <code>potrs</code>
+and <code>getrs</code> on HIP were the only ones that take memory by themselves, and
+none of the three is called any more (<a href="#workspace">above</a>). So the fixed
+128&nbsp;MiB covers every vendor call that is left. The formulas are read from rocBLAS
+5.6.0 and may change with a release.</p>
 
 <h2 id="caps">Caps, and what the limit covers</h2>
 
@@ -1444,20 +1457,42 @@ formulas are read from rocBLAS 5.6.0 and may change with a release.</p>
   surfaces at init, where the tree's own abort names it.
   <span class="tag dec">decided</span></li>
 <li><strong>An explicit device cap is used as written.</strong> The user owns the margin.
-  With no cap given, the default is the device's free memory at start less one fixed
-  margin constant: one read per device, which also sees another process already holding
-  part of a shared card. The margin's value is open. <span class="tag dec">decided</span></li>
+  With no cap given, the default is the device's free memory at start less a margin: one
+  read per device, after its handles exist, which also sees another process already
+  holding part of a shared card. <span class="tag dec">decided</span></li>
+<li><strong>The device margin is the larger of 512&nbsp;MiB and 5% of the card's total
+  memory.</strong> It is for what the card takes after budget mode
+  (<a href="#outside">below</a>): the kernels' stack, and modules loading at first
+  launch. Both numbers are judgment and not measurement; they scale with the card
+  because the stack does. No scan of the kernels and no test ties the constant to them.
+  One that turns out too small costs a failed launch that says so
+  (<a href="#failure">failure</a>), and is raised then; a config that wants the memory
+  back sets an explicit cap. <span class="tag dec">decided</span> 2026-11-24</li>
 <li><strong>The host cap has the same default.</strong> With none given, it is the
   host's available memory read once in setup, less a margin, and every heap and pinned
   charge is held against it as it is made (<a href="#kinds">host heap</a>). With B on
   the host heap this is the cap a large density-fitted run meets first.
   <span class="tag dec">decided</span> 2026-11-24</li>
-<li><strong>The risk that remains</strong> is device memory taken after budget mode:
-  kernel modules loading at first launch (2&ndash;10&nbsp;MiB at a HIP solver handle's
-  first call, by the <a href="#probe">probe</a>), and the kernels' stack (up to
-  1.6&nbsp;GiB on the RTX 3080 by <code>memory.md</code>). The margin constant is for
-  that. The handles themselves (10&ndash;14&nbsp;MiB each on CUDA, 58&ndash;60 on HIP)
-  exist before the free-memory reading, so the default cap already sees them.</li>
+<li><strong>The host margin is the larger of 1&nbsp;GiB and 5% of the available
+  memory.</strong> It tracks nothing. Host scratch is outside the budget by policy
+  (<a href="#scratch">step scratch</a>), and only what is on the <code>MainBus</code> is
+  counted; the margin is room left unpromised, so that a B admitted up to the whole of
+  the host cannot leave the uncounted allocations of a <code>run</code> with nothing,
+  which would end as a kill from the OOM killer mid-run. Judgment again: the policy
+  holds a step's host scratch within O(n_ao&sup2;), megabytes at these sizes.
+  <span class="tag dec">decided</span> 2026-11-24</li>
+<li><strong>Every cap is clamped to what the machine has at init.</strong> A plan is
+  held against the smaller of the cap and the reading made at start: each card's free
+  memory once its handles exist, and the host's available memory in setup. A defaulted
+  cap is that reading less its margin; an explicit one past the machine is clamped to
+  the reading itself, with no margin taken, since the user owns it. The budget table
+  prints the cap as written beside the value used. Without the clamp an explicit cap the
+  machine cannot meet is not a refusal: on a card the tree aborts at whichever
+  allocation fails first, with no table and a different step named from run to run, and
+  on the host budget mode touches pages until the OOM killer ends the process with no
+  message. The reading is a snapshot, so on a shared machine it can refuse a plan that
+  would have fitted a moment later; the refusal prints what it read.
+  <span class="tag dec">decided</span> 2026-11-24</li>
 </ul>
 
 <div class="note"><strong>The compliance statement</strong>, to be written into the user
@@ -1465,7 +1500,69 @@ docs whatever else changes <span class="tag dec">decided</span>: the memory limi
 what steps allocate through <code>mem_budget</code>, step scratch (which holds every
 library call's work buffer), and the fixed BLAS-handle workspace. They exclude the device
 context, the handles' own memory and loaded modules, the kernels' stack, and small host
-allocations such as reading the geometry and the basis data.</div>
+allocations such as reading the geometry and the basis data. A defaulted cap leaves a
+margin for those; an explicit one is the user's.</div>
+
+<h3 id="outside">What a card takes after budget mode</h3>
+
+<p><span class="tag dec">decided</span> 2026-11-24: none of it is budgeted, measured or
+checked at run time. The margin covers it, and the failure it leaves is loud and lands
+in one place.</p>
+
+<ul>
+<li><strong>The kernels' stack is wholly outside the budget.</strong> CUDA holds a
+  kernel's per-thread stack for every thread the card can keep resident (104,448 on the
+  RTX 3080), from that kernel's first launch on, by raising the device's stack limit and
+  keeping it (<code>src/core/wwr/README.md</code>, "Kernel stacks outside the pool").
+  At the largest frame the Rust-only kernels have, 3,856 bytes in their low-stack form,
+  that is about 280&nbsp;MiB on the 3080; at the C++ tree's largest, 16,912 bytes,
+  1.6&nbsp;GiB. It has no row in the budget table and no step declares it.</li>
+<li><strong>What that risks.</strong> One failure: on CUDA, a plan that nearly fills
+  the card fails at the first launch of a kernel whose frame is larger than any
+  launched so far, with an allocation error. If the kernel is a late step's, the run
+  loses the work before it. Nothing is silent and no result is wrong. It is isolable
+  here in a way it was not under the old model, where the driver trimmed a pool's
+  cached memory to make the stack and the failure surfaced at a later, unrelated
+  allocation (#1259): there is no pool, everything budgeted is allocated before the
+  first launch, and so the failure can only be the launch itself, in a named step. It
+  needs free memory after budget mode below the stack the run will take, which a
+  defaulted cap's margin rules out while the margin is the larger.</li>
+<li><strong>Nothing on HIP.</strong> ROCm sizes a kernel's scratch per dispatch and
+  holds no reservation sized by the frame: no growth past the first launch at 1&nbsp;KiB,
+  10,000 or 23,200 bytes of scratch a lane, and a 23,200-byte launch ran on a card full
+  but for 256&nbsp;MiB (gfx1200, ROCm 7.2.4, the same README). What a large launch takes
+  while it runs was not sampled, and the measurement predates ROCm 10
+  (<a href="#open">to measure</a>).</li>
+<li><strong>Not taken: claiming it.</strong> A row of the budget, counted under the cap
+  and sized per step, needs each kernel's frame. That is known when the kernel is
+  compiled and can be read from the built objects on both backends
+  (<code>cuobjdump --dump-resource-usage</code>, as the C++ ctest
+  <code>core_kernel_stack_bound</code> does; on HIP
+  <code>.private_segment_fixed_size</code> in the code object's metadata note, by
+  <code>llvm-readelf --notes</code> once the object is taken out of
+  <code>.hip_fatbin</code>). So it would be a generated manifest of frames, a
+  declaration in every step, and a device-attribute call wwr's C ABI does not have, for
+  the card's thread count: all for one backend, to make an explicit cap honest about
+  one of several things the compliance statement (above) already excludes, and to save
+  at most the difference between the tree's largest frame and the run's.</li>
+<li><strong>Not taken: raising the stack limit at init.</strong> One
+  <code>wwr_device_set_limit</code> to a tree-wide constant, before the reading the
+  default cap is made from, would take the stack before anything is budgeted and move
+  the failure to init. It needs that constant kept at the largest frame the layer
+  launches, by hand or by a scan of the compiled kernels, and the margin covers the
+  case without either. It is the known fix, about ten lines, if a late failure ever
+  costs a real run.</li>
+<li><strong>When to look again.</strong> When a kernel with a frame past 8&nbsp;KiB is
+  ported (the Hessian kernels are the ones): the stack then outgrows the margin on a
+  small card, and both of the above are worth their cost.</li>
+<li><strong>Modules and a library's first call are the margin's too.</strong> Kernel
+  modules load at first launch, and a library takes a few MiB at its first call
+  (2&ndash;10&nbsp;MiB at a HIP solver handle's, up to 14 on cuSOLVER, by the
+  <a href="#probe">probes</a>). No eager loading, no warm-up launch and no warm-up call
+  in budget mode. The handles themselves (10&ndash;14&nbsp;MiB each on CUDA,
+  58&ndash;60 on HIP) exist before the free-memory reading, so the default cap already
+  sees them.</li>
+</ul>
 
 <h2 id="enforce">Enforcement</h2>
 
@@ -1497,14 +1594,16 @@ allocations such as reading the geometry and the basis data.</div>
 <tr><td>A library call's work buffer is at least its size query</td><td>By the
   binding: it repeats the query and checks the slice before the call
   (<a href="#workspace">above</a>); a <code>doc_check</code> test holds every solver
-  binding to it, and <code>trsm</code>'s, whose buffer the binding sets on the handle
-  for the call</td></tr>
+  binding to it</td></tr>
 <tr><td>No library handle manages its own memory</td><td>The wrapper sets the card's
   fixed workspace on its BLAS handle at every acquisition, after <code>SetStream</code>; a
   work buffer is never null</td></tr>
-<tr><td>Nothing on a card allocates in execute mode</td><td>The card's free memory, read
-  by the wrapper after each step's sync, against its value at the end of budget mode
-  (<a href="#lock">below</a>) <span class="tag prop">proposed</span></td></tr>
+<tr><td>No vendor call takes memory by itself</td><td>By what is bound: the calls
+  measured to (<code>trsm</code>, <code>potrs</code>, <code>getrs</code>) have no
+  binding, the tree's recipes standing in for them
+  (<a href="#workspace">above</a>). For the rest, a sentinel test per binding in the
+  nightly <span class="tag prop">proposed</span>. No check at run time
+  (<a href="#lock">below</a>)</td></tr>
 </table></div>
 
 <p>The first rule covers device and pinned memory completely, since both go through
@@ -1877,10 +1976,10 @@ the SCF follows both, and the packer may lay its region over the orthogonalizer'
 <li><strong>The BLAS workspace is fixed, 128&nbsp;MiB per card</strong>, a row of the
   budget table (<a href="#workspace">workspace</a>). Solver work buffers stay per call,
   sized by their query, in step scratch: <code>syevd</code>'s grows as n&sup2;
-  (130&nbsp;MiB at n&nbsp;=&nbsp;2048 on cuSOLVER), so no fixed size covers them. On HIP
-  <code>trsm</code> is in the same position and is treated the same way: the binding
-  swaps a slice of the step's scratch onto the handle for the call and puts the fixed
-  workspace back (<a href="#workspace">workspace</a>).</li>
+  (130&nbsp;MiB at n&nbsp;=&nbsp;2048 on cuSOLVER), so no fixed size covers them. rocBLAS's
+  <code>trsm</code>, the one BLAS call in the same position, is not called: the
+  triangular solve is the tree's recipe, which needs only the fixed workspace
+  (<a href="#workspace">workspace</a>).</li>
 <li><strong>A step's inner tasks share its handle set.</strong> rocBLAS says not to share
   a handle between threads (verify), so two inner tasks do not call the library at once
   on one card; a step that wants concurrent library calls inside itself declares further
@@ -1917,20 +2016,39 @@ time-slice rather than overlap: this tree's test batches measured a CASSCF case 
   <code>syevd</code> queues behind <code>eri</code>'s kernels anyway.</li>
 </ul>
 
-<p><strong>The free-memory check</strong> <span class="tag prop">proposed</span>. In
-execute mode nothing allocates: budget mode allocated everything. The compile-time rule
-(<a href="#enforce">Enforcement</a>) holds that for this tree's own allocations and
-cannot see inside a vendor library; this is the check for what a library takes by
-itself. So a card's free memory
-should hold its value from the end of budget mode for the whole run. The wrapper has
-already synced at step end; one memory-info read there catches growth on that card by any
-step or library, such as a hipBLAS call that outgrows the workspace, for a few
-microseconds a step. Two things it must allow for: the libraries' first-call growth
-(10&nbsp;MiB on HIP, up to 14 on cuSOLVER: code objects or lazy module loading), answered
-by one small warm-up call per library in budget mode or a once-per-process allowance; and
-other processes on the card, which move the same reading, so outside the gates, which
-hold the card, a drop is a warning and not an error. Whether it runs on every run or only
-in the gates is to pick.</p>
+<p><strong>No free-memory check at run time</strong> <span class="tag dec">decided</span>
+2026-11-24. It was proposed here: in execute mode nothing allocates, so a card's free
+memory should hold its value from the end of budget mode, and one memory-info read by the
+wrapper after each step's sync would catch what a vendor library takes by itself, which
+the compile-time rule (<a href="#enforce">Enforcement</a>) cannot see. Dropped, in every
+form:</p>
+<ul>
+<li><strong>What it was for is ruled out by construction.</strong> Every case it was
+  written for was a vendor call taking memory by itself: rocBLAS's <code>trsm</code>,
+  and <code>potrs</code> and <code>getrs</code> on HIP, which are no longer called
+  (<a href="#workspace">workspace</a>); a workspace too small on rocBLAS, which the
+  wrapper's fixed 128&nbsp;MiB at every acquisition covers; a null work buffer, which no
+  binding passes. What is left is a toolkit bump changing what a call takes, or a call
+  nobody measured.</li>
+<li><strong>The reading moves for reasons that are not the tree's.</strong> The
+  kernels' stack at a first launch on CUDA, modules loading, a library's first call
+  (<a href="#outside">what a card takes after budget mode</a>), and any other process on
+  the card. As an error it needs an allowance for each, or a warm-up launch per kernel
+  family and a warm-up call per library in budget mode; as a warning it is mostly
+  noise.</li>
+<li><strong>It is weakest where it would be enforced.</strong> The gates run small
+  molecules, where growth that scales with a call's operands is the size of the
+  allocator's noise; it would show on production runs, where it could only warn.</li>
+<li><strong>A replay test is not taken either</strong>: the card's free memory equal
+  across replays 2 to n, in the gates. It needs no allowance, since the stack and the
+  modules are loaded by then, but anything else on the card moves it, so it is a flaky
+  gate or one with a tolerance; and what it would catch, a vendor call that leaks per
+  call, is the sentinel test's (<a href="#workspace">workspace</a>, proposed), at the
+  binding.</li>
+<li><strong>What is accepted.</strong> A vendor call that starts taking memory after a
+  toolkit bump, on a shape no test runs, surfaces as an out-of-memory failure on a
+  large run. It is loud, and it is at a library call in a named step.</li>
+</ul>
 
 <p><strong>What the measurements showed</strong> <span class="tag run">run</span>
 2026-11-24, RTX 3080 and RX 9060 XT, through <code>wwr-sys</code>
@@ -1957,10 +2075,10 @@ in the gates is to pick.</p>
 <li><strong>On HIP a workspace too small grows.</strong> Given 256&nbsp;B, that
   <code>dtrsm</code> took 8&nbsp;MiB of its own at the call, outside the budget, with no
   error; cuBLAS only changes algorithm. So on HIP the card's workspace must cover the
-  largest BLAS call any step makes: hence 128&nbsp;MiB, and the check above. Measured
+  largest BLAS call any step makes: hence 128&nbsp;MiB. Measured
   since (<a href="#scaling">the workspace scaling probe</a>): it covers every call but
-  <code>trsm</code>, whose need grows with its right-hand sides and is sized per
-  call.</li>
+  <code>trsm</code>, whose need grows with its right-hand sides, and which is no longer
+  called (<a href="#workspace">workspace</a>).</li>
 </ol>
 
 <h3>Resources</h3>
@@ -2387,7 +2505,18 @@ shows against the old path at these sizes.</p>
 <li><strong>A plan over budget is a refusal, not a panic</strong>: the final budget node
   prints the table and exits with an error. An allocation the counter admitted and the
   device then refused aborts at the failing call, by the tree's create policy, still at
-  init.</li>
+  init. A cap the machine cannot meet is not that case: every cap is clamped to what the
+  machine has at init (<a href="#caps">caps</a>), so it is a refusal with the table.</li>
+<li><strong>A launch that fails for memory reports what it can read.</strong> By execute
+  mode everything budgeted is allocated, so a kernel launch that returns an allocation
+  error is about memory outside the budget
+  (<a href="#outside">what a card takes after budget mode</a>). The error names the step
+  and the kernel, prints the card's free memory and, on CUDA, the device's stack limit,
+  and lists what can cause it on that backend: on CUDA the kernel's stack, when its
+  frame is larger than any launched so far; modules loading at a first launch; another
+  process on the card. It suggests a lower device cap, or looking for the other process.
+  It does not guess which, and cannot print the kernel's own frame, which would need the
+  manifest that is not kept. <span class="tag dec">decided</span> 2026-11-24</li>
 <li><strong>A config whose steps do not close is refused when the DAG is built</strong>:
   a step that declares it reads another the config does not ask for, named with what it
   needs.</li>
@@ -2402,7 +2531,8 @@ shows against the old path at these sizes.</p>
   kind, each step's scratch and the handle workspace their own rows, the packed scratch
   peak beside the plain sum of the declarations (so packing's gain reads plainly) and the
   lower bound with the steps that make it (so its distance from the best reads plainly),
-  the totals against the caps. Logged on every run,
+  the totals against the caps, each cap as written beside the value used when it was
+  clamped. Logged on every run,
   printed in full on a refusal. rustflow's <code>ChromeObserver</code> and
   <code>dump()</code> (Graphviz DOT) sit beside the timing record.</li>
 <li><strong>Determinism.</strong> Results are those of the edges. Accept or refuse, the
@@ -2437,7 +2567,7 @@ Rust tree's task layer and not an edit to it.</p>
   fourth variant is most of it, on one card. The step's
   <code>ForkStream</code> and the wrapper's sync, each card's <code>DeviceResources</code>
   and its lock taken in card order, its scratch region with the solver's work in it, the
-  fixed handle workspace, the free-memory check, per-node device selection.</li>
+  fixed handle workspace, per-node device selection.</li>
 <li><strong>The DF-RHF chain</strong> as steps: setup, the integrals, X, the guess, the
   SCF with its condition loop inside its subflow. Held against the old path's energies, which the tree already
   holds against PySCF.</li>
@@ -2498,18 +2628,23 @@ Rust tree's task layer and not an edit to it.</p>
   configs. On the model's dummy and random DAGs it is answered
   (<a href="#closure-model">there</a>): at the bound on 98.1% largest first, the order
   taken; real configs remain, and the table's lower-bound row answers it on each.</li>
-<li><strong>Where <code>trsm_lwork</code> gets its size on HIP.</strong> rocBLAS has
-  its own query (<code>rocblas_start_device_memory_size_query</code>, in the installed
-  headers): exact, and it follows a release. hipBLAS does not expose it, so it means
-  reaching the rocBLAS handle underneath; whether WarpWraps can is to check. Otherwise
-  the measured formulas (<a href="#scaling">the probe</a>), with a gate test that runs
-  one odd-order <code>trsm</code> on a sentinel-filled workspace, so a ROCm bump that
-  changes the need fails loudly. Either way the formulas are the test.</li>
-<li><strong>The rest of the workspace sweep.</strong> Not measured: the sweep on CUDA
-  beyond <code>dtrsm</code>, upper solves, rectangular <code>syrk</code> and
-  <code>gemv</code>, the batched solver calls, hipBLASLt.</li>
-<li><strong>The margin constant</strong> for a defaulted device cap and for the host's, and whether the
-  kernels' stack should be read per card and not carried as the 3080's number.</li>
+<li><strong>The recipe's <code>trsm</code> against the vendors'.</strong> The tree's
+  triangular solve stands in for rocBLAS's and cuBLAS's on both backends
+  (<a href="#workspace">workspace</a>). Its time against each at the density-fitting
+  solve's shape is not measured; the C++ tree's tests hold its results, not its
+  speed.</li>
+<li><strong>The rest of the workspace sweep.</strong> Not measured: upper solves,
+  rectangular <code>syrk</code> and <code>gemv</code>, the batched solver calls,
+  hipBLASLt. What the sentinel tests would run, if taken
+  (<a href="#workspace">workspace</a>, proposed).</li>
+<li><strong>The host and device margins' values</strong> are picked
+  (<a href="#caps">caps</a>): judgment, to be raised when a launch fails for memory
+  or a run is killed on the host. The kernels' stack is not read per card.</li>
+<li><strong>Scratch on HIP while a kernel runs.</strong> The measurement that ROCm
+  reserves nothing for a kernel's scratch read the card after each launch, on ROCm 7.2.4
+  (<a href="#outside">what a card takes after budget mode</a>). To rerun on ROCm 10 with
+  the card's memory sampled during a large launch of a large-frame kernel: what it takes
+  then is the HIP share of the device margin.</li>
 <li><strong>The default limit fraction</strong> that picks a step's batch width.</li>
 <li><strong>Task granularity inside a step.</strong> A step is one node of the outer
   graph (<a href="#steps">decided</a>); how much of its inner graph is
