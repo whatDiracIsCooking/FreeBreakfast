@@ -12,12 +12,12 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest.join("../../../rust/build-cuda"));
     let dir = build.join("deps/WarpWraps/src/capi");
-    for unit in ["runtime_api", "blas"] {
+    for unit in ["runtime_api", "blas", "solver"] {
         let lib = dir.join(format!("libwwr_capi_{unit}.so"));
         assert!(
             lib.exists(),
             "{} is missing: from rust/, `cmake --preset cuda && cmake --build build-cuda \
-             --target wwr.capi.runtime_api wwr.capi.blas` (or hip), or set \
+             --target wwr.capi.runtime_api wwr.capi.blas wwr.capi.solver` (or hip), or set \
              FB_RUST_BUILD_DIR",
             lib.display()
         );

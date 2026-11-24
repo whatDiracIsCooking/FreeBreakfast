@@ -36,8 +36,9 @@ Nothing in ctest or either gate runs it.
 
 ## Results, 2026-11-24
 
-RTX 3080 (CUDA 13) and RX 9060 XT (gfx1200, ROCm), each card held by
-`with_gpu_card`.
+RTX 3080 (CUDA 13) and RX 9060 XT (gfx1200, ROCm 10.0.0: rocBLAS 5.6.0,
+hipBLAS 3.6), each card held by `with_gpu_card`. The formulas are that
+release's.
 
 ### hipBLAS
 
@@ -104,6 +105,65 @@ card's free memory moved by at most 30 MiB, in either direction and with no
 relation to the size of B: something cuBLAS keeps of its own, not explained,
 and the 512 bytes neither.
 
+## The other routines, hipBLAS and hipSOLVER
+
+`routine-sweep <routine> <n>` (`src/sweep.rs`, run by `sweep.sh hip "routine
+n" ...`) asks the same of the other calls the Rust tree makes, and of those
+the ports will bring. One routine at one order per process, 40 readings: each
+routine at an order that is a multiple of 128 and one that is not, and a
+third only where the first two showed a need. HIP only.
+
+### BLAS: what the call uses of the handle's workspace
+
+Matrices are n × n at n = 4096 and 4100 (128 MiB in double).
+
+| Routine | n = 4096 | n = 4100 | Trend |
+|---|---|---|---|
+| `dtrsm`, right, transposed (the DF fit's form) | 8.0 MiB | 132.3 MiB | as `dtrsm` above: the side and the transpose change nothing |
+| `strsm` | 4.0 MiB | 66.1 MiB | the same formulas at 4 bytes an element |
+| `ztrsm` | 16.0 MiB | 264.5 MiB | the same at 16 bytes an element |
+| `dtrmm` | 0 | 0 | none |
+| `dtrsv` | 4 B | 4 B | none |
+| `dgemm_strided_batched` (16 of order n/4) | 0 | 0 | none |
+| `dsyrk` | 0 | 0 | none |
+| `dgemv` | 0 | 0 | none |
+| `dgeam` | 0 | 0 | none |
+| `ddgmm` | 0 | 0 | none |
+| `ddot`, `dnrm2` (vectors of n² elements) | 131,080 B | 131,344 B | 8 bytes per 1024 elements (rounded up), plus 8 |
+
+- **`trsm` is the only BLAS call here whose need grows with its operands.**
+  For an element of s bytes: s·(m·n + 128·k) when k is not a multiple of
+  128, and s·(m·n/32 + 128·k) when it is.
+- **The reductions need a little, and fail without it.** `ddot` and `dnrm2`
+  keep one partial result per 1024 elements: 128 KiB for 16.8 million
+  elements, so 8 MB per billion. Given a 256-byte workspace they return
+  `ALLOC_FAILED` and take nothing, where `trsm` grows silently.
+- **Everything else took nothing** at either order.
+
+### Solvers: the size query, and what the call takes beyond it
+
+Each call is handed a work buffer of exactly its size query and made twice.
+"Beyond" is the free memory lost over the first call; the second lost 0 in
+every case.
+
+| Routine | Size query (doubles) | Beyond the work buffer | Trend |
+|---|---|---|---|
+| `dsyevd`, n = 2048, 2100, 4100 | 13.7 M, 14.4 M, 54.8 M (105, 110, 418 MiB) | +10 MiB | the query is 3.26 n²; no step at an odd order |
+| `dpotrf`, n = 4096, 4100 | 128 | +2 MiB | the query is constant |
+| `dgetrf`, n = 4096, 4100 | 17.35 M, 17.37 M (132 MiB) | −4 MiB | the query is 1.03 n²: a copy of A |
+| `dgesvd`, n = 1024, 1030, 2048 | 0.654 M, 0.661 M, 2.36 M (5, 5, 18 MiB) | +22 MiB | the query is about n²/2 + 128 n |
+| `dpotrs`, n = nrhs = 4096, 4100, 8192 | takes no buffer | **+170, +174, +554 MiB** | B + 42 MiB |
+| `dgetrs`, n = nrhs = 4096, 4100, 8192 | takes no buffer | **+168, +170, +556 MiB** | B + 42 MiB |
+
+- **A call with a size query stays inside it.** `syevd`, `potrf`, `getrf`
+  and `gesvd` took nothing that grows with n beyond their work buffer; the
+  +2 to +22 MiB is the same at every order, so it is first-call growth.
+- **`potrs` and `getrs` take a copy of the right-hand sides by themselves.**
+  They have no work argument, so hipSOLVER's internal rocBLAS handle manages
+  its own memory for the triangular solves inside: B's size plus about
+  42 MiB, at multiples of 128 as well as not, and the handle keeps it (the
+  second call takes nothing more). There is no way to hand them a buffer.
+
 ## What it means for the fixed workspace
 
 1. **On CUDA the size does not matter for `dtrsm`.** Any constant covers it;
@@ -123,6 +183,12 @@ and the 512 bytes neither.
    - use the tree's own triangular solve, as the C++ tree does for Cholesky
      on HIP.
 
-Not measured: `gemm`, `syrk` and `gemv` at production shapes (`handle_ring`
-found `gemm` takes none at 4096), transposed or upper solves, other types
-than double, and shapes between these twelve.
+4. **`potrs` and `getrs` cannot be budgeted through hipSOLVER at all.** A
+   step that needs a solve against a factor has to make it from two `trsm`
+   calls with a declared workspace, or by the tree's own recipe.
+5. **The fixed 128 MiB covers everything else measured**: the reductions up
+   to 17 billion elements, and the calls that take none.
+
+Not measured: plain `gemm` beyond `handle_ring`'s 4096, upper solves,
+rectangular `syrk` and `gemv`, the batched solver calls, hipBLASLt, and any
+of the sweep on CUDA.
