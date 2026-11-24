@@ -179,15 +179,18 @@ handle set per card under one lock, held for a step's run, with a fixed 128&nbsp
 BLAS workspace; then scratch packed by the closure alone and largest first, the lower
 bound in the budget table, one layout function per step, small host scratch as a policy,
 a default host cap checked at every call, and B's slab kept at the unscreened pair
-bound).
+bound; then <code>trsm</code>'s workspace sized per call on HIP, after
+<code>experimental/rust/blas_workspace_scaling</code>).
 <span class="tag prop">proposed</span> this document's suggestion, not yet agreed
-(two remain: in <a href="#lock">one handle set per card</a>, the free-memory check; in
+(three remain: in <a href="#lock">one handle set per card</a>, the free-memory check; in
+<a href="#workspace">workspace</a>, no <code>potrs</code> or <code>getrs</code> on HIP; in
 <a href="#shared">shared code</a>, batches of B kept on the cards between passes).
 <span class="tag disc">to discuss</span> raised in review and set aside for a fuller
 discussion; <a href="#open">collected at the end</a>.
 <span class="tag run">run</span> measured or checked by an experiment, each section
 naming its own: the executor experiment (under the old memory model), the prototype, the
-library-workspace probe, the closure model, and the handle measurements. Everything is unbuilt unless marked run. "Verify" marks a claim recalled from
+library-workspace probe, the closure model, the handle measurements, and the workspace
+scaling probe. Everything is unbuilt unless marked run. "Verify" marks a claim recalled from
 vendor or rustflow documentation and not checked against source.
 </p>
 
@@ -1273,7 +1276,8 @@ things go by the name, and they are handled apart:</p>
 <tr><td>Libraries</td><td>cuBLAS, hipBLAS over rocBLAS</td>
   <td>cuSOLVER; hipSOLVER, which attaches it to its internal rocBLAS handle for the
   call</td></tr>
-<tr><td>Size</td><td>A fixed constant per device: 128&nbsp;MiB</td>
+<tr><td>Size</td><td>A fixed constant per device: 128&nbsp;MiB. The exception is
+  <code>trsm</code> on HIP, sized per call (below)</td>
   <td>The query at the call's arguments, declared in <code>mem_budget</code></td></tr>
 <tr><td>Home</td><td>The device's <code>DeviceResources</code>, allocated by the final
   budget node, set on its BLAS handle at every acquisition of the card's lock</td>
@@ -1294,6 +1298,27 @@ things go by the name, and they are handled apart:</p>
   4096&nbsp;&times;&nbsp;4096 <code>dtrsm</code> needs 8&nbsp;MiB). Setting it on hipBLAS
   also frees rocBLAS's own 32&nbsp;MiB default pool. It is a fixed row of the budget
   table, not an exclusion. <span class="tag dec">decided</span></li>
+<li><strong><code>trsm</code>'s workspace is per call, like a solver's work
+  buffer.</strong> On rocBLAS 5.6.0 a <code>trsm</code> needs workspace that grows with
+  its right-hand sides, so no constant covers it (<a href="#scaling">below</a>): about
+  B's own size when the triangular order is not a multiple of 128, and 1/32 of it when
+  it is. n_aux is whatever the basis gives, so the density-fitting solve is the first
+  case. So <code>trsm</code> gets what <code>syevd</code> has: a size function
+  (<code>trsm_lwork</code>, zero on CUDA) that the step calls in <code>mem_budget</code>
+  to declare step scratch, and a binding that checks the slice against it before the
+  call. <code>trsm</code> has no work argument, so the binding sets the slice on the
+  handle with <code>SetWorkspace</code>, makes the call, and puts the card's fixed
+  workspace back, in one function that nothing else reorders; the step holds the card's
+  lock throughout. Padding the triangular matrix to a multiple of 128 is the step's
+  choice: at most 127 rows, for a workspace 32 times smaller.
+  <span class="tag dec">decided</span> 2026-11-24. Where the size comes from is
+  <a href="#open">open</a>.</li>
+<li><strong>No <code>potrs</code> or <code>getrs</code> on HIP.</strong> They take no
+  work buffer, and hipSOLVER's internal rocBLAS handle takes a copy of the right-hand
+  sides by itself for the triangular solves inside: B's size plus about 42&nbsp;MiB,
+  outside the budget, kept by the handle afterwards. A step that solves against a factor
+  makes it from two <code>trsm</code> calls with a declared workspace, or by the tree's
+  own recipe. <span class="tag prop">proposed</span></li>
 <li><strong>A call's work buffer is the step's, like any kernel's scratch.</strong> The
   step declares it in <code>mem_budget</code> from the size query
   (<code>budget.scratch(dev, Kind::Device, syevd_lwork(n))</code>), and passes a slice of its lent
@@ -1351,8 +1376,51 @@ hipSOLVER and hipBLAS over rocSOLVER and rocBLAS), at n = 2048.</p>
 <p>So the only growth after creation is rocBLAS's managed mode, which a set workspace and a
 non-null work buffer both rule out; and the only silent failure is cuSOLVER's unchecked
 <code>lwork</code>, which the binding's check rules out. Not covered: <code>getrf</code>
-(it takes no length, so nothing can check one), hipBLASLt, rocBLAS's <code>trsm</code>
-against a small set workspace.</p>
+(it takes no length, so nothing can check one) and hipBLASLt. rocBLAS's
+<code>trsm</code> against a small set workspace, not covered here, is measured below.</p>
+
+<h3 id="scaling">What the workspace scaling probe showed</h3>
+
+<p><span class="tag run">run</span> 2026-11-24, RX 9060 XT (ROCm 10.0.0: rocBLAS 5.6.0,
+hipBLAS 3.6) and RTX 3080, through <code>wwr-sys</code>
+(<a href="../experimental/rust/blas_workspace_scaling/"><code>experimental/rust/blas_workspace_scaling</code></a>,
+whose README has every reading). A call on a handle given a large sentinel-filled
+workspace, read for how much it wrote; then on a 256-byte one, read for what the library
+took by itself. Solver calls are handed a work buffer of exactly their size query.</p>
+
+<div class="tablewrap"><table>
+<tr><th>Call, on HIP</th><th>What it needs beyond its operands</th></tr>
+<tr><td><code>trsm</code>, order k not a multiple of 128</td>
+  <td>s&middot;(m&middot;n + 128&middot;k) bytes for an element of s bytes: a copy of B.
+  132&nbsp;MiB for 128&nbsp;MiB of B, 4104&nbsp;MiB for 4100; at 8200&nbsp;MiB the
+  16&nbsp;GiB card returns <code>ALLOC_FAILED</code></td></tr>
+<tr><td><code>trsm</code>, k a multiple of 128</td>
+  <td>s&middot;(m&middot;n/32 + 128&middot;k) bytes: 8&nbsp;MiB for 128&nbsp;MiB of B,
+  260&nbsp;MiB for 8&nbsp;GiB. Exact on six shapes</td></tr>
+<tr><td><code>trsm</code>'s side, transpose and type</td>
+  <td>Change nothing but s: single, double and complex, left and right, plain and
+  transposed all follow the two forms</td></tr>
+<tr><td><code>dot</code>, <code>nrm2</code></td>
+  <td>8 bytes per 1024 elements: 8&nbsp;MB per billion. With too small a workspace they
+  return <code>ALLOC_FAILED</code>, where <code>trsm</code> grows silently</td></tr>
+<tr><td><code>trmm</code>, <code>trsv</code>, <code>gemm_strided_batched</code>,
+  <code>syrk</code>, <code>gemv</code>, <code>geam</code>, <code>dgmm</code></td>
+  <td>Nothing</td></tr>
+<tr><td><code>syevd</code>, <code>potrf</code>, <code>getrf</code>,
+  <code>gesvd</code></td>
+  <td>Nothing that grows beyond the size query (3.26&nbsp;n&sup2; doubles for
+  <code>syevd</code>, with no step at an odd order; a constant 128 for
+  <code>potrf</code>; about a copy of A for <code>getrf</code>; about n&sup2;/2 for
+  <code>gesvd</code>). 2 to 22&nbsp;MiB once, at the first call</td></tr>
+<tr><td><code>potrs</code>, <code>getrs</code></td>
+  <td>B's size plus about 42&nbsp;MiB, taken by the library itself at any order: 170
+  and 554&nbsp;MiB for 128 and 512&nbsp;MiB of right-hand sides</td></tr>
+</table></div>
+
+<p>On cuBLAS <code>dtrsm</code> used none of the handle's workspace up to 8&nbsp;GiB of
+B; the rest of the sweep was not run on CUDA. So the fixed 128&nbsp;MiB covers every
+call measured except <code>trsm</code> on HIP, and the reductions up to 17 billion
+elements. The formulas are read from rocBLAS 5.6.0 and may change with a release.</p>
 
 <h2 id="caps">Caps, and what the limit covers</h2>
 
@@ -1418,7 +1486,8 @@ allocations such as reading the geometry and the basis data.</div>
 <tr><td>A library call's work buffer is at least its size query</td><td>By the
   binding: it repeats the query and checks the slice before the call
   (<a href="#workspace">above</a>); a <code>doc_check</code> test holds every solver
-  binding to it</td></tr>
+  binding to it, and <code>trsm</code>'s, whose buffer the binding sets on the handle
+  for the call</td></tr>
 <tr><td>No library handle manages its own memory</td><td>The wrapper sets the card's
   fixed workspace on its BLAS handle at every acquisition, after <code>SetStream</code>; a
   work buffer is never null</td></tr>
@@ -1797,7 +1866,10 @@ the SCF follows both, and the packer may lay its region over the orthogonalizer'
 <li><strong>The BLAS workspace is fixed, 128&nbsp;MiB per card</strong>, a row of the
   budget table (<a href="#workspace">workspace</a>). Solver work buffers stay per call,
   sized by their query, in step scratch: <code>syevd</code>'s grows as n&sup2;
-  (130&nbsp;MiB at n&nbsp;=&nbsp;2048 on cuSOLVER), so no fixed size covers them.</li>
+  (130&nbsp;MiB at n&nbsp;=&nbsp;2048 on cuSOLVER), so no fixed size covers them. On HIP
+  <code>trsm</code> is in the same position and is treated the same way: the binding
+  swaps a slice of the step's scratch onto the handle for the call and puts the fixed
+  workspace back (<a href="#workspace">workspace</a>).</li>
 <li><strong>A step's inner tasks share its handle set.</strong> rocBLAS says not to share
   a handle between threads (verify), so two inner tasks do not call the library at once
   on one card; a step that wants concurrent library calls inside itself declares further
@@ -1874,9 +1946,10 @@ in the gates is to pick.</p>
 <li><strong>On HIP a workspace too small grows.</strong> Given 256&nbsp;B, that
   <code>dtrsm</code> took 8&nbsp;MiB of its own at the call, outside the budget, with no
   error; cuBLAS only changes algorithm. So on HIP the card's workspace must cover the
-  largest BLAS call any step makes: hence 128&nbsp;MiB, and the check above. Whether
-  128&nbsp;MiB covers every shape the tree calls at production sizes is
-  <a href="#open">to measure</a>.</li>
+  largest BLAS call any step makes: hence 128&nbsp;MiB, and the check above. Measured
+  since (<a href="#scaling">the workspace scaling probe</a>): it covers every call but
+  <code>trsm</code>, whose need grows with its right-hand sides and is sized per
+  call.</li>
 </ol>
 
 <h3>Resources</h3>
@@ -2414,12 +2487,16 @@ Rust tree's task layer and not an edit to it.</p>
   configs. On the model's dummy and random DAGs it is answered
   (<a href="#closure-model">there</a>): at the bound on 98.1% largest first, the order
   taken; real configs remain, and the table's lower-bound row answers it on each.</li>
-<li><strong>Whether 128&nbsp;MiB covers every BLAS call on HIP.</strong> One reading
-  so far: a 4096&nbsp;&times;&nbsp;4096 <code>dtrsm</code> needs 8&nbsp;MiB. Run a handle
-  with no workspace set through the largest shapes the tree calls at production sizes
-  (the DF fit's <code>trsm</code> at n_aux in the ten thousands, <code>gemm</code>,
-  <code>syrk</code>, <code>gemv</code>) and read how far rocBLAS's own pool grows
-  (<a href="#lock">the measurements</a>).</li>
+<li><strong>Where <code>trsm_lwork</code> gets its size on HIP.</strong> rocBLAS has
+  its own query (<code>rocblas_start_device_memory_size_query</code>, in the installed
+  headers): exact, and it follows a release. hipBLAS does not expose it, so it means
+  reaching the rocBLAS handle underneath; whether WarpWraps can is to check. Otherwise
+  the measured formulas (<a href="#scaling">the probe</a>), with a gate test that runs
+  one odd-order <code>trsm</code> on a sentinel-filled workspace, so a ROCm bump that
+  changes the need fails loudly. Either way the formulas are the test.</li>
+<li><strong>The rest of the workspace sweep.</strong> Not measured: the sweep on CUDA
+  beyond <code>dtrsm</code>, upper solves, rectangular <code>syrk</code> and
+  <code>gemv</code>, the batched solver calls, hipBLASLt.</li>
 <li><strong>The margin constant</strong> for a defaulted device cap and for the host's, and whether the
   kernels' stack should be read per card and not carried as the 3080's number.</li>
 <li><strong>The default limit fraction</strong> that picks a step's batch width.</li>
