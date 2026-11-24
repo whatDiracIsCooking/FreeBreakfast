@@ -97,7 +97,7 @@ public:
   /// towards (θ − Δε − 2 L Lᵀ + K_RI)⁻¹ residual with exchange;
   /// @p ritz_vectors is not read. @p correction may be @p residual. Queued on
   /// res.stream() with res.blas() in host pointer mode (its default);
-  /// synchronizes twice per column in lu_solve, and with exchange five times
+  /// synchronizes once per column in lu_solve, and with exchange five times
   /// more per column and twice per GMRES step.
   ///
   /// @return InvalidConfig for more than max_columns columns or another

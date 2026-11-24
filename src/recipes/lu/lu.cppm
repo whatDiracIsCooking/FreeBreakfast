@@ -1,10 +1,11 @@
 /// @file
 /// @brief A general square system A X = B solved on the GPU by the LU
-/// factorization with partial pivoting, P A = L U: wwr's dense-solver getrf
-/// and getrs, their scratch and flag taken from DeviceResources.
+/// factorization with partial pivoting, P A = L U: wwr's dense-solver getrf,
+/// its scratch and flag taken from DeviceResources, then a solve of the tree's
+/// own (the pivots' row interchanges and two trsm recipe calls).
 ///
-/// The README has why the legacy pair, and the concurrent-process check its
-/// HIP path was given.
+/// The README has why the solve is not the library's getrs, and the
+/// concurrent-process check getrf's HIP path was given.
 
 export module free_breakfast.recipes.lu;
 
@@ -17,7 +18,8 @@ import free_breakfast.core.footprint;
 export namespace free_breakfast {
 
 /// @brief Solve A X = B in place: @p a factored, P A = L U (LAPACK's getrf),
-/// and, when that leaves U nonsingular, @p b overwritten by X (getrs).
+/// and, when that leaves U nonsingular, @p b overwritten by X: B <- P B, then
+/// L^-1 B and U^-1 B by the trsm recipe.
 ///
 /// @p a is n x n and @p b n x @p nrhs, both column-major and packed (leading
 /// dimension n). A need not be symmetric, nor definite. On return @p a holds
@@ -27,22 +29,24 @@ export namespace free_breakfast {
 /// i, 1-based.
 ///
 /// The work and the pivots are res.device_workspace()'s, grown to getrf's size
-/// for n if it is smaller: the one allocation this can make. Neither @p a nor
-/// @p b may point into it. res.info() takes the flags. Everything is queued on
-/// res.stream(), and the call synchronizes it twice, to read getrf's flag and
-/// then getrs's. The device res.dev_idx() names is made current for the call
-/// and the previous one restored.
+/// for n if it is smaller: the one allocation this can make (the solve takes
+/// nothing beyond the gemm the BLAS handle's fixed workspace serves). Neither
+/// @p a nor @p b may point into it. res.info() takes getrf's flag. Everything
+/// is queued on res.stream(), and the call synchronizes it once, to read that
+/// flag; the solve after it is queued and not waited for. The device
+/// res.dev_idx() names is made current for the call and the previous one
+/// restored.
 ///
-/// @param res   Supplies the stream, the solver handle, the scratch and the
-///              flag.
+/// @param res   Supplies the stream, the solver and BLAS handles, the scratch
+///              and the flag.
 /// @param n     Matrix order. n = 0 is empty and succeeds.
 /// @param nrhs  Columns of @p b.
 /// @param a     In: A. Out: its LU factors.
 /// @param b     In: B. Out: X, when the returned flag is 0.
 /// @return 0 when U is nonsingular and @p b holds X, else getrf's flag;
 ///         InvalidConfig for a negative @p n or @p nrhs; or a GpuRuntime
-///         error: the first runtime or solver call that failed, or an argument
-///         getrf or getrs rejected.
+///         error: the first runtime, solver, launch or BLAS call that failed,
+///         or an argument getrf rejected.
 [[nodiscard]] Result<int32_t> lu_solve(DeviceResources &res, int32_t n, int32_t nrhs, double *a,
                                        double *b);
 
