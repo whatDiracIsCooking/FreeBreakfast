@@ -9,8 +9,13 @@ description = "Probe: the device memory a dtrsm needs from its BLAS handle, agai
 name = "blas-workspace-scaling"
 path = "src/main.rs"
 
+[[bin]]
+name = "routine-sweep"
+path = "src/sweep.rs"
+
 [dependencies]
 wwr-sys = { path = "../../../deps/WarpWraps/src/capi/wwr-sys", default-features = false, features = [
     "runtime_api",
     "blas",
+    "solver",
 ] }
