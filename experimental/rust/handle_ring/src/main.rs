@@ -6,7 +6,7 @@
 //! ```text
 //! handle-ring handles-blas <count>
 //! handle-ring handles-solver <count>
-//! handle-ring ring <dgemm_square|dgemm_splitk> <stream_then_ws|ws_then_stream|stream_only>[_tiny]
+//! handle-ring ring <dgemm_square|dgemm_splitk|dtrsm> <stream_then_ws|ws_then_stream|stream_only>[_tiny]
 //! ```
 //!
 //! `handles-*`: that many handles in one process, each on its own stream; the
@@ -25,7 +25,9 @@
 //! so each mode also has a `_tiny` form, every workspace given a length of 256
 //! bytes: cuBLAS then picks another split-K algorithm, and `max_diff_vs_tiny`
 //! of 0 against a nonzero `max_diff_vs_default` says the call saw the tiny
-//! length. Then the idle switch is timed.
+//! length. `dtrsm` is the case HIP reads: rocBLAS writes its workspace there,
+//! so `touched_mib` answers, and `call_mib` shows a call growing past a
+//! workspace too small. Then the idle switch is timed.
 //!
 //! Deltas are the drop in the card's free memory over the step, in MiB, after
 //! a device sync: positive means the step took memory.
@@ -194,19 +196,30 @@ fn blas_create() -> wwr_blas_handle {
     h
 }
 
-/// A column-major dgemm C = A B, A m x k, B k x n.
-struct Gemm {
-    m: i32,
-    n: i32,
-    k: i32,
-    a: *const f64,
-    b: *const f64,
+/// The BLAS call a ring case makes, column-major, into `out`.
+enum Routine {
+    /// out = A B, A m x k, B k x n.
+    Gemm {
+        m: i32,
+        n: i32,
+        k: i32,
+        a: *const f64,
+        b: *const f64,
+    },
+    /// out = L^-1 B in place, L lower m x m, B m x n: the DF fit's shape.
+    /// rocBLAS takes device memory for it, where gemm takes none.
+    Trsm {
+        m: i32,
+        n: i32,
+        l: *const f64,
+        b: *const f64,
+    },
 }
 
-impl Gemm {
-    fn new(m: i32, n: i32, k: i32) -> Self {
+impl Routine {
+    fn gemm(m: i32, n: i32, k: i32) -> Self {
         let (mu, nu, ku) = (m as usize, n as usize, k as usize);
-        Self {
+        Self::Gemm {
             m,
             n,
             k,
@@ -215,19 +228,69 @@ impl Gemm {
         }
     }
 
-    fn len_c(&self) -> usize {
-        self.m as usize * self.n as usize
+    fn trsm(m: i32, n: i32) -> Self {
+        let (mu, nu) = (m as usize, n as usize);
+        let mut l = random(mu * mu, 3);
+        for j in 0..mu {
+            for i in 0..j {
+                l[i + j * mu] = 0.0;
+            }
+            l[j + j * mu] = m as f64;
+        }
+        Self::Trsm {
+            m,
+            n,
+            l: upload(&l),
+            b: upload(&random(mu * nu, 4)),
+        }
     }
 
-    fn call(&self, h: wwr_blas_handle, c: *mut f64) -> wwr_blas_status {
+    fn len_out(&self) -> usize {
+        match *self {
+            Self::Gemm { m, n, .. } | Self::Trsm { m, n, .. } => m as usize * n as usize,
+        }
+    }
+
+    fn call(&self, h: wwr_blas_handle, out: *mut f64) -> wwr_blas_status {
         let (one, zero) = (1.0f64, 0.0f64);
         let op = wwr_blas_operation::WWR_BLAS_OP_N;
-        // SAFETY: a, b and c are allocations of the shapes given.
-        unsafe {
-            wwr_blas_dgemm(
-                h, op, op, self.m, self.n, self.k, &one, self.a, self.m, self.b, self.k, &zero, c,
-                self.m,
-            )
+        match *self {
+            // SAFETY: a, b and out are allocations of the shapes given.
+            Self::Gemm { m, n, k, a, b } => unsafe {
+                wwr_blas_dgemm(h, op, op, m, n, k, &one, a, m, b, k, &zero, out, m)
+            },
+            Self::Trsm { m, n, l, b } => {
+                // SAFETY: b and out hold m x n doubles; a blocking copy, so it
+                // is done before the call is enqueued on any stream.
+                rt(
+                    unsafe {
+                        wwr_memcpy(
+                            out.cast(),
+                            b.cast(),
+                            self.len_out() * 8,
+                            wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_DEVICE,
+                        )
+                    },
+                    "copy B",
+                );
+                // SAFETY: l is m x m, out m x n.
+                unsafe {
+                    wwr_blas_dtrsm(
+                        h,
+                        wwr_blas_side_mode::WWR_BLAS_SIDE_LEFT,
+                        wwr_blas_fill_mode::WWR_BLAS_FILL_MODE_LOWER,
+                        op,
+                        wwr_blas_diag_type::WWR_BLAS_DIAG_NON_UNIT,
+                        m,
+                        n,
+                        &one,
+                        l,
+                        m,
+                        out,
+                        m,
+                    )
+                }
+            }
         }
     }
 }
@@ -238,8 +301,9 @@ impl Gemm {
 
 fn ring(routine: &str, mode: &str) {
     let g = match routine {
-        "dgemm_square" => Gemm::new(4096, 4096, 4096),
-        "dgemm_splitk" => Gemm::new(256, 256, 1 << 16),
+        "dgemm_square" => Routine::gemm(4096, 4096, 4096),
+        "dgemm_splitk" => Routine::gemm(256, 256, 1 << 16),
+        "dtrsm" => Routine::trsm(4096, 4096),
         _ => die(&format!("unknown routine {routine}")),
     };
     // A `_tiny` mode gives each workspace a length of TINY_BYTES: cuBLAS then
@@ -252,16 +316,18 @@ fn ring(routine: &str, mode: &str) {
     if !matches!(order, "stream_then_ws" | "ws_then_stream" | "stream_only") {
         die(&format!("unknown ring mode {mode}"));
     }
-    let c = dalloc(g.len_c() * 8).cast::<f64>();
-    let c_ref = dalloc(g.len_c() * 8).cast::<f64>();
+    let c = dalloc(g.len_out() * 8).cast::<f64>();
+    let c_ref = dalloc(g.len_out() * 8).cast::<f64>();
     let streams = [stream_create(), stream_create()];
     let ws = [dalloc(WS_BYTES), dalloc(WS_BYTES)];
 
     // The reference: a default handle on the default stream.
     let href = blas_create();
-    blas_ok(g.call(href, c_ref), "reference gemm");
-    free_bytes();
-    let reference = download_f64(c_ref, g.len_c());
+    let r0 = free_bytes();
+    blas_ok(g.call(href, c_ref), "reference call");
+    // What the default handle takes for the call: rocBLAS's pool growing.
+    let ref_call_mib = mib(r0, free_bytes());
+    let reference = download_f64(c_ref, g.len_out());
     // And one with a tiny workspace, on the default stream.
     let htiny = blas_create();
     let tiny_ws = dalloc(TINY_BYTES);
@@ -270,15 +336,16 @@ fn ring(routine: &str, mode: &str) {
         unsafe { wwr_blas_set_workspace(htiny, tiny_ws, TINY_BYTES) },
         "set tiny workspace",
     );
-    blas_ok(g.call(htiny, c_ref), "tiny reference gemm");
+    blas_ok(g.call(htiny, c_ref), "tiny reference call");
     free_bytes();
-    let reference_tiny = download_f64(c_ref, g.len_c());
+    let reference_tiny = download_f64(c_ref, g.len_out());
 
     let f0 = free_bytes();
     let h = blas_create();
     let f1 = free_bytes();
     print!(
-        "routine={routine} mode={mode} handle_mib={:.2} tiny_vs_default={:.3e}",
+        "routine={routine} mode={mode} handle_mib={:.2} ref_call_mib={ref_call_mib:.2} \
+         tiny_vs_default={:.3e}",
         mib(f0, f1),
         max_abs_diff(&reference_tiny, &reference)
     );
@@ -316,7 +383,7 @@ fn ring(routine: &str, mode: &str) {
         let s = g.call(h, c);
         let after_call = free_bytes();
         let (diff, diff_tiny) = if s == wwr_blas_status::WWR_BLAS_STATUS_SUCCESS {
-            let out = download_f64(c, g.len_c());
+            let out = download_f64(c, g.len_out());
             (
                 max_abs_diff(&out, &reference),
                 max_abs_diff(&out, &reference_tiny),
@@ -367,8 +434,8 @@ fn ring(routine: &str, mode: &str) {
 // ---------------------------------------------------------------------------
 
 fn handles_blas(count: usize) {
-    let g = Gemm::new(2048, 2048, 2048);
-    let c = dalloc(g.len_c() * 8).cast::<f64>();
+    let g = Routine::gemm(2048, 2048, 2048);
+    let c = dalloc(g.len_out() * 8).cast::<f64>();
     let streams: Vec<_> = (0..count).map(|_| stream_create()).collect();
     let ws: Vec<_> = (0..count).map(|_| dalloc(WS_BYTES)).collect();
     let mut h = Vec::with_capacity(count);
@@ -397,7 +464,7 @@ fn handles_blas(count: usize) {
         let f0 = free_bytes();
         blas_ok(g.call(hi, c), "gemm");
         let f1 = free_bytes();
-        let out = download_f64(c, g.len_c());
+        let out = download_f64(c, g.len_out());
         if i == 0 {
             reference = out.clone();
         }
@@ -499,7 +566,7 @@ fn handles_solver(count: usize) {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let usage = "usage: handle-ring handles-blas|handles-solver <count> | \
-                 handle-ring ring <dgemm_square|dgemm_splitk> <stream_then_ws|ws_then_stream|stream_only>[_tiny]";
+                 handle-ring ring <dgemm_square|dgemm_splitk|dtrsm> <stream_then_ws|ws_then_stream|stream_only>[_tiny]";
     let count = |s: Option<&String>| -> usize {
         s.and_then(|s| s.parse().ok())
             .filter(|&n| n > 0)

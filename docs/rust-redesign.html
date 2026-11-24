@@ -1824,7 +1824,7 @@ side only" and "one handle set per device, on one stream"; the handle's workspac
 closure and the step-end sync); the final budget node's duties; and item 2 of the
 <a href="#retire">order of work</a>.</p>
 
-<p><strong>What the two measurements showed</strong> <span class="tag run">run</span>
+<p><strong>What the measurements showed</strong> <span class="tag run">run</span>
 2026-11-24, RTX 3080 and RX 9060 XT, through <code>wwr-sys</code>
 (<code>experimental/rust/handle_ring</code>, whose README has every reading):</p>
 <ol>
@@ -1835,16 +1835,24 @@ closure and the step-end sync); the final budget node's duties; and item 2 of th
   the first-call growth (10 on HIP, 0 to 14 on cuSOLVER) is once per process. A handle per
   step costs the pipeline's length times that, the ring its width: <strong>the ring is
   the better form</strong>.</li>
-<li><strong>The move is safe in one order only.</strong> On cuBLAS a call made after
-  <code>SetStream</code> then <code>SetWorkspace</code> used the workspace it was given;
-  with the two reversed, <code>SetStream</code> silently put the handle back on cuBLAS's
-  own workspace, outside the budget, with no error (read from the result of a split-K
-  <code>gemm</code> whose algorithm follows the workspace length). rocBLAS's
-  <code>gemm</code> uses no workspace, so HIP could not show the order. Nothing is taken
-  by a move on either backend, and an idle switch costs 0.02&nbsp;&micro;s on CUDA and
-  0.15 on HIP; the first <code>SetWorkspace</code> of a hipBLAS handle costs about
-  150&nbsp;&micro;s, the pool's free, once per handle at budget time. The two calls belong
-  in one wrapper function that nothing else reorders.</li>
+<li><strong>The move is safe in the proposal's order.</strong> On cuBLAS a call made
+  after <code>SetStream</code> then <code>SetWorkspace</code> used the workspace it was
+  given; with the two reversed, <code>SetStream</code> silently put the handle back on
+  cuBLAS's own workspace, outside the budget, with no error (read from the result of a
+  split-K <code>gemm</code> whose algorithm follows the workspace length). On hipBLAS
+  <code>SetStream</code> keeps the workspace, so the order does not matter there (read
+  from a <code>dtrsm</code> at the DF fit's shape, which writes 8&nbsp;MiB of the
+  workspace in every order). Nothing is taken by a move on either backend, and an idle
+  switch costs 0.02&nbsp;&micro;s on CUDA and 0.15 on HIP; the first
+  <code>SetWorkspace</code> of a hipBLAS handle costs about 150&nbsp;&micro;s, the pool's
+  free, once per handle at budget time. The two calls belong in one wrapper function that
+  nothing else reorders.</li>
+<li><strong>On HIP a workspace too small grows.</strong> Given 256&nbsp;B, that
+  <code>dtrsm</code> took 8&nbsp;MiB of its own at the call, outside the budget, with no
+  error; cuBLAS only changes algorithm. So on HIP a step's BLAS workspace must cover its
+  largest call, and where that number comes from is open: rocBLAS's device-memory size
+  query, if <code>wwr-sys</code> can reach it through hipBLAS, or a measured allowance per
+  routine and shape. <span class="tag disc">to discuss</span></li>
 </ol>
 
 <h3>Resources</h3>
