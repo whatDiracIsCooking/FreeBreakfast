@@ -58,10 +58,15 @@
 
 <h1>Orbital-optimized NEVPT2</h1>
 <p class="lede">Design note for <code>experimental/oo_nevpt2/</code>. Status:
-an idea and one probe, nothing under <code>src/</code>. The probe says two
-things: the bare functional collapses (<a href="#results">Results</a>), and
+an idea and one probe, nothing under <code>src/</code>. The probe says four
+things: the bare functional collapses (<a href="#results">Results</a>);
 natural orbitals of the PT2-corrected density move the energy by only tenths
-of a millihartree (<a href="#natural">Natural orbitals</a>).</p>
+of a millihartree (<a href="#natural">Natural orbitals</a>); orbitals that
+minimize the weight of the first-order wave function, a bounded and
+parameter-free replacement, move the energy away from FCI
+(<a href="#overlap">Maximum overlap</a>); and the exact state's own natural
+orbitals recover only 2 to 5% of NEVPT2's error on water
+(<a href="#fci">Against FCI</a>).</p>
 
 <h2 id="idea">The idea, and the loop that does not work</h2>
 <p>CASSCF chooses its orbitals to minimize the CASSCF energy, which contains
@@ -369,12 +374,148 @@ orbitals.</p></div>
   orbitals.</li>
 </ul>
 
+<h2 id="overlap">Maximum overlap: minimizing the first-order weight</h2>
+<p>The collapse needs a functional that is bounded below and has no
+threshold to choose. A bound on E_CAS's rise, on ‖g‖ or on the distance from
+the CASSCF orbitals is neither: the bare functional has no interior minimum,
+so such a bound is active at the solution and its value decides the answer.
+Brueckner's criterion is the candidate with physical content: the orbitals
+whose reference has the largest overlap with the exact state. To first order
+that overlap is (1 + W)<sup>−½</sup>, with</p>
+<pre><code>W(κ) = ⟨Ψ⁽¹⁾|Ψ⁽¹⁾⟩ = Σ_t Σ_k ( y_tk / (λ_k + Δ_t) )²      at the orbitals C exp(κ), CI a CASCI there</code></pre>
+<p>W is the weight of PC-NEVPT2's first-order wave function, never
+negative, and near a pole it grows as 1/D² where the energy grows as 1/D.
+The <code>mo</code> mode minimizes it and reads E_CAS + E_PT2 at the
+minimum, without minimizing the energy.</p>
+<h3>How the probe gets W and its gradient</h3>
+<ul>
+  <li><b>W from the energy.</b> No call reports the amplitudes' norm. Adding
+  w S C d Cᵀ S to the core Hamiltonian, d = −1 on the core, 0 on the active
+  and +1 on the virtual orbitals, moves the canonical orbital energies and
+  nothing else, so each perturber's denominator rises by w n, n its count of
+  indices outside the active space (1 for Sr and Si, 4 for Sijrs, 3 for Sijr
+  and Srsi, 2 for the rest). A class's energy then has the derivative
+  n W_class at w = 0, taken as a central difference over w = ±1e-3.</li>
+  <li><b>Checked</b> by shifting the virtual orbitals alone and the core
+  alone: the four classes with both kinds of index give the same W either
+  way to 5e-9.</li>
+  <li><b>The gradient</b> is a central difference over 2e-3 rad in each
+  non-redundant rotation, the CASCI re-solved at every point. Rotations
+  whose derivative vanishes at the CASSCF orbitals (33 of water's 54, by
+  symmetry) are left out and re-checked at the end: at most 1.5e-7.</li>
+  <li><b>The step</b> is BFGS from the differences' own diagonal curvature,
+  backtracked on W, to max |dW/dκ| below 2e-5.</li>
+</ul>
+<h3>Result</h3>
+<div class="box"><p><span class="tag bad">answer</span> <b>It is well posed
+and it is wrong.</b> W has a minimum and the minimization converges, but at
+both water geometries the orbitals it finds raise E_CAS + E_PT2, away from
+FCI: by 0.7 mEh where the active space is strongly correlated, and by
+131 mEh where it is not.</p></div>
+<div class="tablewrap"><table>
+<tr><th>Water, 6-31G, (4,4)</th><th class="num">W, CASSCF</th>
+    <th class="num">W, minimum</th><th class="num">Iterations</th>
+    <th class="num">Largest rotation</th><th class="num">ΔE_CAS</th>
+    <th class="num">ΔE_PT2</th><th class="num">ΔE total</th></tr>
+<tr><td>equilibrium</td><td class="num">0.02174</td>
+    <td class="num">0.01479</td><td class="num">80</td>
+    <td class="num">0.742 rad</td><td class="num">+0.1238</td>
+    <td class="num">+0.0073</td><td class="num">+0.1311</td></tr>
+<tr><td>O–H stretched 1.8×</td><td class="num">0.01975</td>
+    <td class="num">0.01957</td><td class="num">8</td>
+    <td class="num">0.018 rad</td><td class="num">+5.1e-4</td>
+    <td class="num">+2.2e-4</td><td class="num">+7.3e-4</td></tr>
+</table></div>
+<ul>
+  <li><b>At equilibrium the CASSCF orbitals are a saddle of W.</b> The
+  diagonal curvatures run from −0.10 to +3.9. The descent ends far away with
+  active occupations 1.9999, 1.9874, 0.0114, 0.0013: one correlating pair
+  has been rotated out of the active space. The first step alone already
+  raises the total by 0.42 mEh.</li>
+  <li><b>Stretched, W has a minimum next to the CASSCF orbitals</b> (every
+  curvature positive, 0.36 to 3.9). The occupations 1.73, 1.69, 0.31, 0.27
+  pin the active space. W falls by 0.9% and the total rises by 0.73 mEh.</li>
+  <li><b>W does not see the reference's energy.</b> It is small where
+  Dyall's denominators are large and the couplings small, whatever E_CAS is.
+  At equilibrium E_CAS rises by 124 mEh while W says the reference improved,
+  and |E_PT2| shrinks instead of recovering the loss. The first-order
+  estimate of the overlap is not the overlap.</li>
+  <li><b>The exact state disagrees with W.</b> In the FCI natural orbitals,
+  where NEVPT2 is closest to FCI (below), W is higher than at the CASSCF
+  orbitals: 0.02244 against 0.02174, and 0.02008 against 0.01975.</li>
+  <li><b>W as a cap would bind at once.</b> Along the bare functional's
+  descent W rises from the first step (0.0217, 0.0235, 0.0262, 0.0305, and
+  2.1 at the end, a reference weight of 0.32). Minimizing E under
+  W ≤ W(CASSCF) was not run; the two gradients oppose each other, so its
+  solution sits on the cap.</li>
+</ul>
+
+<h2 id="fci">Against FCI: how much can orbitals buy?</h2>
+<p>None of these functionals is variational, so "better orbitals" needs an
+outside judge. Water in 6-31G is small enough for <code>[fci]</code> over
+all 13 orbitals and 10 electrons (1287² determinants) with the same
+density-fitted integrals (<code>water_fci.toml</code>,
+<code>water_stretched_fci.toml</code>). The probe prints the FCI energy and
+one more row: the functional in the FCI state's natural orbitals, the three
+most occupied as the core and the next four as the active space.</p>
+<p>RTX 3080, experimental preset, 2026-11-24. E_CAS + E_PT2 − E_FCI in mEh;
+E_FCI is −76.120874 and −75.914359.</p>
+<div class="tablewrap"><table>
+<tr><th>Orbitals</th><th class="num">equilibrium</th>
+    <th class="num">stretched</th><th>What it is</th></tr>
+<tr><td>CASSCF</td><td class="num">+6.364</td><td class="num">+8.810</td>
+    <td>plain PC-NEVPT2</td></tr>
+<tr><td>Natural, PT2 density, pass 1</td><td class="num">+6.340</td>
+    <td class="num">+8.811</td><td><code>no</code> mode</td></tr>
+<tr><td>Natural, PT2 density, pass 6</td><td class="num">+6.323</td>
+    <td class="num">+8.860</td><td><code>no</code> mode, iterated</td></tr>
+<tr><td>FCI natural orbitals</td><td class="num">+6.222</td>
+    <td class="num">+8.334</td><td>orbitals that have seen all the
+    correlation</td></tr>
+<tr><td>Minimum of W</td><td class="num">+137.4</td>
+    <td class="num">+9.539</td><td><code>mo</code> mode</td></tr>
+<tr><td>Bare functional, 1 step</td><td class="num">+4.19</td>
+    <td class="num">+7.87</td><td><code>oo</code> mode</td></tr>
+<tr><td>Bare functional, 3 steps</td><td class="num">+0.16</td>
+    <td class="num">+5.65</td><td>passing through</td></tr>
+<tr><td>Bare functional, 5 steps</td><td class="num">−90.3</td>
+    <td class="num">−0.35</td><td>below the exact energy</td></tr>
+<tr><td>Bare functional, last</td><td class="num">−1505.6</td>
+    <td class="num">−849.3</td><td>equilibrium: the intruder guard after 8
+    steps; stretched: still falling at the run's 10 steps</td></tr>
+</table></div>
+<ul>
+  <li><b>The error is not in the orbitals.</b> The FCI natural orbitals
+  lower the NEVPT2 error by 0.14 mEh of 6.36 and by 0.48 mEh of 8.81: 2%
+  and 5%. E_PT2 gains 1.80 and 0.75 mEh there and E_CAS gives back 1.66 and
+  0.27. What is left is second-order perturbation theory's own error, which
+  no choice of orbitals in a (4,4) space removes.</li>
+  <li><b>The bare functional crosses the exact energy without slowing.</b>
+  At equilibrium it is 0.16 mEh above FCI after three Newton steps and
+  2.8 mEh below after four, with ‖g + A‖ still at 0.09. Any energy it shows
+  on the way is an accident of where it was stopped.</li>
+  <li><b>The PT2 natural orbitals move the right way at equilibrium and the
+  wrong way stretched</b>, by 0.02 to 0.05 mEh either way: noise against a
+  6 to 9 mEh error.</li>
+  <li><b>Limits.</b> One molecule, one small basis, one active space, single
+  state. FCI natural orbitals picked by occupation are the usual choice, not
+  a proven optimum for NEVPT2.</li>
+</ul>
+
 <h2 id="next">Where this leaves the idea</h2>
 <ul>
   <li><b>Not worth a module on this evidence.</b> By the note's own bar
   (millihartrees, or a shifted crossing) the natural-orbital gain is too
   small, and a bounded functional would be a new energy and adjoint to
-  recover a fraction of a millihartree.</li>
+  recover a fraction of a millihartree. The FCI comparison puts a ceiling on
+  it for water: 0.14 to 0.48 mEh, from orbitals no method here could
+  beat.</li>
+  <li><b>Constraining the functional did not rescue it.</b> The one
+  parameter-free, bounded candidate (the minimum of W) moves the energy the
+  wrong way, and W is not a measure of orbital quality. What remains
+  untried is a functional with the Brillouin-violating part of V projected
+  out, the analogue of OO-MP2's missing singles; the ceiling above says what
+  it could gain here.</li>
   <li><b>What was not tested</b> is the case the idea was for: a reference
   whose orbitals CASSCF gets qualitatively wrong. Single-state ground-state
   LiF is not one; the ionic/covalent pair in a state average is, and so are
