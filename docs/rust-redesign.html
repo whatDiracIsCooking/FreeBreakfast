@@ -176,14 +176,13 @@ of pairs, kept on the host and contracted in batches of aux functions; batched o
 a step runs on no GPU, gpu0 or all of them, and "target" is dropped; scratch's contents
 and addresses over a replay; two thread pools), and 2026-11-24 (no library stream: one
 handle set per card under one lock, held for a step's run, with a fixed 128&nbsp;MiB
-BLAS workspace).
+BLAS workspace; then scratch packed by the closure alone and largest first, the lower
+bound in the budget table, one layout function per step, small host scratch as a policy,
+a default host cap checked at every call, and B's slab kept at the unscreened pair
+bound).
 <span class="tag prop">proposed</span> this document's suggestion, not yet agreed
-(six remain: in <a href="#lock">one handle set per card</a>, the free-memory check; in
-<a href="#scratch">step scratch</a>, packing by the best
-of four fixed orders, one layout function per step, and the policy for small host
-scratch; in the <a href="#closure-model">closure model</a>, the lower bound in the
-budget table; in <a href="#shared">shared code</a>, batches of B kept on the cards
-between passes).
+(two remain: in <a href="#lock">one handle set per card</a>, the free-memory check; in
+<a href="#shared">shared code</a>, batches of B kept on the cards between passes).
 <span class="tag disc">to discuss</span> raised in review and set aside for a fuller
 discussion; <a href="#open">collected at the end</a>.
 <span class="tag run">run</span> measured or checked by an experiment, each section
@@ -627,7 +626,8 @@ and each card's handle workspace, hands the latter to that card's
 scratch, which holds every library call's work buffer, is packed, and its peak is known
 only when every step has declared, which is why the final node exists. The SCF follows
 both X and ERI, so its region may overlap either; X and ERI are unordered, so theirs stay
-apart and the two run side by side. The bar's scratch segment also
+apart, though both take gpu0's lock and so run one after the other
+(<a href="#lock">below</a>). The bar's scratch segment also
 carries the fixed BLAS-handle workspace. Bars not to scale.</figcaption>
 </figure>
 
@@ -877,10 +877,15 @@ shown.</figcaption>
   out lazily on Linux, so an untouched slab "succeeds" without existing and fails at
   first touch mid-run, as a bare kill from the OOM killer.
   <span class="tag dec">decided</span></li>
-<li><strong>The final node checks the host.</strong> Heap total plus pinned total against
-  available memory, by the cgroup-aware reading that exists today
-  (<code>fb_core_arena::host_available</code>).
-  <span class="tag dec">decided</span></li>
+<li><strong>The host is checked at every call, and again by the final node.</strong>
+  Heap and pinned bytes add to one host counter, held against the host cap at each
+  <code>Budget</code> call, before the slab is allocated and its pages touched: a B
+  larger than the host sets the flag and is never touched, where a check in the final
+  node alone would come after the OOM killer. The final node repeats the check with the
+  packed pinned scratch added. The default cap is the cgroup-aware reading that exists
+  today (<code>fb_core_arena::host_available</code>), taken once in setup
+  (<a href="#caps">caps</a>). <span class="tag dec">decided</span> 2026-11-24; the
+  first form checked in the final node only.</li>
 </ul>
 
 <h3 id="scratch">Step scratch</h3>
@@ -911,14 +916,21 @@ calculation.</p>
   lowest offset clear of every unordered region already placed, in a fixed order, so the
   offsets, and the table, are the same every run. Then it allocates one slab per device
   and kind and records each step's offset.</li>
-<li><strong>The order: the best of four, fixed.</strong> First fit largest-first (size,
-  then step id) was the first form. The <a href="#closure-model">closure model</a> found
-  that trying four fixed orders (largest first; most constrained, by size plus the sizes
-  of the regions it may not share with; size times conflicts; topological) and keeping
-  the lowest peak, ties to the earlier order, reaches the lower bound on 99.2% of random
-  DAGs against 98.1%, and cuts the worst case from 1.281&times; the bound to 1.174&times;.
-  Four packings of a few dozen rows cost nothing, and the result is as deterministic as
-  one order. <span class="tag prop">proposed</span></li>
+<li><strong>The order: largest first.</strong> First fit by size, then step id, and no
+  other order. The <a href="#closure-model">closure model</a> found it at the lower bound
+  on 98.1% of random DAGs and 1.281&times; the bound at worst; the best of four fixed
+  orders reaches 99.2% and 1.174&times;, and is not taken. A poorer packing costs bytes
+  and never safety (next item), real pipelines are mostly chains, and the budget table
+  prints the lower bound beside the packed peak, so a config that packs badly shows
+  itself. More orders are added when one does. <span class="tag dec">decided</span>
+  2026-11-24</li>
+<li><strong>The closure alone, not the card's lock.</strong> Two steps that both hold a
+  card's lock (<a href="#lock">below</a>) never run at once on it either, so they could
+  share scratch there with no path between them. The packer does not use that: unordered
+  regions stay apart whoever holds the lock. One safety argument and one test, for the
+  bytes of the smaller of two unordered library users (in DF-RHF, the orthogonalizer's
+  eigensolve work, 8.7&nbsp;MB on gly10). <span class="tag dec">decided</span>
+  2026-11-24</li>
 <li><strong>Safe whatever the packer's quality.</strong> Safety is the packer's
   constraint, not its objective: any placement that keeps unordered regions apart is
   safe, the best and the worst alike. A poorer packing costs bytes, and at worst refuses a
@@ -972,7 +984,7 @@ calculation.</p>
   work). <code>mem_budget</code> sums their sizes and <code>run</code> carves the region,
   so two pieces of code must agree. One function from <code>Dims</code> and the options
   to a struct of offsets serves both: <code>mem_budget</code> declares its total,
-  <code>run</code> slices by it. <span class="tag prop">proposed</span></li>
+  <code>run</code> slices by it. <span class="tag dec">decided</span> 2026-11-24</li>
 <li><strong>A lease that cannot escape.</strong> The wrapper hands <code>run</code> a
   lease on its regions that borrows for the length of <code>run</code>, not
   <code>'static</code>. A step cannot store its scratch in its <code>Output</code>, so
@@ -988,9 +1000,12 @@ calculation.</p>
 <li><strong>What it costs.</strong> Bytes in place of time. The packed peak is at least
   the largest single declaration, and equals it only when every scratch user is chained.
   In DF-RHF, <code>eri</code> and the orthogonalizer are unordered, so their regions are
-  disjoint and the two overlap on the card; the SCF follows both and may reuse either.
+  disjoint; the SCF follows both and may reuse either.
   Revised 2026-11-21: the first form was one max per device under a lock, which made
-  <code>eri</code> and X serialize.</li>
+  <code>eri</code> and X serialize. Since 2026-11-24 the two serialize anyway, as
+  library users under gpu0's lock (<a href="#lock">below</a>); the regions stay
+  disjoint, by the item on the closure above. Unordered steps that call no library
+  still overlap on the card.</li>
 <li><strong>The host heap is not packed.</strong> It stays a sum. What a step's
   <code>run</code> needs on the heap and drops is small, or it is a pinned staging
   buffer, which is scratch.</li>
@@ -1000,9 +1015,15 @@ calculation.</p>
   suballocator. What holds the policy is the allocator record of
   <a href="#enforce">Enforcement</a>, which flags any single large allocation during
   <code>run</code> in the test tiers. One number added to it: the peak heap growth over
-  execute mode, printed as an unbudgeted row of the budget table. The alternative,
-  enforcing it with a custom allocator, was raised and not taken up.
-  <span class="tag prop">proposed</span></li>
+  execute mode, printed as an unbudgeted row of the budget table. The rule a step is
+  written to: heap scratch in <code>run</code> stays within O(n_ao&sup2;), and anything
+  larger is a <code>HeapSlab</code> on the <code>MainBus</code>. Every large object of
+  the methods here has a length that is a closed form in the dimensions, so none needs
+  to live outside the bus; what the record is for is the accident (<code>cells</code>
+  was one). A host suballocator with the standard collections banned was raised again
+  on 2026-11-24 and not taken: allocator-aware collections are not on stable Rust, so
+  it would mean rewriting every host routine over slices, to hold a rule the record
+  already checks by size. <span class="tag dec">decided</span> 2026-11-24</li>
 <li><strong>A batch bounds the scratch.</strong> Every build over an O(N³) tensor is
   <a href="#sizes">batched</a>, so its scratch is one batch on each card it runs on, and
   an all-GPU step declares a row per card.</li>
@@ -1228,7 +1249,9 @@ the sync is a change to the scratch rule too (<a href="#scratch">above</a>).</fi
 <li><strong>The budget table shows it.</strong> Beside the packed peak and the plain sum,
   the table prints the lower bound and the steps that make it, so how far packing is from
   the best any packing could do reads plainly. A branch and bound over a few dozen rows
-  is instant. <span class="tag prop">proposed</span></li>
+  is instant. <span class="tag dec">decided</span> 2026-11-24, with largest first as
+  the one order (<a href="#scratch">step scratch</a>): the row is what says when a
+  second order is worth adding.</li>
 <li><strong>What it does not show.</strong> The sizes are dummies, so nothing here says
   how much packing saves on a real calculation: that is still <a href="#open">to
   measure</a>, on the <code>examples/</code> configs. And the simulation models the sync;
@@ -1345,6 +1368,11 @@ against a small set workspace.</p>
   With no cap given, the default is the device's free memory at start less one fixed
   margin constant: one read per device, which also sees another process already holding
   part of a shared card. The margin's value is open. <span class="tag dec">decided</span></li>
+<li><strong>The host cap has the same default.</strong> With none given, it is the
+  host's available memory read once in setup, less a margin, and every heap and pinned
+  charge is held against it as it is made (<a href="#kinds">host heap</a>). With B on
+  the host heap this is the cap a large density-fitted run meets first.
+  <span class="tag dec">decided</span> 2026-11-24</li>
 <li><strong>The risk that remains</strong> is device memory taken after budget mode:
   kernel modules loading at first launch (2&ndash;10&nbsp;MiB at a HIP solver handle's
   first call, by the <a href="#probe">probe</a>), and the kernels' stack (up to
@@ -1780,7 +1808,10 @@ the SCF follows both, and the packer may lay its region over the orthogonalizer'
 unordered on one card.</strong> The lock is held through a step's non-library phases too.
 In DF-RHF that is one pair, <code>eri</code> and the <code>orthogonalizer</code>: the
 orthogonalizer's one <code>syevd</code> at n_ao, a few milliseconds, waits for
-<code>eri</code>. Heavy steps fill the card on their own, and two of them on one card
+<code>eri</code>. So library-using steps are serial on a card, whatever the DAG says;
+steps that call no library still overlap. The packer takes nothing from this: two lock
+holders the DAG leaves unordered keep disjoint scratch (<a href="#scratch">step
+scratch</a>). Heavy steps fill the card on their own, and two of them on one card
 time-slice rather than overlap: this tree's test batches measured a CASSCF case at
 2.3&nbsp;s alone and 158&nbsp;s beside the exchange build.</p>
 
@@ -1804,7 +1835,10 @@ time-slice rather than overlap: this tree's test batches measured a CASSCF case 
 </ul>
 
 <p><strong>The free-memory check</strong> <span class="tag prop">proposed</span>. In
-execute mode nothing allocates: budget mode allocated everything. So a card's free memory
+execute mode nothing allocates: budget mode allocated everything. The compile-time rule
+(<a href="#enforce">Enforcement</a>) holds that for this tree's own allocations and
+cannot see inside a vendor library; this is the check for what a library takes by
+itself. So a card's free memory
 should hold its value from the end of budget mode for the whole run. The wrapper has
 already synced at step end; one memory-info read there catches growth on that card by any
 step or library, such as a hipBLAS call that outgrows the workspace, for a few
@@ -1983,15 +2017,17 @@ column for the three-centre step are to be redone at a batch width.</div>
   may be contended here: X, or H, waits for B's step; nothing is wrong when it does.</li>
 <li><strong>The scratch slab is packed</strong>: X's eigensolve work, and B's build
   intermediates with its records and work lists, are unordered, so their regions are
-  disjoint and X runs beside the three-centre step; the SCF, which follows both, may
-  reuse either. The slab is allocated once, by the final budget node, beside the fixed
+  disjoint, though X waits on gpu0's lock while the three-centre step holds it; the SCF,
+  which follows both, may reuse either. The slab is allocated once, by the final budget node, beside the fixed
   128&nbsp;MiB BLAS-handle workspace.</li>
 <li><strong>n_pair is budgeted at its bound.</strong> The screening map decides how
   many pairs (μν|P) and B hold, it is a GPU computation and not a parse, and it changes
   from one geometry to the next, while the unscreened count does not. So both are
   budgeted at the unscreened count, which also keeps a replay inside its buffers. That
-  wastes memory on a large sparse molecule; at the sizes where it matters, the batched
-  path of the step concerned is the remedy. The bound is the count in the tree's own
+  wastes memory on a large sparse molecule. Kept on 2026-11-24, with B on the host heap:
+  batching bounds what a card holds, not B's slab, so the waste is host memory and there
+  is no remedy for it short of a tighter bound, which is not taken; a replay can then
+  never outgrow its buffers. The bound is the count in the tree's own
   pair layout and not the bare n_ao(n_ao+1)/2: gly10 below holds 270,497 pair columns
   where that formula gives 269,745. <span class="tag dec">decided</span></li>
 <li><strong>The step boundary around B decides the peak.</strong> As two steps, (μν|P)
@@ -2376,15 +2412,15 @@ Rust tree's task layer and not an edit to it.</p>
 <li><strong>Packing quality.</strong> The packed peak against the lower bound the
   closure gives (the heaviest set of mutually unordered declarations), on the same
   configs. On the model's dummy and random DAGs it is answered
-  (<a href="#closure-model">there</a>): at the bound on 98.1% largest first, 99.2% the
-  best of four; real configs remain.</li>
+  (<a href="#closure-model">there</a>): at the bound on 98.1% largest first, the order
+  taken; real configs remain, and the table's lower-bound row answers it on each.</li>
 <li><strong>Whether 128&nbsp;MiB covers every BLAS call on HIP.</strong> One reading
   so far: a 4096&nbsp;&times;&nbsp;4096 <code>dtrsm</code> needs 8&nbsp;MiB. Run a handle
   with no workspace set through the largest shapes the tree calls at production sizes
   (the DF fit's <code>trsm</code> at n_aux in the ten thousands, <code>gemm</code>,
   <code>syrk</code>, <code>gemv</code>) and read how far rocBLAS's own pool grows
   (<a href="#lock">the measurements</a>).</li>
-<li><strong>The margin constant</strong> for a defaulted device cap, and whether the
+<li><strong>The margin constant</strong> for a defaulted device cap and for the host's, and whether the
   kernels' stack should be read per card and not carried as the 3080's number.</li>
 <li><strong>The default limit fraction</strong> that picks a step's batch width.</li>
 <li><strong>Task granularity inside a step.</strong> A step is one node of the outer
