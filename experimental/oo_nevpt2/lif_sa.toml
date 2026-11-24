@@ -1,0 +1,22 @@
+# The state average: LiF's ionic and covalent 1-Sigma+ states, the two
+# lowest singlets of a state-averaged CASSCF(2,2) over F 2p-sigma and
+# Li 2s (RHF orbitals 5 and 6, 0-based, from 3.5 angstrom out; at 3.0
+# orbital 5 is a 2p-pi), for the probe's `sa` mode. The scan in
+# design.html is this config with lif_sa.xyz's R replaced.
+[molecule]
+xyz = "lif_sa.xyz"
+[basis_set]
+basis = "aug-cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "aug-cc-pVDZ-acCD-6-6"
+[scf]
+energy_tolerance = 1e-12
+commutator_tolerance = 1e-10
+[casscf]
+ncas = 2
+nelecas = 2
+active = [5, 6]
+nroots = 2
+conv_tol = 1e-12
+conv_tol_grad = 1e-9

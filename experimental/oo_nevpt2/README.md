@@ -15,8 +15,15 @@ need regularization (as κ-OOMP2) before it is a method.
 **And there is little to gain.** The probe's `no` mode takes the natural
 orbitals of the PT2-corrected density instead, minimizing nothing: the first
 pass lowers the total by 0.06 to 0.5 mEh on the same cases, E_CAS giving
-back most of what E_PT2 gains. Not tested: a state-averaged reference whose
-CASSCF orbitals are qualitatively wrong, which is the case the idea was for.
+back most of what E_PT2 gains.
+
+**The state average, the case the idea was for, says the same.** The
+probe's `sa` mode takes those passes to LiF's ionic and covalent ¹Σ⁺ pair
+(SA-CASSCF(2,2), PC-QD-NEVPT2). The orbitals do move, and one pass shifts
+the crossing by 0.46 Å; but the passes settle, and at their fixed point the
+crossing is at 6.28 Å against 6.34 Å in the CASSCF orbitals. Both states
+rise by 4 to 5 mEh, together: 0.6 mEh between them. Nothing judges which
+orbitals are right; the answer barely depends on them.
 
 **A bounded replacement does not rescue it.** The probe's `mo` mode
 minimizes W = ⟨Ψ⁽¹⁾|Ψ⁽¹⁾⟩, the first-order wave function's weight
@@ -51,12 +58,17 @@ build-experimental/experimental/oo_nevpt2/free_breakfast_oo_nevpt2 \
   experimental/oo_nevpt2/water_fci.toml 150 mo  # minimize W, with FCI
 build-experimental/experimental/oo_nevpt2/free_breakfast_oo_nevpt2 \
   experimental/oo_nevpt2/water_fci.toml 100 cap 1.03  # E under W <= 1.03 W0
+build-experimental/experimental/oo_nevpt2/free_breakfast_oo_nevpt2 \
+  experimental/oo_nevpt2/lif_sa.toml 12 sa      # passes over a state average
 ```
 
 The config needs a `[casscf]` of one singlet root over density-fitted
-`[eri]`; the second argument is the iteration count (8 by default), the
-third `oo` (the default), `no`, `mo` or `cap`, and after `cap` the factor f
-(1 by default). Every mode first prints W at the
+`[eri]` (of two or more singlet roots with `sa`); the second argument is
+the iteration count (8 by default), the third `oo` (the default), `no`,
+`mo`, `cap` or `sa`, and after `cap` the factor f (1 by default). `sa`
+prints one row per pass: the CASCI roots' energies, H_eff's upper triangle,
+the QD states' energies and each one's weight on root 0. Every other mode
+first prints W at the
 CASSCF orbitals and its check; with an `[fci]` table in the config, also the
 FCI energy and the functional in the FCI natural orbitals. `mo` and `cap`
 difference over every rotation, so they are for small cases: 54 rotations
@@ -70,9 +82,10 @@ occupations. Not a ctest entry.
 | File | Role |
 |------|------|
 | `design.html` | The design note and the results |
-| `main.cpp` | The probe: CASCI, PC-NEVPT2 energy and adjoint, Z-vector step and line search; the natural-orbital pass; W, its minimization, and E's under a cap on it |
+| `main.cpp` | The probe: CASCI, PC-NEVPT2 energy and adjoint, Z-vector step and line search; the natural-orbital pass, and a state average's; W, its minimization, and E's under a cap on it |
 | `CMakeLists.txt` | `free_breakfast_oo_nevpt2` |
 | `water.toml`, `water.xyz` | CASSCF(4,4) water, cc-pVDZ |
 | `water_fci.toml` | The same water in 6-31G with `[fci]`: the exact answer |
 | `water_stretched_fci.toml`, `water_stretched.xyz` | That with both O–H bonds at 1.8 times their length |
 | `lif_1.6.toml`, `lif_5.0.toml` and their `.xyz` | LiF CASSCF(6,4) by AVAS over F 2p and Li 2s, aug-cc-pVDZ |
+| `lif_sa.toml`, `lif_sa.xyz` | LiF SA-CASSCF(2,2) of the ionic and covalent ¹Σ⁺ states over F 2pσ and Li 2s, at 6.25 Å; the scan is this with R replaced |

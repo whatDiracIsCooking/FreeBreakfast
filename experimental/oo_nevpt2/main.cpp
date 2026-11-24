@@ -11,7 +11,7 @@
 /// Hessian, A and y from nevpt2::pc_adjoint plus the z^c term's. A short
 /// line search along it (t = 1, 1/2, then halving) takes the lowest energy.
 ///
-///     free_breakfast_oo_nevpt2 <config.toml> [iterations = 8] [oo|no|mo|cap]
+///     free_breakfast_oo_nevpt2 <config.toml> [iterations = 8] [oo|no|mo|cap|sa]
 ///                              [cap factor = 1]
 ///
 /// With `no`, the natural orbitals of the PT2-corrected density instead,
@@ -22,7 +22,12 @@
 /// With `cap`, E minimized under W <= factor W(CASSCF orbitals): the bare
 /// functional with the first-order weight capped (capped() below).
 ///
-/// The config needs [casscf] of one singlet root and density-fitted [eri].
+/// With `sa`, `no`'s passes over a state average: the natural orbitals of the
+/// state-averaged density plus PC-QD-NEVPT2's correction to it, and the QD
+/// states in them (averaged() below).
+///
+/// The config needs [casscf] of one singlet root (two or more singlet roots
+/// with `sa`) and density-fitted [eri].
 /// Prints one row per iteration; nothing is written but the pipeline's own
 /// files, under the system's temporary directory.
 
@@ -464,33 +469,22 @@ fb::Result<Point> moved(const Problem &p, const Point &from, const Step &step, c
   return evaluate(p, c.data(), {from.roots.vectors.data(), static_cast<std::size_t>(p.rdm.size())});
 }
 
-// One natural-orbital pass from @p at: E at the natural orbitals of the
-// PT2-corrected density D = D_CAS + dE_PT2/dh (pc_adjoint's h_bar plus the
-// canonical condition's z^c), the unrelaxed response density. The new active
-// orbitals are the ncas natural orbitals with the most weight on the old
-// active space, the new core the ncore of the rest with the most on the old
-// core: by overlap, not by occupation, so a correlated core orbital whose
-// occupation falls among the active ones does not swap in. The CI starts
-// cold, since the active orbitals have changed.
-fb::Result<Point> natural(const Problem &p, const Point &at) {
+// The orbitals C U, U's columns the natural orbitals of D = D_ref + @p d,
+// D_ref the reference's density over the orbitals @p c (2 on the core, the
+// active 1-RDM @p gamma) and @p d a correlation correction to it, nmo^2 in
+// that basis. The new active orbitals are the ncas natural orbitals with the
+// most weight on the old active space, the new core the ncore of the rest
+// with the most on the old core: by overlap, not by occupation, so a
+// correlated core orbital whose occupation falls among the active ones does
+// not swap in.
+fb::Result<fb::Buffers::device<double>> natural_orbitals(const Problem &p, const double *const c,
+                                                         std::vector<double> d,
+                                                         const std::span<const double> gamma) {
   fb::DeviceResources &res = p.res;
   const auto nmo = static_cast<std::size_t>(p.nmo);
   const auto ncore = static_cast<std::size_t>(p.ncore);
   const auto n = static_cast<std::size_t>(p.ncas);
   const std::size_t mo2 = nmo * nmo;
-  const double *const c = at.c.data();
-  const double *const vector = at.roots.vectors.data();
-  const fb::nevpt2::PcAdjoint corr =
-      FBF_TRY(fb::nevpt2::pc_adjoint(res, p.alpha, p.beta, p.naux, p.nmo, p.nmo, p.b.data(), c,
-                                     p.h.data(), p.ncore, p.ncas, vector, 0));
-  const fb::nevpt2::ZcMultipliers zc = FBF_TRY(
-      fb::nevpt2::zc_multipliers(res, p.nmo, p.ncore, p.ncas, corr.a.data(), corr.epsilon.data()));
-  const fb::nevpt2::ZcAdjoint phi = FBF_TRY(
-      fb::nevpt2::zc_adjoint(res, p.alpha, p.beta, p.naux, p.nmo, p.nmo, p.b.data(), c, p.h.data(),
-                             p.ncore, p.ncas, std::array{1.0}, vector, zc.z.data()));
-  std::vector<double> d = FBF_TRY(download(res, corr.h_bar.data(), mo2));
-  const std::vector<double> z = FBF_TRY(download(res, phi.h_bar.data(), mo2));
-  std::ranges::transform(d, z, d.begin(), std::plus<>{});
   double trace = 0.0;
   double mixing = 0.0;
   for (std::size_t q = 0; q < nmo; ++q) {
@@ -509,7 +503,7 @@ fb::Result<Point> natural(const Problem &p, const Point &at) {
   }
   for (std::size_t t = 0; t < n; ++t) {
     for (std::size_t u = 0; u < n; ++u) {
-      d[((ncore + t) * nmo) + ncore + u] += at.gamma[(t * n) + u];
+      d[((ncore + t) * nmo) + ncore + u] += gamma[(t * n) + u];
     }
   }
   std::vector<double> v;
@@ -574,7 +568,211 @@ fb::Result<Point> natural(const Problem &p, const Point &at) {
                                       p.nmo, p.nmo, &fb::kOne<double>, c, p.nmo, u_device.data(),
                                       p.nmo, &fb::kZero<double>, rotated.data(), p.nmo)));
   FBF_TRY(res.sync());
+  return rotated;
+}
+
+// One natural-orbital pass from @p at: E at the natural orbitals of the
+// PT2-corrected density D = D_CAS + dE_PT2/dh (pc_adjoint's h_bar plus the
+// canonical condition's z^c), the unrelaxed response density, picked by
+// natural_orbitals(). The CI starts cold, since the active orbitals have
+// changed.
+fb::Result<Point> natural(const Problem &p, const Point &at) {
+  fb::DeviceResources &res = p.res;
+  const auto nmo = static_cast<std::size_t>(p.nmo);
+  const std::size_t mo2 = nmo * nmo;
+  const double *const c = at.c.data();
+  const double *const vector = at.roots.vectors.data();
+  const fb::nevpt2::PcAdjoint corr =
+      FBF_TRY(fb::nevpt2::pc_adjoint(res, p.alpha, p.beta, p.naux, p.nmo, p.nmo, p.b.data(), c,
+                                     p.h.data(), p.ncore, p.ncas, vector, 0));
+  const fb::nevpt2::ZcMultipliers zc = FBF_TRY(
+      fb::nevpt2::zc_multipliers(res, p.nmo, p.ncore, p.ncas, corr.a.data(), corr.epsilon.data()));
+  const fb::nevpt2::ZcAdjoint phi = FBF_TRY(
+      fb::nevpt2::zc_adjoint(res, p.alpha, p.beta, p.naux, p.nmo, p.nmo, p.b.data(), c, p.h.data(),
+                             p.ncore, p.ncas, std::array{1.0}, vector, zc.z.data()));
+  std::vector<double> d = FBF_TRY(download(res, corr.h_bar.data(), mo2));
+  const std::vector<double> z = FBF_TRY(download(res, phi.h_bar.data(), mo2));
+  std::ranges::transform(d, z, d.begin(), std::plus<>{});
+  const fb::Buffers::device<double> rotated =
+      FBF_TRY(natural_orbitals(p, c, std::move(d), at.gamma));
   return evaluate(p, rotated.data(), {});
+}
+
+// The state-averaged functional at one set of orbitals: the CASCI roots
+// there, the core and virtuals made canonical over the state-averaged Fock,
+// and PC-QD-NEVPT2's effective Hamiltonian over the roots with its states.
+struct Average {
+  fb::SphericalMatrixAO c;
+  fb::ci::Roots roots;
+  // The state-averaged active 1-RDM.
+  std::vector<double> gamma;
+  // E_I delta_IJ + (C_IJ + C_JI) / 2, n x n: the pipeline's H_eff.
+  std::vector<double> heff;
+  // Its eigenvalues, ascending, and each state's weight on CASCI root 0.
+  std::vector<double> e_qd;
+  std::vector<double> on_root0;
+};
+
+// The functional at the orbitals @p c_in (device, nmo^2) over the roots at
+// @p weights, the CI started from @p start (every root's, or empty).
+fb::Result<Average> average(const Problem &p, const double *c_in,
+                            const std::span<const double> weights,
+                            const std::span<const double> start) {
+  fb::DeviceResources &res = p.res;
+  const auto nmo = static_cast<std::size_t>(p.nmo);
+  const auto n = static_cast<std::size_t>(p.ncas);
+  const std::size_t mo2 = nmo * nmo;
+  const std::size_t nroots = weights.size();
+  const auto dim = static_cast<std::size_t>(p.rdm.size());
+  fb::SphericalMatrixAO c(res, p.basis);
+  FBF_TRY(copy(res, c.data(), c_in, mo2, wwr::wwrMemcpyDeviceToDevice));
+  const fb::CasscfIntegrals ints =
+      FBF_TRY(fb::casscf_integrals(res, p.basis, p.molecule, p.h, p.b, p.naux, c, p.ncore, p.ncas));
+  FBF_TRY(set_sigma(p, ints));
+  fb::Buffers::device<double> diagonal(dim, res.device());
+  FBF_TRY(p.sigma.diagonal(res, diagonal.data()));
+  fb::ci::Roots roots = FBF_TRY(fb::ci::solve(res, p.sigma, p.alpha, p.beta, diagonal.data(),
+                                              static_cast<std::int32_t>(nroots), {}, start));
+  fb::Buffers::device<double> gamma_device(n * n, res.device());
+  fb::Buffers::device<double> gamma2_device(n * n * n * n, res.device());
+  FBF_TRY(
+      p.rdm.rdm12(res, weights, roots.vectors.data(), gamma_device.data(), gamma2_device.data()));
+  std::vector<double> gamma = FBF_TRY(download(res, gamma_device.data(), n * n));
+  const std::vector<double> gamma2 = FBF_TRY(download(res, gamma2_device.data(), n * n * n * n));
+
+  // Canonical core and virtuals over the state-averaged Fock: C <- C R. The
+  // roots do not see it.
+  {
+    const fb::response::Fock fock =
+        FBF_TRY(fb::response::fock(res, p.molecule, p.h, p.b, p.naux, c, p.ncore, p.ncas, ints.ppaa,
+                                   ints.papa, gamma, gamma2));
+    std::vector<double> f = FBF_TRY(download(res, fock.fock_inactive.data(), mo2));
+    const std::vector<double> fa = FBF_TRY(download(res, fock.fock_active.data(), mo2));
+    std::ranges::transform(f, fa, f.begin(), std::plus<>{});
+    std::vector<double> r;
+    std::vector<double> energies;
+    FBF_TRY(fb::canonicalize_core_virtual(res, nmo, static_cast<std::size_t>(p.ncore),
+                                          static_cast<std::size_t>(p.ncore + p.ncas), f, r,
+                                          energies));
+    fb::Buffers::device<double> r_device(mo2, res.device());
+    fb::Buffers::device<double> rotated(mo2, res.device());
+    FBF_TRY(copy(res, r_device.data(), r.data(), mo2, wwr::wwrMemcpyHostToDevice));
+    FBF_TRY(fb::gpu_status(wwr::gemm<double, std::int32_t>(
+        res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, p.nmo, p.nmo, p.nmo,
+        &fb::kOne<double>, c.data(), p.nmo, r_device.data(), p.nmo, &fb::kZero<double>,
+        rotated.data(), p.nmo)));
+    FBF_TRY(copy(res, c.data(), rotated.data(), mo2, wwr::wwrMemcpyDeviceToDevice));
+  }
+  const std::vector<fb::nevpt2::PcClassEnergies> elements = FBF_TRY(
+      fb::nevpt2::qd_pc_energy(res, p.alpha, p.beta, p.naux, p.nmo, p.nmo, p.b.data(), c.data(),
+                               p.h.data(), p.ncore, p.ncas, weights, roots.vectors.data(), 0));
+  std::vector<double> heff(nroots * nroots);
+  for (std::size_t i = 0; i < nroots; ++i) {
+    for (std::size_t j = 0; j < nroots; ++j) {
+      heff[(i * nroots) + j] =
+          (i == j ? roots.energies[i] : 0.0) +
+          (0.5 * (elements[(i * nroots) + j].total + elements[(j * nroots) + i].total));
+    }
+  }
+  std::vector<double> v;
+  const std::vector<double> unsorted = eigensystem(heff, nroots, &v);
+  std::vector<std::size_t> order(nroots);
+  std::iota(order.begin(), order.end(), std::size_t{0});
+  std::ranges::sort(
+      order, [&](const std::size_t a, const std::size_t b) { return unsorted[a] < unsorted[b]; });
+  std::vector<double> e_qd(nroots);
+  std::vector<double> on_root0(nroots);
+  for (std::size_t k = 0; k < nroots; ++k) {
+    e_qd[k] = unsorted[order[k]];
+    on_root0[k] = v[order[k]] * v[order[k]];
+  }
+  return Average{.c = std::move(c),
+                 .roots = std::move(roots),
+                 .gamma = std::move(gamma),
+                 .heff = std::move(heff),
+                 .e_qd = std::move(e_qd),
+                 .on_root0 = std::move(on_root0)};
+}
+
+// One natural-orbital pass of a state average from @p at: natural()'s, over
+// D = D_SA + dE[W]/dh, E[W] = sum_I w_I H_II the weighted trace of the
+// PC-QD-NEVPT2 effective Hamiltonian's correlation part (qd_pc_adjoint's
+// h_bar at W = diag(w), plus the canonical condition's z^c). At equal
+// weights that trace does not depend on how the model space is rotated, so
+// D is the average of the QD states' unrelaxed correlated densities.
+fb::Result<Average> natural(const Problem &p, const Average &at,
+                            const std::span<const double> weights) {
+  fb::DeviceResources &res = p.res;
+  const auto nmo = static_cast<std::size_t>(p.nmo);
+  const std::size_t mo2 = nmo * nmo;
+  const std::size_t nroots = weights.size();
+  const double *const c = at.c.data();
+  const double *const vectors = at.roots.vectors.data();
+  std::vector<double> w(nroots * nroots, 0.0);
+  for (std::size_t r = 0; r < nroots; ++r) {
+    w[(r * nroots) + r] = weights[r];
+  }
+  const fb::nevpt2::QdPcAdjoint corr =
+      FBF_TRY(fb::nevpt2::qd_pc_adjoint(res, p.alpha, p.beta, p.naux, p.nmo, p.nmo, p.b.data(), c,
+                                        p.h.data(), p.ncore, p.ncas, weights, vectors, w, 0));
+  const fb::nevpt2::ZcMultipliers zc = FBF_TRY(
+      fb::nevpt2::zc_multipliers(res, p.nmo, p.ncore, p.ncas, corr.a.data(), corr.epsilon.data()));
+  const fb::nevpt2::ZcAdjoint phi =
+      FBF_TRY(fb::nevpt2::zc_adjoint(res, p.alpha, p.beta, p.naux, p.nmo, p.nmo, p.b.data(), c,
+                                     p.h.data(), p.ncore, p.ncas, weights, vectors, zc.z.data()));
+  std::vector<double> d = FBF_TRY(download(res, corr.h_bar.data(), mo2));
+  const std::vector<double> z = FBF_TRY(download(res, phi.h_bar.data(), mo2));
+  std::ranges::transform(d, z, d.begin(), std::plus<>{});
+  const fb::Buffers::device<double> rotated =
+      FBF_TRY(natural_orbitals(p, c, std::move(d), at.gamma));
+  return average(p, rotated.data(), weights, {});
+}
+
+void print_average(const std::int32_t pass, const Average &at) {
+  const std::size_t n = at.e_qd.size();
+  std::print("{:>4}  E_CAS", pass);
+  for (const double e : at.roots.energies) {
+    std::print(" {:.10f}", e);
+  }
+  std::print("  H_eff");
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = i; j < n; ++j) {
+      std::print(" {:.10f}", at.heff[(i * n) + j]);
+    }
+  }
+  std::print("  E_QD");
+  for (const double e : at.e_qd) {
+    std::print(" {:.10f}", e);
+  }
+  std::print("  on root 0");
+  for (const double o : at.on_root0) {
+    std::print(" {:.4f}", o);
+  }
+  std::println("");
+}
+
+// The state-averaged natural-orbital passes (design.html, "The state
+// average"): from the config's SA-CASSCF, @p passes of natural() above, one
+// row each: the CASCI roots' energies, H_eff's upper triangle by rows, the
+// QD states' energies and each one's weight on root 0.
+fb::Status averaged(const Problem &p, const fb::CasscfOutput &casscf, const std::int32_t passes) {
+  fb::Buffers::device<double> start(casscf.vectors.size(), p.res.device());
+  FBF_TRY(copy(p.res, start.data(), casscf.vectors.data(), casscf.vectors.size(),
+               wwr::wwrMemcpyHostToDevice));
+  Average at =
+      FBF_TRY(average(p, casscf.c.data(), casscf.weights, {start.data(), casscf.vectors.size()}));
+  std::print("SA-CASSCF({},{}) of {} roots, nmo {} ncore {}: pipeline E_CAS", casscf.nelecas,
+             casscf.ncas, casscf.weights.size(), p.nmo, p.ncore);
+  for (const double e : casscf.energies) {
+    std::print(" {:.10f}", e);
+  }
+  std::println("");
+  print_average(0, at);
+  for (std::int32_t pass = 1; pass <= passes; ++pass) {
+    at = FBF_TRY(natural(p, at, casscf.weights));
+    print_average(pass, at);
+  }
+  return {};
 }
 
 // A point and its weight.
@@ -1115,9 +1313,9 @@ fb::Status capped(const Problem &p, const Point &origin, const std::int32_t iter
 fb::Status run(const std::span<char *const> args) {
   const std::string_view mode = args.size() >= 4 ? std::string_view(args[3]) : "oo";
   if (args.size() < 2 || args.size() > 5 ||
-      (mode != "no" && mode != "oo" && mode != "mo" && mode != "cap") ||
+      (mode != "no" && mode != "oo" && mode != "mo" && mode != "cap" && mode != "sa") ||
       (args.size() == 5 && mode != "cap")) {
-    return fb::err_config("usage: {} <config.toml> [iterations] [oo|no|mo|cap] [cap factor]",
+    return fb::err_config("usage: {} <config.toml> [iterations] [oo|no|mo|cap|sa] [cap factor]",
                           args.empty() ? "free_breakfast_oo_nevpt2" : args[0]);
   }
   const std::filesystem::path config = args[1];
@@ -1132,9 +1330,10 @@ fb::Status run(const std::span<char *const> args) {
   const auto &casscf = calc.get<fb::CasscfOutput>();
   const auto &eri = calc.get<fb::EriOutput>();
   if (!casscf.has_value() || !eri.has_value() ||
-      !std::holds_alternative<fb::DensityFitted>(eri->eri) || casscf->energies.size() != 1 ||
-      casscf->nelecas % 2 != 0) {
-    return fb::err_config("{}: needs [casscf] of one singlet root over density-fitted [eri]",
+      !std::holds_alternative<fb::DensityFitted>(eri->eri) ||
+      (casscf->energies.size() == 1) == (mode == "sa") || casscf->nelecas % 2 != 0) {
+    return fb::err_config("{}: needs [casscf] of one singlet root (of two or more with sa) over "
+                          "density-fitted [eri]",
                           config.string());
   }
   fb::DeviceResources &res = node.device(0);
@@ -1160,6 +1359,9 @@ fb::Status run(const std::span<char *const> args) {
                   .sigma = sigma,
                   .rdm = rdm};
 
+  if (mode == "sa") {
+    return averaged(p, *casscf, iterations);
+  }
   fb::Buffers::device<double> start(casscf->vectors.size(), res.device());
   FBF_TRY(copy(res, start.data(), casscf->vectors.data(), casscf->vectors.size(),
                wwr::wwrMemcpyHostToDevice));
