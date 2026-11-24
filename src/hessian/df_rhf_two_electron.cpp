@@ -11,7 +11,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kTwo, kNegOne, kNegTwo, kNegHalf
 import free_breakfast.core.error_handling;
 import free_breakfast.core.primitives; // align_up
-import free_breakfast.core.wwr;        // gemm, gemv, trsm, gemmStridedBatched
+import free_breakfast.core.wwr;        // gemm, gemv, gemmStridedBatched
 import free_breakfast.core.resources;
 import free_breakfast.core.footprint; // MemoryFootprint, kPoolHeadroomBytes
 import free_breakfast.basis;
@@ -20,6 +20,7 @@ import free_breakfast.integrals.eri.density_fitting.gradient;
 import free_breakfast.integrals.eri.density_fitting.hessian;
 import free_breakfast.integrals.eri.density_fitting.mo;
 import free_breakfast.recipes.blas;
+import free_breakfast.recipes.trsm;
 import :atom_block;
 
 #include "diagnostics.h"
@@ -156,9 +157,8 @@ Result<RhfTwoElectron> df_rhf_two_electron(DeviceResources &res, const BasisSet 
   // P + naux (i + nocc j), symmetric in i and j.
   const OrbitalRange occupied{.first = 0, .count = nocc};
   FBF_TRY(b_mo(res, q, n, nocc, b.data(), c_occ, occupied, occupied, fitted));
-  FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-      blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-      wwr::WWRBLAS_DIAG_NON_UNIT, q, n_oo, &kOne<double>, l, q, fitted, q)));
+  FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
+                       wwr::WWRBLAS_DIAG_NON_UNIT, q, n_oo, kOne<double>, l, q, fitted, q));
   // The pairs' diagonal c_P,ii is the naux x nocc matrix of leading dimension
   // naux (nocc + 1), so 2 Sum_i of it is one gemv against the twos.
   const auto diagonal_ld = static_cast<int32_t>(naux * (occ + 1));

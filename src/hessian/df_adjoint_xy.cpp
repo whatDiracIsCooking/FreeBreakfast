@@ -14,7 +14,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kHalf, kNegHalf, kTwo, kNegTwo
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, gemv, geam, trsm, gemmStridedBatched
+import free_breakfast.core.wwr; // gemm, gemv, geam, gemmStridedBatched
 import free_breakfast.core.resources;
 import free_breakfast.core.footprint;
 import free_breakfast.basis;
@@ -27,6 +27,7 @@ import free_breakfast.integrals.eri.density_fitting.mo;
 import free_breakfast.mcscf.third_derivative;
 import free_breakfast.recipes.blas;
 import free_breakfast.recipes.matrix_ao;
+import free_breakfast.recipes.trsm;
 import :atom_block;
 import :state_specific; // Ledger
 
@@ -163,12 +164,12 @@ Result<std::vector<double>> df_adjoint_xy(DeviceResources &res, const Molecule &
   // atom without fitting functions, whose mu^x is zero and whose rows keep
   // the zero the products start at.
   const auto against_mu = [&](double *const h_in, double *const column) -> Status {
-    FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-        blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-        wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kNegHalf<double>, l, q, h_in, q)));
-    FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-        blas, wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
-        wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kOne<double>, l, q, h_in, q)));
+    FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER,
+                         wwr::WWRBLAS_OP_T, wwr::WWRBLAS_DIAG_NON_UNIT, q, q, kNegHalf<double>, l,
+                         q, h_in, q));
+    FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER,
+                         wwr::WWRBLAS_OP_N, wwr::WWRBLAS_DIAG_NON_UNIT, q, q, kOne<double>, l, q,
+                         h_in, q));
     FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, q, q,
                                                   &kOne<double>, h_in, q, &kOne<double>, h_in, q,
                                                   sq_b, q)));
@@ -206,12 +207,12 @@ Result<std::vector<double>> df_adjoint_xy(DeviceResources &res, const Molecule &
       FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, q,
                                                     q, &kOne<double>, sq_a, q, &kOne<double>, sq_a,
                                                     q, sq_b, q)));
-      FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-          blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
-          wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kNegHalf<double>, l, q, sq_b, q)));
-      FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-          blas, wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-          wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kOne<double>, l, q, sq_b, q)));
+      FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER,
+                           wwr::WWRBLAS_OP_N, wwr::WWRBLAS_DIAG_NON_UNIT, q, q, kNegHalf<double>, l,
+                           q, sq_b, q));
+      FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER,
+                           wwr::WWRBLAS_OP_T, wwr::WWRBLAS_DIAG_NON_UNIT, q, q, kOne<double>, l, q,
+                           sq_b, q));
       FBF_TRY(gpu_status(gemm(blas, q, &kOne<double>, g, sq_b, &kZero<double>, sq_a)));
       FBF_TRY(against_mu(sq_a, p6 + (x * n_x)));
     }
@@ -289,12 +290,11 @@ Result<std::vector<double>> df_adjoint_xy(DeviceResources &res, const Molecule &
   const std::vector<double> overlap = FBF_TRY(overlap_hessian(res, basis, classes, ao));
   FBF_TRY(gpu_status(
       wwr::wwrMemcpyAsync(sq_a, g, sizeof(double) * sq, wwr::wwrMemcpyDeviceToDevice, stream)));
-  FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-      blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-      wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kNegHalf<double>, l, q, sq_a, q)));
-  FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-      blas, wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
-      wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kOne<double>, l, q, sq_a, q)));
+  FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
+                       wwr::WWRBLAS_DIAG_NON_UNIT, q, q, kNegHalf<double>, l, q, sq_a, q));
+  FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER,
+                       wwr::WWRBLAS_OP_N, wwr::WWRBLAS_DIAG_NON_UNIT, q, q, kOne<double>, l, q,
+                       sq_a, q));
   const std::vector<double> metric = FBF_TRY(metric_hessian(res, aux, sq_a));
   FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
       blas, q * n, n, n, &kOne<double>, lambda, c.data(), &kZero<double>, y_buf)));
@@ -302,9 +302,8 @@ Result<std::vector<double>> df_adjoint_xy(DeviceResources &res, const Molecule &
       blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, q, n, n, &kOne<double>, y_buf, q,
       static_cast<int64_t>(naux * nmo), c.data(), n, 0, &kZero<double>, lam_t, q * n,
       static_cast<int64_t>(naux), n)));
-  FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-      blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-      wwr::WWRBLAS_DIAG_NON_UNIT, q, n_nn, &kOne<double>, l, q, lam_t, q)));
+  FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
+                       wwr::WWRBLAS_DIAG_NON_UNIT, q, n_nn, kOne<double>, l, q, lam_t, q));
   const std::vector<double> three_center =
       FBF_TRY(three_center_hessian(res, basis, classes, aux, lam_t));
 

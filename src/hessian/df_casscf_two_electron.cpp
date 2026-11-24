@@ -14,7 +14,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kNegOne, kHalf, kNegHalf, kNegTwo
 import free_breakfast.core.error_handling;
 import free_breakfast.core.primitives; // align_up
-import free_breakfast.core.wwr;        // gemm, gemv, geam, trsm, gemmStridedBatched
+import free_breakfast.core.wwr;        // gemm, gemv, geam, gemmStridedBatched
 import free_breakfast.core.resources;
 import free_breakfast.core.footprint;
 import free_breakfast.basis;
@@ -23,6 +23,7 @@ import free_breakfast.integrals.eri.density_fitting.gradient;
 import free_breakfast.integrals.eri.density_fitting.hessian;
 import free_breakfast.integrals.eri.density_fitting.mo;
 import free_breakfast.recipes.blas;
+import free_breakfast.recipes.trsm;
 import :atom_block;
 
 #include "diagnostics.h"
@@ -229,9 +230,8 @@ df_casscf_two_electron(DeviceResources &res, const BasisSet &basis,
   // at P + naux (a + nocc b), symmetric in a and b.
   const OrbitalRange occupied{.first = 0, .count = nocc};
   FBF_TRY(b_mo(res, q, n, nocc, b.data(), c_occ, occupied, occupied, fitted));
-  FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-      blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-      wwr::WWRBLAS_DIAG_NON_UNIT, q, n_oo, &kOne<double>, l, q, fitted, q)));
+  FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
+                       wwr::WWRBLAS_DIAG_NON_UNIT, q, n_oo, kOne<double>, l, q, fitted, q));
   // With a rotation K: C_ext = [C_o | C~_o], C~_o = C K's occupied columns
   // (the derivative of C_o along C -> C (1 + e K)); the fitted pairs over it,
   // naux x (2 nocc)^2 at P + naux (a + 2 nocc b); and their derivative
@@ -251,9 +251,9 @@ df_casscf_two_electron(DeviceResources &res, const BasisSet &basis,
                             rotation, &kZero<double>, c_ext + (nao * occ))));
     const OrbitalRange extended{.first = 0, .count = ext_occ};
     FBF_TRY(b_mo(res, q, n, ext_occ, b.data(), c_ext, extended, extended, fitted_ext));
-    FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-        blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-        wwr::WWRBLAS_DIAG_NON_UNIT, q, 4 * n_oo, &kOne<double>, l, q, fitted_ext, q)));
+    FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER,
+                         wwr::WWRBLAS_OP_T, wwr::WWRBLAS_DIAG_NON_UNIT, q, 4 * n_oo, kOne<double>,
+                         l, q, fitted_ext, q));
     // c_o~o: the rows naux nocc onward of the first nocc columns; c_oo~: the
     // first naux nocc rows of the columns nocc onward.
     FBF_TRY(gpu_status(wwr::geam<double, int32_t>(

@@ -19,7 +19,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kTwo, kNegOne, kNegTwo
 import free_breakfast.core.primitives;
 import free_breakfast.core.error_handling;
-// gemmStridedBatched, gemm, gemv, trsv, trsm, geam, axpy, wwrMemsetAsync,
+// gemmStridedBatched, gemm, gemv, trsv, geam, axpy, wwrMemsetAsync,
 // wwrMemcpy2DAsync, gpu_status
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
@@ -27,6 +27,7 @@ import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.recipes.blas;
+import free_breakfast.recipes.trsm;
 import free_breakfast.integrals.eri.density_fitting.staging;
 
 #include "diagnostics.h"
@@ -714,9 +715,8 @@ Status df_jk_derivative(DeviceResources &res, const BasisSet &basis,
   FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
       blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, q, o, n, &kOne<double>, b, q, int64_t{q} * n, c,
       n, 0, &kZero<double>, cf, q, int64_t{q} * o, n)));
-  FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-      blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-      wwr::WWRBLAS_DIAG_NON_UNIT, q, o * n, &kOne<double>, l, q, cf, q)));
+  FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
+                       wwr::WWRBLAS_DIAG_NON_UNIT, q, o * n, kOne<double>, l, q, cf, q));
   // M1 = d(P|Q)/dA_k, column-major element (Q, P) of slab k.
   FBF_TRY(metric_derivative_device(res, naux_cart, naux, metric_pairs,
                                    static_cast<int32_t>(n_aux_rec), d_aux, d_pairs, d_u_aux, m1c,
@@ -854,9 +854,8 @@ Status df_jk_derivative(DeviceResources &res, const BasisSet &basis,
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
   }
   // L^-1 (u^x - M^x d), in place: T M^-1 (u^x - M^x d) = B^T L^-1 (u^x - M^x d).
-  FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-      blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
-      wwr::WWRBLAS_DIAG_NON_UNIT, q, nx, &kOne<double>, l, q, gx, q)));
+  FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
+                       wwr::WWRBLAS_DIAG_NON_UNIT, q, nx, kOne<double>, l, q, gx, q));
   // J = S + S^T and K = 2 (S + S^T), one slab at a time through sym (geam may
   // not write its own transposed operand).
   for (size_t x = 0; x < n_x; ++x) {

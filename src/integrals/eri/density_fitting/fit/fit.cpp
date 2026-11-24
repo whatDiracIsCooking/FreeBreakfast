@@ -8,13 +8,14 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // trsm, wwrMemcpyAsync, ScopedDeviceIndex, gpu_status
+import free_breakfast.core.wwr; // wwrMemcpyAsync, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.core.primitives;
 import free_breakfast.core.footprint;
 import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.cholesky;
 import free_breakfast.recipes.orthogonalize;
+import free_breakfast.recipes.trsm;
 
 #include "diagnostics.h"
 
@@ -72,10 +73,9 @@ Status density_fit(DeviceResources &res, const int32_t nao, const int32_t naux, 
   }
 
   // B = L^-1 (P|mn): every column of the naux x nao^2 view at once.
-  return gpu_status(wwr::trsm<double, int32_t>(
-      res.blas().get(), wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
-      wwr::WWRBLAS_DIAG_NON_UNIT, naux, static_cast<int32_t>(pairs), &kOne<double>, metric, naux, b,
-      naux));
+  return trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
+                      wwr::WWRBLAS_DIAG_NON_UNIT, naux, static_cast<int32_t>(pairs), kOne<double>,
+                      metric, naux, b, naux);
 }
 
 MemoryFootprint density_fit_footprint(const int32_t nao, const int32_t naux,

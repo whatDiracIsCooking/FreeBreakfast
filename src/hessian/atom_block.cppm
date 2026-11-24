@@ -14,11 +14,12 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kNegOne
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, trsm, gemmStridedBatched, wwrMemsetAsync
+import free_breakfast.core.wwr; // gemm, gemmStridedBatched, wwrMemsetAsync
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.eri.density_fitting.gradient;
+import free_breakfast.recipes.trsm;
 
 #include "diagnostics.h"
 
@@ -132,10 +133,9 @@ Status occupied_atom_block(DeviceResources &res, const BasisSet &basis,
                                                     q, fitted + q0, q, &kOne<double>, r_k, q)));
     }
   }
-  return gpu_status(wwr::trsm<double, int32_t>(
-      blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
-      wwr::WWRBLAS_DIAG_NON_UNIT, q, static_cast<int32_t>(3 * size_t{count} * oo), &kOne<double>, l,
-      q, r, q));
+  return trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
+                      wwr::WWRBLAS_DIAG_NON_UNIT, q, static_cast<int32_t>(3 * size_t{count} * oo),
+                      kOne<double>, l, q, r, q);
 }
 
 } // namespace free_breakfast::hessian

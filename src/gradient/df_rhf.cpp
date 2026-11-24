@@ -10,7 +10,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kNegTwo, kNegHalf
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemv, trsv, trsm, gemmStridedBatched
+import free_breakfast.core.wwr; // gemv, trsv, gemmStridedBatched
 import free_breakfast.core.resources;
 import free_breakfast.core.footprint;
 import free_breakfast.basis;
@@ -20,6 +20,7 @@ import free_breakfast.integrals.eri.density_fitting.gradient;
 import free_breakfast.integrals.eri.density_fitting.mo;
 import free_breakfast.recipes.blas;
 import free_breakfast.recipes.matrix_ao;
+import free_breakfast.recipes.trsm;
 
 #include "diagnostics.h"
 
@@ -96,9 +97,9 @@ Result<RhfTerms> df_rhf(DeviceResources &res, const Molecule &molecule, const Ba
     // at P + naux (i + nocc j).
     const OrbitalRange occupied{.first = 0, .count = nocc};
     FBF_TRY(b_mo(res, q, n, n, b, c.data(), occupied, occupied, fitted.data()));
-    FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-        blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-        wwr::WWRBLAS_DIAG_NON_UNIT, q, nocc * nocc, &kOne<double>, l, q, fitted.data(), q)));
+    FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER,
+                         wwr::WWRBLAS_OP_T, wwr::WWRBLAS_DIAG_NON_UNIT, q, nocc * nocc,
+                         kOne<double>, l, q, fitted.data(), q));
     // Y_P,in = Sum_j c_P,ij C_nj, at P + naux (i + nocc n); then for each n,
     // Gam_(P, n, m) = -2 Sum_i Y_P,in C_mi, the naux x nao block at
     // P + naux (n + nao m): leading dimension naux nao, consecutive n naux
