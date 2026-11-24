@@ -1,0 +1,19 @@
+# The FCI comparison: CASSCF(4,4) water in 6-31G, small enough for [fci]
+# over every orbital and electron (1287^2 determinants) with the same
+# density-fitted integrals, so the probe's energies have an exact answer.
+[molecule]
+xyz = "water.xyz"
+[basis_set]
+basis = "6-31g"
+[eri]
+mode = "density_fitting"
+aux_basis = "def2-universal-jkfit"
+[scf]
+energy_tolerance = 1e-12
+commutator_tolerance = 1e-10
+[casscf]
+ncas = 4
+nelecas = 4
+conv_tol = 1e-12
+conv_tol_grad = 1e-9
+[fci]

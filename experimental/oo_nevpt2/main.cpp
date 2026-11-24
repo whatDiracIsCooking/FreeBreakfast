@@ -11,10 +11,13 @@
 /// Hessian, A and y from nevpt2::pc_adjoint plus the z^c term's. A short
 /// line search along it (t = 1, 1/2, then halving) takes the lowest energy.
 ///
-///     free_breakfast_oo_nevpt2 <config.toml> [iterations = 8] [oo|no]
+///     free_breakfast_oo_nevpt2 <config.toml> [iterations = 8] [oo|no|mo]
 ///
 /// With `no`, the natural orbitals of the PT2-corrected density instead,
-/// iterated: no functional is minimized (natural() below).
+/// iterated: no functional is minimized (natural() below). With `mo`, the
+/// maximum-overlap orbitals: the weight of the first-order wave function,
+/// W = <Psi1|Psi1>, minimized in the orbital rotations by BFGS over a
+/// finite-difference gradient (maximum_overlap() below), and E read there.
 ///
 /// The config needs [casscf] of one singlet root and density-fitted [eri].
 /// Prints one row per iteration; nothing is written but the pipeline's own
@@ -44,6 +47,19 @@ constexpr double kEnergyTolerance = 1e-9;
 constexpr double kFallbackStep = 0.05;
 constexpr double kTrustStep = 0.3;
 constexpr double kLongestStep = 2.0;
+// The denominator shift W is differenced over (weight() below), the rotation
+// its gradient is differenced over, and the gradient that ends the
+// minimization.
+constexpr double kShift = 1e-3;
+constexpr double kRotation = 2e-3;
+constexpr double kWeightGradient = 2e-5;
+// A rotation whose derivative of W is below this at the CASSCF orbitals is
+// taken as zero by symmetry and left out, until the last gradient says not.
+constexpr double kSymmetryZero = 2e-6;
+// The indices outside the active space each class's perturbers carry, in
+// PcClassEnergies' order: Sr, Si, Sijrs, Sijr, Srsi, Srs, Sij, Sir.
+constexpr std::array<double, 8> kVirtualIndices{1, 0, 2, 1, 2, 2, 0, 1};
+constexpr std::array<double, 8> kCoreIndices{0, 1, 2, 2, 1, 0, 2, 1};
 
 fb::Result<std::vector<double>> download(fb::DeviceResources &res, const double *data,
                                          const std::size_t count) {
@@ -135,6 +151,7 @@ struct Problem {
   const fb::Molecule &molecule;
   const fb::BasisSet &basis;
   const fb::SphericalMatrixAO &h;
+  const fb::SphericalMatrixAO &s;
   const fb::Buffers::device<double> &b;
   std::int32_t naux;
   std::int32_t nmo;
@@ -170,8 +187,10 @@ fb::Status set_sigma(const Problem &p, const fb::CasscfIntegrals &ints) {
 }
 
 // E at the orbitals @p c_in (device, nmo^2), the CI started from @p start.
+// Without @p pt2 the PC-NEVPT2 energy is left out (e_pt2 a NaN): what a
+// point that is only weighed needs.
 fb::Result<Point> evaluate(const Problem &p, const double *c_in,
-                           const std::span<const double> start) {
+                           const std::span<const double> start, const bool pt2 = true) {
   fb::DeviceResources &res = p.res;
   const auto nmo = static_cast<std::size_t>(p.nmo);
   const auto n = static_cast<std::size_t>(p.ncas);
@@ -222,9 +241,13 @@ fb::Result<Point> evaluate(const Problem &p, const double *c_in,
       FBF_TRY(fb::casscf_integrals(res, p.basis, p.molecule, p.h, p.b, p.naux, c, p.ncore, p.ncas));
   fb::response::Fock fock = FBF_TRY(fb::response::fock(
       res, p.molecule, p.h, p.b, p.naux, c, p.ncore, p.ncas, ints.ppaa, ints.papa, gamma, gamma2));
-  const fb::nevpt2::PcClassEnergies pt2 = FBF_TRY(
-      fb::nevpt2::pc_energy(res, p.alpha, p.beta, p.naux, p.nmo, p.nmo, p.b.data(), c.data(),
-                            p.h.data(), p.ncore, p.ncas, roots.vectors.data(), 0));
+  double e_pt2 = std::numeric_limits<double>::quiet_NaN();
+  if (pt2) {
+    const fb::nevpt2::PcClassEnergies classes = FBF_TRY(
+        fb::nevpt2::pc_energy(res, p.alpha, p.beta, p.naux, p.nmo, p.nmo, p.b.data(), c.data(),
+                              p.h.data(), p.ncore, p.ncas, roots.vectors.data(), 0));
+    e_pt2 = classes.total;
+  }
   const double e_cas = fock.energy;
   return Point{.c = std::move(c),
                .roots = std::move(roots),
@@ -233,7 +256,76 @@ fb::Result<Point> evaluate(const Problem &p, const double *c_in,
                .ints = std::move(ints),
                .fock = std::move(fock),
                .e_cas = e_cas,
-               .e_pt2 = pt2.total};
+               .e_pt2 = e_pt2};
+}
+
+// The weight of the first-order wave function at a point, W = <Psi1|Psi1>,
+// per class and summed. No call reports it, so it is read off the energy:
+// with every perturber's denominator raised by w n, n the perturber's count
+// of indices outside the active space, a class's energy -sum y^2 / (D + w n)
+// has the derivative n sum y^2 / D^2 = n W_class at w = 0. The shift is
+// h + w S C d C^T S, d = -1 on the core, 0 on the active and +1 on the
+// virtual orbitals: it moves the canonical orbital energies and nothing
+// else (no block V or the active Hamiltonian reads), and W is the central
+// difference over w = +-kShift. @p virt and @p core scale the two halves of
+// d, so the classes with both kinds of index can be weighed either way: the
+// check run() prints.
+struct Weight {
+  std::array<double, 8> classes{};
+  double total = 0.0;
+};
+
+fb::Result<Weight> weight(const Problem &p, const Point &at, const double virt = 1.0,
+                          const double core = 1.0) {
+  fb::DeviceResources &res = p.res;
+  const auto nmo = static_cast<std::size_t>(p.nmo);
+  const auto ncore = static_cast<std::size_t>(p.ncore);
+  const auto nocc = static_cast<std::size_t>(p.ncore + p.ncas);
+  const std::size_t mo2 = nmo * nmo;
+  const std::vector<double> s = FBF_TRY(download(res, p.s.data(), mo2));
+  const std::vector<double> c = FBF_TRY(download(res, at.c.data(), mo2));
+  const std::vector<double> h = FBF_TRY(download(res, p.h.data(), mo2));
+  // M = S C, column-major, and the shift's matrix sum_q d_q M[:, q] M[:, q]^T.
+  std::vector<double> m(mo2, 0.0);
+  for (std::size_t q = 0; q < nmo; ++q) {
+    for (std::size_t nu = 0; nu < nmo; ++nu) {
+      const double c_nu = c[nu + (nmo * q)];
+      for (std::size_t mu = 0; mu < nmo; ++mu) {
+        m[mu + (nmo * q)] += s[mu + (nmo * nu)] * c_nu;
+      }
+    }
+  }
+  std::vector<double> shift(mo2, 0.0);
+  for (std::size_t q = 0; q < nmo; ++q) {
+    const double d = q < ncore ? -core : (q < nocc ? 0.0 : virt);
+    for (std::size_t nu = 0; nu < nmo; ++nu) {
+      for (std::size_t mu = 0; mu < nmo; ++mu) {
+        shift[mu + (nmo * nu)] += d * m[mu + (nmo * q)] * m[nu + (nmo * q)];
+      }
+    }
+  }
+  fb::Buffers::device<double> shifted(mo2, res.device());
+  std::array<fb::nevpt2::PcClassEnergies, 2> sides;
+  for (std::size_t side = 0; side < 2; ++side) {
+    const double w = side == 0 ? kShift : -kShift;
+    std::vector<double> host = h;
+    for (std::size_t k = 0; k < mo2; ++k) {
+      host[k] += w * shift[k];
+    }
+    FBF_TRY(copy(res, shifted.data(), host.data(), mo2, wwr::wwrMemcpyHostToDevice));
+    sides[side] = FBF_TRY(fb::nevpt2::pc_energy(res, p.alpha, p.beta, p.naux, p.nmo, p.nmo,
+                                                p.b.data(), at.c.data(), shifted.data(), p.ncore,
+                                                p.ncas, at.roots.vectors.data(), 0));
+  }
+  Weight out;
+  for (std::size_t k = 0; k < 8; ++k) {
+    const double n = (virt * kVirtualIndices[k]) + (core * kCoreIndices[k]);
+    if (n > 0.0) {
+      out.classes[k] = (sides[0].energies[k] - sides[1].energies[k]) / (2.0 * kShift * n);
+    }
+    out.total += out.classes[k];
+  }
+  return out;
 }
 
 // The quasi-Newton step at a point: kappa(Z)'s eigenpairs, for skew_expm.
@@ -478,11 +570,285 @@ fb::Result<Point> natural(const Problem &p, const Point &at) {
   return evaluate(p, rotated.data(), {});
 }
 
+// A point and its weight.
+struct Weighed {
+  Point point;
+  Weight w;
+};
+
+// The functional at the orbitals C0 exp(kappa(x)), x the non-redundant
+// rotations packed (response::unpack_orbital_pairs), the CI started from
+// @p start; none where the CASCI or a PC class refuses, @p why said if set.
+std::optional<Weighed> weigh(const Problem &p, const double *c0, const std::span<const double> x,
+                             const std::span<const double> start, const bool pt2,
+                             const char *const why = nullptr) {
+  const auto run = [&]() -> fb::Result<Weighed> {
+    fb::DeviceResources &res = p.res;
+    const auto mo2 = static_cast<std::size_t>(p.nmo) * static_cast<std::size_t>(p.nmo);
+    fb::Buffers::device<double> packed(x.size(), res.device());
+    fb::Buffers::device<double> kappa(mo2, res.device());
+    fb::Buffers::device<wwr::wwrDoubleComplex> u(mo2, res.device());
+    fb::Buffers::device<double> w(static_cast<std::size_t>(p.nmo), res.device());
+    fb::Buffers::device<double> rotation(mo2, res.device());
+    fb::Buffers::device<double> c(mo2, res.device());
+    FBF_TRY(copy(res, packed.data(), x.data(), x.size(), wwr::wwrMemcpyHostToDevice));
+    FBF_TRY(fb::response::unpack_orbital_pairs(res, p.nmo, p.ncore, p.ncas, packed.data(),
+                                               kappa.data()));
+    FBF_TRY(fb::skew_eig<double>(res, p.nmo, kappa.data(), u.data(), w.data()));
+    FBF_TRY(fb::skew_expm<double>(res, p.nmo, u.data(), w.data(), 1.0, rotation.data()));
+    FBF_TRY(fb::gpu_status(wwr::gemm<double, std::int32_t>(
+        res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, p.nmo, p.nmo, p.nmo,
+        &fb::kOne<double>, c0, p.nmo, rotation.data(), p.nmo, &fb::kZero<double>, c.data(),
+        p.nmo)));
+    FBF_TRY(res.sync());
+    Point point = FBF_TRY(evaluate(p, c.data(), start, pt2));
+    const Weight weighed = FBF_TRY(weight(p, point));
+    return Weighed{.point = std::move(point), .w = weighed};
+  };
+  fb::Result<Weighed> out = run();
+  if (!out.has_value()) {
+    if (why != nullptr) {
+      std::println("     {}: {}", why, out.error().message);
+    }
+    return std::nullopt;
+  }
+  return std::move(*out);
+}
+
+void print_weight(const std::string_view label, const Weight &w) {
+  std::print("{:<22} W {:.6f} (reference weight {:.6f});", label, w.total, 1.0 / (1.0 + w.total));
+  constexpr std::array<std::string_view, 8> kNames{"Sr",   "Si",  "Sijrs", "Sijr",
+                                                   "Srsi", "Srs", "Sij",   "Sir"};
+  for (std::size_t k = 0; k < 8; ++k) {
+    std::print(" {} {:.5f}", kNames[k], w.classes[k]);
+  }
+  std::println("");
+}
+
+// The maximum-overlap orbitals (design.html, "Maximum overlap"): W, the
+// weight of the first-order wave function, minimized over the non-redundant
+// rotations x from @p origin's orbitals, C = C0 exp(kappa(x)). To first
+// order the overlap of the reference with the exact state is
+// (1 + W)^(-1/2), so this is Brueckner's criterion at this order. W is
+// bounded below, which E_CAS + E_PT2 is not.
+//
+// The gradient is a central difference over kRotation in each rotation, the
+// CI relaxed at every point; the rotations whose derivative vanishes at the
+// start (by symmetry) are left out and checked at the end. The step is BFGS
+// from the differences' own diagonal curvature, backtracked on W.
+fb::Status maximum_overlap(const Problem &p, const Point &origin, const std::int32_t iterations) {
+  fb::DeviceResources &res = p.res;
+  const std::size_t n = origin.fock.gradient.num_elements();
+  const auto dim = static_cast<std::size_t>(p.rdm.size());
+  const double *const c0 = origin.c.data();
+  std::vector<double> x(n, 0.0);
+  std::optional<Weighed> first =
+      weigh(p, c0, x, {origin.roots.vectors.data(), dim}, true, "the CASSCF orbitals");
+  if (!first) {
+    return fb::err_numerical("maximum_overlap: no weight at the CASSCF orbitals");
+  }
+  Weighed at = std::move(*first);
+  const Weight w0 = at.w;
+  const double e_cas0 = at.point.e_cas;
+  const double e_pt20 = at.point.e_pt2;
+
+  // dW/dx and d2W/dx2 over the rotations @p take names, at x.
+  struct Slope {
+    std::vector<double> g;
+    std::vector<double> curvature;
+  };
+  const auto slope = [&](const std::vector<bool> &take) -> fb::Result<Slope> {
+    Slope out{.g = std::vector<double>(n, 0.0), .curvature = std::vector<double>(n, 0.0)};
+    const std::span<const double> start{at.point.roots.vectors.data(), dim};
+    std::vector<double> moved = x;
+    for (std::size_t i = 0; i < n; ++i) {
+      if (!take[i]) {
+        continue;
+      }
+      moved[i] = x[i] + kRotation;
+      const std::optional<Weighed> plus = weigh(p, c0, moved, start, false, "gradient");
+      moved[i] = x[i] - kRotation;
+      const std::optional<Weighed> minus = weigh(p, c0, moved, start, false, "gradient");
+      moved[i] = x[i];
+      if (!plus || !minus) {
+        return fb::err_numerical("maximum_overlap: a gradient point was refused");
+      }
+      out.g[i] = (plus->w.total - minus->w.total) / (2.0 * kRotation);
+      out.curvature[i] =
+          (plus->w.total - (2.0 * at.w.total) + minus->w.total) / (kRotation * kRotation);
+    }
+    return out;
+  };
+  const auto largest = [&](const std::vector<double> &v, const std::vector<bool> &take) {
+    double out = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+      if (take[i]) {
+        out = std::max(out, std::abs(v[i]));
+      }
+    }
+    return out;
+  };
+
+  std::vector<bool> free(n, true);
+  Slope s = FBF_TRY(slope(free));
+  std::size_t count = 0;
+  double low = std::numeric_limits<double>::infinity();
+  double high = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    free[i] = std::abs(s.g[i]) >= kSymmetryZero;
+    if (free[i]) {
+      ++count;
+      low = std::min(low, s.curvature[i]);
+      high = std::max(high, s.curvature[i]);
+    }
+  }
+  std::println("{} rotations, {} with a derivative above {:g}; their curvature {:.3e} to {:.3e}", n,
+               count, kSymmetryZero, low, high);
+  // The inverse Hessian, n x n: the diagonal curvature's, floored.
+  const double floor = 0.05 * high;
+  std::vector<double> inverse(n * n, 0.0);
+  const auto reset = [&](const Slope &from) {
+    std::ranges::fill(inverse, 0.0);
+    for (std::size_t i = 0; i < n; ++i) {
+      if (free[i]) {
+        inverse[(i * n) + i] = 1.0 / std::max(from.curvature[i], floor);
+      }
+    }
+  };
+  reset(s);
+
+  std::println("{:>4} {:>12} {:>16} {:>14} {:>16} {:>10} {:>10} {:>6}", "iter", "W", "E_CAS",
+               "E_PT2", "E_total", "max|dW|", "|g_CAS|", "t");
+  double t = 0.0;
+  for (std::int32_t iter = 0;; ++iter) {
+    const std::vector<double> g_cas = FBF_TRY(download(res, at.point.fock.gradient.data(), n));
+    double g_max = largest(s.g, free);
+    std::println("{:>4} {:>12.8f} {:>16.10f} {:>14.10f} {:>16.10f} {:>10.3e} {:>10.3e} {:>6}", iter,
+                 at.w.total, at.point.e_cas, at.point.e_pt2, at.point.total(), g_max, norm(g_cas),
+                 t);
+    if (g_max < kWeightGradient) {
+      // The rotations left out: any that has grown a derivative joins.
+      std::vector<bool> rest(n);
+      for (std::size_t i = 0; i < n; ++i) {
+        rest[i] = !free[i];
+      }
+      const Slope others = FBF_TRY(slope(rest));
+      std::size_t joined = 0;
+      for (std::size_t i = 0; i < n; ++i) {
+        if (rest[i] && std::abs(others.g[i]) >= kWeightGradient) {
+          free[i] = true;
+          s.g[i] = others.g[i];
+          s.curvature[i] = others.curvature[i];
+          inverse[(i * n) + i] = 1.0 / std::max(others.curvature[i], floor);
+          ++joined;
+        }
+      }
+      std::println("     max |dW| over the rotations left out {:.3e}; {} join",
+                   largest(others.g, rest), joined);
+      if (joined == 0) {
+        break;
+      }
+      g_max = largest(s.g, free);
+    }
+    if (iter >= iterations) {
+      std::println("not converged in {} iterations", iterations);
+      break;
+    }
+    const auto direction = [&] {
+      std::vector<double> d(n, 0.0);
+      for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t j = 0; j < n; ++j) {
+          d[i] -= inverse[(i * n) + j] * s.g[j];
+        }
+      }
+      return d;
+    };
+    std::vector<double> d = direction();
+    double descent = std::inner_product(d.begin(), d.end(), s.g.begin(), 0.0);
+    if (!(descent < 0.0)) {
+      reset(s);
+      d = direction();
+      descent = std::inner_product(d.begin(), d.end(), s.g.begin(), 0.0);
+    }
+    const double longest =
+        std::ranges::max(d | std::views::transform([](const double v) { return std::abs(v); }));
+    if (longest > kTrustStep) {
+      for (double &v : d) {
+        v *= kTrustStep / longest;
+      }
+      descent *= kTrustStep / longest;
+    }
+    std::optional<Weighed> next;
+    std::vector<double> x_next;
+    for (t = 1.0; t >= 1.0 / 128.0 && !next; t /= 2.0) {
+      x_next = x;
+      for (std::size_t i = 0; i < n; ++i) {
+        x_next[i] += t * d[i];
+      }
+      std::optional<Weighed> trial =
+          weigh(p, c0, x_next, {at.point.roots.vectors.data(), dim}, true, "trial");
+      if (trial && trial->w.total < at.w.total + (1e-4 * t * descent)) {
+        next = std::move(trial);
+        break;
+      }
+    }
+    if (!next) {
+      std::println("no descent along the step down to t = 1/128: stopping");
+      break;
+    }
+    std::vector<double> step(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      step[i] = x_next[i] - x[i];
+    }
+    x = std::move(x_next);
+    at = std::move(*next);
+    const Slope fresh = FBF_TRY(slope(free));
+    // BFGS on the inverse: H <- (1 - r s y^T) H (1 - r y s^T) + r s s^T.
+    std::vector<double> y(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      y[i] = fresh.g[i] - s.g[i];
+    }
+    const double sy = std::inner_product(step.begin(), step.end(), y.begin(), 0.0);
+    if (sy > 1e-14) {
+      const double r = 1.0 / sy;
+      std::vector<double> hy(n, 0.0);
+      for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t j = 0; j < n; ++j) {
+          hy[i] += inverse[(i * n) + j] * y[j];
+        }
+      }
+      const double yhy = std::inner_product(y.begin(), y.end(), hy.begin(), 0.0);
+      for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t j = 0; j < n; ++j) {
+          inverse[(i * n) + j] += (r * (1.0 + (r * yhy)) * step[i] * step[j]) -
+                                  (r * ((hy[i] * step[j]) + (step[i] * hy[j])));
+        }
+      }
+    }
+    s = fresh;
+  }
+  print_weight("CASSCF orbitals:", w0);
+  print_weight("maximum overlap:", at.w);
+  std::print(
+      "largest rotation {:.4f} rad; occupations",
+      std::ranges::max(x | std::views::transform([](const double v) { return std::abs(v); })));
+  for (const double o : eigenvalues(at.point.gamma, static_cast<std::size_t>(p.ncas))) {
+    std::print(" {:.4f}", o);
+  }
+  std::println("");
+  std::println("final {:>16.10f} {:>14.10f} {:>16.10f}", at.point.e_cas, at.point.e_pt2,
+               at.point.total());
+  std::println("change over CASSCF orbitals: E_CAS {:+.3e}  E_PT2 {:+.3e}  total {:+.3e} hartree",
+               at.point.e_cas - e_cas0, at.point.e_pt2 - e_pt20,
+               at.point.total() - e_cas0 - e_pt20);
+  return {};
+}
+
 fb::Status run(const std::span<char *const> args) {
   if (args.size() < 2 || args.size() > 4 ||
-      (args.size() == 4 && std::string_view(args[3]) != "no" &&
-       std::string_view(args[3]) != "oo")) {
-    return fb::err_config("usage: {} <config.toml> [iterations] [oo|no]",
+      (args.size() == 4 && std::string_view(args[3]) != "no" && std::string_view(args[3]) != "oo" &&
+       std::string_view(args[3]) != "mo")) {
+    return fb::err_config("usage: {} <config.toml> [iterations] [oo|no|mo]",
                           args.empty() ? "free_breakfast_oo_nevpt2" : args[0]);
   }
   const std::filesystem::path config = args[1];
@@ -514,6 +880,7 @@ fb::Status run(const std::span<char *const> args) {
                   .molecule = calc.get<fb::MoleculeOutput>()->molecule,
                   .basis = calc.get<fb::BasisSetOutput>()->basis,
                   .h = calc.get<fb::CoreHamiltonianOutput>()->h,
+                  .s = calc.get<fb::OverlapOutput>()->s,
                   .b = df.b,
                   .naux = df.naux,
                   .nmo = static_cast<std::int32_t>(casscf->c.n()),
@@ -532,6 +899,68 @@ fb::Status run(const std::span<char *const> args) {
   const double e_pt20 = at.e_pt2;
   std::println("CASSCF({},{}) nmo {} ncore {}: pipeline E_CAS {:.10f}", casscf->nelecas,
                casscf->ncas, p.nmo, p.ncore, casscf->energy);
+  if (const auto &fci = calc.get<fb::FciOutput>(); fci.has_value()) {
+    // The exact answer, and the functional in the exact state's natural
+    // orbitals, by occupation: the ncore most occupied the core, the next
+    // ncas the active space. What orbitals that have seen all the
+    // correlation are worth to NEVPT2.
+    std::println("FCI {:.10f}", fci->energies.front());
+    const auto nmo = static_cast<std::size_t>(p.nmo);
+    const std::size_t mo2 = nmo * nmo;
+    std::vector<double> v;
+    const std::vector<double> occupations = eigensystem(
+        {fci->rdm1.begin(), fci->rdm1.begin() + static_cast<std::ptrdiff_t>(mo2)}, nmo, &v);
+    std::vector<std::size_t> order(nmo);
+    std::iota(order.begin(), order.end(), std::size_t{0});
+    std::ranges::sort(order, [&](const std::size_t a, const std::size_t b) {
+      return occupations[a] > occupations[b];
+    });
+    const std::vector<double> c_scf =
+        FBF_TRY(download(res, calc.get<fb::ScfOutput>()->c.data(), mo2));
+    std::vector<double> c_no(mo2, 0.0);
+    for (std::size_t column = 0; column < nmo; ++column) {
+      for (std::size_t k = 0; k < nmo; ++k) {
+        const double u = v[(k * nmo) + order[column]];
+        for (std::size_t mu = 0; mu < nmo; ++mu) {
+          c_no[mu + (nmo * column)] += c_scf[mu + (nmo * k)] * u;
+        }
+      }
+    }
+    fb::Buffers::device<double> c_device(mo2, res.device());
+    FBF_TRY(copy(res, c_device.data(), c_no.data(), mo2, wwr::wwrMemcpyHostToDevice));
+    const fb::Result<Point> exact = evaluate(p, c_device.data(), {});
+    if (exact.has_value()) {
+      std::println("FCI natural orbitals: E_CAS {:.10f}  E_PT2 {:.10f}  total {:.10f}",
+                   exact->e_cas, exact->e_pt2, exact->total());
+      print_weight("FCI natural orbitals:", FBF_TRY(weight(p, *exact)));
+      std::print("     FCI occupations from the last core orbital to the first virtual:");
+      for (std::int32_t k = std::max(p.ncore - 1, 0); k <= std::min(p.ncore + p.ncas, p.nmo - 1);
+           ++k) {
+        std::print(" {:.4f}", occupations[order[static_cast<std::size_t>(k)]]);
+      }
+      std::println("");
+    } else {
+      std::println("FCI natural orbitals: {}", exact.error().message);
+    }
+  }
+  // W either way: the virtual orbitals' shift alone and the core's alone
+  // weigh the four classes with both kinds of index, and must agree.
+  {
+    const Weight both = FBF_TRY(weight(p, at));
+    const Weight virt = FBF_TRY(weight(p, at, 1.0, 0.0));
+    const Weight core = FBF_TRY(weight(p, at, 0.0, 1.0));
+    print_weight("CASSCF orbitals:", both);
+    double worst = 0.0;
+    for (const std::size_t k : {2U, 3U, 4U, 7U}) {
+      worst = std::max({worst, std::abs(virt.classes[k] - both.classes[k]),
+                        std::abs(core.classes[k] - both.classes[k])});
+    }
+    std::println("W by the virtual shift alone and by the core's: off by {:.1e} at the most",
+                 worst);
+  }
+  if (args.size() == 4 && std::string_view(args[3]) == "mo") {
+    return maximum_overlap(p, at, iterations);
+  }
   if (natural_orbitals) {
     // Natural orbitals of the PT2-corrected density, iterated: no functional
     // is minimized.
@@ -543,6 +972,7 @@ fb::Status run(const std::span<char *const> args) {
       std::println("{:>4} {:>16.10f} {:>14.10f} {:>16.10f} {:>+11.3e} {:>+11.3e} {:>+11.3e}", pass,
                    next.e_cas, next.e_pt2, next.total(), next.e_cas - e_cas0, next.e_pt2 - e_pt20,
                    next.total() - e_cas0 - e_pt20);
+      print_weight("     its weight:", FBF_TRY(weight(p, next)));
       const double change = next.total() - at.total();
       at = std::move(next);
       if (std::abs(change) < kEnergyTolerance) {
@@ -608,6 +1038,9 @@ fb::Status run(const std::span<char *const> args) {
       std::print(" {:.4f}", o);
     }
     std::println("");
+    if (const fb::Result<Weight> w = weight(p, at); w.has_value()) {
+      print_weight("     its weight:", *w);
+    }
     if (!best) {
       std::println("no descent along the step down to t = 1/64: stopping");
       break;
