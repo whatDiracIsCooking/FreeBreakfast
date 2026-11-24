@@ -21,7 +21,7 @@
 //! difference is the screen's.
 
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use fb_core_planner::Dag;
 use fb_core_wwr::runtime::Stream;
@@ -71,7 +71,7 @@ fn kept_pairs(molecule: &Molecule, eri: &EriStep) -> (usize, usize) {
 /// The converged DF-RHF energy of `molecule` in cc-pVDZ over `eri`.
 fn energy(molecule: &Molecule, eri: &EriStep) -> f64 {
     let run = Run::new(molecule, "cc-pvdz", eri, &ScfStep::default(), 1, |n| {
-        syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n)
+        syevd_lwork(&SolverHandle::new(Arc::new(Stream::new(0))), n)
     })
     .expect("the case plans");
     let (record, out) = run.run(&[0]);

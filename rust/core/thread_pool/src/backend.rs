@@ -28,6 +28,8 @@ use fb_core_wwr::solver::SolverHandle;
 use std::ops::Deref;
 #[cfg(feature = "device")]
 use std::rc::Rc;
+#[cfg(feature = "device")]
+use std::sync::Arc;
 
 /// The device side of a run: the lanes the GPU workers enqueue on, and the
 /// waits that make each edge leaving a lane hold
@@ -168,7 +170,7 @@ pub struct DeviceStream {
     // `None` on a lane made without them.
     blas: Option<BlasHandle>,
     solver: Option<SolverHandle>,
-    stream: Rc<Stream>,
+    stream: Arc<Stream>,
     /// The worker's fork streams, shared by its lanes; `None` for a worker
     /// none of whose tasks forks onto two or more.
     forks: Option<Rc<Forks>>,
@@ -226,10 +228,10 @@ impl DeviceStream {
         forks: Option<Rc<Forks>>,
         privileged: bool,
     ) -> Self {
-        let stream = Rc::new(Stream::new(dev_idx));
+        let stream = Arc::new(Stream::new(dev_idx));
         DeviceStream {
-            blas: libraries.then(|| BlasHandle::new(Rc::clone(&stream))),
-            solver: libraries.then(|| SolverHandle::new(Rc::clone(&stream))),
+            blas: libraries.then(|| BlasHandle::new(Arc::clone(&stream))),
+            solver: libraries.then(|| SolverHandle::new(Arc::clone(&stream))),
             stream,
             forks,
             privileged,

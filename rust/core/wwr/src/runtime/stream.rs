@@ -50,7 +50,33 @@ impl HandleKind for StreamKind {
 ///
 /// It is a [`DeviceHandleStream`] on its own, so it can back a device
 /// buffer with no wrapping struct, as in wwr.
+///
+/// `Send` and `Sync`: a step runs on whichever worker picks it up, so its
+/// stream moves with it, and a stream shared by its library handles (an
+/// `Arc`, [`StreamBoundHandle`](crate::handle::StreamBoundHandle)) is
+/// reached from each handle's thread.
 pub struct Stream(DeviceBoundHandle<StreamKind>);
+
+// SAFETY: the raw stream is a runtime object, not tied to the thread that
+// made it, and the runtime API (CUDA's and HIP's) is thread-safe: every
+// call through it names the stream, which carries its device. Moving the
+// owner moves only the pointer, and it is destroyed once, by its drop, on
+// whichever thread that runs; a thread whose current device is not the
+// stream's could make the same calls before the move.
+unsafe impl Send for Stream {}
+// SAFETY: as above. Every `&self` method is one runtime call on the live
+// stream (a sync, a wait, a capture's begin or end, or reading the
+// pointer), which the runtime allows from several threads at once; work
+// two threads enqueue meanwhile runs in an order neither chose, which is
+// the callers' to order, not memory safety. The drop takes the stream by
+// value.
+unsafe impl Sync for Stream {}
+
+// The two above, checked at every build.
+const _: () = {
+    const fn shared_across_threads<T: Send + Sync>() {}
+    shared_across_threads::<Stream>();
+};
 
 impl Stream {
     /// A non-blocking stream on `dev_idx`.

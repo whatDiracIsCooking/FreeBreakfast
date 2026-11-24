@@ -449,13 +449,13 @@ struct RunBackend<'a, B>(&'a B);
 // and no other run's. A library handle is called through only by the nodes
 // of its own lane, one node at a time on its GPU worker's thread, and cuBLAS,
 // hipBLAS, cuSOLVER and hipSOLVER allow a handle to be used from any thread
-// one call at a time; a `DeviceStream` is not `Sync`, so a node cannot hand
-// its stream or handles to another thread. A worker's fork streams and
+// one call at a time; a `DeviceStream` and its library handles are not
+// `Sync`, so a node cannot hand its handles to another thread (a `Stream`
+// is `Sync` itself, `fb_core_wwr`'s argument). A worker's fork streams and
 // their events are reached only through its lanes' `DeviceStream`s, so
-// only from its own thread. Every handle and every `Rc` a `DeviceStream`
-// holds, its forks among them, is made before the run and dropped after
-// it, and a
-// BLAS workspace is handed over only through `&mut Device`, which the run's
+// only from its own thread. Every handle, every `Rc` and every `Arc` a
+// `DeviceStream` holds, its forks among them, is made before the run and
+// dropped after it, and a BLAS workspace is handed over only through `&mut Device`, which the run's
 // borrow rules out.
 unsafe impl<B: Backend> Sync for RunBackend<'_, B> {}
 

@@ -60,7 +60,7 @@
 
 use std::ops::Deref;
 use std::panic::Location;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use wwr_sys::{
     wwr_blas_diag_type, wwr_blas_fill_mode, wwr_blas_handle, wwr_blas_operation,
@@ -145,9 +145,14 @@ impl StreamBoundKind for BlasKind {
 /// An owned BLAS handle bound to a stream it keeps alive:
 /// `BlasHandleWrapper`. Every call through it enqueues on that stream.
 ///
-/// Like the stream it is bound to, it is neither `Send` nor `Sync`; an
-/// owner that shares it across threads makes sure no two call through it at
-/// once.
+/// `Send`, not `Sync`: a step that calls the library moves to whichever
+/// worker picks it up, and its handles with it, but a handle's state (its
+/// stream, its workspace) is one caller's at a time, so it is never shared.
+///
+/// ```compile_fail,E0277
+/// fn shared_across_threads<T: Sync>() {}
+/// shared_across_threads::<fb_core_wwr::blas::BlasHandle>();
+/// ```
 pub struct BlasHandle {
     // Fields drop in declaration order: the handle is destroyed before the
     // workspace it was handed is released.
@@ -158,11 +163,26 @@ pub struct BlasHandle {
     workspace: Option<Box<dyn DeviceSliceMut<u8> + Send + Sync>>,
 }
 
+// SAFETY: the raw handle is a library object, not tied to the thread that
+// made it: cuBLAS and hipBLAS allow a handle to be used from any thread,
+// one call at a time, and every call names it. Moving the owner moves the
+// pointer, the `Arc` of its stream (`Stream` is `Send` and `Sync`) and the
+// workspace (`Send` by its bound); the handle is destroyed once, by its
+// drop, on whichever thread that runs. It is not `Sync`, so no two threads
+// call through one handle at once.
+unsafe impl Send for BlasHandle {}
+
+// The one above, checked at every build.
+const _: () = {
+    const fn moved_between_threads<T: Send>() {}
+    moved_between_threads::<BlasHandle>();
+};
+
 impl BlasHandle {
     /// A handle on `owner`'s device, bound to its stream. Aborts on
     /// failure, logging at critical against the caller.
     #[track_caller]
-    pub fn new(owner: Rc<Stream>) -> Self {
+    pub fn new(owner: Arc<Stream>) -> Self {
         BlasHandle {
             handle: check_or_abort(StreamBoundHandle::try_new(owner)),
             workspace: None,
@@ -1291,7 +1311,7 @@ mod tests {
         reason = "a test reads its result back on the host: the harness waits, not a task"
     )]
     fn binds_the_owners_stream() {
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let blas = BlasHandle::new(owner.clone());
         assert_eq!(blas.dev_idx(), 0);
         assert_eq!(blas.stream(), owner.stream());
@@ -1301,7 +1321,7 @@ mod tests {
         assert_eq!(status, wwr_blas_status::WWR_BLAS_STATUS_SUCCESS);
         assert_eq!(bound, owner.stream());
         drop(blas);
-        assert_eq!(Rc::strong_count(&owner), 1);
+        assert_eq!(Arc::strong_count(&owner), 1);
         ok(owner.sync());
     }
 
@@ -1318,7 +1338,7 @@ mod tests {
     fn runs_a_gemm_on_a_workspace_it_was_handed() {
         const N: usize = 16;
         const BYTES: usize = 32 << 20;
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let mut blas = BlasHandle::new(owner.clone());
         assert!(blas.workspace().is_none());
         let workspace = DeviceBytes::new(BYTES);
@@ -1363,6 +1383,68 @@ mod tests {
         .unwrap();
         assert_eq!(download(&dc, &owner), want);
         drop(blas);
+        ok(owner.sync());
+    }
+
+    /// Needs a GPU. A stream and the BLAS and solver handles bound to it,
+    /// made on this thread, move to another and are used there: a DGEMM to
+    /// the exact product (small integers, as above) and the solver's
+    /// workspace query. The stream stays this thread's too, through its
+    /// `Arc`, and the handles are destroyed on the other thread.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test reads its result back on the host: the harness waits, not a task"
+    )]
+    fn a_stream_and_its_handles_move_to_another_thread() {
+        use crate::solver::{SolverHandle, syevd_lwork};
+        use wwr_sys::{wwr_solver_eig_mode, wwr_solver_fill_mode};
+
+        const N: usize = 16;
+        let owner = Arc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner.clone());
+        let solver = SolverHandle::new(owner.clone());
+        let a: Vec<f64> = (0..N * N).map(|i| (i % 7) as f64 - 3.0).collect();
+        let b: Vec<f64> = (0..N * N).map(|i| (i % 5) as f64 - 2.0).collect();
+        let want = host_gemm(
+            false,
+            false,
+            (N, N, N),
+            1.0,
+            (&a, N),
+            (&b, N),
+            0.0,
+            (&[], N),
+        );
+        let (da, db) = (
+            DeviceBytes::upload(&a, &owner),
+            DeviceBytes::upload(&b, &owner),
+        );
+
+        let (got, lwork) = std::thread::spawn(move || {
+            let n = N as i32;
+            let mut dc = DeviceBytes::new(N * N * size_of::<f64>());
+            gemm(
+                &blas, OP_N, OP_N, n, n, n, 1.0, &da, n, &db, n, 0.0, &mut dc, n,
+            )
+            .unwrap();
+            let lwork = syevd_lwork::<f64>(
+                &solver,
+                wwr_solver_eig_mode::WWR_SOLVER_EIG_MODE_VECTOR,
+                wwr_solver_fill_mode::WWR_SOLVER_FILL_MODE_LOWER,
+                n,
+                n,
+            )
+            .unwrap();
+            (download(&dc, blas.owner()), lwork)
+        })
+        .join()
+        .unwrap();
+
+        assert_eq!(got, want);
+        assert!(lwork > 0);
+        assert_eq!(Arc::strong_count(&owner), 1);
         ok(owner.sync());
     }
 
@@ -1440,7 +1522,7 @@ mod tests {
             3.0,
             (&c, ldc),
         );
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let blas = BlasHandle::new(owner.clone());
         let (da, db, mut dc) = (
             DeviceBytes::upload(&a, &owner),
@@ -1476,7 +1558,7 @@ mod tests {
         expected = "gemm: C is 4 x 4 at leading dimension 4, 16 elements, but its slice holds 15"
     )]
     fn gemm_refuses_a_short_slice() {
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let blas = BlasHandle::new(owner);
         let a = DeviceBytes::new(16 * size_of::<f64>());
         let mut c = DeviceBytes::new(15 * size_of::<f64>());
@@ -1513,7 +1595,7 @@ mod tests {
             );
             want[i * stride_c..i * stride_c + ldc * n].copy_from_slice(&block);
         }
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let blas = BlasHandle::new(owner.clone());
         let (da, db, mut dc) = (
             DeviceBytes::upload(&a, &owner),
@@ -1604,7 +1686,7 @@ mod tests {
                 .sum();
             want[r * incy] = -2.0 * dot + 3.0 * y[r * incy];
         }
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let blas = BlasHandle::new(owner.clone());
         let (da, dx, mut dy) = (
             DeviceBytes::upload(&a, &owner),
@@ -1652,7 +1734,7 @@ mod tests {
         expected = "gemv: y is 3 entries at stride 1, 3 elements, but its slice holds 2"
     )]
     fn gemv_refuses_a_short_slice() {
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let blas = BlasHandle::new(owner);
         let a = DeviceBytes::new(15 * size_of::<f64>());
         let x = DeviceBytes::new(5 * size_of::<f64>());
@@ -1709,7 +1791,7 @@ mod tests {
                 };
             }
         }
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let blas = BlasHandle::new(owner.clone());
         let (da, mut db) = (
             DeviceBytes::upload(&a, &owner),
@@ -1784,7 +1866,7 @@ mod tests {
                 a[l + i * lda]
             }
         };
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let blas = BlasHandle::new(owner.clone());
         let (da, mut dc) = (
             DeviceBytes::upload(&a, &owner),
@@ -1842,7 +1924,7 @@ mod tests {
         expected = "trsm: A is 4 x 4 at leading dimension 4, 16 elements, but its slice holds 9"
     )]
     fn trsm_refuses_a_short_slice() {
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let blas = BlasHandle::new(owner);
         let a = DeviceBytes::new(9 * size_of::<f64>());
         let mut b = DeviceBytes::new(12 * size_of::<f64>());
@@ -1859,7 +1941,7 @@ mod tests {
         expected = "syrk: C is 3 x 3 at leading dimension 3, 9 elements, but its slice holds 8"
     )]
     fn syrk_refuses_a_short_slice() {
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let blas = BlasHandle::new(owner);
         let a = DeviceBytes::new(6 * size_of::<f64>());
         let mut c = DeviceBytes::new(8 * size_of::<f64>());
@@ -1959,7 +2041,7 @@ mod tests {
             matrix(ldc, n, 3),
         );
         let want = host_dgmm(left, (m, n), (&a, lda), (&x, incx), (&c, ldc));
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let blas = BlasHandle::new(owner.clone());
         let (da, dx, mut dc) = (
             DeviceBytes::upload(&a, &owner),
@@ -2007,7 +2089,7 @@ mod tests {
         expected = "dgmm: x is 4 entries at stride 1, 4 elements, but its slice holds 3"
     )]
     fn dgmm_refuses_a_short_slice() {
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let blas = BlasHandle::new(owner);
         let a = DeviceBytes::new(12 * size_of::<f64>());
         let x = DeviceBytes::new(3 * size_of::<f64>());
@@ -2022,7 +2104,7 @@ mod tests {
     #[ignore = "tier 4: needs a GPU"]
     fn geam_reads_each_operand_at_its_op_and_leading_dimension() {
         let (m, n) = (5, 3);
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let blas = BlasHandle::new(owner.clone());
         for (op_a, op_b) in [(OP_N, OP_N), (OP_N, OP_T), (OP_T, OP_N), (OP_T, OP_T)] {
             let stored = |op| if op == OP_N { (m, n) } else { (n, m) };
@@ -2082,7 +2164,7 @@ mod tests {
         expected = "geam: B is 4 x 2 at leading dimension 4, 8 elements, but its slice holds 7"
     )]
     fn geam_refuses_a_short_slice() {
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let blas = BlasHandle::new(owner);
         let a = DeviceBytes::new(8 * size_of::<f64>());
         let b = DeviceBytes::new(7 * size_of::<f64>());

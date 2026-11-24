@@ -28,7 +28,7 @@
 
 mod common;
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use fb_core_thread_pool::Placement;
 use fb_core_wwr::runtime::Stream;
@@ -60,7 +60,7 @@ fn core_orbitals_match_lapack() {
     let mut misses = Vec::new();
     for (stem, xyz, basis) in common::FIXTURES {
         let run = common::run(xyz, basis, |n| {
-            syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n)
+            syevd_lwork(&SolverHandle::new(Arc::new(Stream::new(0))), n)
         });
         let n = run.n_ao();
         let planned = run.planned();

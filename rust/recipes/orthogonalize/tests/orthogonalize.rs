@@ -21,7 +21,6 @@
 //! inside the margin).
 
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
@@ -126,7 +125,7 @@ fn npy(path: &Path) -> (Vec<usize>, Vec<f64>) {
 /// asked of a handle there and the default floor, run once.
 fn orthogonalize(n: usize, s: Vec<f64>) -> Vec<f64> {
     let lwork = {
-        let solver = SolverHandle::new(Rc::new(Stream::new(0)));
+        let solver = SolverHandle::new(Arc::new(Stream::new(0)));
         syevd_lwork(&solver, n).unwrap()
     };
     let mut dag = Dag::new();

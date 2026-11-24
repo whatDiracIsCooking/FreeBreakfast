@@ -10,7 +10,7 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_log::{self as log, LogLevel};
@@ -51,7 +51,7 @@ fn run(args: &[String]) -> Status {
     };
     let planned = plan(
         &config,
-        |n| syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n),
+        |n| syevd_lwork(&SolverHandle::new(Arc::new(Stream::new(0))), n),
         &mut card,
     )?;
     std::fs::create_dir_all(&config.output).map_err(|e| {

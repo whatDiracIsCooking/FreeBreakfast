@@ -4,7 +4,7 @@
 //! (`docs/gpu_layer.md`, "Layering"): a caller outside the crate passes
 //! the leading dimensions to `fb_core_wwr::blas`.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::*;
 use fb_core_wwr::runtime::Stream;
@@ -62,7 +62,7 @@ fn check<OpA: BlasOp, OpB: BlasOp>((m, n, k): (usize, usize, usize)) {
     let (t_a, t_b) = (t(OpA::RAW), t(OpB::RAW));
     let (a, b, c) = (matrix(m, k, 1), matrix(k, n, 2), matrix(m, n, 3));
     let want = host_gemm(t_a, t_b, (m, n, k), -2.0, &a, &b, 3.0, &c);
-    let owner = Rc::new(Stream::new(0));
+    let owner = Arc::new(Stream::new(0));
     let blas = BlasHandle::new(owner.clone());
     let (da, db, mut dc) = (
         DeviceBytes::upload(&a, &owner),
@@ -102,7 +102,7 @@ fn c_on_a_real_type_is_the_transpose() {
     reason = "a test reads its result back on the host: the harness waits, not a task"
 )]
 fn an_empty_product_is_a_no_op() {
-    let owner = Rc::new(Stream::new(0));
+    let owner = Arc::new(Stream::new(0));
     let blas = BlasHandle::new(owner.clone());
     let a = DeviceBytes::new(8);
     let mut c = DeviceBytes::new(8);
@@ -128,7 +128,7 @@ fn check_dgmm(side: wwr_blas_side_mode, (m, n): (usize, usize)) {
             x[if left { i } else { j }] * a[e]
         })
         .collect();
-    let owner = Rc::new(Stream::new(0));
+    let owner = Arc::new(Stream::new(0));
     let blas = BlasHandle::new(owner.clone());
     let (da, dx) = (
         DeviceBytes::upload(&a, &owner),
