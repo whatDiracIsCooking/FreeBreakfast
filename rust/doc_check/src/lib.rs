@@ -35,7 +35,10 @@
 //! `fb_core_planner` is named for the planner; and `tests/doc_lists.rs`, which holds the docs'
 //! lists of what the tree holds to the tree: the kernel libraries' ABI
 //! versions and functions in `docs/gpu_layer.md`, the slow cases in
-//! `docs/testing.md`, and which members link the library in `README.md`.
+//! `docs/testing.md`, and which members link the library in `README.md`;
+//! and `tests/git_dependencies.rs`, which checks that a git dependency is
+//! pinned by a full commit in `[workspace.dependencies]` alone, and that a
+//! prototype under `experimental/rust/` names the same commit.
 //! A crate of its own
 //! so that it builds and runs without the wwr library. The checks are its tests; the
 //! library holds only what more than one of them reads.

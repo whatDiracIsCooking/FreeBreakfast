@@ -327,6 +327,7 @@ name = "fb-doc-check"
 version = "0.1.0"
 dependencies = [
  "guppy",
+ "toml",
 ]
 
 [[package]]

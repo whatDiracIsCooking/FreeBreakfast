@@ -876,7 +876,7 @@ checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
 [[package]]
 name = "rustflow"
 version = "0.0.0"
-source = "git+https://github.com/whatDiracIsCooking/rustflow?rev=b77e5474091d84bc49808245b9ac3f9004070a3f#b77e5474091d84bc49808245b9ac3f9004070a3f"
+source = "git+https://github.com/whatDiracIsCooking/rustflow?rev=f184bcabac5ab01dec0def8c3f369d1bbdb3bbaf#f184bcabac5ab01dec0def8c3f369d1bbdb3bbaf"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",

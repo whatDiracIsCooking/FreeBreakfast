@@ -55,7 +55,7 @@ a benchmark.
 git submodule update --init --recursive
 (cd rust && cmake --preset cuda && cmake --build --preset cuda -j8)   # the libraries the crates link
 cd experimental/rust/v0.0.2
-cargo test                                                # 9 device-free tests, 2 doctests
+cargo test                                                # 11 device-free tests, 2 doctests
 cargo test -- --include-ignored --nocapture --test-threads=1   # and the 8 GPU cases
 cargo run --release --example run -- examples/h2o.toml    # setup, budget mode, execute mode
 cargo run --release --example run -- --budget-only examples/h2o.toml   # the DAG and the table, no device
@@ -74,6 +74,7 @@ them (`flock ~/.sccache/gpu-locks/cuda.0.lock flock â€¦/cuda.1.lock cargo test â
 | `src/bus.rs` | The TOML config, setup, `Shared`, `MainBus` with one slot per step | Steps and the MainBus; Caps |
 | `src/steps/` | `harmonics`, `records`, `overlap`, `core_hamiltonian`, `orthogonalizer`, `eri` (the `EriManager`), `guess`, `scf` | Example: the DF-HF setup DAG |
 | `tests/core.rs` | The core with fake steps and no device | "The core, device-free" |
+| `tests/rustflow_pin.rs` | At the pinned rustflow: a condition loop inside a subflow, and a multi-condition looping a body of two sources with no entry node, on one worker and four | The step DAG on rustflow |
 | `tests/water.rs` | The energies above, the replay, the stress loop, the refusals | "The DF-RHF chain as steps" |
 
 The step DAG (`--budget-only` prints it as DOT):

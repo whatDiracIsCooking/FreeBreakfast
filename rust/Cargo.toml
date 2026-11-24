@@ -124,6 +124,12 @@ jiff = "0.2.43"
 # dev-dependency only).
 guppy = "0.19.1"
 libc = "0.2"
+# The executor the redesign moves to (docs/rust-redesign.html, "The step DAG
+# on rustflow"). Unpublished, so a git dependency pinned by its full commit,
+# here alone; a prototype under experimental/rust/, a workspace of its own,
+# names the same rev (docs/testing.md, "What runs when"). No member depends
+# on it yet, so Cargo.lock has no entry for it until one does.
+rustflow = { git = "https://github.com/whatDiracIsCooking/rustflow", rev = "f184bcabac5ab01dec0def8c3f369d1bbdb3bbaf" }
 log = { version = "0.4.35", features = ["std"] }
 proptest = "1"
 # io/basis: the BSE JSON documents.
