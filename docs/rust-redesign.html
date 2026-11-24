@@ -176,8 +176,9 @@ of pairs, kept on the host and contracted in batches of aux functions; batched o
 a step runs on no GPU, gpu0 or all of them, and "target" is dropped; scratch's contents
 and addresses over a replay; two thread pools).
 <span class="tag prop">proposed</span> this document's suggestion, not yet agreed
-(six remain: in <a href="#sets">streams</a>, the device's mutex held per library call
-with one contention check; in <a href="#scratch">step scratch</a>, packing by the best
+(seven remain: in <a href="#sets">streams</a>, the device's mutex held per library call
+with one contention check, and, in its place, <a href="#ring">a ring of library handles
+with no library stream</a>; in <a href="#scratch">step scratch</a>, packing by the best
 of four fixed orders, one layout function per step, and the policy for small host
 scratch; in the <a href="#closure-model">closure model</a>, the lower bound in the
 budget table; in <a href="#shared">shared code</a>, batches of B kept on the cards
@@ -1715,6 +1716,125 @@ stream and joins back; B reads A's <code>Output</code>; C is independent of both
   gly10 size. If it does not, this closes. <span class="tag prop">proposed</span></li>
 </ul>
 
+<h3 id="ring">A ring of library handles, and no library stream</h3>
+
+<p><span class="tag prop">proposed</span> 2026-11-24, in discussion; nothing below is
+run. It would replace the device's one library stream, its mutex, the fork and join
+events and the fixed handle workspace, all of which the text above still describes as
+decided. It answers the <a href="#open">open question</a> on the step-end sync and the
+library stream.</p>
+
+<p><strong>The hole, in DF-RHF.</strong> <code>eri</code> and the
+<code>orthogonalizer</code> are unordered, so their scratch regions on gpu0 are disjoint;
+the SCF follows both, and the packer may lay its region over the orthogonalizer's.</p>
+
+<div class="tablewrap"><table>
+<tr><th>Step</th><th>What it enqueues</th><th>On which stream</th>
+  <th>Scratch on gpu0</th></tr>
+<tr><td><code>orthogonalizer</code></td><td><code>syevd</code> on S, then the
+  <code>gemm</code>s of X</td><td>The library stream only, as in the prototype</td>
+  <td><code>syevd</code>'s work at n_ao</td></tr>
+<tr><td><code>eri</code></td><td>Class kernels, then <code>potrf</code> and
+  <code>trsm</code> on the metric</td><td>Its own, then the library stream</td>
+  <td>The build's intermediates</td></tr>
+<tr><td><code>scf</code></td><td>The J and K batches, then <code>syevd</code> on
+  F</td><td>Its own, then the library stream</td>
+  <td>The J and K batch, the DIIS ring and <code>syevd</code>'s work, over the
+  orthogonalizer's bytes</td></tr>
+</table></div>
+
+<ul>
+<li><strong>The schedule that breaks.</strong> <code>eri</code> enqueues its library
+  calls, joins, and its wrapper syncs. The orthogonalizer enqueues <code>syevd</code>(S)
+  behind them and returns; its wrapper syncs the step's own stream, which is empty, so the
+  node finishes at once. Both of the SCF's predecessors are finished, it starts, and its
+  first J and K batch, on its own stream, writes the bytes <code>syevd</code>(S) is still
+  using as work. X is wrong, with no error, and only on schedules where the orthogonalizer
+  enqueues after <code>eri</code>.</li>
+<li><strong>Why the prototype never showed it.</strong> Every step put everything on the
+  library stream, and that one stream ordered all of it
+  (<a href="#prototype">the prototype</a>). The hazard needs a step that uses its own
+  stream, which the batched J and K build does.</li>
+<li><strong>The same gap is inside a step.</strong> In an SCF trip, <code>syevd</code>
+  has to wait for the kernels that built F, and the density's kernels for
+  <code>syevd</code>'s C. With two streams that takes the fork as well as the join.</li>
+</ul>
+
+<p><strong>Considered first: the join made by the access.</strong> A step reaches the
+handles only through a call that takes its <code>ForkStream</code>, forks on entry and
+joins on exit; a closure and not a guard's drop, since a forgotten guard would skip a
+join that carries memory safety. It closes the hole and does nothing for contention:
+once <code>eri</code> forks, the orthogonalizer's <code>syevd</code> queues behind
+<code>eri</code>'s class kernels on the shared stream. Not taken.</p>
+
+<p><strong>The proposal: every library call runs on the calling step's own
+stream.</strong></p>
+<ul>
+<li><strong>A handle belongs to one step for the length of its
+  <code>run</code>.</strong> <code>DeviceResources</code> holds, per card, a ring of
+  handle sets (a BLAS handle and a solver handle) and no stream of its own.</li>
+<li><strong>A step declares that it calls the library</strong>, per card, in
+  <code>mem_budget</code>, beside its scratch. Its BLAS workspace is a row of that
+  scratch, as a solver call's work buffer already is.</li>
+<li><strong>The final budget node assigns the slots by the closure</strong>, as it packs
+  scratch: two steps share a handle set only if one reaches the other. The ring's size on
+  a card is then the largest set of mutually unordered library-using steps, computed and
+  not chosen: two on gpu0 for DF-RHF (<code>eri</code> and the orthogonalizer; the SCF
+  reuses one). The guess in discussion is that two serves most calculations and four is a
+  ceiling; the handles' bytes are a fixed row of the budget table.</li>
+<li><strong>The wrapper prepares the slot before <code>run</code></strong>:
+  <code>SetStream</code> to the step's stream, then <code>SetWorkspace</code> to the
+  step's scratch slice, in that order, since on cuBLAS <code>SetStream</code> resets the
+  workspace to the library's default pool (verify; from the vendor's documentation). The
+  handle's previous user is an ancestor and has synced, so no handle is moved with work
+  in flight.</li>
+<li><strong>Safety is the scratch argument, unchanged.</strong> Everything a step
+  enqueues is on its own stream, so the step-end sync covers it with no event, and the
+  order inside a step is the order it enqueued in. No fork, no join, no mutex in a step's
+  code, and nothing rests on a drop.</li>
+<li><strong>Contention goes with the shared stream.</strong> <code>eri</code> and the
+  orthogonalizer each run on their own stream and time-slice on the card; neither waits
+  behind the other's kernels. The contention check <a href="#sets">above</a> is then
+  moot.</li>
+<li><strong>A step's inner tasks share its one handle set per card.</strong> rocBLAS
+  says not to share a handle between threads (verify), so two inner tasks do not call the
+  library at once on one card; the step arranges it, as it splits its own scratch.</li>
+<li><strong>Replays and condition loops need nothing more.</strong> The assignment is
+  made once, in budget mode, like the offsets.</li>
+</ul>
+
+<p><strong>Against a handle per step.</strong> One handle set for each library-using
+step, its stream and workspace set once in budget mode, is the same design with no
+sharing, and simpler. Its cost grows with the pipeline's length where the ring's grows
+with its width: the <a href="#probe">probe</a> read 10&ndash;14&nbsp;MiB a handle on CUDA
+and 58&ndash;60&nbsp;MiB on HIP, though with one handle and one process per case, so that
+may be mostly the library's start-up and not what each further handle costs. If a second
+handle costs next to nothing, a handle per step is the better form.</p>
+
+<p><strong>What it costs.</strong> A BLAS workspace per unordered library-using step in
+place of one per device: 64&nbsp;MiB on gpu0 for DF-RHF against 32, less if a step
+declares a smaller one (on cuBLAS the size only picks the algorithm, and rocBLAS's
+<code>gemm</code> needs none: <a href="#workspace">workspace</a>). The handle-workspace
+row of the budget table becomes scratch rows and a handles row.</p>
+
+<p><strong>What it would change above, if agreed:</strong> the streams table and its
+figure (no <code>DeviceResources</code> stream, no events); "the mutex guards the host
+side only" and "one handle set per device, on one stream"; the handle's workspace in
+<a href="#workspace">BLAS and solver workspace</a> (home: step scratch; protected by the
+closure and the step-end sync); the final budget node's duties; and item 2 of the
+<a href="#retire">order of work</a>.</p>
+
+<p><strong>To measure first</strong>, by two cases added to
+<code>experimental/library_handle_workspace</code>, on both cards:</p>
+<ol>
+<li>What a second, third and fourth handle cost in one process, BLAS and solver. This
+  picks between the ring and a handle per step.</li>
+<li>One idle handle moved between two streams, a workspace per stream: that the call uses
+  the workspace it was given after <code>SetStream</code> then
+  <code>SetWorkspace</code>, on hipBLAS as on cuBLAS; that nothing is taken or grown by
+  the move; and what the two calls cost in time.</li>
+</ol>
+
 <h3>Resources</h3>
 <p>The C++ <code>src/core/resources</code> comes back as a crate, without a pool.</p>
 <div class="tablewrap"><table>
@@ -2222,7 +2342,10 @@ Rust tree's task layer and not an edit to it.</p>
   joins back, and nothing makes it: the prototype's <code>orthogonalizer</code> and
   <code>scf</code> never used their own stream. One way to close it: the
   <code>DeviceResources</code> guard records the join into the step's stream when it is
-  dropped. Raised in review, 2026-11-23. <span class="tag disc">to discuss</span></li>
+  dropped. Raised in review, 2026-11-23. Discussed 2026-11-24: the proposal is to drop
+  the library stream, with <a href="#ring">a ring of library handles</a> assigned by the
+  closure, or a handle per step; two measurements pick between them.
+  <span class="tag prop">proposed</span></li>
 <li><strong>Packing <code>Output</code>s too</strong>, by the same closure, held until
   the measurement says <code>Output</code>s are what stacks.
   <a href="#scratch">Step scratch</a>. <span class="tag disc">to discuss</span></li>
@@ -2234,6 +2357,10 @@ Rust tree's task layer and not an edit to it.</p>
 
 <h3>To measure, verify or pick a value for</h3>
 <ul>
+<li><strong>The handle ring's two measurements</strong>: what each handle after the
+  first costs in one process, and one idle handle moved between two streams with a
+  workspace per stream, on both backends (<a href="#ring">the ring</a>). The cases are
+  written on the <code>handle-ring</code> branch and not yet run.</li>
 <li><strong>The blocking sync.</strong> Which scheduling flag makes a worker waiting on
   its step's stream sleep, on each backend. If what it costs on the SCF iteration argues
   for a cheaper replacement, the replacement has to keep pinned scratch safe as well as
