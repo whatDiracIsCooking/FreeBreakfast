@@ -1,0 +1,16 @@
+# LiF at R = 1.6 angstrom: single-state CASSCF over F 2p and Li 2s, the
+# ionic/covalent pair, picked by AVAS.
+[molecule]
+xyz = "lif_1.6.xyz"
+[basis_set]
+basis = "aug-cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "aug-cc-pVDZ-acCD-6-6"
+[scf]
+energy_tolerance = 1e-12
+commutator_tolerance = 1e-10
+[casscf]
+avas = ["F 2p", "Li 2s"]
+conv_tol = 1e-12
+conv_tol_grad = 1e-9

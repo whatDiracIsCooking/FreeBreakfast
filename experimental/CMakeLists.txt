@@ -75,3 +75,7 @@ add_subdirectory(library_handle_workspace)
 # the pipeline's setup and overlap steps, handing S to rust/gemm's buffers.
 # Checked against PySCF; cargo is run by hand, not by CMake.
 add_subdirectory(rust/s_overlap)
+
+# The OO-NEVPT2 probe: quasi-Newton steps of E_CAS + E_PT2 in the orbitals,
+# over the NEVPT2 gradient's adjoint and Z-vector. A probe, not a ctest entry.
+add_subdirectory(oo_nevpt2)

@@ -1,0 +1,16 @@
+# The probe's smoke case: examples/casscf.toml's CASSCF(4,4) water, tightened.
+[molecule]
+xyz = "water.xyz"
+[basis_set]
+basis = "cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"
+[scf]
+energy_tolerance = 1e-12
+commutator_tolerance = 1e-10
+[casscf]
+ncas = 4
+nelecas = 4
+conv_tol = 1e-12
+conv_tol_grad = 1e-9

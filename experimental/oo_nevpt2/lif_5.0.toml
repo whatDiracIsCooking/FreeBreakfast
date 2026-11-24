@@ -1,0 +1,17 @@
+# LiF at R = 5.0 angstrom, between the CASSCF and the correlated
+# ionic/covalent crossings: single-state CASSCF over F 2p and Li 2s,
+# picked by AVAS.
+[molecule]
+xyz = "lif_5.0.xyz"
+[basis_set]
+basis = "aug-cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "aug-cc-pVDZ-acCD-6-6"
+[scf]
+energy_tolerance = 1e-12
+commutator_tolerance = 1e-10
+[casscf]
+avas = ["F 2p", "Li 2s"]
+conv_tol = 1e-12
+conv_tol_grad = 1e-9
