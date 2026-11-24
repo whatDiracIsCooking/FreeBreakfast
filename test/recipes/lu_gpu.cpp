@@ -152,7 +152,7 @@ TEST(Lu, MatchesHostOnIndefiniteAndGeneralMatrices) {
   }
 }
 
-// Past the trsm recipe's 64-row block and its 16-column tile, at a general
+// Past the trsm recipe's 64-row block and its 48-column tile, at a general
 // matrix with no diagonal weight, so partial pivoting moves most rows: the
 // row interchanges and both triangular solves over several blocks each.
 // Held to GEPP's backward error (Higham, Thm 9.4): the computed X solves
@@ -165,7 +165,7 @@ TEST(Lu, BackwardStableAtLargeOrderAndManyRightHandSides) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t kN = 300;
-  constexpr std::int32_t kRhs = 40;
+  constexpr std::int32_t kRhs = 60;
   constexpr auto n = static_cast<std::size_t>(kN);
   const auto a = random_matrix(kN, kN, 300U);
   const auto b = random_matrix(kN, kRhs, 301U);

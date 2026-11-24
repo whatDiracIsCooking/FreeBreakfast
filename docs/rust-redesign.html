@@ -1317,9 +1317,16 @@ things go by the name, and they are handled apart:</p>
   three vendor calls. One path on both backends, so CUDA runs the recipe as well. What
   it replaces, a size function for <code>trsm</code> and a binding that swapped a slice
   of the step's scratch onto the handle for the call (decided earlier the same day),
-  goes, and with it the question of where the size would come from. To measure: the
-  recipe against rocBLAS's and cuBLAS's <code>trsm</code> at the density-fitting solve's
-  shape. <span class="tag dec">decided</span> 2026-11-24</li>
+  goes, and with it the question of where the size would come from. Measured against
+  both libraries (<span class="tag run">run</span> 2026-11-24, #1782,
+  <a href="../src/recipes/trsm/README.md"><code>src/recipes/trsm/README.md</code></a>'s
+  table, from <code>bench/trsm_vendor.cpp</code>): at the density-fitting solve's shape,
+  1&nbsp;GB of B and up, the recipe takes 0.76 to 0.86 of cuBLAS's time on the RTX 3080
+  and 0.99 to 1.04 of rocBLAS's on the RX 9060 XT, after its diagonal-block kernel was
+  reworked (1.13 to 1.28 of rocBLAS's before); one right-hand side goes to the
+  library's <code>trsv</code>, which takes no workspace, at the library's own time. What
+  is left is small solves a few milliseconds long, up to 1.6 times the library's.
+  <span class="tag dec">decided</span> 2026-11-24</li>
 <li><strong>A sentinel test per vendor binding, in the nightly.</strong> What is left
   of the vendor libraries (<code>gemm</code> and the other BLAS calls, <code>syevd</code>,
   <code>potrf</code>, <code>getrf</code>) was measured to stay inside the fixed workspace
@@ -2628,11 +2635,6 @@ Rust tree's task layer and not an edit to it.</p>
   configs. On the model's dummy and random DAGs it is answered
   (<a href="#closure-model">there</a>): at the bound on 98.1% largest first, the order
   taken; real configs remain, and the table's lower-bound row answers it on each.</li>
-<li><strong>The recipe's <code>trsm</code> against the vendors'.</strong> The tree's
-  triangular solve stands in for rocBLAS's and cuBLAS's on both backends
-  (<a href="#workspace">workspace</a>). Its time against each at the density-fitting
-  solve's shape is not measured; the C++ tree's tests hold its results, not its
-  speed.</li>
 <li><strong>The rest of the workspace sweep.</strong> Not measured: upper solves,
   rectangular <code>syrk</code> and <code>gemv</code>, the batched solver calls,
   hipBLASLt. What the sentinel tests would run, if taken

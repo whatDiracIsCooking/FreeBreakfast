@@ -29,8 +29,9 @@ export namespace free_breakfast {
 /// A singular A is not detected: as in BLAS, a zero pivot gives Inf or NaN.
 ///
 /// Everything is queued on res.stream(), with res.blas() in host pointer mode
-/// (its default), and nothing is synchronized. The library's trsm workspace is
-/// never touched, and nothing is drawn from res.device_workspace(), so A or B
+/// (its default), and nothing is synchronized. One right-hand side goes to the
+/// library's trsv (after a scal for an @p alpha that is not 1), which takes no
+/// workspace; the library's trsm is never called, and nothing is drawn from res.device_workspace(), so A or B
 /// may point into it. The device res.dev_idx() names is made current for the
 /// call and the previous one restored.
 ///

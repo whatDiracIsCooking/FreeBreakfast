@@ -61,8 +61,8 @@ at the RIS basis's order).
 
 `test/recipes/lu_gpu.cpp`: against a host pivoted elimination on random
 symmetric indefinite and general matrices at orders 1 to 130 with three
-right-hand sides, to 1e-12 relative; a general matrix at order 300 with 40
-right-hand sides, past the trsm recipe's 64-row block and its 16-column
+right-hand sides, to 1e-12 relative; a general matrix at order 300 with 60
+right-hand sides, past the trsm recipe's 64-row block and its 48-column
 tile, whose pivoting moves most rows, held to a backward-error bound; bitwise repeatable over 20 repeats; a
 zero column flagged at its pivot with B untouched; the empty and negative
 shapes; and `Lu.Footprint`, the workspace a solve grows held to

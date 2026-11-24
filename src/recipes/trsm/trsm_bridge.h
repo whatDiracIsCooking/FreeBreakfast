@@ -29,10 +29,19 @@ namespace free_breakfast::device {
 inline constexpr int32_t kTrsmBlock = 64;
 
 /// @brief The right-hand sides one thread block of the diagonal-block kernel
-/// takes: its tile is kTrsmBlock x kTrsmColumns, 8 KiB of doubles, so with the
-/// triangle the kernel holds 40 KiB of shared memory, under CUDA's 48 KiB
-/// static limit and CDNA's 64 KiB of LDS.
-inline constexpr int32_t kTrsmColumns = 16;
+/// takes: its tile is kTrsmBlock x kTrsmColumns, 24 KiB of doubles. With the
+/// packed triangle (16.25 KiB) and its diagonal's reciprocals the kernel holds
+/// 40.75 KiB of shared memory, under CUDA's 48 KiB static limit and the
+/// 64 KiB of LDS under HIP.
+inline constexpr int32_t kTrsmColumns = 48;
+
+/// @brief The threads of the kernel that share one right-hand side, each
+/// taking every kTrsmLanes-th row of an update.
+inline constexpr int32_t kTrsmLanes = 4;
+
+/// @brief The kernel's thread block: kTrsmLanes threads to each of its
+/// kTrsmColumns columns, 192, whole warps at a warp of 32 or 64.
+inline constexpr uint32_t kTrsmThreads = kTrsmColumns * kTrsmLanes;
 
 /// @brief Solve M X = s B in place for one @p jb x @p jb triangular diagonal
 /// block M and @p ncols right-hand sides, on @p stream.
