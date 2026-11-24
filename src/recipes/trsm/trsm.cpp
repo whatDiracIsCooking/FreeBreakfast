@@ -66,6 +66,19 @@ Status trsm(DeviceResources &res, const wwr::wwrblasSideMode_t side,
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
   const bool trans = op != wwr::WWRBLAS_OP_N;
+  // One right-hand side is a vector: the library's trsv, which takes no
+  // workspace on either backend, in place of a launch and a gemm per block.
+  // On the right, x op(A) = alpha b is op(A)^T x^T = alpha b^T, over b's
+  // stride. alpha = 0 stays below, where A and B are not read.
+  if ((left ? n : m) == 1 && alpha != T{0}) {
+    const int32_t inc = left ? 1 : ldb;
+    if (alpha != kOne<T>) {
+      FBF_TRY(gpu_status(wwr::scal<T, int32_t>(res.blas().get(), k, &alpha, b, inc)));
+    }
+    const wwr::wwrblasOperation_t vector_op = left == trans ? wwr::WWRBLAS_OP_T : wwr::WWRBLAS_OP_N;
+    return gpu_status(
+        wwr::trsv<T, int32_t>(res.blas().get(), fill, vector_op, diag, k, a, lda, b, inc));
+  }
   const bool lower_fill = fill == wwr::WWRBLAS_FILL_MODE_LOWER;
   // op(A) is lower for (lower, N) and (upper, T); M is op(A) on the left and
   // its transpose on the right.

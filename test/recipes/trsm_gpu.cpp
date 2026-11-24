@@ -1,6 +1,6 @@
 // GPU cases for recipes.trsm: every side, fill, op and unit flag, in float and
 // double, against a host substitution at orders around the 64-row block's
-// edges and right-hand sides around the 16-column tile's, with padded leading
+// edges and right-hand sides around the 48-column tile's, with padded leading
 // dimensions; the same against the library's trsm at a size many blocks deep;
 // _C the same as _T; alpha zero over NaN; and the argument refusals.
 //
@@ -252,9 +252,10 @@ void check_against_host(const Shape &shape) {
   fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr T kAlpha = static_cast<T>(-1.5);
   // One block, its edges, two blocks and their edge, and several; the
-  // right-hand sides one, a tile's edge, and past two tiles.
+  // right-hand sides one (the library's trsv), two, a tile's edge, and past two
+  // tiles.
   for (const std::int32_t k : {1, 2, 63, 64, 65, 128, 129, 200}) {
-    for (const std::int32_t rhs : {1, 16, 17, 33}) {
+    for (const std::int32_t rhs : {1, 2, 48, 49, 97}) {
       const bool left = shape.side == wwr::WWRBLAS_SIDE_LEFT;
       const Problem<T> p = make_problem<T>(shape, left ? k : rhs, left ? rhs : k,
                                            static_cast<std::uint32_t>(k + rhs));
@@ -274,7 +275,7 @@ TEST_P(Trsm, MatchesTheHostSubstitution) {
 
 // Many blocks deep, against the BLAS library's own trsm: k = 700 is not a
 // multiple of the block (64) or of rocBLAS's 128, and n = 300 right-hand sides
-// is 19 tiles. Both sides of the comparison read only the stored triangle, so
+// is 7 tiles. Both sides of the comparison read only the stored triangle, so
 // the NaNs elsewhere are a check on the library too.
 template <typename T>
 void check_against_library(const Shape &shape) {

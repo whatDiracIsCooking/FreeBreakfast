@@ -12,26 +12,43 @@ namespace free_breakfast::device {
 
 namespace {
 
-// One thread block per kTrsmColumns right-hand sides. The triangle and the
-// block's tile of B go to shared memory, and the solve is forward substitution
-// over them, row k per step: row k divided by the pivot, a barrier, the rows
-// below it lose their multiple of row k, a barrier.
+// One thread block per kTrsmColumns right-hand sides, kTrsmLanes threads to a
+// column. The triangle, packed, and the block's tile of B go to shared memory,
+// and the solve is forward substitution over them with one barrier a row.
+//
+// The triangle is first scaled to a unit one, M = M' D: column j below the
+// diagonal times 1 / M(j, j). Then M' Y = s B needs no division and no pivot
+// step: once row k is final, each column's threads take their multiple of it
+// from the rows below, a barrier, and row k + 1 is final. X = D^-1 Y is
+// applied on the way out.
 //
 // An upper M is solved as a lower one by reversing its rows and columns, and
-// the tile's rows with them: M(p, q) for p <= q goes to tri at
-// (jb-1-p, jb-1-q), which is on or below the diagonal. So one loop serves both
-// triangles, and only the loads and stores know which it is.
+// the tile's rows with them: M(p, q) for p <= q goes to (jb-1-p, jb-1-q),
+// which is on or below the diagonal. So one loop serves both triangles, and
+// only the loads and stores know which it is.
 //
-// `tri[j][i]` is the flipped M's (i, j) and `x[c][i]` the tile's (i, c), so
-// the update's threads, consecutive in i, read consecutive words of both.
+// `x[i][c]` is the tile's (i, c): a warp's threads, consecutive in c, write
+// consecutive words of a row and read one word of the triangle.
+constexpr int32_t kTrsmPacked = kTrsmBlock * (kTrsmBlock + 1) / 2;
+
+static_assert(kTrsmThreads % kWarpSize == 0 && kTrsmThreads <= kMaxThreads,
+              "the diagonal-block kernel's thread block is whole warps");
+
+// Where column j of the packed lower triangle starts: (i, j), i >= j, is at
+// packed_column(j) + i - j.
+__device__ constexpr int32_t packed_column(const int32_t j) {
+  return (j * kTrsmBlock) - (j * (j - 1) / 2);
+}
+
 template <typename T>
 __global__ void trsm_diagonal_block_kernel(const int32_t jb, const int32_t ncols, const T s,
                                            const T *__restrict__ a, const int64_t lda,
                                            const bool a_trans, const bool upper, const bool unit,
                                            T *__restrict__ b, const int64_t ldb,
                                            const bool b_trans) {
-  __shared__ T tri[kTrsmBlock][kTrsmBlock];
-  __shared__ T x[kTrsmColumns][kTrsmBlock];
+  __shared__ T tri[kTrsmPacked];
+  __shared__ T reciprocal[kTrsmBlock];
+  __shared__ T x[kTrsmBlock][kTrsmColumns];
 
   const auto tid = static_cast<int32_t>(threadIdx.x);
   const auto stride = static_cast<int32_t>(blockDim.x);
@@ -70,40 +87,53 @@ __global__ void trsm_diagonal_block_kernel(const int32_t jb, const int32_t ncols
       continue;
     }
     if (i == j && unit) {
-      tri[j][i] = T{1};
+      tri[packed_column(j)] = T{1};
       continue;
     }
     const int64_t p = flip(i);
     const int64_t q = flip(j);
-    tri[j][i] = a_trans ? a[q + (p * lda)] : a[p + (q * lda)];
+    tri[packed_column(j) + i - j] = a_trans ? a[q + (p * lda)] : a[p + (q * lda)];
   }
   for (int32_t e = tid; e < elements; e += stride) {
     int32_t r = 0;
     int32_t c = 0;
     const int64_t at = b_index(e, r, c);
-    x[c][flip(r)] = s * b[at];
+    x[flip(r)][c] = s * b[at];
+  }
+  __syncthreads();
+  if (tid < jb) {
+    reciprocal[tid] = T{1} / tri[packed_column(tid)];
+  }
+  __syncthreads();
+  for (int32_t e = tid; e < jb * jb; e += stride) {
+    const int32_t i = e % jb;
+    const int32_t j = e / jb;
+    if (i > j) {
+      tri[packed_column(j) + i - j] *= reciprocal[j];
+    }
   }
   __syncthreads();
 
-  for (int32_t k = 0; k < jb; ++k) {
-    if (tid < nc) {
-      x[tid][k] /= tri[k][k];
-    }
-    __syncthreads();
-    const int32_t rest = jb - k - 1;
-    for (int32_t e = tid; e < rest * nc; e += stride) {
-      const int32_t i = k + 1 + (e % rest);
-      const int32_t c = e / rest;
-      x[c][i] -= tri[k][i] * x[c][k];
+  // This thread's column of the tile, and which of its rows it takes.
+  const int32_t c = tid % kTrsmColumns;
+  const int32_t lane = tid / kTrsmColumns;
+  for (int32_t k = 0; k + 1 < jb; ++k) {
+    if (c < nc) {
+      const T xk = x[k][c];
+      const T *const column = tri + packed_column(k) - k;
+      for (int32_t i = k + 1 + lane; i < jb; i += kTrsmLanes) {
+        x[i][c] -= column[i] * xk;
+      }
     }
     __syncthreads();
   }
 
   for (int32_t e = tid; e < elements; e += stride) {
     int32_t r = 0;
-    int32_t c = 0;
-    const int64_t at = b_index(e, r, c);
-    b[at] = x[c][flip(r)];
+    int32_t col = 0;
+    const int64_t at = b_index(e, r, col);
+    const int32_t row = flip(r);
+    b[at] = x[row][col] * reciprocal[row];
   }
 }
 
@@ -116,8 +146,8 @@ wwr::wwrError_t launch(const wwr::wwrStream_t stream, const int32_t jb, const in
     return wwr::wwrErrorInvalidValue;
   }
   const auto blocks = static_cast<uint32_t>(math::idivup(ncols, kTrsmColumns));
-  trsm_diagonal_block_kernel<T><<<blocks, kFourWarps, 0, stream>>>(jb, ncols, s, a, lda, a_trans,
-                                                                   upper, unit, b, ldb, b_trans);
+  trsm_diagonal_block_kernel<T><<<blocks, kTrsmThreads, 0, stream>>>(jb, ncols, s, a, lda, a_trans,
+                                                                     upper, unit, b, ldb, b_trans);
   return wwr::wwrGetLastError();
 }
 

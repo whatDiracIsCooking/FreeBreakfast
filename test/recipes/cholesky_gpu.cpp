@@ -249,11 +249,11 @@ TEST_P(CholeskySolve, MatchesTheHostSolve) {
   }
 }
 
-// The block's edges in A's order, and one, few and more than a 16-column tile
+// The block's edges in A's order, and one, few and more than a 48-column tile
 // of right-hand sides.
 INSTANTIATE_TEST_SUITE_P(OrdersAndColumns, CholeskySolve,
                          ::testing::Combine(::testing::Values(1, 63, 64, 65, 127, 128, 130),
-                                            ::testing::Values(1, 3, 17)));
+                                            ::testing::Values(1, 3, 49)));
 
 TEST(CholeskySolveSizes, EmptyIsANoOpAndNegativeIsInvalid) {
   FBF_REQUIRE_GPU();

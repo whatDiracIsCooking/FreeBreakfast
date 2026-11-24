@@ -132,3 +132,16 @@ target_link_libraries(
           free_breakfast::pipeline::scf
           free_breakfast::pipeline::config
 )
+
+# recipes/trsm against the BLAS library's trsm on the same A and B, and the
+# recipe's gemms alone: the DF fit's shape, the solves and the Cholesky panel.
+add_executable(free_breakfast_trsm_vendor trsm_vendor.cpp)
+set_target_properties(
+  free_breakfast_trsm_vendor PROPERTIES CXX_MODULE_STD 1
+                                        CXX_SCAN_FOR_MODULES ON
+)
+target_link_libraries(
+  free_breakfast_trsm_vendor
+  PRIVATE free_breakfast::core free_breakfast::core::resources
+          free_breakfast::recipes::trsm
+)
