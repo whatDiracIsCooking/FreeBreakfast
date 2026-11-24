@@ -170,12 +170,18 @@ allocates. A design, agreed in discussion and not yet built: the code is
 boundary around B, the target of an output, setup's lengths, step scratch, and library
 workspace after <code>experimental/library_handle_workspace</code>; then step scratch
 packed by the closure of the DAG, a step as one node of the outer graph, and the records
-and work lists as scratch with no umbrella name).
+and work lists as scratch with no umbrella name), and 2026-11-23 (no managers: shared
+code is a function over a <code>View</code> and its caller's scratch; B built in batches
+of pairs, kept on the host and contracted in batches of aux functions; batched only;
+a step runs on no GPU, gpu0 or all of them, and "target" is dropped; scratch's contents
+and addresses over a replay; two thread pools).
 <span class="tag prop">proposed</span> this document's suggestion, not yet agreed
-(three remain: in the <a href="#managers">managers</a> discussion, the device's
-mutex held per library call with one contention check, and a manager's scratch declared
-by its callers; in <a href="#scratch">step scratch</a>, packing by the best of four
-fixed orders).
+(six remain: in <a href="#sets">streams</a>, the device's mutex held per library call
+with one contention check; in <a href="#scratch">step scratch</a>, packing by the best
+of four fixed orders, one layout function per step, and the policy for small host
+scratch; in the <a href="#closure-model">closure model</a>, the lower bound in the
+budget table; in <a href="#shared">shared code</a>, batches of B kept on the cards
+between passes).
 <span class="tag disc">to discuss</span> raised in review and set aside for a fuller
 discussion; <a href="#open">collected at the end</a>.
 <span class="tag run">run</span> measured or checked by an experiment, each section
@@ -194,7 +200,7 @@ vendor or rustflow documentation and not checked against source.
 <li><a href="#workspace">BLAS and solver workspace</a></li>
 <li><a href="#caps">Caps, and what the limit covers</a></li>
 <li><a href="#enforce">Enforcement</a></li>
-<li><a href="#sizes">Sizes: one slab first, batched later</a></li>
+<li><a href="#sizes">Sizes: batched only</a></li>
 <li><a href="#cost">What is given up, and what disappears</a></li>
 <li><a href="#stealing">Work stealing</a></li>
 <li><a href="#sets">Streams and device resources</a></li>
@@ -274,20 +280,21 @@ stealing cannot interact with memory at all.</p>
   <span class="tag dec">decided</span></td></tr>
 <tr><td>Adaptive widths</td><td>The planner bisects <code>bytes(width)</code> against
   the room left</td>
-  <td>First version: the full slab or a refusal. Later, per step: its own limit and a
-  batched path <span class="tag dec">decided</span></td></tr>
+  <td>Every step over an O(N³) tensor is batched, and has no other path: its own limit
+  picks the width, and one batch on one card is the old unbatched case
+  <span class="tag dec">decided</span></td></tr>
 <tr><td>Products</td><td>Rows of the arena, read by row handle</td>
   <td>Each step's <code>Output</code> in the <code>MainBus</code>, behind an
   <code>RwLock</code>, read through the reader's declared <code>View</code>
   <span class="tag dec">decided</span></td></tr>
 <tr><td>Shared machinery</td><td>Task builders (<code>add_*</code>) called by each
   user</td>
-  <td>A <a href="#managers">manager</a>: one step's <code>Output</code>, called by the
-  steps that read it (<code>EriManager</code> for J and K)
+  <td>A <a href="#shared">plain function</a> over a <code>View</code> of the product it
+  reads and a slice of its caller's scratch (the J and K build over B). No manager
   <span class="tag dec">decided</span></td></tr>
 <tr><td>Devices</td><td>A worker per device; tasks placed by the builder</td>
-  <td><code>num_gpus</code> from the config. gpu0 is privileged: one-GPU steps run
-  there, and multi-GPU work is reduced onto it
+  <td><code>num_gpus</code> from the config. A step runs on no GPU, on gpu0, or on all
+  of them; all-GPU work is reduced onto gpu0
   <span class="tag dec">decided</span></td></tr>
 <tr><td>Streams</td><td>A lane, named by the builder: a stream and handles per
   lane</td>
@@ -317,7 +324,7 @@ invalidating them together is fine. One crate also means the bus can name every
 
 <div class="tablewrap"><table>
 <tr><th>The <code>MainBus</code> holds</th><th>Written</th></tr>
-<tr><td>The parsed config: every step's options, and later its memory limit</td>
+<tr><td>The parsed config: every step's options, and its memory limit</td>
   <td>Setup</td></tr>
 <tr><td>The dimensions: n_atom, n_ao, n_aux, n_occ, and the bases they come from</td>
   <td>Setup</td></tr>
@@ -338,7 +345,7 @@ invalidating them together is fine. One crate also means the bus can name every
   <text class="m s" x="100" y="38">shared by every task body as Arc&lt;MainBus&gt;</text>
   <rect class="f-plain" x="40" y="56" width="184" height="46" rx="6"/>
   <text class="b" x="132" y="75" text-anchor="middle">config</text>
-  <text class="m s" x="132" y="92" text-anchor="middle">options; later, limits</text>
+  <text class="m s" x="132" y="92" text-anchor="middle">options and limits</text>
   <rect class="f-setup" x="252" y="56" width="184" height="46" rx="6"/>
   <text class="b" x="344" y="75" text-anchor="middle">dimensions</text>
   <text class="m s" x="344" y="92" text-anchor="middle">n_atom, n_ao, n_aux, n_occ</text>
@@ -428,12 +435,12 @@ locks are never contended.</figcaption>
   mode fills), as the prototype found. <span class="tag dec">decided</span></li>
 <li><strong>Shared code with per-user state is a type, not a step.</strong> DIIS is the
   case: the SCF's history and a coupled-cluster solver's cannot be shared and their
-  vector lengths differ. Each user holds its own <code>Diis</code> as a private field of
-  its step scratch, declared in its own <code>mem_budget</code>. Whether DIIS should
-  instead be a step with a manager is part of the manager discussion. The question runs
-  the other way too (2026-11-21): if DIIS is not a manager, is the
-  <code>EriManager</code> one, or only an <code>Output</code> with methods?
-  <span class="tag disc">to discuss</span></li>
+  vector lengths differ. Each user builds its own <code>Diis</code> in <code>run</code>
+  over a slice of its step scratch (the ring of Fock and error matrices, on the device),
+  declared in its own <code>mem_budget</code>. The history then lives exactly as long as
+  the step's run, and a replay starts with none. Shared code over a shared product is the
+  same thing with a <code>View</code> added (<a href="#shared">below</a>).
+  <span class="tag dec">decided</span> 2026-11-23</li>
 <li><strong>An <code>Output</code> can be loaded from a file</strong>, in part or whole,
   as in <code>src/pipeline</code>. That is how a step is tested alone: its inputs are
   loaded and not computed. Budget mode still allocates; the load fills.
@@ -447,87 +454,78 @@ locks are never contended.</figcaption>
   The prototype's reset mode sufficed; one way to make what carries over explicit is a
   trait method the wrapper calls when a replay enters (an <code>on_replay</code> with a
   no-op default). Tagged for later, 2026-11-21. The split above narrows it: what lives in
-  scratch never carries over, so only an <code>Output</code>'s fields need the rule.
+  scratch never carries over, so only an <code>Output</code>'s fields need the rule. A
+  DIIS history is scratch, so it is no longer part of the question.
   <span class="tag disc">to discuss</span></li>
 <li><strong><code>mem_budget</code> is an associated function.</strong> Sizes depend on
   step options (<code>nroots</code>, a Davidson subspace) as well as on the dimensions,
   so it reads both from the <code>MainBus</code>.</li>
 </ul>
 
-<h3 id="managers">Managers</h3>
+<h3 id="shared">Shared code: a function over a View, not a manager</h3>
 
-<p><span class="tag dec">decided</span> Some steps' <code>Output</code> is a
-<strong>manager</strong>: an object that owns a large shared product and the machinery
-over it, and is called by the steps that read it. <code>EriStep</code> outputs an
-<code>EriManager</code>, which holds B and builds J and K for <code>ScfStep</code>, and
-later for CASSCF and the response solvers.</p>
+<p><span class="tag dec">decided</span> 2026-11-23: <strong>there are no
+managers.</strong> The earlier form made <code>EriStep</code>'s <code>Output</code> an
+<code>EriManager</code>: an object owning B, the machinery over it, scratch of its own
+and a lock around that scratch. Once the scratch moves to the callers, nothing mutable is
+left inside, and what remains is an <code>Output</code> and a function.</p>
 
 <ul>
-<li><strong>One manager, one copy of its data.</strong> There is one
-  <code>EriManager</code> and one B. A second copy of the fitted three-centre integrals
-  is ruled out by size, in batched mode too. <span class="tag dec">decided</span></li>
-<li><strong>A manager writes only its own internals and what it is passed.</strong>
-  <code>eri.build_jk(&amp;density, &amp;mut j, &amp;mut k)</code>: J and K belong to the
-  caller's <code>Output</code>. If a manager ever writes into the <code>MainBus</code>, a
-  step directed it to. More generally, global mutable statics are minimized and,
-  ideally, banned. <span class="tag dec">decided</span></li>
-<li><strong>Whoever fans out, joins.</strong> A manager that recruits every card owns
+<li><strong>A shared product is an ordinary <code>Output</code>.</strong> In
+  density-fitting mode <code>EriOutput</code> holds the metric (P|Q) and its factor L on
+  every card, and B. Steps read it through their declared <code>View</code>, like any
+  other. Two steps may read it at once: each holds a read view.</li>
+<li><strong>The J and K build is a function.</strong> It takes a <code>View</code> of B,
+  the density, the J and K to write (the caller's), a slice of the caller's scratch, and
+  the devices' <code>DeviceResources</code> for its library calls:
+  <code>build_jk(&amp;b, &amp;density, &amp;mut j, &amp;mut k, scratch)</code>. It has no
+  state of its own, so no internal lock and no question about concurrent callers. DIIS is
+  the same without the <code>View</code> (<a href="#steps">above</a>).</li>
+<li><strong>The callee gives the size, the caller declares it.</strong> A size function
+  (<code>jk_scratch(dims, n_dens)</code>), pure in <code>Dims</code> and the options, with
+  a row per card; each caller adds it to its own declaration in <code>mem_budget</code>,
+  and the build works in the caller's region, since it runs during the caller's
+  <code>run</code>. Packing then covers one density for the SCF, <code>nroots</code> for
+  a state average and many right-hand sides for a response solve with no new rule. The
+  <a href="#closure-model">closure model</a> checked both forms with two unordered
+  callers: declared by the callers, safe in every simulated run; owned by the callee,
+  one region used during both callers' runs, a collision in every one of 300.</li>
+<li><strong>It writes only what it is passed.</strong> J and K belong to the caller. More
+  generally, global mutable statics are minimized and, ideally, banned.</li>
+<li><strong>Whoever fans out, joins.</strong> A function that recruits every card owns
   the whole of that: each inner task makes its card current with a
   <code>ScopedDeviceIndex</code>, the fragments each card produces (not necessarily
-  disjoint) are reduced onto the <a href="#target">target</a> device, and the call
-  returns with that done. The caller sees an ordinary call and needs no knowledge of how
-  many cards ran. <span class="tag dec">decided</span></li>
-<li><strong>Open, for the fuller discussion</strong>
-  <span class="tag disc">to discuss</span>. Set aside together on 2026-11-21, to be
-  taken as one discussion of managers in general:
+  disjoint) are reduced onto gpu0, and the call returns with that done. The caller sees
+  an ordinary call. The caller is still an <a href="#span">all-GPU step</a>: the scratch
+  and the streams on every card are its own.</li>
+<li><strong>One B, built over pairs, contracted over aux functions.</strong> The two
+  loops run over different indices, as
+  <code>experimental/rust/df_batched/single_gpu</code> builds it:
   <ul>
-  <li>The opening question: whether "manager" is a concept at all. DIIS has per-user
-    state and shares nothing; the <code>EriManager</code> owns one heavy product many
-    steps read. That difference may be no more than "an <code>Output</code> with
-    methods taking <code>&amp;self</code>", in which case the questions below are about
-    such <code>Output</code>s, not about a separate kind of object.</li>
-  <li>Several managers in one DAG, each owned by exactly one step (its
-    <code>Output</code>), and each step owning at most its own. This is what the text
-    already allows; "one manager, one B" rules out a second copy of B, not a second
-    manager of something else. Ownership being one step's leaves the reading side open:
-    SCF, CASSCF and the response solvers all call the one <code>EriManager</code>.</li>
-  <li>Whether a manager is ever called by two steps at once. Its methods would take
-    <code>&amp;self</code> (a caller holds a read view) and mutate internal scratch, so
-    an internal lock is needed for Rust's sake either way; it is harmless if callers
-    never overlap.</li>
-  <li>How the manager's scratch is sized when callers differ: one density for the SCF,
-    <code>nroots</code> for a state average, many right-hand sides for a response solve.
-    Either callers declare and the manager takes the max (the scratch pattern), or the
-    scratch is sized for one density and callers loop. Not on the table: more than one
-    manager, or more than one B.
-    <br><em>Suggested, 2026-11-21:</em> the manager owns no scratch. It exposes a size
-    function (<code>EriManager::jk_scratch(n_dens)</code>); each caller adds that to its
-    own declaration in <code>mem_budget</code>, and <code>build_jk</code> works in the
-    caller's region, since it runs during the caller's <code>run</code>. Packing then
-    covers the SCF, a state average and a response solve with no new rule, and the
-    internal lock is left guarding almost nothing, which bears on the opening question.
-    The <a href="#closure-model">closure model</a> checked both forms with two unordered
-    callers: declared by the callers, safe in every simulated run; owned by the manager,
-    one region used during both callers' runs, a collision in every one of 300.
-    <span class="tag prop">proposed</span></li>
-  <li>Whether a manager owns its own streams and BLAS handles per card, which would
-    take its <code>gemm</code> calls off the device's one library stream.
-    <br><em>Leaning after the prototype, 2026-11-20: no.</em> The prototype
-    (<code>experimental/rust/v0.0.2</code>, "What the prototype says to change", item 1)
-    suggested a BLAS handle per step on the step's own stream; that suggestion is
-    dropped. Distinct handles on one card are permitted but buy little: a large
-    <code>gemm</code> already fills the card, so two on separate streams time-slice; and
-    each handle carries device memory outside the budget (cuBLAS's pool, and on rocBLAS
-    memory that grows on demand unless a workspace is set on it: measured by
-    <code>experimental/library_handle_workspace</code>, 10&ndash;14&nbsp;MiB a handle on
-    CUDA and 58&ndash;60&nbsp;MiB on HIP). One handle set per device on one stream stays the
-    default. What is left of the finding is smaller: hold the device's mutex per library
-    call or short run of calls and not for a step's whole enqueueing; and one check that
-    the shared stream costs nothing measurable with two unordered library-heavy steps
-    (<code>eri</code> beside <code>orthogonalizer</code>) at gly10 size. If it does not,
-    this closes. <span class="tag prop">proposed</span></li>
-  <li>Whether DIIS is a manager set up by a step, or the plain type above.</li>
-  </ul></li>
+  <li><em>The build</em> runs over batches of orbital shell pairs (mn). A column mn of B
+    depends on every P, so a batch of P cannot be fitted alone; a batch of pairs can.
+    Each card takes its own batches, forms (mn|P), fits it against its own copy of L,
+    and downloads the batch to the host. No card needs anything from another.</li>
+  <li><em>B's home is the host heap</em>, one slab of <code>EriOutput</code>. The cards
+    hold the O(N²) data and one batch each, which is scratch. So host memory is what B
+    is held against, not gpu0's cap.</li>
+  <li><em>The J and K build</em> runs over batches of P. Each card takes its own batches
+    from the host, contracts them into fragments of J and K, and the fragments are
+    summed onto gpu0.</li>
+  </ul>
+  A second copy of B is ruled out by size.</li>
+<li><strong>Derivatives of B are scratch.</strong> Analytic gradients, Hessians and
+  higher derivatives build the derivative of B a batch at a time and contract it at
+  once, inside the step that needs it. It is never an <code>Output</code>; its records
+  and work lists are that step's scratch too. Those steps read the metric and L, so the
+  two are real <code>Output</code>s and not, as an earlier draft had it, products only B
+  reads.</li>
+<li><strong>Batches of B kept on the cards between passes.</strong> Streaming uploads
+  all of B on every J and K pass (4.3&nbsp;s on gly10 in the
+  <a href="#experiment">experiment</a>, B on the heap). A cache over the host copy would
+  keep as many batches on each card as the step's limit allows and stream the rest. An
+  optimization for after the streamed path works.
+  <span class="tag prop">proposed</span></li>
 </ul>
 
 <h2 id="budget">The memory budget</h2>
@@ -958,6 +956,20 @@ calculation.</p>
   the DAG, and a runtime condition, such as a convergence loop, lives inside a step's
   subflow, so exclusive branches of the outer graph should be rare.
   <span class="tag dec">decided</span></li>
+<li><strong>Over a replay the addresses hold and the contents do not.</strong> A step
+  gets the same region at the same address on every run. What is in it on entry is
+  undefined, on the first run and on every replay: any step the DAG orders against it
+  may have written those bytes in between, and nothing clears them. A step whose region
+  happens to share with nobody would find its old data still there, and must not rely
+  on it. The check: in a test mode the wrapper fills each lease with NaN before
+  <code>run</code>, so a step that depends on what was left fails in the gate.
+  <span class="tag dec">decided</span> 2026-11-23</li>
+<li><strong>One layout function per step.</strong> A step's region holds several
+  tenants (the SCF's: the DIIS ring, the J and K build's scratch, the eigensolve's
+  work). <code>mem_budget</code> sums their sizes and <code>run</code> carves the region,
+  so two pieces of code must agree. One function from <code>Dims</code> and the options
+  to a struct of offsets serves both: <code>mem_budget</code> declares its total,
+  <code>run</code> slices by it. <span class="tag prop">proposed</span></li>
 <li><strong>A lease that cannot escape.</strong> The wrapper hands <code>run</code> a
   lease on its regions that borrows for the length of <code>run</code>, not
   <code>'static</code>. A step cannot store its scratch in its <code>Output</code>, so
@@ -979,9 +991,18 @@ calculation.</p>
 <li><strong>The host heap is not packed.</strong> It stays a sum. What a step's
   <code>run</code> needs on the heap and drops is small, or it is a pinned staging
   buffer, which is scratch.</li>
-<li><strong>Sizes will change, the mechanism should not.</strong> A batched build
-  bounds the scratch to one block, and a multi-GPU build declares scratch on every card
-  it spans.</li>
+<li><strong>Small host scratch is a policy, not a kind.</strong> A <code>Vec</code> or a
+  <code>HashMap</code> that lives within a step's <code>run</code> is assumed small, and
+  is documented as outside the budget; there is no host scratch kind and no
+  suballocator. What holds the policy is the allocator record of
+  <a href="#enforce">Enforcement</a>, which flags any single large allocation during
+  <code>run</code> in the test tiers. One number added to it: the peak heap growth over
+  execute mode, printed as an unbudgeted row of the budget table. The alternative,
+  enforcing it with a custom allocator, was raised and not taken up.
+  <span class="tag prop">proposed</span></li>
+<li><strong>A batch bounds the scratch.</strong> Every build over an O(N³) tensor is
+  <a href="#sizes">batched</a>, so its scratch is one batch on each card it runs on, and
+  an all-GPU step declares a row per card.</li>
 <li><strong>The same machinery would cover <code>Output</code>s.</strong> An
   <code>Output</code> only one later step reads still holds its bytes for the whole
   calculation. Packing it too is the same closure over a different interval, from its
@@ -1184,10 +1205,10 @@ the sync is a change to the scratch rule too (<a href="#scratch">above</a>).</fi
   collide</td></tr>
 <tr><td>Devices and kinds</td><td>1777 slabs over 500 random DAGs on two cards, device
   and pinned memory each: all safe. A slab's offsets do not move when another slab's
-  regions change; a multi-GPU step declares on each card it spans</td></tr>
-<tr><td>A manager's scratch</td><td>Declared by its two unordered callers: safe, peak
-  500. Owned by the manager and used during its callers' runs: 450, and a collision in
-  every one of 300 runs</td></tr>
+  regions change; an all-GPU step declares on every card</td></tr>
+<tr><td>Scratch of code two steps call (the model's "manager")</td><td>Declared by its
+  two unordered callers: safe, peak 500. Owned by the callee and used during its
+  callers' runs: 450, and a collision in every one of 300 runs</td></tr>
 <tr><td>Exclusive branches</td><td>Packed by the closure: 220, safe. Packed as exclusive:
   120, also safe; not adopted (<a href="#scratch">above</a>)</td></tr>
 <tr><td>Replay</td><td>Packed once over one iteration; three iterations unrolled: no
@@ -1354,6 +1375,8 @@ allocations such as reading the geometry and the basis data.</div>
   <code>run</code> receives its <code>View</code>, not the bus</td></tr>
 <tr><td>Scratch dies with its step</td><td>By type: the lease borrows for the length of
   <code>run</code>, so it cannot be stored in an <code>Output</code></td></tr>
+<tr><td>A step relies on nothing its scratch held on entry</td><td>In a test mode the
+  wrapper fills each lease with NaN before <code>run</code></td></tr>
 <tr><td>Two steps share scratch bytes only if the DAG orders them</td><td>By
   construction: the final node packs from the closure; one <code>unsafe</code>, in the
   arena, and a test that packs a DAG and checks every overlapping pair against
@@ -1388,28 +1411,44 @@ C++ <code>#pragma GCC poison</code> cover it from two sides
   <code>malloc</code>. Run in the test tiers, this is the real check.</li>
 </ul>
 
-<h2 id="sizes">Sizes: one slab first, batched later</h2>
+<h2 id="sizes">Sizes: batched only</h2>
 
-<p><span class="tag dec">decided</span> A step whose natural size may not fit has three
-outcomes, as the density-fitted J/K has today: refuse the plan if it cannot run at all,
-run as normal if the whole fits, or run a batched mode. Providing the batched path is a
-goal, and almost never the first implementation.</p>
+<p><span class="tag dec">decided</span> 2026-11-23: <strong>a step over an O(N³) tensor
+has a batched path and no other.</strong> The earlier plan was the full slab or a refusal
+first, with a batched path later, per step. But the unbatched path is the batched one
+with a single batch on a single card, so there is one path, and it is the one the gates
+run.</p>
 
 <div class="tablewrap"><table>
-<tr><th></th><th>First implementation</th><th>Later, per step</th></tr>
-<tr><td>What <code>mem_budget</code> does</td><td>Charges and allocates the full size.
-  Two-state: it fits, or the plan is refused</td>
-  <td>Full size within the step's limit: as before. Else the widest batch whose bytes
-  fit. Else refuse, naming the step, its limit and its least bytes</td></tr>
-<tr><td>The step's own limit</td><td>None. The cap per kind is the only number</td>
-  <td>Arrives with the batched path. Defaults to a fixed fraction of the kind's cap; the
-  config overrides it, which is also how a test forces batching on a small molecule</td></tr>
-<tr><td>What is charged</td><td>What is used</td>
+<tr><th>What a step holds</th><th>Rule</th></tr>
+<tr><td>Everything O(N²): the records, the n_ao² matrices, the metric and its factor</td>
+  <td>Resident on the card, whole. It fits or the plan is refused: a dense eigensolve at
+  n_ao cannot be batched</td></tr>
+<tr><td>The O(N³) tensors: (mn|P), B, a derivative of B</td>
+  <td>Never resident whole. Built or contracted a batch at a time, the batch in step
+  scratch; B itself on the host heap (<a href="#shared">shared code</a>)</td></tr>
+<tr><td>The width of a batch</td>
+  <td>The widest whose bytes fit the step's own limit; no width fits: refuse, naming the
+  step, its limit and its least bytes</td></tr>
+<tr><td>The step's own limit</td>
+  <td>A fixed fraction of the kind's cap by default; the config overrides it, which is
+  also how a test forces several batches on a small molecule</td></tr>
+<tr><td>What is charged</td>
   <td>What is used, never the limit: the limit only picks the width, the cap still
   admits. Limits need not sum to the cap</td></tr>
 </table></div>
 
 <ul>
+<li><strong>Every GPU step is built batched and for every card, or not built.</strong>
+  Hartree-Fock, CASSCF, NEVPT2 and what follows: a feature is not added until it runs on
+  a single node's <code>num_gpus</code> cards, one card being the case of one. That is
+  tedious, and it is the commitment. Whether to go further, to several nodes or not
+  built at all, is <a href="#open">to discuss</a>.
+  <span class="tag dec">decided</span> 2026-11-23</li>
+<li><strong>Width stops mattering early.</strong> In
+  <code>experimental/rust/df_batched/single_gpu</code> the build's time is flat past
+  about 20 trips, and width 1 costs 5.6&times; to 11.6&times;. So a default limit well
+  under the cap loses little.</li>
 <li><strong>No "what is left".</strong> A width is a function of the step's own limit,
   not of the room other steps leave, so <code>mem_budget</code> stays local and
   order-free, and there is no second, ordered phase.</li>
@@ -1431,8 +1470,8 @@ goal, and almost never the first implementation.</p>
 <em>within</em> a step is untouched: a step owns its buffers and may use one for two
 purposes, so where two things should share bytes, the tool is the step boundary
 (<a href="#example">the example</a> has the case that matters, B solved in place). Past
-that, the remedy when a calculation does not fit is that step's batched path, not a
-shared pool. The exception is <a href="#scratch">step scratch</a>: memory dead after a
+that, the remedy when a calculation does not fit is a narrower batch in the step
+concerned, not a shared pool. The exception is <a href="#scratch">step scratch</a>: memory dead after a
 step's <code>run</code>, library work buffers included, packed per device and kind so that
 steps the DAG orders share bytes.</p>
 
@@ -1440,10 +1479,10 @@ steps the DAG orders share bytes.</p>
 calculation: the <em>sum</em> (every buffer alive at once), the <em>fold</em> (the peak
 with bytes reused perfectly) and the cap. Reuse narrows sum toward fold and can never go
 below it; batching lowers the fold itself. So where a chain's fold fits and its sum does
-not, packing is the remedy and batching stays later; where the peak sits inside one step
-(DF-HF's is inside <code>eri</code>: B, its records and work lists, and its build
-intermediates, all live at once), only that step's own design helps, a batched path or a
-kernel that derives its work lists. Packing scratch alone reaches part of the way from
+not, packing is the remedy; where the peak sits inside one step (DF-HF's is inside
+<code>eri</code>: a batch, its records and work lists, and its build intermediates, all
+live at once), only that step's own design helps: its batch width, or a kernel that
+derives its work lists. Packing scratch alone reaches part of the way from
 sum to fold; how far depends on how much of each step is scratch.</p>
 
 <p><strong>Disappears:</strong></p>
@@ -1459,10 +1498,10 @@ sum to fold; how far depends on how much of each step is scratch.</p>
 <li>The plan goldens' table totals; what is pinned instead is the budget table.</li>
 </ul>
 
-<p><strong>A refusal at a size the first implementations do not cover is scope, not a
-regression</strong> <span class="tag dec">decided</span>: a chain whose steps each fit
-alone can be refused on their sum until those steps have batched paths, and building
-those before they are needed would be premature. The ratio is still worth knowing: the
+<p><strong>What can still be refused</strong> (revised 2026-11-23, with
+<a href="#sizes">batched only</a>): a plan whose O(N²) data does not fit its cards, whose
+B does not fit the host, or whose <code>Output</code>s, each fitting alone, do not fit
+summed down a chain. The last is the sum's price. The ratio is worth knowing: the
 C++ footprints already give, for each <code>examples/</code> config, the sum of the
 steps' own peaks against the fold's peak. Split three ways, it says which remedy
 applies: each step's <code>Output</code> bytes, its scratch bytes, and whether the peak
@@ -1496,40 +1535,40 @@ that, and each needs an explicit owner once any rustflow worker may run any step
 
 <p><strong>Device assignment is fixed before budget mode</strong>
 <span class="tag dec">decided</span>: <code>mem_budget</code> has to know which device's
-counter to charge, and a multi-GPU step charges every card it spans. The assignment is
+counter to charge, and an all-GPU step charges every card. The assignment is
 made when the DAG is built from the config. Stealing moves which thread runs a step,
 never where its memory is.</p>
 
-<p id="target"><strong>The rule of assignment</strong>
-<span class="tag dec">decided</span>: the config gives <code>num_gpus</code>, and the run
-uses all of them where a step can. A step needs no GPU, one, or all of them.</p>
+<p id="span"><strong>The rule of assignment</strong>
+<span class="tag dec">decided</span> 2026-11-23: the config gives <code>num_gpus</code>,
+and a step runs on <strong>no GPU, on gpu0, or on all of them</strong>. Those are the
+only three; no step runs on card k alone, or on some of the cards.</p>
 <ul>
 <li><strong>gpu0 is the privileged card.</strong> A one-GPU step runs on gpu0. A card
-  has to be privileged in any case, since dense diagonalization is single-GPU for now.</li>
-<li><strong>Multi-GPU work lands on gpu0.</strong> A step allowed every card (the J and
-  K builds, through the <code>EriManager</code>) leaves its result on gpu0; the
-  reduction is the manager's, not its callers'.</li>
-<li><strong>So gpu0's cap is the one that binds</strong>: every single-card step's
-  memory and every reduced result is charged there, and the other cards hold only what
-  the multi-GPU managers place on them.</li>
-<li><strong>A "target" for an output</strong>: where a product physically lives, so
-  that gpu0 is a default and not an assumption written into every step.
-  <span class="tag dec">decided</span> 2026-11-21: <strong>the producer delivers to the
-  target, and a reader never pulls.</strong>
-  <ul>
-  <li>The target is set when the DAG is built, gpu0 by default. It is carried by the
-    buffer, which knows its device anyway; the step's device assignment names it.</li>
-  <li>The target buffer is charged to the target's device in <code>mem_budget</code>; a
-    producer's working buffers to the card it runs on.</li>
-  <li>A single-GPU step on another card copies device to device onto the target inside
-    its own <code>run</code> (S computed on card k, as
-    <code>experimental/rust/s_overlap</code> could be, lands on gpu0).</li>
-  <li>The multi-GPU J/K build accumulates onto gpu0 inside the manager's call: "whoever
-    fans out, joins", extended to "whoever produces, delivers".</li>
-  <li>A reader whose device is not a product's target is refused when the DAG is
-    built. With every single-GPU step on gpu0 it does not fire today; readers that ask
-    for a copy elsewhere wait until a step needs one.</li>
-  </ul></li>
+  has to be privileged in any case, since dense diagonalization is single-GPU for now.
+  The overlap, computed on the host as <code>experimental/rust/s_overlap_host</code>
+  does, is uploaded to gpu0 and nowhere else.</li>
+<li><strong>An all-GPU step uses every card and splits its data across them.</strong>
+  Anything that builds J, or contracts like it, is one: the batches are shared out, each
+  card works on its own, and the result is reduced onto gpu0. A step that calls an
+  all-GPU function is an all-GPU step (the SCF, through the J and K build), though its
+  eigensolve still runs on gpu0.</li>
+<li><strong>With one GPU, all is gpu0.</strong> A single card is the degenerate case of
+  the same code, not a second path.</li>
+<li><strong>A device buffer is on gpu0 or on every card.</strong> Which is said by the
+  <code>Budget</code> call that allocates it, not by the step's kind: the SCF is an
+  all-GPU step whose orbitals are on gpu0; the metric and its factor are on every card
+  (<code>experimental/rust/df_metric</code>'s (P|Q), uploaded to each). The one rule
+  joining the two: an all-GPU step's reduced results land on gpu0.</li>
+<li><strong>So gpu0's cap is the one that binds</strong>: every one-GPU step's memory
+  and every reduced result is charged there, and the other cards hold their copies of
+  the every-card buffers and their batches.</li>
+<li><strong>"Target" is dropped.</strong> It named the card a product lives on, so that
+  a one-GPU step could run on card k and deliver to gpu0, and a reader on another card
+  could be refused. With three kinds of step and two places for a buffer, neither case
+  exists: nothing is delivered, and no reader is on the wrong card. Revised 2026-11-23;
+  the earlier form (2026-11-21) had "the producer delivers to the target, and a reader
+  never pulls".</li>
 </ul>
 
 <h2 id="sets">Streams and device resources</h2>
@@ -1632,7 +1671,7 @@ stream and joins back; B reads A's <code>Output</code>; C is independent of both
   method would do it too, but a step could override that; a step cannot forget or skip
   the wrapper.</li>
 <li><strong>The same holds one level down.</strong> A step's inner GPU tasks, and a
-  manager's fan-out across cards, are finished before <code>run</code> returns: whoever
+  shared function's fan-out across cards, are finished before <code>run</code> returns: whoever
   fans out, joins. The wrapper's sync is then the last word and not the only one.
   <span class="tag dec">decided</span></li>
 <li><strong>A finished node is finished device work.</strong> So the DAG's edges order
@@ -1656,6 +1695,24 @@ stream and joins back; B reads A's <code>Output</code>; C is independent of both
 <li><strong>A waiting worker is not stealing.</strong> The executor's width has to
   cover the GPU steps that can be waiting at once, plus the CPU work: for these
   pipelines, a handful of threads.</li>
+<li><strong>Two thread pools are allowed.</strong> The host integrals
+  (<code>experimental/rust/df_metric</code>, <code>s_overlap_host</code>) run on rayon's
+  threads, called from a step on a rustflow worker. The pools are kept separate, each
+  with its thread count from the config; a worker blocked in a rayon call is a waiting
+  worker, as above. <span class="tag dec">decided</span> 2026-11-23</li>
+<li><strong>One handle set per device, on one stream; the mutex held per call.</strong>
+  The prototype (<code>experimental/rust/v0.0.2</code>, "What the prototype says to
+  change", item 1) suggested a BLAS handle per step on the step's own stream; that
+  suggestion is dropped. Distinct handles on one card are permitted but buy little: a
+  large <code>gemm</code> already fills the card, so two on separate streams time-slice;
+  and each handle carries device memory outside the budget (cuBLAS's pool, and on
+  rocBLAS memory that grows on demand unless a workspace is set on it: measured by
+  <code>experimental/library_handle_workspace</code>, 10&ndash;14&nbsp;MiB a handle on
+  CUDA and 58&ndash;60&nbsp;MiB on HIP). What is left of the finding is smaller: hold the
+  device's mutex per library call or short run of calls and not for a step's whole
+  enqueueing; and one check that the shared stream costs nothing measurable with two
+  unordered library-heavy steps (<code>eri</code> beside <code>orthogonalizer</code>) at
+  gly10 size. If it does not, this closes. <span class="tag prop">proposed</span></li>
 </ul>
 
 <h3>Resources</h3>
@@ -1772,6 +1829,13 @@ to show the rules at work, and not sizes the tree commits to.</p>
 </table></div>
 
 <h3>How it maps onto this design</h3>
+<div class="note"><strong>The sizes below predate 2026-11-23.</strong> They take B as one
+7.80&nbsp;GB slab on device 0, built whole, with the whole <code>cells</code> work list
+beside it. As now decided (<a href="#sizes">batched only</a>,
+<a href="#shared">shared code</a>), B's slab is on the host heap, the cards hold one batch
+of pairs each as scratch, and the work lists are a batch's. The graph, the phases and the
+O(N²) charges stand; the device total, the two budget figures and the node table's gly10
+column for the three-centre step are to be redone at a batch width.</div>
 <ul>
 <li><strong>The top three levels are the setup phase.</strong> The reads, the electron
   count, the nuclear repulsion and the two basis sets are small host work, unbudgeted,
@@ -1821,8 +1885,10 @@ to show the rules at work, and not sizes the tree commits to.</p>
   1.81&nbsp;GB, on each side, only for the steps after it. The work lists are the
   second-largest charge, and <code>cells</code> is a dense cross product a kernel could
   derive from two short lists (<a href="#open">to measure</a>). The metric and its factor
-  are the other case: <code>Output</code>s only B reads, summed for the whole
-  calculation, which packing <code>Output</code>s would cover.</li>
+  were named here as the other case, <code>Output</code>s only B reads, which packing
+  <code>Output</code>s would cover; the derivative steps read them too
+  (<a href="#shared">shared code</a>), so they stay for the whole calculation by
+  right.</li>
 </ul>
 
 <figure class="fig" id="budgetfig">
@@ -2027,13 +2093,14 @@ shows against the old path at these sizes.</p>
   <td>And every kernel between them. <code>orthogonalizer</code> and <code>scf</code>
   never use their own stream; <code>eri</code> only for its class kernels. Each holds
   the mutex for its whole enqueueing</td>
-  <td>See <a href="#managers">Managers</a>: no handle per step; shorten the mutex hold;
+  <td>See <a href="#sets">Streams</a>: no handle per step; shorten the mutex hold;
   one contention check</td></tr>
 <tr><td>A manager's internal lock</td>
   <td>Needed, as predicted, but held only while enqueueing. The one library stream is
   what keeps two callers' scratch apart on the card</td>
-  <td>Nothing, while the library stream stays one; with the manager's scratch in its
-  callers' regions (<a href="#managers">proposed</a>), less still</td></tr>
+  <td>Gone with managers, 2026-11-23: the J and K build works in its caller's scratch
+  and holds no state (<a href="#shared">shared code</a>)
+  <span class="tag dec">decided</span></td></tr>
 <tr><td>Step-end sync cost: to measure</td>
   <td>Under 25 &micro;s over 50 SCF trips: a step that reads a value back has already
   synced. Where a step only enqueues, its device time lands there
@@ -2115,8 +2182,9 @@ Rust tree's task layer and not an edit to it.</p>
   offsets do not depend on declaration order (each as the
   <a href="#closure-model">closure model</a> checks it); a condition loop inside a
   subflow, at the pinned rustflow.</li>
-<li><strong>One step on one card, beside the old path.</strong> The DF J/K pass is the
-  candidate: the experiment's fourth variant is most of it. The step's
+<li><strong>One step, batched, on <code>num_gpus</code> cards, beside the old
+  path.</strong> The DF J/K pass over batches of P is the candidate: the experiment's
+  fourth variant is most of it, on one card. The step's
   <code>ForkStream</code> and the wrapper's sync, <code>DeviceResources</code> behind its
   mutex, its scratch region with the solver's work in it, the fixed handle workspace,
   per-node device selection.</li>
@@ -2126,7 +2194,8 @@ Rust tree's task layer and not an edit to it.</p>
 <li><strong>Measure</strong>: the budget's total against the planner's block for the
   same runs, and what the step-end sync costs on the SCF iteration.</li>
 <li><strong>Then</strong> the enforcement checks (the clippy bans, the allocator
-  record), HIP, more than one card, and the first batched path with its limit.</li>
+  record, the NaN fill of scratch) and HIP. Batching and every card are not on this
+  list: each step has them from its first form (<a href="#sizes">batched only</a>).</li>
 <li><strong>Development on the old task layer stops now</strong>
   <span class="tag dec">decided</span>. The new layer is built from the ground up, and
   crates of the old one may be disabled along the way where that helps; the retired
@@ -2140,14 +2209,23 @@ Rust tree's task layer and not an edit to it.</p>
 
 <h3>Set aside for a fuller discussion</h3>
 <ul>
-<li><strong>Managers, in general.</strong> Opening question: is a manager a concept,
-  or only an <code>Output</code> with methods (if DIIS is not a manager, is ERI?). Then:
-  several managers, each owned by one step, and the readers they share; concurrent
-  callers and the internal lock; how the scratch is sized across callers with one
-  manager and one B (proposed: callers declare it, by the manager's size function, in
-  their own regions); whether a manager owns streams and handles per card (leaning no
-  since the prototype: a BLAS handle per step is dropped, see there).
-  <a href="#managers">Managers</a>. <span class="tag disc">to discuss</span></li>
+<li><strong>Several nodes.</strong> The commitment is to a single node's cards
+  (<a href="#sizes">batched only</a>). The further one was raised on 2026-11-23: a step
+  runs on several nodes with several GPUs each, or is not built. Against making it a
+  gate now: nothing here can test it, and a rule with no check drifts. What would keep it
+  open cheaply is one rule, that work on different cards communicates only through the
+  collectives layer; B on one host's heap is the first thing that rule would have to
+  answer. <span class="tag disc">to discuss</span></li>
+<li><strong>The step-end sync and the library stream.</strong> The sync carries memory
+  safety (<a href="#scratch">step scratch</a>), and the wrapper syncs the step's own
+  stream. Work a step puts on the device's library stream is under it only if the step
+  joins back, and nothing makes it: the prototype's <code>orthogonalizer</code> and
+  <code>scf</code> never used their own stream. One way to close it: the
+  <code>DeviceResources</code> guard records the join into the step's stream when it is
+  dropped. Raised in review, 2026-11-23. <span class="tag disc">to discuss</span></li>
+<li><strong>Packing <code>Output</code>s too</strong>, by the same closure, held until
+  the measurement says <code>Output</code>s are what stacks.
+  <a href="#scratch">Step scratch</a>. <span class="tag disc">to discuss</span></li>
 <li><strong>What is cleared between replays, and by whom.</strong> A prologue node, an
   epilogue node, or a <code>reset</code> mode on the steps that need one (an explicit
   <code>on_replay</code> suggested). Tagged for later. <a href="#steps">Steps</a>.
@@ -2175,7 +2253,7 @@ Rust tree's task layer and not an edit to it.</p>
   best of four; real configs remain.</li>
 <li><strong>The margin constant</strong> for a defaulted device cap, and whether the
   kernels' stack should be read per card and not carried as the 3080's number.</li>
-<li><strong>The default limit fraction</strong> for a step with a batched path.</li>
+<li><strong>The default limit fraction</strong> that picks a step's batch width.</li>
 <li><strong>Task granularity inside a step.</strong> A step is one node of the outer
   graph (<a href="#steps">decided</a>); how much of its inner graph is
   rustflow's (a subflow, a pipeline) and how much stays a plain loop on one stream. A
@@ -2189,7 +2267,7 @@ Rust tree's task layer and not an edit to it.</p>
 <li><strong>Rebuilding the records and work lists on a replay.</strong> Every
   <code>run</code> rebuilds them in place, since the records hold coordinates. Whether rebuilding only the records is
   worth a second path depends on what the full rebuild costs per geometry step.</li>
-<li><strong>Collectives.</strong> A multi-GPU step holds a stream per card, so one
+<li><strong>Collectives.</strong> An all-GPU step holds a stream per card, so one
   rank's calls within a step stay on one stream. Whether NCCL and RCCL mind a rank moving
   between steps' streams is to verify.</li>
 <li><strong>Idle workers.</strong> rustflow's workers give up a search after a fixed
