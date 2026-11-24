@@ -10,7 +10,7 @@ is safe:
 1. **What a second, third and fourth handle cost in one process**, BLAS and
    solver (`handles-blas 4`, `handles-solver 4`).
 2. **One idle handle moved between two streams, a workspace per stream**
-   (`ring <routine> <order>`): does the call use the workspace it was given
+   (`ring <dgemm_square|dgemm_splitk|dtrsm> <order>`): does the call use the workspace it was given
    after `SetStream` then `SetWorkspace`; is anything taken or grown by the
    move; what do the two calls cost.
 
@@ -71,29 +71,46 @@ RTX 3080 (CUDA 13) and RX 9060 XT (gfx1200, ROCm). Each card was held by
 
 ### 2. One handle moved between two streams
 
-| | cuBLAS | hipBLAS |
+Split-K `dgemm` reads the workspace on cuBLAS, through its algorithm choice.
+`dtrsm` (L⁻¹B in place, L lower 4096 × 4096, B 4096 × 4096: the DF fit's
+shape) reads it on hipBLAS. There the call writes its workspace, and the
+default handle's pool grows by 12 MiB for it. rocBLAS's `gemm` uses no
+workspace on either shape, so it reads nothing on HIP. cuBLAS's `trsm` takes
+none either, so `dtrsm` reads nothing on CUDA.
+
+| | cuBLAS, split-K `dgemm` | hipBLAS, `dtrsm` |
 |---|---|---|
-| Result in every order and shape | equal to the default handle's, or to the tiny reference's | bitwise equal to the default |
-| `stream_then_ws_tiny` (split-K) | **equals the tiny reference**: the call used the workspace it was given | rocBLAS `gemm` uses none (as before), so no signature |
-| `ws_then_stream_tiny` (split-K) | **equals the default**: `SetStream` threw the workspace away | no signature |
-| `stream_only_tiny` (split-K) | equals the default: the workspace was set before the first `SetStream` and lost to it | no signature |
+| `stream_then_ws` (32 MiB) | | **wrote 8 of the 32 MiB given**, took 0 |
+| `ws_then_stream` (32 MiB) | | **the same**: `SetStream` kept the workspace |
+| `stream_only` (32 MiB) | | **the same**: the workspace set before the first `SetStream` was still used on every call |
+| `stream_then_ws_tiny` | **equals the tiny reference**: the call used the workspace it was given | **+8 MiB taken by the call**; the next `SetWorkspace` frees it |
+| `ws_then_stream_tiny` | **equals the default**: `SetStream` threw the workspace away | +8 MiB taken by the call, likewise |
+| `stream_only_tiny` | equals the default: the workspace was set before the first `SetStream` and lost to it | +8 MiB on the first call, kept by the handle after it |
+| Results | equal to the default or the tiny reference, as above | bitwise equal to the default in every mode |
 | Memory taken by a move | 0 | 0 after the first `SetWorkspace`, which frees the 32 MiB pool |
-| One `SetStream` + `SetWorkspace` before a call | 0.3–3.9 µs | 3–7 µs; the first ~150–200 µs (the pool's free) |
-| Idle switch, mean of 1000 | 0.02 µs (stream alone 0.01) | 0.15 µs (stream alone 0.11) |
+| One `SetStream` + `SetWorkspace` before a call | 0.3–3.9 µs | 3–8 µs; ~150–200 µs when it frees memory |
+| Idle switch, mean of 1000 | 0.02 µs (stream alone 0.01) | 0.15–0.26 µs (stream alone 0.11–0.19) |
 | Solver `SetStream`, idle | 0.02 µs; moved handle's `syevd` bitwise equal, 0 taken | 0.12 µs; the same |
 
-- **The order is load-bearing on cuBLAS, as its documentation says.**
-  `SetStream` resets the handle to cuBLAS's own default workspace. A
-  `SetWorkspace` before it is silently lost, and the call then runs on memory
-  outside the budget. The wrapper must call `SetStream` first, then
-  `SetWorkspace`, every time.
-- **HIP cannot show the order here.** rocBLAS's `gemm` takes no workspace, so
-  nothing distinguishes the two orders. Nothing re-grows after a move in
-  either order: once the pool is freed, a later `SetStream` does not bring it
-  back.
+- **The order matters on cuBLAS, as its documentation says.** `SetStream`
+  resets the handle to cuBLAS's own default workspace. A `SetWorkspace` made
+  before it is silently lost, and the call then runs on memory outside the
+  budget.
+- **On hipBLAS the order does not matter.** `SetStream` keeps the caller's
+  workspace. So `SetStream` then `SetWorkspace` is correct on both backends.
+- **On hipBLAS, a workspace that is too small is not an error: the call
+  grows.** With 256 B, each `dtrsm` took 8 MiB of its own, outside the budget,
+  and gave the same result. With 32 MiB it used 8 MiB inside the workspace.
+  cuBLAS does the opposite: a small workspace only changes the algorithm. So
+  on HIP, a step's BLAS workspace has to cover what its calls need. Not
+  measured:
+  - the threshold between 256 B and 8 MiB;
+  - how the need scales with the shape;
+  - whether the growth happens in hipBLAS or in rocBLAS.
 - **The move costs nothing that matters.** No memory, and well under a
-  microsecond while idle. The one-time ~150 µs on HIP is the pool's free, and
-  it would happen once per handle at budget time.
+  microsecond while idle. The ~150 µs on HIP is a free (the pool's, or the
+  8 MiB a tiny-workspace call grew), and it happens once per handle at budget
+  time when the workspace is big enough.
 
 An unexplained −6.3 MiB showed up on one cuBLAS square call
 (`ws_then_stream` call 2): memory was freed, not taken. Every other reading
@@ -107,10 +124,18 @@ during a call was 0.
    520 MiB with a handle per step against 104 with the ring. On CUDA, 200
    against 40.
 2. **The wrapper's preparation is safe as proposed**, on the condition that
-   it calls `SetStream` and then `SetWorkspace`. The reverse order is a
-   silent budget leak on CUDA, not an error, and no getter reads the
-   workspace back, so the two calls belong in one function that nothing
-   else can reorder.
-3. **The handles row of the budget table** should carry per-backend numbers:
+   it calls `SetStream` and then `SetWorkspace`. That order is right on both
+   backends. The reverse order is a silent budget leak on CUDA, not an error,
+   and no getter reads the workspace back, so the two calls belong in one
+   function that nothing else can reorder.
+3. **On HIP the BLAS workspace is a real declaration.** A call whose need
+   exceeds it grows outside the budget, with no error. So a step's declared
+   BLAS workspace must cover its largest call. Where that number comes from
+   is open: rocBLAS has a size query (`rocblas_start_device_memory_size_query`),
+   but it may not be reachable through hipBLAS and `wwr-sys` (to check). The
+   alternative is a measured allowance per routine and shape. The allocator
+   record (`docs/rust-redesign.html`, enforcement) would catch a miss only
+   after the fact.
+4. **The handles row of the budget table** should carry per-backend numbers:
    20 MiB per set on CUDA and 52 on HIP (after the pool is given back), plus a
    once-per-process first-call allowance (10 on HIP, up to ~15 on CUDA).

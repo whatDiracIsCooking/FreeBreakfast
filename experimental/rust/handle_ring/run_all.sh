@@ -27,7 +27,7 @@ run_cases() {
   for routine in handles-blas handles-solver; do
     "$bin" "$routine" 4 2>&1 || echo "routine=$routine count=4 exit=$?"
   done
-  for routine in dgemm_square dgemm_splitk; do
+  for routine in dgemm_square dgemm_splitk dtrsm; do
     for mode in stream_then_ws ws_then_stream stream_only \
       stream_then_ws_tiny ws_then_stream_tiny stream_only_tiny; do
       "$bin" ring "$routine" "$mode" 2>&1 || echo "routine=$routine mode=$mode exit=$?"
