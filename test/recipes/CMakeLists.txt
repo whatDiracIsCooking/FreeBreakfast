@@ -80,6 +80,7 @@ add_executable(
   polynomial_roots_gpu.cpp
   sort_gpu.cpp
   symmetrize_gpu.cpp
+  trsm_gpu.cpp
 )
 
 set_target_properties(

@@ -16,6 +16,7 @@ add_subdirectory(pcg)
 add_subdirectory(polynomial_roots)
 add_subdirectory(sort)
 add_subdirectory(symmetrize)
+add_subdirectory(trsm)
 
 # The aggregate: one import for the dense linear-algebra layer.
 free_breakfast_add_cxx_module_library(
@@ -43,4 +44,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::recipes::polynomial_roots
   free_breakfast::recipes::sort
   free_breakfast::recipes::symmetrize
+  free_breakfast::recipes::trsm
 )
