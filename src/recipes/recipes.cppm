@@ -24,3 +24,4 @@ export import free_breakfast.recipes.pcg;
 export import free_breakfast.recipes.polynomial_roots;
 export import free_breakfast.recipes.sort;
 export import free_breakfast.recipes.symmetrize;
+export import free_breakfast.recipes.trsm;
