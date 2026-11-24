@@ -1422,12 +1422,16 @@ took by itself. Solver calls are handed a work buffer of exactly their size quer
   and 554&nbsp;MiB for 128 and 512&nbsp;MiB of right-hand sides</td></tr>
 </table></div>
 
-<p>On cuBLAS <code>dtrsm</code> used none of the handle's workspace up to 8&nbsp;GiB of
-B; the rest of the sweep was not run on CUDA. So the fixed 128&nbsp;MiB covers every
-call measured except <code>trsm</code> on HIP, and the reductions up to 17 billion
-elements (8.6 for <code>iamax</code> and <code>dotc</code>). Every BLAS and solver
-call the C++ tree makes is now measured: <code>trsm</code>, <code>potrs</code> and
-<code>getrs</code> are the only ones that take memory by themselves. The formulas are read from rocBLAS 5.6.0 and may change with a release.</p>
+<p>On CUDA (RTX 3080, the same sweep) nothing grows: <code>dtrsm</code> used none of
+the handle's workspace up to 8&nbsp;GiB of B, the other BLAS calls use at most
+17&nbsp;KB whatever their size and succeed on a 256-byte workspace, every solver call
+stays inside its size query, and cuSOLVER's <code>potrs</code> and <code>getrs</code>
+take nothing. So the fixed 128&nbsp;MiB covers every call measured except
+<code>trsm</code> on HIP, and on HIP the reductions up to 17 billion elements (8.6 for
+<code>iamax</code> and <code>dotc</code>). Every BLAS and solver call the C++ tree makes
+is now measured on both backends: <code>trsm</code>, <code>potrs</code> and
+<code>getrs</code> on HIP are the only ones that take memory by themselves. The
+formulas are read from rocBLAS 5.6.0 and may change with a release.</p>
 
 <h2 id="caps">Caps, and what the limit covers</h2>
 
