@@ -15,8 +15,9 @@ free_breakfast_add_gpu_device_library(
 )
 
 # The module. DeviceResources is in its signature, so core::resources is
-# PUBLIC. trsm and syrk are wwr's, and the device library is reached through
-# the bridge header in the implementation unit's GMF, so both are PRIVATE.
+# PUBLIC. The factor's trsm and syrk are wwr's, the solve's trsm is
+# recipes/trsm's, and the device library is reached through the bridge header
+# in the implementation unit's GMF, so all are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.recipes.cholesky
@@ -34,4 +35,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::cholesky::device
+  free_breakfast::recipes::trsm
 )

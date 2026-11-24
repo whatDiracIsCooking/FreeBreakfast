@@ -1,4 +1,4 @@
-# The module. Host code over recipes/blas, recipes/cholesky, wwr's solver,
+# The module. Host code over recipes/blas, recipes/cholesky,
 # orthogonalize and overlap_mixed, with no kernels of its own: the
 # localization is pipek_mezey's, re-exported for its options and info, so it
 # is PUBLIC.

@@ -3,7 +3,14 @@
 `cholesky(res, n, a)`: A = L L^T for a symmetric positive definite A, in
 place, L in the lower triangle. It is LAPACK's `potrf` with `uplo = L`, and it
 returns `potrf`'s flag: 0, or the 1-based order of the first leading minor
-that is not positive. Link `free_breakfast::recipes::cholesky`.
+that is not positive.
+
+`cholesky_solve(res, n, nrhs, l, b)`: A X = B in place over that factor,
+B <- L^-T L^-1 B. It is LAPACK's `potrs` with `uplo = L`, as two of
+`recipes/trsm`'s solves (left, lower, non-unit; `OP_N`, then `OP_T`). It
+returns a `Status`, takes no flag and does not synchronize.
+
+Link `free_breakfast::recipes::cholesky`.
 
 ## Why not the dense solver's potrf
 
@@ -25,6 +32,15 @@ the version a ROCm install carries, so the tree does not call `potrf` at all.
 `cholesky` is one source for both backends, so CUDA runs it too: one code path,
 tested on both cards.
 
+## Why not the dense solver's potrs
+
+On HIP, hipSOLVER's `potrs` allocates about B's size plus ~42 MiB of its own
+on a call, outside any budget the caller set, and keeps it
+(`experimental/rust/blas_workspace_scaling/README.md`, "Solvers"). Its two
+triangular solves are `recipes/trsm`'s here, which take nothing but the gemm
+the handle's fixed workspace already serves, and nothing from
+`res.device_workspace()`, so `l` or `b` may sit in it.
+
 ## Algorithm
 
 Right-looking and blocked, `kCholeskyBlock` (64) columns at a time:
@@ -43,4 +59,6 @@ does. The routine takes no scratch, so `a` may sit in `res.device_workspace()`.
 
 `test/recipes/cholesky_gpu.cpp`: against a host Cholesky at orders around the
 block edges, bitwise repeatable over repeated runs, and the flag for a matrix
-that is not positive definite.
+that is not positive definite; `cholesky_solve` against a host solve at orders
+around the block edges with one and several right-hand sides, and its empty
+and negative sizes.
