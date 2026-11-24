@@ -174,11 +174,12 @@ and work lists as scratch with no umbrella name), and 2026-11-23 (no managers: s
 code is a function over a <code>View</code> and its caller's scratch; B built in batches
 of pairs, kept on the host and contracted in batches of aux functions; batched only;
 a step runs on no GPU, gpu0 or all of them, and "target" is dropped; scratch's contents
-and addresses over a replay; two thread pools).
+and addresses over a replay; two thread pools), and 2026-11-24 (no library stream: one
+handle set per card under one lock, held for a step's run, with a fixed 128&nbsp;MiB
+BLAS workspace).
 <span class="tag prop">proposed</span> this document's suggestion, not yet agreed
-(seven remain: in <a href="#sets">streams</a>, the device's mutex held per library call
-with one contention check, and, in its place, <a href="#ring">a ring of library handles
-with no library stream</a>; in <a href="#scratch">step scratch</a>, packing by the best
+(six remain: in <a href="#lock">one handle set per card</a>, the free-memory check; in
+<a href="#scratch">step scratch</a>, packing by the best
 of four fixed orders, one layout function per step, and the policy for small host
 scratch; in the <a href="#closure-model">closure model</a>, the lower bound in the
 budget table; in <a href="#shared">shared code</a>, batches of B kept on the cards
@@ -187,7 +188,7 @@ between passes).
 discussion; <a href="#open">collected at the end</a>.
 <span class="tag run">run</span> measured or checked by an experiment, each section
 naming its own: the executor experiment (under the old memory model), the prototype, the
-library-workspace probe, and the closure model. Everything is unbuilt unless marked run. "Verify" marks a claim recalled from
+library-workspace probe, the closure model, and the handle measurements. Everything is unbuilt unless marked run. "Verify" marks a claim recalled from
 vendor or rustflow documentation and not checked against source.
 </p>
 
@@ -354,8 +355,8 @@ invalidating them together is fine. One crate also means the bus can name every
   <text class="b" x="556" y="75" text-anchor="middle">caps and counters</text>
   <text class="m s" x="556" y="92" text-anchor="middle">sum per kind; scratch max</text>
   <rect class="f-scf" x="676" y="56" width="184" height="46" rx="6"/>
-  <text class="mono" x="768" y="75" text-anchor="middle">Mutex&lt;DeviceResources&gt;</text>
-  <text class="m s" x="768" y="92" text-anchor="middle">one per device</text>
+  <text class="mono" x="768" y="75" text-anchor="middle">DeviceResources</text>
+  <text class="m s" x="768" y="92" text-anchor="middle">one per device, one lock</text>
   <text class="m s" x="40" y="136">One Output per step: allocated in budget mode, filled in execute mode, rewritten in place on a replay</text>
   <rect class="f-int" x="40" y="150" width="184" height="46" rx="6"/>
   <text class="mono" x="132" y="169" text-anchor="middle">RwLock&lt;XOutput&gt;</text>
@@ -478,7 +479,7 @@ left inside, and what remains is an <code>Output</code> and a function.</p>
   other. Two steps may read it at once: each holds a read view.</li>
 <li><strong>The J and K build is a function.</strong> It takes a <code>View</code> of B,
   the density, the J and K to write (the caller's), a slice of the caller's scratch, and
-  the devices' <code>DeviceResources</code> for its library calls:
+  the handles of the cards its caller holds (<a href="#lock">the lock</a>):
   <code>build_jk(&amp;b, &amp;density, &amp;mut j, &amp;mut k, scratch)</code>. It has no
   state of its own, so no internal lock and no question about concurrent callers. DIIS is
   the same without the <code>View</code> (<a href="#steps">above</a>).</li>
@@ -581,8 +582,9 @@ takes the closure of the DAG and packs each device and kind's scratch rows into 
 workspace (<a href="#workspace">below</a>) to its counter and makes the same check; holds
 the heap and pinned totals against the host's available memory; and, if the flag is set,
 prints the whole table with the totals and exits. Otherwise it allocates the scratch slabs
-and the handle workspace, sets the latter on each BLAS handle, records each step's offset,
-and logs the table.</p>
+and each card's handle workspace, hands the latter to that card's
+<code>DeviceResources</code> (the wrapper sets it on the BLAS handle at every acquisition,
+<a href="#lock">below</a>), records each step's offset, and logs the table.</p>
 
 <figure class="fig">
 <svg viewBox="0 0 900 274" role="img" aria-label="One device's counters: Output allocations add along a bar toward the cap; scratch declarations are packed by the closure of the DAG, and the final node adds the packed peak at the end">
@@ -859,8 +861,8 @@ shown.</figcaption>
   <td>Packed and allocated by the final node; regions overlap only between steps the
   DAG orders (<a href="#scratch">below</a>)</td></tr>
 <tr><td>Handle workspace</td><td>A fixed constant, per device</td><td>Nothing: set on
-  the device's BLAS handle, the step never sees it</td>
-  <td>32&nbsp;MiB, allocated by the final node (<a href="#workspace">below</a>)</td></tr>
+  the card's BLAS handle when a step takes the card's lock; the step never sees it</td>
+  <td>128&nbsp;MiB, allocated by the final node (<a href="#workspace">below</a>)</td></tr>
 </table></div>
 
 <h3>Host heap</h3>
@@ -1248,24 +1250,27 @@ things go by the name, and they are handled apart:</p>
 <tr><td>Libraries</td><td>cuBLAS, hipBLAS over rocBLAS</td>
   <td>cuSOLVER; hipSOLVER, which attaches it to its internal rocBLAS handle for the
   call</td></tr>
-<tr><td>Size</td><td>A fixed constant per device: 32&nbsp;MiB</td>
+<tr><td>Size</td><td>A fixed constant per device: 128&nbsp;MiB</td>
   <td>The query at the call's arguments, declared in <code>mem_budget</code></td></tr>
-<tr><td>Home</td><td>The device's <code>DeviceResources</code>, set on its BLAS handle
-  by the final budget node</td>
+<tr><td>Home</td><td>The device's <code>DeviceResources</code>, allocated by the final
+  budget node, set on its BLAS handle at every acquisition of the card's lock</td>
   <td><a href="#scratch">Step scratch</a>, lent to the step for its <code>run</code></td></tr>
-<tr><td>Protected by</td><td>The order of the one library stream every BLAS call is
-  on</td><td>The closure and the step-end sync, as for any scratch</td></tr>
+<tr><td>Protected by</td><td>The card's lock: one holder at a time, released only after
+  the holder's step-end sync (<a href="#lock">below</a>)</td><td>The closure and the
+  step-end sync, as for any scratch</td></tr>
 </table></div>
 
 <ul>
-<li><strong>Every BLAS handle is user-owned, never library-managed.</strong> The final
-  node sets a fixed workspace on each device's BLAS handle, so rocBLAS never manages, and
-  never grows, the handle's memory. Thirty-two MiB is NVIDIA's recommendation for Hopper
-  and more than earlier cards use; on cuBLAS the size only picks the algorithm (a
-  256-byte workspace still ran, by another algorithm), and on rocBLAS <code>gemm</code>
-  needs none. Setting it on hipBLAS also frees rocBLAS's own 32&nbsp;MiB default pool.
-  It is a fixed row of the budget table, not an exclusion.
-  <span class="tag dec">decided</span></li>
+<li><strong>Every BLAS handle is user-owned, never library-managed.</strong> Each card's
+  BLAS handle always runs on a fixed workspace of the caller's, so rocBLAS never manages
+  the handle's memory. 128&nbsp;MiB, raised from 32 on 2026-11-24: 1.3% of a 10&nbsp;GB
+  RTX 3080 and 0.8% of a 16&nbsp;GB RX 9060 XT, paid once per card. On cuBLAS the size
+  only picks the algorithm (a 256-byte workspace still ran, by another algorithm); on
+  rocBLAS it is a hard need: a call that needs more than it was given takes memory of its
+  own, outside the budget, with no error (<a href="#lock">the measurements</a>: a
+  4096&nbsp;&times;&nbsp;4096 <code>dtrsm</code> needs 8&nbsp;MiB). Setting it on hipBLAS
+  also frees rocBLAS's own 32&nbsp;MiB default pool. It is a fixed row of the budget
+  table, not an exclusion. <span class="tag dec">decided</span></li>
 <li><strong>A call's work buffer is the step's, like any kernel's scratch.</strong> The
   step declares it in <code>mem_budget</code> from the size query
   (<code>budget.scratch(dev, Kind::Device, syevd_lwork(n))</code>), and passes a slice of its lent
@@ -1386,8 +1391,12 @@ allocations such as reading the geometry and the basis data.</div>
   binding: it repeats the query and checks the slice before the call
   (<a href="#workspace">above</a>); a <code>doc_check</code> test holds every solver
   binding to it</td></tr>
-<tr><td>No library handle manages its own memory</td><td>The final node sets every BLAS
-  handle's workspace; a work buffer is never null</td></tr>
+<tr><td>No library handle manages its own memory</td><td>The wrapper sets the card's
+  fixed workspace on its BLAS handle at every acquisition, after <code>SetStream</code>; a
+  work buffer is never null</td></tr>
+<tr><td>Nothing on a card allocates in execute mode</td><td>The card's free memory, read
+  by the wrapper after each step's sync, against its value at the end of budget mode
+  (<a href="#lock">below</a>) <span class="tag prop">proposed</span></td></tr>
 </table></div>
 
 <p>The first rule covers device and pinned memory completely, since both go through
@@ -1523,8 +1532,8 @@ that, and each needs an explicit owner once any rustflow worker may run any step
 <li><strong>Exclusive use of the library handles.</strong> Enqueueing on a stream is
   thread-safe on both runtimes; the handle is the question. cuBLAS documents calls on a
   shared handle as thread-safe and warns only about reconfiguring it under other users;
-  rocBLAS says not to share a handle between threads (verify both). A mutex around the
-  device's handles answers it either way.</li>
+  rocBLAS says not to share a handle between threads (verify both). The card's lock,
+  held by one step at a time (<a href="#lock">below</a>), answers it either way.</li>
 <li><strong>Order between unordered steps.</strong> It was repeatable and now varies run
   to run. Correctness never rested on it, provided every ordering that matters is an
   edge. <span class="tag run">run</span> with lanes kept and chained: results bitwise
@@ -1574,95 +1583,89 @@ only three; no step runs on card k alone, or on some of the cards.</p>
 
 <h2 id="sets">Streams and device resources</h2>
 
-<p><span class="tag dec">decided</span> Two kinds of stream, with different owners.</p>
+<p><span class="tag dec">decided</span> One stream per step per card, and one set of library
+handles per card, which a step borrows with the card's lock. Changed 2026-11-24: the
+device's own library stream, its per-call mutex and the fork and join events between the
+two are gone (<a href="#lock">below</a>).</p>
 
 <div class="tablewrap"><table>
 <tr><th></th><th>The step's <code>ForkStream</code></th>
   <th>The device's <code>DeviceResources</code></th></tr>
-<tr><td>What it is</td><td>A stream with fork and join events, the C++
-  <code>ForkStream</code> (<code>fork_from</code>, <code>record_join</code>,
-  <code>join_into</code>)</td>
-  <td>A stream, the BLAS and solver handles bound to it, and the BLAS handle's fixed
-  workspace</td></tr>
+<tr><td>What it is</td><td>A stream. Its fork and join events (the C++
+  <code>ForkStream</code>'s <code>fork_from</code>, <code>record_join</code>,
+  <code>join_into</code>) serve only a step's own inner fan-out</td>
+  <td>The BLAS and solver handles, any further library object a step declares, the BLAS
+  handle's fixed workspace, and the card's lock. No stream</td></tr>
 <tr><td>How many</td><td>One per GPU step, per device the step spans</td>
   <td>One per device</td></tr>
 <tr><td>Where it lives</td><td>The step's slot, beside its <code>Output</code>, made by
   the wrapper in budget mode; the step never owns it</td>
-  <td>The <code>MainBus</code>, behind a plain <code>Mutex</code>, made before budget
-  mode</td></tr>
-<tr><td>What goes on it</td><td>The step's own kernels</td>
-  <td>Every BLAS and solver call, from any step</td></tr>
+  <td>The <code>MainBus</code>, made before budget mode</td></tr>
+<tr><td>What goes on it</td><td>The step's own kernels, and its library calls</td>
+  <td>Nothing: the handles are bound to the holder's stream</td></tr>
 <tr><td>Who may use it</td><td>Its step</td>
-  <td>A step holding the lock, for the length of its library calls</td></tr>
+  <td>The step holding the card's lock, for the length of its <code>run</code></td></tr>
 </table></div>
 
 <figure class="fig">
-<svg viewBox="0 0 900 372" role="img" aria-label="Timeline: step A enqueues kernels on its own stream, crosses to the device's library stream by fork and join events, and its wrapper syncs; dependent step B starts only after; independent step C overlaps on its own stream">
-  <defs>
-    <marker id="fch" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="hot" d="M0,1 L10,5 L0,9 z"/></marker>
-    <marker id="fcg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="grey" d="M0,1 L10,5 L0,9 z"/></marker>
-  </defs>
+<svg viewBox="0 0 900 330" role="img" aria-label="Timeline: step A takes gpu0's lock, enqueues kernels and a gemm on its own stream, and its wrapper syncs and releases; dependent step B starts only after; independent step C, which calls no library, overlaps on its own stream">
   <text class="m s" x="190" y="18">time →</text>
   <text class="b s" x="14" y="47">worker thread 1</text>
   <text class="m s" x="14" y="61">host</text>
   <line class="f-rule" x1="186" y1="51" x2="884" y2="51"/>
-  <text class="b s" x="14" y="97">step A's ForkStream</text>
-  <text class="m s" x="14" y="111">device</text>
-  <line class="f-rule" x1="186" y1="101" x2="884" y2="101"/>
-  <text class="b s" x="14" y="147">DeviceResources stream</text>
-  <text class="m s" x="14" y="161">BLAS and solver handles</text>
-  <line class="f-rule" x1="186" y1="151" x2="884" y2="151"/>
-  <text class="b s" x="14" y="197">step B's ForkStream</text>
-  <text class="m s" x="14" y="211">device</text>
-  <line class="f-rule" x1="186" y1="201" x2="884" y2="201"/>
-  <text class="b s" x="14" y="267">worker thread 2</text>
-  <text class="m s" x="14" y="281">host</text>
-  <line class="f-rule" x1="186" y1="271" x2="884" y2="271"/>
-  <text class="b s" x="14" y="317">step C's ForkStream</text>
-  <text class="m s" x="14" y="331">device</text>
-  <line class="f-rule" x1="186" y1="321" x2="884" y2="321"/>
+  <text class="b s" x="14" y="107">step A's ForkStream</text>
+  <text class="m s" x="14" y="121">device</text>
+  <line class="f-rule" x1="186" y1="111" x2="884" y2="111"/>
+  <text class="b s" x="14" y="157">step B's ForkStream</text>
+  <text class="m s" x="14" y="171">device</text>
+  <line class="f-rule" x1="186" y1="161" x2="884" y2="161"/>
+  <text class="b s" x="14" y="227">worker thread 2</text>
+  <text class="m s" x="14" y="241">host</text>
+  <line class="f-rule" x1="186" y1="231" x2="884" y2="231"/>
+  <text class="b s" x="14" y="277">step C's ForkStream</text>
+  <text class="m s" x="14" y="291">device</text>
+  <line class="f-rule" x1="186" y1="281" x2="884" y2="281"/>
   <rect class="f-la" x="190" y="34" width="60" height="26" rx="4"/>
   <text class="s" x="220" y="51" text-anchor="middle">run A</text>
   <rect class="f-wait" x="250" y="34" width="310" height="26" rx="4"/>
   <text class="s m" x="405" y="51" text-anchor="middle">sync A's stream (the wrapper)</text>
-  <rect class="f-int" x="270" y="84" width="70" height="26" rx="4"/>
-  <text class="s" x="305" y="101" text-anchor="middle">kernels</text>
-  <rect class="f-int" x="340" y="84" width="60" height="26" rx="4"/>
-  <text class="s" x="370" y="101" text-anchor="middle">kernels</text>
-  <rect class="f-int" x="480" y="84" width="70" height="26" rx="4"/>
-  <text class="s" x="515" y="101" text-anchor="middle">kernels</text>
-  <rect class="f-scf" x="405" y="134" width="70" height="26" rx="4"/>
-  <text class="s" x="440" y="151" text-anchor="middle">gemm</text>
-  <path class="f-hot" marker-end="url(#fch)" d="M400,112 L407,132"/>
-  <path class="f-hot" marker-end="url(#fch)" d="M473,134 L482,112"/>
-  <text class="s" x="330" y="128">fork event</text>
-  <text class="s" x="486" y="128">join event</text>
+  <line class="f-hot" x1="190" y1="70" x2="560" y2="70"/>
+  <text class="s" x="194" y="84">A holds gpu0's lock: handles bound to A's stream, then released after the sync</text>
+  <rect class="f-int" x="270" y="94" width="70" height="26" rx="4"/>
+  <text class="s" x="305" y="111" text-anchor="middle">kernels</text>
+  <rect class="f-scf" x="340" y="94" width="70" height="26" rx="4"/>
+  <text class="s" x="375" y="111" text-anchor="middle">gemm</text>
+  <rect class="f-int" x="410" y="94" width="70" height="26" rx="4"/>
+  <text class="s" x="445" y="111" text-anchor="middle">kernels</text>
+  <rect class="f-scf" x="480" y="94" width="70" height="26" rx="4"/>
+  <text class="s" x="515" y="111" text-anchor="middle">syevd</text>
   <rect class="f-la" x="575" y="34" width="60" height="26" rx="4"/>
   <text class="s" x="605" y="51" text-anchor="middle">run B</text>
   <rect class="f-wait" x="635" y="34" width="165" height="26" rx="4"/>
   <text class="s m" x="718" y="51" text-anchor="middle">sync B's stream</text>
-  <rect class="f-int" x="655" y="184" width="70" height="26" rx="4"/>
-  <text class="s" x="690" y="201" text-anchor="middle">kernels</text>
-  <rect class="f-int" x="725" y="184" width="65" height="26" rx="4"/>
-  <text class="s" x="758" y="201" text-anchor="middle">kernels</text>
-  <line class="f-cap" x1="566" y1="22" x2="566" y2="222"/>
-  <text class="s" x="572" y="236">A's node finishes here, with its device work done.</text>
-  <text class="s" x="572" y="250">B depends on A, so it starts after: an edge, no event.</text>
-  <rect class="f-la" x="190" y="254" width="60" height="26" rx="4"/>
-  <text class="s" x="220" y="271" text-anchor="middle">run C</text>
-  <rect class="f-wait" x="250" y="254" width="220" height="26" rx="4"/>
-  <text class="s m" x="360" y="271" text-anchor="middle">sync C's stream</text>
-  <rect class="f-int" x="270" y="304" width="60" height="26" rx="4"/>
-  <text class="s" x="300" y="321" text-anchor="middle">kernels</text>
-  <rect class="f-int" x="330" y="304" width="70" height="26" rx="4"/>
-  <text class="s" x="365" y="321" text-anchor="middle">kernels</text>
-  <rect class="f-int" x="400" y="304" width="60" height="26" rx="4"/>
-  <text class="s" x="430" y="321" text-anchor="middle">kernels</text>
-  <text class="m s" x="480" y="322">C has no edge to A or B, so it overlaps them on the card.</text>
-  <text class="m s" x="14" y="358">Solid boxes are work; dashed boxes are a thread asleep in the wrapper's sync. The only events are inside step A.</text>
+  <rect class="f-int" x="655" y="144" width="70" height="26" rx="4"/>
+  <text class="s" x="690" y="161" text-anchor="middle">kernels</text>
+  <rect class="f-scf" x="725" y="144" width="65" height="26" rx="4"/>
+  <text class="s" x="758" y="161" text-anchor="middle">gemm</text>
+  <line class="f-cap" x1="566" y1="22" x2="566" y2="200"/>
+  <text class="s" x="572" y="188">A's node finishes here: device work done, lock released.</text>
+  <text class="s" x="572" y="202">B depends on A, so it starts after: an edge, no event.</text>
+  <rect class="f-la" x="190" y="214" width="60" height="26" rx="4"/>
+  <text class="s" x="220" y="231" text-anchor="middle">run C</text>
+  <rect class="f-wait" x="250" y="214" width="220" height="26" rx="4"/>
+  <text class="s m" x="360" y="231" text-anchor="middle">sync C's stream</text>
+  <rect class="f-int" x="270" y="264" width="60" height="26" rx="4"/>
+  <text class="s" x="300" y="281" text-anchor="middle">kernels</text>
+  <rect class="f-int" x="330" y="264" width="70" height="26" rx="4"/>
+  <text class="s" x="365" y="281" text-anchor="middle">kernels</text>
+  <rect class="f-int" x="400" y="264" width="60" height="26" rx="4"/>
+  <text class="s" x="430" y="281" text-anchor="middle">kernels</text>
+  <text class="m s" x="480" y="282">C calls no library and has no edge to A or B: it overlaps them.</text>
+  <text class="m s" x="14" y="318">Solid boxes are work; dashed boxes are a thread asleep in the wrapper's sync. There are no events.</text>
 </svg>
-<figcaption>Three steps on one card. A uses the library, so it forks to the device's
-stream and joins back; B reads A's <code>Output</code>; C is independent of both.</figcaption>
+<figcaption>Three steps on one card. A uses the library, so it holds gpu0's lock for its
+run and its library calls go on its own stream; B reads A's <code>Output</code>; C is
+independent of both.</figcaption>
 </figure>
 
 <ul>
@@ -1679,16 +1682,10 @@ stream and joins back; B reads A's <code>Output</code>; C is independent of both
   everything between steps: no event between steps, no chain edge, and any worker can
   run any step, because the stream is the step's and not the thread's. Independent GPU
   steps overlap on the card for free.</li>
-<li><strong>The two streams are independent, and joined by events when a step needs
-  both.</strong> A step that calls the library forks from its own stream to the
-  device's and joins back, with its <code>ForkStream</code>'s events. Those are the only
-  events in the design, and they are inside a step.</li>
-<li><strong>The mutex guards the host side only.</strong> It keeps two threads from
-  using one handle at once. The BLAS handle's workspace needs nothing more: every library
-  call is on the one stream, in order. A solver call's work buffer is in the calling
-  step's scratch region, and the join back to the step's stream puts it under the
-  step-end sync, so a later step the closure lets reuse those bytes cannot overlap it. Like <code>RwLock&lt;Output&gt;</code>, it is never
-  contended on a chain.</li>
+<li><strong>A step's library calls go on its own stream.</strong> The wrapper binds the
+  card's handles to the step's stream before <code>run</code>, so everything the step
+  enqueues, kernels and library calls alike, is under its step-end sync, in the order it
+  enqueued them, with no event (<a href="#lock">below</a>).</li>
 <li><strong>This replaces "a task never syncs the host".</strong> That rule exists
   because a GPU worker was one thread that had to keep enqueueing. At step granularity,
   over a pool, a blocked worker is fine. The sync should block so the thread sleeps and
@@ -1701,30 +1698,16 @@ stream and joins back; B reads A's <code>Output</code>; C is independent of both
   threads, called from a step on a rustflow worker. The pools are kept separate, each
   with its thread count from the config; a worker blocked in a rayon call is a waiting
   worker, as above. <span class="tag dec">decided</span> 2026-11-23</li>
-<li><strong>One handle set per device, on one stream; the mutex held per call.</strong>
-  The prototype (<code>experimental/rust/v0.0.2</code>, "What the prototype says to
-  change", item 1) suggested a BLAS handle per step on the step's own stream; that
-  suggestion is dropped. Distinct handles on one card are permitted but buy little: a
-  large <code>gemm</code> already fills the card, so two on separate streams time-slice;
-  and each handle carries device memory outside the budget (cuBLAS's pool, and on
-  rocBLAS memory that grows on demand unless a workspace is set on it: measured by
-  <code>experimental/library_handle_workspace</code>, 10&ndash;14&nbsp;MiB a handle on
-  CUDA and 58&ndash;60&nbsp;MiB on HIP). What is left of the finding is smaller: hold the
-  device's mutex per library call or short run of calls and not for a step's whole
-  enqueueing; and one check that the shared stream costs nothing measurable with two
-  unordered library-heavy steps (<code>eri</code> beside <code>orthogonalizer</code>) at
-  gly10 size. If it does not, this closes. <span class="tag prop">proposed</span></li>
 </ul>
 
-<h3 id="ring">A ring of library handles, and no library stream</h3>
+<h3 id="lock">One handle set per card, under one lock</h3>
 
-<p><span class="tag prop">proposed</span> 2026-11-24, in discussion; only its two
-measurements are run (at the end of this section). It would replace the device's one library stream, its mutex, the fork and join
-events and the fixed handle workspace, all of which the text above still describes as
-decided. It answers the <a href="#open">open question</a> on the step-end sync and the
-library stream.</p>
+<p><span class="tag dec">decided</span> 2026-11-24. It replaces the device's one library
+stream, its per-call mutex and the fork and join events between it and a step's stream,
+and the ring of handles proposed earlier the same day. It closes the
+<a href="#open">open question</a> on the step-end sync and the library stream.</p>
 
-<p><strong>The hole, in DF-RHF.</strong> <code>eri</code> and the
+<p><strong>The hole it closes, in DF-RHF.</strong> With the library stream, <code>eri</code> and the
 <code>orthogonalizer</code> are unordered, so their scratch regions on gpu0 are disjoint;
 the SCF follows both, and the packer may lay its region over the orthogonalizer's.</p>
 
@@ -1760,69 +1743,77 @@ the SCF follows both, and the packer may lay its region over the orthogonalizer'
   <code>syevd</code>'s C. With two streams that takes the fork as well as the join.</li>
 </ul>
 
-<p><strong>Considered first: the join made by the access.</strong> A step reaches the
-handles only through a call that takes its <code>ForkStream</code>, forks on entry and
-joins on exit; a closure and not a guard's drop, since a forgotten guard would skip a
-join that carries memory safety. It closes the hole and does nothing for contention:
-once <code>eri</code> forks, the orthogonalizer's <code>syevd</code> queues behind
-<code>eri</code>'s class kernels on the shared stream. Not taken.</p>
-
-<p><strong>The proposal: every library call runs on the calling step's own
-stream.</strong></p>
+<p><strong>The design.</strong></p>
 <ul>
-<li><strong>A handle belongs to one step for the length of its
-  <code>run</code>.</strong> <code>DeviceResources</code> holds, per card, a ring of
-  handle sets (a BLAS handle and a solver handle) and no stream of its own.</li>
-<li><strong>A step declares that it calls the library</strong>, per card, in
-  <code>mem_budget</code>, beside its scratch. Its BLAS workspace is a row of that
-  scratch, as a solver call's work buffer already is.</li>
-<li><strong>The final budget node assigns the slots by the closure</strong>, as it packs
-  scratch: two steps share a handle set only if one reaches the other. The ring's size on
-  a card is then the largest set of mutually unordered library-using steps, computed and
-  not chosen: two on gpu0 for DF-RHF (<code>eri</code> and the orthogonalizer; the SCF
-  reuses one). The guess in discussion is that two serves most calculations and four is a
-  ceiling; the handles' bytes are a fixed row of the budget table.</li>
-<li><strong>The wrapper prepares the slot before <code>run</code></strong>:
-  <code>SetStream</code> to the step's stream, then <code>SetWorkspace</code> to the
-  step's scratch slice, in that order, since on cuBLAS <code>SetStream</code> resets the
-  workspace to the library's default pool (verify; from the vendor's documentation). The
-  handle's previous user is an ancestor and has synced, so no handle is moved with work
-  in flight.</li>
+<li><strong>One handle set per card.</strong> <code>DeviceResources</code> holds a BLAS
+  handle and a dense-solver handle, the BLAS handle's fixed workspace, and a lock of one.
+  A further library object a step needs on that card (a sparse or FFT handle, a
+  collectives communicator) joins the same set under the same lock, so there is never an
+  order between locks to get wrong. No stream.</li>
+<li><strong>A step declares, per card, that it calls the library</strong>, in
+  <code>mem_budget</code>, beside its scratch.</li>
+<li><strong>The wrapper takes the lock for the step's whole <code>run</code>.</strong>
+  Before <code>run</code> it takes the lock of every card the step declared, in card
+  order, so two multi-card steps cannot deadlock, and that order also keeps collectives
+  issued in the same order on every rank. It then binds each card's handles:
+  <code>SetStream</code> to the step's stream on that card, then <code>SetWorkspace</code>
+  to the card's fixed workspace, every time and in that order, since on cuBLAS
+  <code>SetStream</code> silently drops the workspace (measured, below). After
+  <code>run</code> it syncs the step's streams and only then releases. A step re-run by a
+  condition loop takes the lock each time; binding costs microseconds.</li>
 <li><strong>Safety is the scratch argument, unchanged.</strong> Everything a step
-  enqueues is on its own stream, so the step-end sync covers it with no event, and the
-  order inside a step is the order it enqueued in. No fork, no join, no mutex in a step's
-  code, and nothing rests on a drop.</li>
-<li><strong>Contention goes with the shared stream.</strong> <code>eri</code> and the
-  orthogonalizer each run on their own stream and time-slice on the card; neither waits
-  behind the other's kernels. The contention check <a href="#sets">above</a> is then
-  moot.</li>
-<li><strong>A step's inner tasks share its one handle set per card.</strong> rocBLAS
-  says not to share a handle between threads (verify), so two inner tasks do not call the
-  library at once on one card; the step arranges it, as it splits its own scratch.</li>
-<li><strong>Replays and condition loops need nothing more.</strong> The assignment is
-  made once, in budget mode, like the offsets.</li>
+  enqueues is on its own stream, so the step-end sync covers its library calls with no
+  event, and the order inside a step is the order it enqueued in. The previous holder of
+  a card's handles has synced before releasing them, so no handle is ever shared with
+  work in flight, and no two steps ever use the fixed workspace at once.</li>
+<li><strong>The BLAS workspace is fixed, 128&nbsp;MiB per card</strong>, a row of the
+  budget table (<a href="#workspace">workspace</a>). Solver work buffers stay per call,
+  sized by their query, in step scratch: <code>syevd</code>'s grows as n&sup2;
+  (130&nbsp;MiB at n&nbsp;=&nbsp;2048 on cuSOLVER), so no fixed size covers them.</li>
+<li><strong>A step's inner tasks share its handle set.</strong> rocBLAS says not to share
+  a handle between threads (verify), so two inner tasks do not call the library at once
+  on one card; a step that wants concurrent library calls inside itself declares further
+  handles of its own, like scratch.</li>
 </ul>
 
-<p><strong>Against a handle per step.</strong> One handle set for each library-using
-step, its stream and workspace set once in budget mode, is the same design with no
-sharing, and simpler. Its cost grows with the pipeline's length where the ring's grows
-with its width: the <a href="#probe">probe</a> read 10&ndash;14&nbsp;MiB a handle on CUDA
-and 58&ndash;60&nbsp;MiB on HIP, though with one handle and one process per case, so that
-may be mostly the library's start-up and not what each further handle costs. If a second
-handle costs next to nothing, a handle per step is the better form.</p>
+<p><strong>What it gives up: overlap between library-using steps the DAG leaves
+unordered on one card.</strong> The lock is held through a step's non-library phases too.
+In DF-RHF that is one pair, <code>eri</code> and the <code>orthogonalizer</code>: the
+orthogonalizer's one <code>syevd</code> at n_ao, a few milliseconds, waits for
+<code>eri</code>. Heavy steps fill the card on their own, and two of them on one card
+time-slice rather than overlap: this tree's test batches measured a CASSCF case at
+2.3&nbsp;s alone and 158&nbsp;s beside the exchange build.</p>
 
-<p><strong>What it costs.</strong> A BLAS workspace per unordered library-using step in
-place of one per device: 64&nbsp;MiB on gpu0 for DF-RHF against 32, less if a step
-declares a smaller one (on cuBLAS the size only picks the algorithm, and rocBLAS's
-<code>gemm</code> needs none: <a href="#workspace">workspace</a>). The handle-workspace
-row of the budget table becomes scratch rows and a handles row.</p>
+<p><strong>Not taken.</strong></p>
+<ul>
+<li><strong>A ring of handle sets</strong>, assigned by the closure so that two steps
+  share a set only if one reaches the other. It keeps that overlap, at a handle set per
+  unit of the DAG's width (about 20&nbsp;MiB on CUDA and 52 on HIP, measured below) and
+  an assignment in the final budget node, for overlap the paragraph above says is worth
+  little.</li>
+<li><strong>A handle set per step.</strong> The same with no sharing, at a set per
+  library-using step: ten such steps cost 520&nbsp;MiB on HIP against 52.</li>
+<li><strong>The lock per call, the handles rebound at each call.</strong> It waits less,
+  but two unordered steps would then have calls in flight on one handle at once, and
+  whether cuSOLVER or rocBLAS keep internal device state that those calls would race on
+  is unverified.</li>
+<li><strong>The join made by the access</strong>: the library stream kept, a step
+  reaching the handles only through a call that forks from its stream and joins back. It
+  closes the hole, but leaves every library call on one stream, so the orthogonalizer's
+  <code>syevd</code> queues behind <code>eri</code>'s kernels anyway.</li>
+</ul>
 
-<p><strong>What it would change above, if agreed:</strong> the streams table and its
-figure (no <code>DeviceResources</code> stream, no events); "the mutex guards the host
-side only" and "one handle set per device, on one stream"; the handle's workspace in
-<a href="#workspace">BLAS and solver workspace</a> (home: step scratch; protected by the
-closure and the step-end sync); the final budget node's duties; and item 2 of the
-<a href="#retire">order of work</a>.</p>
+<p><strong>The free-memory check</strong> <span class="tag prop">proposed</span>. In
+execute mode nothing allocates: budget mode allocated everything. So a card's free memory
+should hold its value from the end of budget mode for the whole run. The wrapper has
+already synced at step end; one memory-info read there catches growth on that card by any
+step or library, such as a hipBLAS call that outgrows the workspace, for a few
+microseconds a step. Two things it must allow for: the libraries' first-call growth
+(10&nbsp;MiB on HIP, up to 14 on cuSOLVER: code objects or lazy module loading), answered
+by one small warm-up call per library in budget mode or a once-per-process allowance; and
+other processes on the card, which move the same reading, so outside the gates, which
+hold the card, a drop is a warning and not an error. Whether it runs on every run or only
+in the gates is to pick.</p>
 
 <p><strong>What the measurements showed</strong> <span class="tag run">run</span>
 2026-11-24, RTX 3080 and RX 9060 XT, through <code>wwr-sys</code>
@@ -1833,8 +1824,7 @@ closure and the step-end sync); the final budget node's duties; and item 2 of th
   and 58 on hipSOLVER; on HIP each gives back rocBLAS's 32&nbsp;MiB pool once it has a
   caller's workspace. So a handle set costs about 20&nbsp;MiB on CUDA and 52 on HIP, and
   the first-call growth (10 on HIP, 0 to 14 on cuSOLVER) is once per process. A handle per
-  step costs the pipeline's length times that, the ring its width: <strong>the ring is
-  the better form</strong>.</li>
+  step costs the pipeline's length times that; one set per card is the floor.</li>
 <li><strong>The move is safe in the proposal's order.</strong> On cuBLAS a call made
   after <code>SetStream</code> then <code>SetWorkspace</code> used the workspace it was
   given; with the two reversed, <code>SetStream</code> silently put the handle back on
@@ -1849,10 +1839,10 @@ closure and the step-end sync); the final budget node's duties; and item 2 of th
   nothing else reorders.</li>
 <li><strong>On HIP a workspace too small grows.</strong> Given 256&nbsp;B, that
   <code>dtrsm</code> took 8&nbsp;MiB of its own at the call, outside the budget, with no
-  error; cuBLAS only changes algorithm. So on HIP a step's BLAS workspace must cover its
-  largest call, and where that number comes from is open: rocBLAS's device-memory size
-  query, if <code>wwr-sys</code> can reach it through hipBLAS, or a measured allowance per
-  routine and shape. <span class="tag disc">to discuss</span></li>
+  error; cuBLAS only changes algorithm. So on HIP the card's workspace must cover the
+  largest BLAS call any step makes: hence 128&nbsp;MiB, and the check above. Whether
+  128&nbsp;MiB covers every shape the tree calls at production sizes is
+  <a href="#open">to measure</a>.</li>
 </ol>
 
 <h3>Resources</h3>
@@ -1863,9 +1853,9 @@ closure and the step-end sync); the final budget node's duties; and item 2 of th
   the host queries</td><td>The rustflow <code>Executor</code>, the device list, the host
   queries, one <code>DeviceResources</code> per device</td></tr>
 <tr><td><code>DeviceResources</code></td><td>One per device: stream, handles, pool,
-  workspaces, pinned memory</td><td>One per device: stream, BLAS and solver handles, and
-  the fixed BLAS workspace the final budget node sets. No pool; memory is the steps', and
-  solver work is their scratch</td></tr>
+  workspaces, pinned memory</td><td>One per device: BLAS and solver handles, the fixed
+  128&nbsp;MiB BLAS workspace the final budget node allocates, and the card's lock. No
+  stream and no pool; memory is the steps', and solver work is their scratch</td></tr>
 <tr><td>Lifetime</td><td>The run</td><td>The process, behind an <code>Arc</code></td></tr>
 </table></div>
 <ul>
@@ -1988,14 +1978,14 @@ column for the three-centre step are to be redone at a batch width.</div>
   <code>ForkStream</code>, so the five overlap on the card with no lane named and no
   event between them.</li>
 <li><strong>Three nodes use the library</strong>: X (an eigensolve), H (a sum) and B (a
-  triangular solve). Each locks the device's <code>DeviceResources</code> for its calls.
-  They are on separate chains, so the lock may be contended here, briefly; nothing is
-  wrong when it is.</li>
+  triangular solve). Each holds gpu0's lock for its <code>run</code>
+  (<a href="#lock">one handle set per card</a>). They are on separate chains, so the lock
+  may be contended here: X, or H, waits for B's step; nothing is wrong when it does.</li>
 <li><strong>The scratch slab is packed</strong>: X's eigensolve work, and B's build
   intermediates with its records and work lists, are unordered, so their regions are
   disjoint and X runs beside the three-centre step; the SCF, which follows both, may
   reuse either. The slab is allocated once, by the final budget node, beside the fixed
-  32&nbsp;MiB BLAS-handle workspace.</li>
+  128&nbsp;MiB BLAS-handle workspace.</li>
 <li><strong>n_pair is budgeted at its bound.</strong> The screening map decides how
   many pairs (μν|P) and B hold, it is a GPU computation and not a parse, and it changes
   from one geometry to the next, while the unscreened count does not. So both are
@@ -2018,7 +2008,7 @@ column for the three-centre step are to be redone at a batch width.</div>
   9.86&nbsp;GB of device memory: the one slab (7.80), the records and work lists
   (1.81, nearly all of it the three-centre step's <code>cells</code>), the metric and its
   factor (0.21), and 0.04 for everything else, the eigensolve's scratch included; plus
-  the 32&nbsp;MiB handle workspace, and the records and work lists' 1.81&nbsp;GB pinned.
+  the 128&nbsp;MiB handle workspace, and the records and work lists' 1.81&nbsp;GB pinned.
   An earlier draft said "the slab plus about 0.25&nbsp;GB": it left the work lists out.
   Packing does not lower this: the peak is inside the three-centre step, where its slab,
   its work lists and its build intermediates are all live at once. Packing frees the
@@ -2043,7 +2033,7 @@ cc-pVDZ-JKFIT (n_ao 734, n_aux 3606, 270,497 pair columns), by kind. Log scale: 
 charges span eight decades. Computed from the formulas in the node table, with
 (μν|P) and B one step, as decided; the scratch row is the LAPACK formula for the
 eigensolve's work at n_ao, not a cuSOLVER query, and the SCF is left out, as in the graph.
-B's build intermediates, which would raise the scratch row, and the fixed 32&nbsp;MiB
+B's build intermediates, which would raise the scratch row, and the fixed 128&nbsp;MiB
 handle workspace are not drawn. Hover a bar for its parts.</figcaption>
 </figure>
 
@@ -2233,8 +2223,8 @@ shows against the old path at these sizes.</p>
   <td>And every kernel between them. <code>orthogonalizer</code> and <code>scf</code>
   never use their own stream; <code>eri</code> only for its class kernels. Each holds
   the mutex for its whole enqueueing</td>
-  <td>See <a href="#sets">Streams</a>: no handle per step; shorten the mutex hold;
-  one contention check</td></tr>
+  <td>No library stream: <a href="#lock">one handle set per card</a>, bound to the
+  holder's stream <span class="tag dec">decided</span> 2026-11-24</td></tr>
 <tr><td>A manager's internal lock</td>
   <td>Needed, as predicted, but held only while enqueueing. The one library stream is
   what keeps two callers' scratch apart on the card</td>
@@ -2325,9 +2315,9 @@ Rust tree's task layer and not an edit to it.</p>
 <li><strong>One step, batched, on <code>num_gpus</code> cards, beside the old
   path.</strong> The DF J/K pass over batches of P is the candidate: the experiment's
   fourth variant is most of it, on one card. The step's
-  <code>ForkStream</code> and the wrapper's sync, <code>DeviceResources</code> behind its
-  mutex, its scratch region with the solver's work in it, the fixed handle workspace,
-  per-node device selection.</li>
+  <code>ForkStream</code> and the wrapper's sync, each card's <code>DeviceResources</code>
+  and its lock taken in card order, its scratch region with the solver's work in it, the
+  fixed handle workspace, the free-memory check, per-node device selection.</li>
 <li><strong>The DF-RHF chain</strong> as steps: setup, the integrals, X, the guess, the
   SCF with its condition loop inside its subflow. Held against the old path's energies, which the tree already
   holds against PySCF.</li>
@@ -2356,17 +2346,10 @@ Rust tree's task layer and not an edit to it.</p>
   open cheaply is one rule, that work on different cards communicates only through the
   collectives layer; B on one host's heap is the first thing that rule would have to
   answer. <span class="tag disc">to discuss</span></li>
-<li><strong>The step-end sync and the library stream.</strong> The sync carries memory
-  safety (<a href="#scratch">step scratch</a>), and the wrapper syncs the step's own
-  stream. Work a step puts on the device's library stream is under it only if the step
-  joins back, and nothing makes it: the prototype's <code>orthogonalizer</code> and
-  <code>scf</code> never used their own stream. One way to close it: the
-  <code>DeviceResources</code> guard records the join into the step's stream when it is
-  dropped. Raised in review, 2026-11-23. Discussed 2026-11-24: the proposal is to drop
-  the library stream, with <a href="#ring">a ring of library handles</a> assigned by the
-  closure, or a handle per step. The two measurements favour the ring, with
-  <code>SetStream</code> before <code>SetWorkspace</code> (<a href="#ring">the ring</a>).
-  <span class="tag prop">proposed</span></li>
+<li><strong>The step-end sync and the library stream.</strong> Closed 2026-11-24: the
+  library stream is gone, and a step's library calls go on its own stream, under one
+  handle set per card and that card's lock (<a href="#lock">one handle set per card</a>).
+  <span class="tag dec">decided</span></li>
 <li><strong>Packing <code>Output</code>s too</strong>, by the same closure, held until
   the measurement says <code>Output</code>s are what stacks.
   <a href="#scratch">Step scratch</a>. <span class="tag disc">to discuss</span></li>
@@ -2395,6 +2378,12 @@ Rust tree's task layer and not an edit to it.</p>
   configs. On the model's dummy and random DAGs it is answered
   (<a href="#closure-model">there</a>): at the bound on 98.1% largest first, 99.2% the
   best of four; real configs remain.</li>
+<li><strong>Whether 128&nbsp;MiB covers every BLAS call on HIP.</strong> One reading
+  so far: a 4096&nbsp;&times;&nbsp;4096 <code>dtrsm</code> needs 8&nbsp;MiB. Run a handle
+  with no workspace set through the largest shapes the tree calls at production sizes
+  (the DF fit's <code>trsm</code> at n_aux in the ten thousands, <code>gemm</code>,
+  <code>syrk</code>, <code>gemv</code>) and read how far rocBLAS's own pool grows
+  (<a href="#lock">the measurements</a>).</li>
 <li><strong>The margin constant</strong> for a defaulted device cap, and whether the
   kernels' stack should be read per card and not carried as the 3080's number.</li>
 <li><strong>The default limit fraction</strong> that picks a step's batch width.</li>
@@ -2531,17 +2520,17 @@ const NODES = [
    note:"Two-centre, two-electron. Needs no orbital basis."},
 
   // linear algebra
-  {id:"X", ph:'step', mb:'Device: n_ao². Scratch: the eigensolve’s work at n_ao. Locks DeviceResources', layer:5, x:3.55, kind:"la", label:"orthogonalizer", sub:"X: XᵀSX = 1",
+  {id:"X", ph:'step', mb:'Device: n_ao². Scratch: the eigensolve’s work at n_ao. Holds gpu0's library lock', layer:5, x:3.55, kind:"la", label:"orthogonalizer", sub:"X: XᵀSX = 1",
    deps:["S"], out:"The transform to an orthonormal basis", size:"N × N (or N × N_kept)",
    note:"Symmetric S^(−1/2), or canonical with small eigenvalues of S dropped."},
-  {id:"H", ph:'step', mb:'Device: n_ao². Locks DeviceResources for the sum', layer:5, x:4.6, kind:"la", label:"core Hamiltonian", sub:"H = T + V",
+  {id:"H", ph:'step', mb:'Device: n_ao². Holds gpu0's library lock', layer:5, x:4.6, kind:"la", label:"core Hamiltonian", sub:"H = T + V",
    deps:["T","V"], out:"The one-electron part of the Fock matrix",
    size:"N × N, symmetric", note:"A sum. The SCF never needs T and V apart."},
   {id:"L", ph:'step', mb:'Device: n_aux²', layer:5, x:9.8, kind:"la", label:"factor the metric", sub:"J = L Lᵀ",
    deps:["PQ"], out:"A factor of the metric (Cholesky), or J^(−1/2)",
    size:"N_aux × N_aux",
    note:"The \"orthogonalize (P|Q)\" step: it makes the fitting functions orthonormal in the Coulomb metric."},
-  {id:"B", ph:'step', mb:'n_pair × n_aux as its own step; nothing more if solved in place in one step with (μν|P). Locks DeviceResources for the solve', layer:6, x:8.6, kind:"la", label:"fitting vectors",
+  {id:"B", ph:'step', mb:'n_pair × n_aux as its own step; nothing more if solved in place in one step with (μν|P). Holds gpu0's library lock', layer:6, x:8.6, kind:"la", label:"fitting vectors",
    sub:"B = (μν|Q) L⁻ᵀ", deps:["mnP","L"],
    out:"B_μν^P, with (μν|λσ) ≈ Σ_P B_μν^P B_λσ^P", size:"N_pair × N_aux",
    note:"A triangular solve against the factor, over every orbital pair. Once built, (μν|P) and the factor are no longer needed."},
