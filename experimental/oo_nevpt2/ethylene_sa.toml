@@ -1,0 +1,23 @@
+# Ethylene's N and V states, the two lowest singlets of a state-averaged
+# CASSCF(2,2) over pi and pi*, for the probe's `sa` mode: the case where
+# the CASSCF orbitals are known to be wrong (V's pi* too diffuse). AVAS
+# over C 2p at a threshold only the two pi orbitals pass. The solver
+# usually ends at the minimum (average -77.921394); see
+# ethylene_sa_valence.toml for the saddle before it.
+[molecule]
+xyz = "ethylene_sa.xyz"
+[basis_set]
+basis = "aug-cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "aug-cc-pVDZ-acCD-6-6"
+[scf]
+energy_tolerance = 1e-12
+commutator_tolerance = 1e-10
+[casscf]
+avas = ["C 2p"]
+avas_threshold = 0.95
+avas_max_ncas = 2
+nroots = 2
+conv_tol = 1e-12
+conv_tol_grad = 1e-9

@@ -1,0 +1,21 @@
+# Ethylene at the valence-like SA-CASSCF solution: ethylene_sa.toml with
+# the CASSCF tolerances loosened, so the solver stops at the saddle it
+# reaches after five macro iterations (average -77.895776) and does not
+# go on to the minimum (-77.921394).
+[molecule]
+xyz = "ethylene_sa.xyz"
+[basis_set]
+basis = "aug-cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "aug-cc-pVDZ-acCD-6-6"
+[scf]
+energy_tolerance = 1e-12
+commutator_tolerance = 1e-10
+[casscf]
+avas = ["C 2p"]
+avas_threshold = 0.95
+avas_max_ncas = 2
+nroots = 2
+conv_tol = 1e-7
+conv_tol_grad = 1e-6
