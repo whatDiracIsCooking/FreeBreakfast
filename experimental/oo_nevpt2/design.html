@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orbital-optimized NEVPT2: design note</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --ink: #1c1d21; --muted: #666a73;
+    --line: #d9d7cf; --code-bg: #efeee9; --link: #4b55c4;
+    --ok: #2b8a7a; --open: #b7791f; --bad: #c2410c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17181c; --panel: #1f2126; --ink: #e8e8ea; --muted: #9a9ea8;
+      --line: #33363d; --code-bg: #26282e; --link: #8891f0;
+      --ok: #4fb8a6; --open: #e0a84a; --bad: #fb923c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 900px; margin: 0 auto; padding: 28px 16px 64px; }
+  h1 { font-size: 25px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  h2 { font-size: 19px; margin: 40px 0 10px; padding-top: 14px;
+       border-top: 1px solid var(--line); }
+  h3 { font-size: 15.5px; margin: 24px 0 8px; }
+  p { margin: 0 0 11px; max-width: 80ch; }
+  ul, ol { margin: 0 0 12px; padding-left: 22px; max-width: 80ch; }
+  li { margin: 0 0 5px; }
+  a { color: var(--link); }
+  .lede { color: var(--muted); }
+  code { font: 13px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+         background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+        padding: 12px 14px; overflow-x: auto; margin: 0 0 14px; }
+  pre code { background: none; padding: 0; line-height: 1.5; }
+  .tablewrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line);
+               border-radius: 8px; margin: 0 0 14px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 7px 11px;
+           border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tag { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 0 6px;
+         border-radius: 4px; border: 1px solid; white-space: nowrap; }
+  .tag.ok { color: var(--ok); } .tag.open { color: var(--open); } .tag.bad { color: var(--bad); }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+         padding: 12px 14px; margin: 0 0 14px; }
+  .box p:last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Orbital-optimized NEVPT2</h1>
+<p class="lede">Design note for <code>experimental/oo_nevpt2/</code>. Status:
+an idea and one probe, nothing under <code>src/</code>. The probe says two
+things: the bare functional collapses (<a href="#results">Results</a>), and
+natural orbitals of the PT2-corrected density move the energy by only tenths
+of a millihartree (<a href="#natural">Natural orbitals</a>).</p>
+
+<h2 id="idea">The idea, and the loop that does not work</h2>
+<p>CASSCF chooses its orbitals to minimize the CASSCF energy, which contains
+almost no dynamic correlation. NEVPT2 then adds that correlation on top of
+orbitals that never saw it. The idea is to let the NEVPT2 energy inform the
+orbitals, so some dynamic correlation is built in at the orbital level.</p>
+<p>The loop as first stated was: NEVPT2 informs the SCF orbitals, those feed a
+CASSCF, that feeds NEVPT2, and so on. It has no effect. CASSCF optimizes the
+orbitals to its own stationary point, so the NEVPT2 information only changes
+its starting guess and the loop returns the CASSCF orbitals it started with.</p>
+<p>The fix is to drop the CASSCF orbital condition and replace it, not to feed
+it.</p>
+
+<h2 id="functional">The functional</h2>
+<pre><code>E(κ) = E_CAS(κ, c*(κ)) + E_PT2(κ, c*(κ))
+
+c*(κ)   the CASCI root at the orbitals C exp(κ):  (H₀(κ) − E_CAS) c* = 0
+E_PT2   the PC-NEVPT2 correlation energy of that root, core and virtual
+        orbitals canonical over the root's generalized Fock</code></pre>
+<p>OO-NEVPT2 is the stationary point of E in the orbital rotations κ. The CI
+is a CASCI at every set of orbitals, so the reference stays a proper CAS
+eigenfunction and Dyall's Hamiltonian stays well defined.</p>
+<p>The non-redundant rotations are the same three classes CASSCF has:
+core–active, active–virtual and core–virtual.</p>
+<ul>
+  <li><b>Active–active</b> rotations leave both terms unchanged (CASCI and
+  PC-NEVPT2 are invariant). SC-NEVPT2 is not invariant to them, which is one
+  reason to build this on PC.</li>
+  <li><b>Core–core and virtual–virtual</b> rotations are fixed by the
+  canonical condition, not optimized. The functional is defined on canonical
+  orbitals, and the derivative through that condition is the z<sup>c</sup>
+  term below.</li>
+</ul>
+
+<h2 id="gradient">The gradient is already in the tree</h2>
+<p>The NEVPT2 nuclear gradient (<code>src/nevpt2/gradient/</code>) makes this
+Lagrangian stationary at CASSCF orbitals:</p>
+<pre><code>L = E_CAS + E_PT2 + Z · g_orb + z · g_ci + ⟨z^c, f⟩</code></pre>
+<p>It needs the Z-vector (Z, z) because E_PT2 is not stationary in the
+orbitals or the CI vector. That non-stationarity is exactly the OO-NEVPT2
+gradient. Piece by piece:</p>
+<div class="tablewrap"><table>
+<tr><th>Quantity</th><th>Meaning here</th><th>Call</th></tr>
+<tr><td>A<sup>corr</sup> = X − Xᵀ</td><td>∂E_PT2/∂κ at fixed c</td>
+    <td><code>nevpt2::pc_adjoint</code> (<code>a</code>)</td></tr>
+<tr><td>y</td><td>∂E_PT2/∂c at fixed orbitals</td>
+    <td><code>nevpt2::pc_adjoint</code> (<code>y</code>)</td></tr>
+<tr><td>z<sup>c</sup>, A<sup>z^c</sup>, y<sup>c</sup></td>
+    <td>the derivative through the canonical condition</td>
+    <td><code>nevpt2::zc_multipliers</code>, <code>nevpt2::zc_adjoint</code></td></tr>
+<tr><td>g</td><td>∂E_CAS/∂κ; zero at CASSCF orbitals, not afterwards</td>
+    <td><code>response::fock</code> (<code>gradient</code>)</td></tr>
+<tr><td>H̃</td><td>the CASSCF orbital Hessian with the CI relaxed</td>
+    <td><code>response::Hessian</code>, <code>response::RelaxedHessian</code></td></tr>
+</table></div>
+<p>With c eliminated through the CASCI condition, the total derivative is</p>
+<pre><code>dE/dκ = g + A − H_oc H_cc⁻¹ y          A = A^corr + A^{z^c},  y ← y + y^c</code></pre>
+<p>and the Z-vector equation the gradient code solves is</p>
+<pre><code>H̃ Z = −(g + A − H_oc H_cc⁻¹ y),        H̃ = H_oo − H_oc H_cc⁻¹ H_co</code></pre>
+<div class="box"><p><b>So Z is the quasi-Newton step of OO-NEVPT2</b>: the
+total gradient, preconditioned by the CI-relaxed CASSCF Hessian, with the
+second derivatives of E_PT2 dropped. The existing right-hand side already
+carries g, so the same solve gives the step away from CASSCF convergence too.
+Each iteration is one NEVPT2 adjoint and one Z-vector solve, with no
+derivative integrals.</p></div>
+
+<h2 id="algorithm">Algorithm</h2>
+<ol>
+  <li>Start from a converged single-state DF-CASSCF (C, c).</li>
+  <li><code>pc_adjoint</code>, <code>zc_multipliers</code>, <code>zc_adjoint</code>
+      at (C, c): E_PT2, A, y.</li>
+  <li><code>response::zvector</code> with the right-hand sides g + pack(A) and
+      ½ y: the step Z.</li>
+  <li>C ← C exp(t κ(Z)), with t from a short line search on E.</li>
+  <li>CASCI at the new C, then canonicalize the core and virtuals over the
+      new root's Fock.</li>
+  <li>Stop when ‖g + pack(A)‖ and the reduced gradient are below tolerance;
+      otherwise go to 2.</li>
+</ol>
+<p>A converged OO-NEVPT2 has no orbital Z-vector in its nuclear gradient. The
+CI response z remains, because c is stationary for E_CAS only.</p>
+
+<h2 id="risks">Risks</h2>
+<ul>
+  <li><b>No lower bound.</b> E_PT2 is not variational in the orbitals. OO-MP2
+  overcorrelates by shrinking denominators and needs regularization. Dyall's
+  Hamiltonian keeps NEVPT2 free of intruders at fixed orbitals; an optimizer
+  may look for them. PC's conditioning floor (<code>pc_floor</code>) is the
+  existing lever.</li>
+  <li><b>Active-space drift.</b> Nothing ties the active orbitals to the
+  static correlation. They may rotate towards whatever raises |E_PT2|.</li>
+  <li><b>Hessian quality.</b> The CASSCF Hessian ignores E_PT2's curvature.
+  If the two disagree, steps overshoot and convergence is slow.</li>
+  <li><b>Cost.</b> Each iteration is a NEVPT2 energy, its reverse pass (the
+  3-RDM and contracted 4-RDM adjoints) and a Z-vector solve.</li>
+  <li><b>Several states.</b> For a state average or QD-NEVPT2 the functional
+  is not obvious (the average of the PT2 energies, or a trace of
+  H<sub>eff</sub>). Out of scope here.</li>
+  <li><b>Prior art.</b> Not checked. OO-MP2 and Brueckner methods are the
+  single-reference analogues; a literature search for orbital-optimized
+  CASPT2 or NEVPT2 comes before any real investment.</li>
+</ul>
+
+<h2 id="experiment">The experiment</h2>
+<p><code>experimental/oo_nevpt2/main.cpp</code>, built by the
+<code>experimental</code> preset as <code>free_breakfast_oo_nevpt2</code>.
+It runs a config's DF-CASSCF through the pipeline, then iterates the
+algorithm above with PC-NEVPT2 and prints, per iteration:</p>
+<ul>
+  <li>E_CAS, E_PT2 and their sum;</li>
+  <li>‖g‖, ‖pack(A)‖ and ‖g + pack(A)‖;</li>
+  <li>E at t = ½ and t = 1 along Z. On a quadratic model whose minimum is
+  t = 1, the drop at ½ is ¾ of the drop at 1, so the ratio measures how well
+  the CASSCF Hessian models E.</li>
+  <li>the active natural occupations.</li>
+</ul>
+<p>The line search takes the lower of t = 1 and ½, doubles once to t = 2
+while still descending, and halves down to 1/64 when neither descends. A
+Newton step is cut to 0.3 rad. Where the Z-vector solve refuses (the CASSCF
+Hessian no longer positive definite), the step is steepest descent on
+g + pack(A), 0.05 rad at its largest.</p>
+<p><b>What decides.</b> If the total energy moves by microhartrees and the
+orbitals barely change, the idea is not worth a module. If it moves by
+millihartrees, or shifts a crossing, it is, with regularization.</p>
+
+<h2 id="results">Results</h2>
+<div class="box"><p><span class="tag bad">verdict</span> <b>The bare functional
+has no usable minimum.</b> In all three cases the total energy falls without
+the gradient shrinking, E_PT2 runs away while E_CAS rises, and the run stops
+only when PC-NEVPT2 refuses an intruder. This is the "no lower bound" risk
+above, and it is not a small effect: do not promote this as it stands.</p></div>
+
+<p>RTX 3080, <code>experimental</code> preset, PC-NEVPT2, all-electron, 2026-11-24.
+Energies in hartree; changes are against the CASSCF orbitals.</p>
+
+<h3>At the CASSCF orbitals</h3>
+<div class="tablewrap"><table>
+<tr><th>Case</th><th>Active space</th><th class="num">E_PT2</th>
+    <th class="num">‖pack(A)‖</th><th class="num">ΔE(t = ½)</th>
+    <th class="num">ΔE(t = 1)</th><th class="num">ratio</th></tr>
+<tr><td>water, cc-pVDZ</td><td>(4,4)</td><td class="num">−0.14971</td>
+    <td class="num">0.0625</td><td class="num">−1.61e-3</td>
+    <td class="num">−3.10e-3</td><td class="num">0.52</td></tr>
+<tr><td>LiF 1.6 Å, aug-cc-pVDZ</td><td>(6,4)</td><td class="num">−0.20422</td>
+    <td class="num">0.129</td><td class="num">−9.8e-4</td>
+    <td class="num">+1.67e-3</td><td class="num">n/a</td></tr>
+<tr><td>LiF 5.0 Å, aug-cc-pVDZ</td><td>(6,4)</td><td class="num">−0.20785</td>
+    <td class="num">0.135</td><td class="num">−7.43e-3</td>
+    <td class="num">+2.17e-3</td><td class="num">n/a</td></tr>
+</table></div>
+<ul>
+  <li><b>The gradient is large.</b> ‖pack(A)‖ is 0.06 to 0.13 at orbitals
+  where the CASSCF gradient is 1e-10. The first step lowers the total by
+  1 to 7 mEh, so by the note's own bar the effect is not negligible.</li>
+  <li><b>The CASSCF Hessian is the wrong model.</b> On water the ratio is
+  0.52, not the 0.75 of a quadratic with its minimum at t = 1: E is nearly
+  linear along Z, with about a seventh of the curvature the CASSCF Hessian
+  predicts. E_PT2's own curvature is negative and cancels most of E_CAS's.</li>
+  <li><b>LiF's first step is cut.</b> Two active orbitals sit at occupation
+  1.9999, so the Hessian is near singular and Z is 47 rad at 1.6 Å (0.72 at
+  5.0 Å). The probe cuts a step to 0.3 rad, and LiF's rows are along that
+  cut step.</li>
+</ul>
+
+<h3>Following the descent</h3>
+<div class="tablewrap"><table>
+<tr><th>Case</th><th class="num">Steps</th><th class="num">ΔE_CAS</th>
+    <th class="num">ΔE_PT2</th><th class="num">ΔE total</th>
+    <th class="num">final ‖g + A‖</th><th>Stopped by</th></tr>
+<tr><td>water</td><td class="num">9</td><td class="num">+2.85</td>
+    <td class="num">−3.90</td><td class="num">−1.06</td>
+    <td class="num">19.8</td><td>intruder in Sr at every trial</td></tr>
+<tr><td>LiF 1.6 Å</td><td class="num">7</td><td class="num">+2.62</td>
+    <td class="num">−4.24</td><td class="num">−1.62</td>
+    <td class="num">32.0</td><td>intruder in Sr at every trial</td></tr>
+<tr><td>LiF 5.0 Å</td><td class="num">5</td><td class="num">+0.46</td>
+    <td class="num">−0.54</td><td class="num">−0.077</td>
+    <td class="num">2.4</td><td>intruder in Sr at every trial</td></tr>
+</table></div>
+<p>Water's trajectory, with the line search capped at t = 2:</p>
+<div class="tablewrap"><table>
+<tr><th class="num">Iter</th><th class="num">E_CAS</th><th class="num">E_PT2</th>
+    <th class="num">E total</th><th class="num">‖g‖</th>
+    <th class="num">‖g + A‖</th><th>Step</th></tr>
+<tr><td class="num">0</td><td class="num">−76.07784</td><td class="num">−0.14971</td>
+    <td class="num">−76.22755</td><td class="num">8e-10</td>
+    <td class="num">0.063</td><td>Newton, t = 2</td></tr>
+<tr><td class="num">1</td><td class="num">−76.07097</td><td class="num">−0.16218</td>
+    <td class="num">−76.23315</td><td class="num">0.126</td>
+    <td class="num">0.055</td><td>Newton, t = 2</td></tr>
+<tr><td class="num">2</td><td class="num">−76.05795</td><td class="num">−0.17778</td>
+    <td class="num">−76.23573</td><td class="num">0.205</td>
+    <td class="num">0.066</td><td>descent, t = ¼</td></tr>
+<tr><td class="num">4</td><td class="num">−76.00683</td><td class="num">−0.23125</td>
+    <td class="num">−76.23808</td><td class="num">1.92</td>
+    <td class="num">0.176</td><td>descent, t = ½</td></tr>
+<tr><td class="num">6</td><td class="num">−75.52726</td><td class="num">−0.73982</td>
+    <td class="num">−76.26708</td><td class="num">5.36</td>
+    <td class="num">1.56</td><td>descent, t = 2</td></tr>
+<tr><td class="num">9</td><td class="num">−73.23168</td><td class="num">−4.05144</td>
+    <td class="num">−77.28312</td><td class="num">19.2</td>
+    <td class="num">19.8</td><td>none: every trial refused</td></tr>
+</table></div>
+<ul>
+  <li><b>No minimum is approached.</b> ‖g + A‖ never falls below its starting
+  value and then grows. Even the first two Newton steps, taken before any
+  fallback, leave it at 0.055 to 0.066.</li>
+  <li><b>The reference is traded away.</b> After two steps E_CAS is already
+  20 mEh above CASSCF for an 8 mEh gain in the total; by the end it is
+  hartrees above. g and A grow together and nearly cancel: E_PT2 pays, at a
+  profit, for every rotation that damages the reference.</li>
+  <li><b>The active space does not change character.</b> Water's natural
+  occupations stay at 1.98, 1.98, 0.02, 0.02 throughout, so this is not
+  active-space drift. The damage is in rotations with the external spaces.</li>
+  <li><b>The CASSCF Hessian turns indefinite</b> after two steps (water) or
+  one (LiF): the reference is no longer at a minimum of E_CAS, and the
+  Z-vector solve refuses.</li>
+  <li><b>What stops it</b> is PC's intruder guard on the Sr class
+  (denominators down to 1e-3), not a stationary point.</li>
+</ul>
+
+<h3>What the probe does not show</h3>
+<ul>
+  <li>Once the Hessian is indefinite the step is steepest descent on
+  g + pack(A), without the CI's response, so the later rows are not the exact
+  reduced gradient's path. The early rows are.</li>
+  <li>It does not prove there is no shallow local minimum that a
+  trust-region method on E's own Hessian would find. Nothing in the first
+  steps suggests one: the gradient does not shrink.</li>
+  <li>One basis and one small active space per molecule; SC-NEVPT2 not tried.</li>
+</ul>
+
+<h2 id="why">Why it collapses, and what else could be minimized</h2>
+<p>Orbital rotations form a compact set, so a functional continuous in the
+orbitals is bounded below. E_PT2 = −V†(H₀ − E₀)⁻¹V is not, because it has
+poles: rotating occupied orbitals into the external spaces breaks the
+Brillouin condition, the reference then couples to single-excitation-like
+perturbers in step with g, and the rotated Dyall Hamiltonian's denominators
+shrink. The Hylleraas form does not help: it is variational in the
+amplitudes, and its minimum over them is the same expression. (The mechanism
+is read off the numbers above, not isolated block by block.)</p>
+<div class="tablewrap"><table>
+<tr><th>Way out</th><th>Candidates</th><th>Cost here</th></tr>
+<tr><td>Remove the poles</td>
+    <td>κ-type regularization; Brillouin–Wigner denominators (the lowest
+    eigenvalue of H₀ in the perturber space coupled to the reference by V);
+    denominators frozen at the CASSCF orbitals; DSRG-MRPT2's flow</td>
+    <td>A changed energy and adjoint; BW loses size-consistency</td></tr>
+<tr><td>A true expectation value</td>
+    <td>⟨Ψ|H|Ψ⟩/⟨Ψ|Ψ⟩ over the reference plus the first-order wavefunction:
+    an upper bound to FCI</td>
+    <td>⟨ψ₁|H|ψ₁⟩, towards the 5-RDM; not size-consistent</td></tr>
+<tr><td>Do not minimize</td>
+    <td>Natural orbitals of the PT2-corrected density; a Brueckner condition
+    on the single-excitation-like amplitudes</td>
+    <td>The adjoint the tree already has; not stationary</td></tr>
+</table></div>
+
+<h2 id="natural">Natural orbitals: how much is there to gain?</h2>
+<p>Before building any of those, the prior question is whether orbitals that
+have seen dynamic correlation change the NEVPT2 energy by an amount that
+matters. The probe's <code>no</code> mode answers it without minimizing
+anything:</p>
+<ol>
+  <li>D = D_CAS + ∂E_PT2/∂h, the unrelaxed response density:
+  <code>pc_adjoint</code>'s <code>h_bar</code> plus the canonical condition's
+  z<sup>c</sup>. Its trace correction is zero to round-off.</li>
+  <li>Diagonalize D over all orbitals. The new active orbitals are the
+  natural orbitals with the most weight on the old active space, the new core
+  those of the rest with the most on the old core (by overlap, so a
+  correlated core orbital does not swap in by occupation).</li>
+  <li>CASCI and PC-NEVPT2 in them; repeat.</li>
+</ol>
+<div class="tablewrap"><table>
+<tr><th>Case</th><th class="num">max |ΔD| between spaces</th>
+    <th class="num">ΔE_CAS, pass 1</th><th class="num">ΔE_PT2, pass 1</th>
+    <th class="num">ΔE total, pass 1</th><th class="num">ΔE total, pass 6</th></tr>
+<tr><td>water (4,4)</td><td class="num">2.5e-3</td><td class="num">+1.6e-5</td>
+    <td class="num">−8.1e-5</td><td class="num">−6.5e-5</td>
+    <td class="num">−1.25e-4</td></tr>
+<tr><td>LiF 1.6 Å (6,4)</td><td class="num">2.0e-2</td><td class="num">+7.0e-4</td>
+    <td class="num">−9.3e-4</td><td class="num">−2.3e-4</td>
+    <td class="num">+6e-6</td></tr>
+<tr><td>LiF 5.0 Å (6,4)</td><td class="num">2.6e-2</td><td class="num">+1.19e-3</td>
+    <td class="num">−1.69e-3</td><td class="num">−5.0e-4</td>
+    <td class="num">+8.0e-5</td></tr>
+</table></div>
+<div class="box"><p><span class="tag open">answer</span> <b>Tenths of a
+millihartree.</b> The first pass lowers the total by 0.06 to 0.5 mEh
+(0.04 to 0.3 kcal/mol); the difference between the two LiF geometries is
+0.27 mEh. E_PT2 moves by up to 1.7 mEh, but E_CAS gives back 70% of it. On
+these cases the orbitals NEVPT2 would prefer are, for the energy, the CASSCF
+orbitals.</p></div>
+<ul>
+  <li><b>The spaces barely mix.</b> The old active space keeps 3.9993 to
+  3.9998 of its 4 units of weight, and the largest density element between
+  spaces is 2.6e-2.</li>
+  <li><b>Iterating is not a method.</b> Water settles (−0.125 mEh, the mixing
+  down to 4e-5). On LiF the total climbs back through zero over six passes
+  while the mixing is still 3e-4 to 2e-3: nothing is being minimized, so
+  nothing says the fixed point is lower.</li>
+  <li><b>Against the collapse.</b> The quasi-Newton path gains 1 to 7 mEh in
+  its first step and hartrees later. The natural orbitals gain a tenth of
+  that first step. Most of what OO-NEVPT2 "finds" is the pole, not better
+  orbitals.</li>
+</ul>
+
+<h2 id="next">Where this leaves the idea</h2>
+<ul>
+  <li><b>Not worth a module on this evidence.</b> By the note's own bar
+  (millihartrees, or a shifted crossing) the natural-orbital gain is too
+  small, and a bounded functional would be a new energy and adjoint to
+  recover a fraction of a millihartree.</li>
+  <li><b>What was not tested</b> is the case the idea was for: a reference
+  whose orbitals CASSCF gets qualitatively wrong. Single-state ground-state
+  LiF is not one; the ionic/covalent pair in a state average is, and so are
+  ethylene's V state and 3d metals. Those need the multi-state functional,
+  which this probe does not have.</li>
+  <li><b>If it is reopened</b>, the order is: the natural-orbital pass on a
+  state-averaged LiF pair across the crossing (through
+  <code>qd_pc_adjoint</code>'s <code>h_bar</code>); only if that moves the
+  crossing, a Brillouin–Wigner or regularized functional on this probe.</li>
+</ul>
+
+</main>
+</body>
+</html>
