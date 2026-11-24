@@ -47,7 +47,7 @@
 //! be read against the card's other tenants, but nothing is asserted of it.
 
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use fb_core_error_handling::ErrorKind;
@@ -206,7 +206,7 @@ fn run_molecule(
     step: &ScfStep,
 ) -> (fb_core_thread_pool::Record, Option<ScfOutput>) {
     let run = Run::new(molecule, basis, eri, step, 1, |n| {
-        syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n)
+        syevd_lwork(&SolverHandle::new(Arc::new(Stream::new(0))), n)
     })
     .expect("the case plans");
     run.run(&[0])
@@ -420,7 +420,7 @@ fn a_guess_with_a_negative_eigenvalue_is_warned_of() {
     ));
     fb_io_npy::write_npy(&path, &[n, n], &d).unwrap();
 
-    let lwork = syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n).unwrap();
+    let lwork = syevd_lwork(&SolverHandle::new(Arc::new(Stream::new(0))), n).unwrap();
     let mut dag = Dag::new();
     dag.blas_workspace(0);
     let nuclei = add_nuclei(&mut dag, 0, &molecule);

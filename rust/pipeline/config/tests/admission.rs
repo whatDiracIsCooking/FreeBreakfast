@@ -96,7 +96,7 @@ fn the_dense_eri_of_ten_glycines_is_refused_on_one_card() {
     let card = |w: usize| Card::read(w as i32);
     let lwork = |n| {
         fb_recipes_diagonalize::syevd_lwork(
-            &fb_core_wwr::solver::SolverHandle::new(std::rc::Rc::new(
+            &fb_core_wwr::solver::SolverHandle::new(std::sync::Arc::new(
                 fb_core_wwr::runtime::Stream::new(0),
             )),
             n,

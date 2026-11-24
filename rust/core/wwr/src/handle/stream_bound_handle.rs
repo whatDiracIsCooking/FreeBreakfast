@@ -2,7 +2,7 @@
 
 use std::ops::Deref;
 use std::panic::Location;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use wwr_sys::wwr_stream;
 
@@ -33,24 +33,29 @@ pub trait StreamBoundKind: HandleKind {
 /// [`DeviceHandleStream::stream`] reads back through the owner, so there is
 /// one source of truth.
 ///
-/// The owner is an `Rc`, wwr's `shared_ptr` without the atomic count: a
-/// handle over a raw GPU pointer is neither `Send` nor `Sync`, so the count
-/// is never shared across threads. Ownership runs one way only, handle to
-/// owner. An owner that came to own a handle anchored back to it would be an
-/// `Rc` cycle and leak, which wwr documents and this cannot prevent either.
+/// The owner is an `Arc`, wwr's `shared_ptr`: a library handle and the
+/// stream it is bound to move between workers ([`BlasHandle`] and
+/// [`SolverHandle`] are `Send`), and the stream's other owners may stay on
+/// the thread that made them, so the count is atomic. Ownership runs one way
+/// only, handle to owner. An owner that came to own a handle anchored back
+/// to it would be an `Arc` cycle and leak, which wwr documents and this
+/// cannot prevent either.
+///
+/// [`BlasHandle`]: crate::blas::BlasHandle
+/// [`SolverHandle`]: crate::solver::SolverHandle
 ///
 /// Fields drop in declaration order, so the handle is destroyed before the
 /// owner it was bound to is released.
 pub struct StreamBoundHandle<K: StreamBoundKind, S: DeviceHandleStream> {
     handle: DeviceBoundHandle<K>,
-    owner: Rc<S>,
+    owner: Arc<S>,
 }
 
 impl<K: StreamBoundKind, S: DeviceHandleStream> StreamBoundHandle<K, S> {
     /// Create the handle on `owner`'s device and bind `owner`'s stream to
     /// it; a failure is an `Err` at the caller's location.
     #[track_caller]
-    pub fn try_new(owner: Rc<S>) -> Result<Self> {
+    pub fn try_new(owner: Arc<S>) -> Result<Self> {
         let location = Location::caller();
         let handle = DeviceBoundHandle::try_new_at(
             owner.dev_idx(),
@@ -66,7 +71,7 @@ impl<K: StreamBoundKind, S: DeviceHandleStream> StreamBoundHandle<K, S> {
     }
 
     /// The retained stream owner.
-    pub fn owner(&self) -> &Rc<S> {
+    pub fn owner(&self) -> &Arc<S> {
         &self.owner
     }
 
@@ -114,12 +119,16 @@ mod tests {
         clippy::disallowed_methods,
         reason = "a test reads its result back on the host: the harness waits, not a task"
     )]
+    #[allow(
+        clippy::arc_with_non_send_sync,
+        reason = "the test's stand-in stream stays on its thread; `runtime::Stream` is the one that moves"
+    )]
     fn binds_and_retains_the_owners_stream() {
-        let owner = Rc::new(OwnedStream::new(0));
+        let owner = Arc::new(OwnedStream::new(0));
         let h = Bound::try_new(owner.clone()).unwrap();
         assert_eq!(h.dev_idx(), owner.dev_idx());
         assert_eq!(h.stream(), owner.stream());
-        assert_eq!(Rc::strong_count(&owner), 2);
+        assert_eq!(Arc::strong_count(&owner), 2);
 
         let v = h.view();
         assert_eq!(
@@ -131,6 +140,6 @@ mod tests {
         assert_eq!(status, wwr_status::WWR_STATUS_SUCCESS);
 
         drop(h);
-        assert_eq!(Rc::strong_count(&owner), 1);
+        assert_eq!(Arc::strong_count(&owner), 1);
     }
 }

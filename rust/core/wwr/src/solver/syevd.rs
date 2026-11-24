@@ -231,7 +231,7 @@ mod tests {
     use crate::device_slice::DeviceSlice;
     use crate::runtime::Stream;
     use crate::runtime::tests::DeviceBytes;
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     const VECTOR: wwr_solver_eig_mode = wwr_solver_eig_mode::WWR_SOLVER_EIG_MODE_VECTOR;
     const LOWER: wwr_solver_fill_mode = wwr_solver_fill_mode::WWR_SOLVER_FILL_MODE_LOWER;
@@ -274,7 +274,7 @@ mod tests {
                 }
             })
             .collect();
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let solver = SolverHandle::new(owner.clone());
         let n = N as i32;
         let lwork = syevd_lwork::<f64>(&solver, VECTOR, LOWER, n, LDA as i32).unwrap();
@@ -321,7 +321,7 @@ mod tests {
     #[test]
     #[ignore = "tier 4: needs a GPU"]
     fn syevd_refuses_a_work_shorter_than_the_query() {
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let solver = SolverHandle::new(owner);
         let lwork = syevd_lwork::<f64>(&solver, VECTOR, LOWER, 4, 4).unwrap();
         let mut a = DeviceBytes::new(16 * size_of::<f64>());
@@ -351,7 +351,7 @@ mod tests {
         expected = "syevd: A is 4 x 4 at leading dimension 4, 16 elements, but its slice holds 15"
     )]
     fn syevd_refuses_a_short_matrix() {
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let solver = SolverHandle::new(owner);
         let mut a = DeviceBytes::new(15 * size_of::<f64>());
         let mut w = DeviceBytes::new(4 * size_of::<f64>());

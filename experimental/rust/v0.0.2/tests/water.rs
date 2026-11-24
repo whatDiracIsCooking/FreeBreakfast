@@ -14,8 +14,7 @@
 //! `cargo test --test water -- --include-ignored --nocapture --test-threads=1`.
 
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use fb_core_error_handling::ErrorKind;
@@ -92,7 +91,7 @@ fn old_path(xyz: &Path) -> (f64, usize, Duration) {
     let molecule = fb_io_xyz::read_xyz(xyz, 0, 1).unwrap();
     let eri = OldEriStep::density_fitting("cc-pvdz-jkfit", 0.0);
     let run = OldRun::new(&molecule, "cc-pvdz", &eri, &OldScfStep::default(), 1, |n| {
-        syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n)
+        syevd_lwork(&SolverHandle::new(Arc::new(Stream::new(0))), n)
     })
     .expect("the old path plans");
     let (record, out) = run.run(&[0]);

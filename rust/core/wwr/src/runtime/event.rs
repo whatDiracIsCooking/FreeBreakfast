@@ -48,7 +48,25 @@ impl HandleKind for EventKind {
 
 /// An owned event on one device: `EventWrapper`. Every constructor aborts
 /// on failure ([`super`] has why).
+///
+/// `Send` and `Sync`, as a [`Stream`] is: it moves with
+/// the step that records it.
 pub struct Event(DeviceBoundHandle<EventKind>);
+
+// SAFETY: as `Stream`'s: the raw event is a runtime object, not tied to
+// the thread that made it, every call through it is a thread-safe runtime
+// call that names it, and it is destroyed once, by its drop.
+unsafe impl Send for Event {}
+// SAFETY: as `Stream`'s: every `&self` method is one runtime call on the
+// live event (a record, a sync or an elapsed time), which the
+// runtime allows from several threads at once.
+unsafe impl Sync for Event {}
+
+// The two above, checked at every build.
+const _: () = {
+    const fn shared_across_threads<T: Send + Sync>() {}
+    shared_across_threads::<Event>();
+};
 
 impl Event {
     /// A timing-disabled event on `dev_idx`.

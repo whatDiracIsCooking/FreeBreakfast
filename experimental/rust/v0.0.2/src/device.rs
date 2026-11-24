@@ -8,8 +8,7 @@
 //! calls, and joins back ([`ForkStream::library`]); those two events are the
 //! only ones in the design, and they are inside a step.
 
-use std::rc::Rc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_wwr::blas::BlasHandle;
@@ -35,15 +34,6 @@ pub struct ForkStream {
     fork: Event,
     join: Event,
 }
-
-// SAFETY: a stream and its events are driver handles, usable from any thread
-// that has the device current, which the step wrapper sees to; the wwr
-// wrappers are `!Send` only because the old executor pinned a thread per
-// device. One step holds the lane at a time: it sits in the step's slot,
-// behind the slot's lock.
-unsafe impl Send for ForkStream {}
-// SAFETY: as above; the slot's write lock is the exclusion.
-unsafe impl Sync for ForkStream {}
 
 impl ForkStream {
     /// A stream on `device` with its two events.
@@ -110,17 +100,11 @@ impl ForkStream {
 /// pool; memory is the steps'.
 pub struct DeviceResources {
     device: i32,
-    stream: Rc<Stream>,
+    stream: Arc<Stream>,
     blas: BlasHandle,
     solver: SolverHandle,
     workspace: Option<DeviceBuf<f64>>,
 }
-
-// SAFETY: as `ForkStream`'s: driver handles, used by one thread at a time
-// (the bus holds this behind a mutex) with the device current. The `Rc`s
-// never leave the struct, so their counts are touched only at construction
-// and drop, each by one thread.
-unsafe impl Send for DeviceResources {}
 
 impl DeviceResources {
     /// The library stream and handles of `device`. They exist before budget
@@ -128,11 +112,11 @@ impl DeviceResources {
     pub fn new(device: usize) -> DeviceResources {
         let device = device as i32;
         let _current = ScopedDeviceIndex::new(device);
-        let stream = Rc::new(Stream::new(device));
+        let stream = Arc::new(Stream::new(device));
         DeviceResources {
             device,
-            blas: BlasHandle::new(Rc::clone(&stream)),
-            solver: SolverHandle::new(Rc::clone(&stream)),
+            blas: BlasHandle::new(Arc::clone(&stream)),
+            solver: SolverHandle::new(Arc::clone(&stream)),
             stream,
             workspace: None,
         }

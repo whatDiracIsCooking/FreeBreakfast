@@ -14,7 +14,6 @@
 //! orthogonality and the order together imply them.
 
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
@@ -134,7 +133,7 @@ fn fixture(stem: &str) -> (usize, Vec<f64>) {
 /// `(lwork, U, w)`.
 fn diagonalize(n: usize, a: Vec<f64>) -> (usize, Vec<f64>, Vec<f64>) {
     let lwork = {
-        let solver = SolverHandle::new(Rc::new(Stream::new(0)));
+        let solver = SolverHandle::new(Arc::new(Stream::new(0)));
         syevd_lwork(&solver, n).unwrap()
     };
     let mut dag = Dag::new();

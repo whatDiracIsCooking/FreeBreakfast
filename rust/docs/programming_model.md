@@ -911,7 +911,13 @@ reports), the arena over the raw allocation and copy bindings, the two
 `libc` calls in `core::log`, and the one `unsafe impl Sync` in
 `core::thread_pool`, on `run`'s private wrapper of the backend it shares
 with its workers, which rests on a run borrowing the backend exclusively
-and on `Backend` being sealed ("Plan once, run many"). The binding crates declare a kernel
+and on `Backend` being sealed ("Plan once, run many"). `fb-core-wwr` also
+holds the `unsafe impl Send` of the handles a step carries between
+workers: `Stream` and `Event`, `Sync` as well, on the runtime's thread
+safety; the BLAS and dense-solver handles, `Send` but never `Sync`, since
+the libraries allow a handle on any thread one call at a time. Each impl
+states its argument and is asserted at compile time beside it. The CCL
+rank stays neither. The binding crates declare a kernel
 library's `extern "C"` functions, check its version at load, and wrap its
 launches safely beside the bindings (`fb-integrals-sys` its records tasks
 too, since the class launchers trust records only those tasks write, and

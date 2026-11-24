@@ -36,7 +36,7 @@
 //! jk`), the run's wall time and the iteration count.
 
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use fb_core_thread_pool::Record;
 use fb_core_wwr::runtime::{Stream, device_count};
@@ -83,7 +83,7 @@ fn dense() -> EriStep {
 fn plan(stem: &str, basis: &str, gpus: usize) -> Run {
     let molecule = fb_io_xyz::read_xyz(&xyz(stem), 0, 1).unwrap();
     Run::new(&molecule, basis, &dense(), &ScfStep::default(), gpus, |n| {
-        syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n)
+        syevd_lwork(&SolverHandle::new(Arc::new(Stream::new(0))), n)
     })
     .expect("the case plans")
 }

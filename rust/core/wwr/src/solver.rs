@@ -29,7 +29,7 @@ mod syevd;
 pub use syevd::{SolverScalar, syevd, syevd_lwork};
 
 use std::ops::Deref;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use wwr_sys::{wwr_solver_handle, wwr_solver_status, wwr_stream};
 
@@ -89,14 +89,32 @@ impl StreamBoundKind for SolverKind {
 /// An owned dense-solver handle bound to a stream it keeps alive:
 /// `SolverDnHandleWrapper`. Every call through it enqueues on that stream.
 ///
-/// Neither `Send` nor `Sync`, as [`BlasHandle`](crate::blas::BlasHandle).
+/// `Send`, not `Sync`, as [`BlasHandle`](crate::blas::BlasHandle).
+///
+/// ```compile_fail,E0277
+/// fn shared_across_threads<T: Sync>() {}
+/// shared_across_threads::<fb_core_wwr::solver::SolverHandle>();
+/// ```
 pub struct SolverHandle(StreamBoundHandle<SolverKind, Stream>);
+
+// SAFETY: as `BlasHandle`'s: cuSOLVER and hipSOLVER allow a handle to be
+// used from any thread, one call at a time, and every call names it; the
+// stream it holds is an `Arc` of a `Send` and `Sync` `Stream`; it is
+// destroyed once, by its drop. It is not `Sync`, so no two threads call
+// through one handle at once.
+unsafe impl Send for SolverHandle {}
+
+// The one above, checked at every build.
+const _: () = {
+    const fn moved_between_threads<T: Send>() {}
+    moved_between_threads::<SolverHandle>();
+};
 
 impl SolverHandle {
     /// A handle on `owner`'s device, bound to its stream. Aborts on
     /// failure, logging at critical against the caller.
     #[track_caller]
-    pub fn new(owner: Rc<Stream>) -> Self {
+    pub fn new(owner: Arc<Stream>) -> Self {
         SolverHandle(check_or_abort(StreamBoundHandle::try_new(owner)))
     }
 }
@@ -150,7 +168,7 @@ mod tests {
         reason = "a test reads its result back on the host: the harness waits, not a task"
     )]
     fn binds_the_owners_stream() {
-        let owner = Rc::new(Stream::new(0));
+        let owner = Arc::new(Stream::new(0));
         let solver = SolverHandle::new(owner.clone());
         assert_eq!(solver.dev_idx(), 0);
         assert_eq!(solver.stream(), owner.stream());
@@ -160,7 +178,7 @@ mod tests {
         assert_eq!(status, wwr_solver_status::WWR_SOLVER_STATUS_SUCCESS);
         assert_eq!(bound, owner.stream());
         drop(solver);
-        assert_eq!(Rc::strong_count(&owner), 1);
+        assert_eq!(Arc::strong_count(&owner), 1);
         ok(owner.sync());
     }
 }

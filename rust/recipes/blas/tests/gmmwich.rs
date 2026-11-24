@@ -8,7 +8,7 @@
 
 mod common;
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use common::{
     M, Mat, N, Scalar, adjoint, assert_matches, download, is_n, product, random, room, upload,
@@ -74,7 +74,7 @@ fn check<OpX: SandwichOp<S>, S: Scalar>(blas: &BlasHandle, owner: &Stream) {
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn real_each_op_matches_the_host() {
-    let owner = Rc::new(Stream::new(0));
+    let owner = Arc::new(Stream::new(0));
     let blas = BlasHandle::new(owner.clone());
     check::<OpN, f32>(&blas, &owner);
     check::<T, f32>(&blas, &owner);
@@ -87,7 +87,7 @@ fn real_each_op_matches_the_host() {
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn complex_each_op_matches_the_host() {
-    let owner = Rc::new(Stream::new(0));
+    let owner = Arc::new(Stream::new(0));
     let blas = BlasHandle::new(owner.clone());
     check::<OpN, wwr_complex64>(&blas, &owner);
     check::<C, wwr_complex64>(&blas, &owner);
@@ -104,7 +104,7 @@ fn complex_each_op_matches_the_host() {
     reason = "a test reads its result back on the host: the harness waits, not a task"
 )]
 fn a_short_c_panics_before_anything_is_enqueued() {
-    let owner = Rc::new(Stream::new(0));
+    let owner = Arc::new(Stream::new(0));
     let blas = BlasHandle::new(owner.clone());
     let (x, d) = (random::<f64>(M, N, 1), random::<f64>(N, 1, 2));
     let before = random::<f64>(M, N, 3);
