@@ -31,6 +31,13 @@ PC-NEVPT2 is 6.4 and 8.8 mEh above FCI at the CASSCF orbitals, and 6.2 and
 functional passes through the FCI energy after three to five steps and
 keeps falling.
 
+**Capping W makes it well posed, and the cap decides the answer.** The
+probe's `cap` mode minimizes E under W ≤ f · W(CASSCF orbitals), which is
+bounded below. On the same water cases it converges, stays within 0.04 rad
+of the CASSCF orbitals and at f = 1 lowers the total by 0.19 and 0.16 mEh,
+towards FCI. The constraint is active at every solution: f = 1.03 buys
+1 mEh and f = 1.10 buys 2 to 3 mEh, and nothing in the functional picks f.
+
 ## Run
 
 ```sh
@@ -42,15 +49,18 @@ build-experimental/experimental/oo_nevpt2/free_breakfast_oo_nevpt2 \
   experimental/oo_nevpt2/water.toml 6 no      # natural-orbital passes
 build-experimental/experimental/oo_nevpt2/free_breakfast_oo_nevpt2 \
   experimental/oo_nevpt2/water_fci.toml 150 mo  # minimize W, with FCI
+build-experimental/experimental/oo_nevpt2/free_breakfast_oo_nevpt2 \
+  experimental/oo_nevpt2/water_fci.toml 100 cap 1.03  # E under W <= 1.03 W0
 ```
 
 The config needs a `[casscf]` of one singlet root over density-fitted
 `[eri]`; the second argument is the iteration count (8 by default), the
-third `oo` (the default), `no` or `mo`. Every mode first prints W at the
+third `oo` (the default), `no`, `mo` or `cap`, and after `cap` the factor f
+(1 by default). Every mode first prints W at the
 CASSCF orbitals and its check; with an `[fci]` table in the config, also the
-FCI energy and the functional in the FCI natural orbitals. `mo` differences
-W over every rotation, so it is for small cases: 54 rotations and a minute
-or two on 6-31G water. In `oo` mode, one row
+FCI energy and the functional in the FCI natural orbitals. `mo` and `cap`
+difference over every rotation, so they are for small cases: 54 rotations
+and a minute or two on 6-31G water. In `oo` mode, one row
 per iteration: both energies, ‖g‖, ‖pack(A)‖, ‖g + pack(A)‖, the energy
 change at t = ½ and t = 1 along the step, and the active natural
 occupations. Not a ctest entry.
@@ -60,7 +70,7 @@ occupations. Not a ctest entry.
 | File | Role |
 |------|------|
 | `design.html` | The design note and the results |
-| `main.cpp` | The probe: CASCI, PC-NEVPT2 energy and adjoint, Z-vector step and line search; the natural-orbital pass; W and its minimization |
+| `main.cpp` | The probe: CASCI, PC-NEVPT2 energy and adjoint, Z-vector step and line search; the natural-orbital pass; W, its minimization, and E's under a cap on it |
 | `CMakeLists.txt` | `free_breakfast_oo_nevpt2` |
 | `water.toml`, `water.xyz` | CASSCF(4,4) water, cc-pVDZ |
 | `water_fci.toml` | The same water in 6-31G with `[fci]`: the exact answer |

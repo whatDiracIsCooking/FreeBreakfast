@@ -58,15 +58,18 @@
 
 <h1>Orbital-optimized NEVPT2</h1>
 <p class="lede">Design note for <code>experimental/oo_nevpt2/</code>. Status:
-an idea and one probe, nothing under <code>src/</code>. The probe says four
+an idea and one probe, nothing under <code>src/</code>. The probe says five
 things: the bare functional collapses (<a href="#results">Results</a>);
 natural orbitals of the PT2-corrected density move the energy by only tenths
 of a millihartree (<a href="#natural">Natural orbitals</a>); orbitals that
 minimize the weight of the first-order wave function, a bounded and
 parameter-free replacement, move the energy away from FCI
-(<a href="#overlap">Maximum overlap</a>); and the exact state's own natural
+(<a href="#overlap">Maximum overlap</a>); the exact state's own natural
 orbitals recover only 2 to 5% of NEVPT2's error on water
-(<a href="#fci">Against FCI</a>).</p>
+(<a href="#fci">Against FCI</a>); and the energy minimized with that weight
+capped at its CASSCF value converges and moves 0.2 mEh towards FCI, but the
+cap's value decides the answer
+(<a href="#cap">Capping the weight</a>).</p>
 
 <h2 id="idea">The idea, and the loop that does not work</h2>
 <p>CASSCF chooses its orbitals to minimize the CASSCF energy, which contains
@@ -446,7 +449,7 @@ FCI: by 0.7 mEh where the active space is strongly correlated, and by
   <li><b>W as a cap would bind at once.</b> Along the bare functional's
   descent W rises from the first step (0.0217, 0.0235, 0.0262, 0.0305, and
   2.1 at the end, a reference weight of 0.32). Minimizing E under
-  W ≤ W(CASSCF) was not run; the two gradients oppose each other, so its
+  W ≤ W(CASSCF) is <a href="#cap">Capping the weight</a>, below: its
   solution sits on the cap.</li>
 </ul>
 
@@ -502,20 +505,121 @@ E_FCI is −76.120874 and −75.914359.</p>
   a proven optimum for NEVPT2.</li>
 </ul>
 
+<h2 id="cap">Capping the weight</h2>
+<p>The other use of W is as a bound rather than a target: minimize the
+energy, and do not let the first-order wave function grow.</p>
+<pre><code>min over κ of  E_CAS(κ) + E_PT2(κ)     subject to  W(κ) ≤ f · W(CASSCF orbitals)</code></pre>
+<p>This is bounded below, which the bare functional is not: each perturber
+gives −y²/D to the energy and y²/D² to W, so E_PT2 ≥ −W · max D, and the
+denominators are bounded by the spread of the orbital energies. With f = 1
+it has no number to choose: the reference may not carry less weight in the
+first-order state than CASSCF's does. The <code>cap</code> mode solves it;
+its fourth argument is f.</p>
+<h3>How the probe solves it</h3>
+<ul>
+  <li><b>Both gradients by differences</b>, as in the <code>mo</code> mode:
+  E and W over ±2e-3 rad in each rotation, the CASCI re-solved at every
+  point. 21 of water's 54 rotations have a derivative; the rest stay below
+  4e-8 at the solution.</li>
+  <li><b>The step</b> is the quadratic program with the one linearized
+  constraint, over a BFGS inverse Hessian of the Lagrangian E + λW seeded
+  from its diagonal curvature, backtracked on the merit
+  E + μ max(0, W − cap).</li>
+  <li><b>Converged</b> when max |dE/dκ + λ dW/dκ| is below 2e-5 and W is
+  within 1e-7 of the cap. Every run below converged, at full steps.</li>
+</ul>
+<h3>Result</h3>
+<div class="box"><p><span class="tag open">answer</span> <b>It is well
+posed, it converges, and it moves towards FCI; but the cap decides by how
+much.</b> At f = 1 the total falls by 0.19 mEh at equilibrium and 0.16 mEh
+stretched, 2 to 3% of NEVPT2's error. Allowing 3% more weight buys 1 mEh,
+and 10% buys 2 to 3 mEh. The constraint is active at every solution, so the
+energy is a function of f and nothing inside the functional picks f.</p></div>
+<p>Water (4,4), 6-31G, RTX 3080, experimental preset, 2026-11-24. Energies
+in mEh; Δ is against the CASSCF orbitals; λ in hartree per unit of W.</p>
+<div class="tablewrap"><table>
+<tr><th>Geometry</th><th class="num">f</th><th class="num">E − E_FCI</th>
+    <th class="num">ΔE_CAS</th><th class="num">ΔE_PT2</th>
+    <th class="num">ΔE total</th><th class="num">λ</th>
+    <th class="num">Largest rotation</th><th class="num">Iterations</th></tr>
+<tr><td>equilibrium</td><td class="num">CASSCF</td><td class="num">+6.364</td>
+    <td class="num"></td><td class="num"></td><td class="num"></td>
+    <td class="num"></td><td class="num"></td><td class="num"></td></tr>
+<tr><td></td><td class="num">1.00</td><td class="num">+6.177</td>
+    <td class="num">+0.695</td><td class="num">−0.882</td>
+    <td class="num">−0.187</td><td class="num">2.05</td>
+    <td class="num">0.038 rad</td><td class="num">24</td></tr>
+<tr><td></td><td class="num">1.03</td><td class="num">+5.149</td>
+    <td class="num">+1.217</td><td class="num">−2.432</td>
+    <td class="num">−1.215</td><td class="num">1.27</td>
+    <td class="num">0.073 rad</td><td class="num">25</td></tr>
+<tr><td></td><td class="num">1.10</td><td class="num">+3.593</td>
+    <td class="num">+4.137</td><td class="num">−6.908</td>
+    <td class="num">−2.770</td><td class="num">0.88</td>
+    <td class="num">0.128 rad</td><td class="num">33</td></tr>
+<tr><td>O–H stretched 1.8×</td><td class="num">CASSCF</td>
+    <td class="num">+8.810</td><td class="num"></td><td class="num"></td>
+    <td class="num"></td><td class="num"></td><td class="num"></td>
+    <td class="num"></td></tr>
+<tr><td></td><td class="num">1.00</td><td class="num">+8.654</td>
+    <td class="num">+0.203</td><td class="num">−0.359</td>
+    <td class="num">−0.156</td><td class="num">2.19</td>
+    <td class="num">0.010 rad</td><td class="num">6</td></tr>
+<tr><td></td><td class="num">1.03</td><td class="num">+7.865</td>
+    <td class="num">+2.078</td><td class="num">−3.023</td>
+    <td class="num">−0.945</td><td class="num">1.00</td>
+    <td class="num">0.012 rad</td><td class="num">24</td></tr>
+<tr><td></td><td class="num">1.10</td><td class="num">+6.769</td>
+    <td class="num">+8.098</td><td class="num">−10.14</td>
+    <td class="num">−2.041</td><td class="num">0.67</td>
+    <td class="num">0.025 rad</td><td class="num">20</td></tr>
+</table></div>
+<ul>
+  <li><b>The cap tames the collapse.</b> The orbitals stay within 0.04 rad
+  of CASSCF's at f = 1, and the active occupations barely move (1.9792,
+  1.9754, 0.0232, 0.0222 at equilibrium; 1.728, 1.696, 0.307, 0.268
+  stretched). No pair leaves the active space, as one did at the minimum of
+  W, and no denominator closes.</li>
+  <li><b>What there is to gain at f = 1 is the part of dE/dκ that does not
+  raise W.</b> At the CASSCF orbitals the two gradients have a cosine of
+  −0.80 and −0.83: mostly opposed, as expected, with a fifth of the energy's
+  slope left along the surface of constant W.</li>
+  <li><b>The multiplier is the price of the cap:</b> λ = −dE/d(cap), about
+  2 hartree per unit of W at f = 1. W(CASSCF) is 0.022 and 0.020, so one
+  percent more weight is worth 0.4 mEh there: twice the whole gain at
+  f = 1. The price falls as f grows (0.9 and 0.7 at f = 1.10), but nothing
+  marks a place to stop.</li>
+  <li><b>f = 1 is a convention, and the exact state does not keep it.</b>
+  The FCI natural orbitals carry 3.2% and 1.7% more W than CASSCF's. At
+  that much weight the capped energy is about 1 mEh below what NEVPT2 gives
+  in the FCI natural orbitals themselves (+5.15 against +6.22 at
+  equilibrium, at f = 1.03): the functional is being lowered, not the
+  orbitals improved.</li>
+  <li><b>The FCI natural orbitals were not a ceiling.</b> At equilibrium
+  the capped orbitals at f = 1 give +6.177 mEh, below the +6.222 of
+  <a href="#fci">Against FCI</a>. The size is the same, though: tenths of a
+  millihartree.</li>
+  <li><b>Limits.</b> The same one molecule, basis and state. Finite
+  differences cost two CASCI and six PC-NEVPT2 energies per rotation per
+  iteration, so this is a probe's method; a real one needs W's analytic
+  orbital and CI gradient, an adjoint the tree does not have.</li>
+</ul>
+
 <h2 id="next">Where this leaves the idea</h2>
 <ul>
   <li><b>Not worth a module on this evidence.</b> By the note's own bar
   (millihartrees, or a shifted crossing) the natural-orbital gain is too
   small, and a bounded functional would be a new energy and adjoint to
-  recover a fraction of a millihartree. The FCI comparison puts a ceiling on
-  it for water: 0.14 to 0.48 mEh, from orbitals no method here could
-  beat.</li>
-  <li><b>Constraining the functional did not rescue it.</b> The one
-  parameter-free, bounded candidate (the minimum of W) moves the energy the
-  wrong way, and W is not a measure of orbital quality. What remains
-  untried is a functional with the Brillouin-violating part of V projected
-  out, the analogue of OO-MP2's missing singles; the ceiling above says what
-  it could gain here.</li>
+  recover a fraction of a millihartree. The FCI comparison sizes it for
+  water: 0.14 to 0.48 mEh from the exact state's natural orbitals, and
+  0.16 to 0.19 mEh from the capped functional at f = 1.</li>
+  <li><b>Constraining the functional makes it well posed, not useful.</b>
+  The minimum of W moves the energy the wrong way, and W is not a measure
+  of orbital quality. E under a cap on W converges and moves the right way,
+  but its answer is set by the cap: with the one parameter-free choice it
+  gains 2 to 3% of the error, and any larger gain is bought by choosing f.
+  What remains untried is a functional with the Brillouin-violating part of
+  V projected out, the analogue of OO-MP2's missing singles.</li>
   <li><b>What was not tested</b> is the case the idea was for: a reference
   whose orbitals CASSCF gets qualitatively wrong. Single-state ground-state
   LiF is not one; the ionic/covalent pair in a state average is, and so are

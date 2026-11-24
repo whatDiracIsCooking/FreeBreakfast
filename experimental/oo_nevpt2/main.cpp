@@ -11,13 +11,16 @@
 /// Hessian, A and y from nevpt2::pc_adjoint plus the z^c term's. A short
 /// line search along it (t = 1, 1/2, then halving) takes the lowest energy.
 ///
-///     free_breakfast_oo_nevpt2 <config.toml> [iterations = 8] [oo|no|mo]
+///     free_breakfast_oo_nevpt2 <config.toml> [iterations = 8] [oo|no|mo|cap]
+///                              [cap factor = 1]
 ///
 /// With `no`, the natural orbitals of the PT2-corrected density instead,
 /// iterated: no functional is minimized (natural() below). With `mo`, the
 /// maximum-overlap orbitals: the weight of the first-order wave function,
 /// W = <Psi1|Psi1>, minimized in the orbital rotations by BFGS over a
 /// finite-difference gradient (maximum_overlap() below), and E read there.
+/// With `cap`, E minimized under W <= factor W(CASSCF orbitals): the bare
+/// functional with the first-order weight capped (capped() below).
 ///
 /// The config needs [casscf] of one singlet root and density-fitted [eri].
 /// Prints one row per iteration; nothing is written but the pipeline's own
@@ -56,6 +59,10 @@ constexpr double kWeightGradient = 2e-5;
 // A rotation whose derivative of W is below this at the CASSCF orbitals is
 // taken as zero by symmetry and left out, until the last gradient says not.
 constexpr double kSymmetryZero = 2e-6;
+// The capped minimization's ends: the Lagrangian's gradient (hartree per
+// radian) and how far W may sit over the cap.
+constexpr double kLagrangianGradient = 2e-5;
+constexpr double kCapTolerance = 1e-7;
 // The indices outside the active space each class's perturbers carry, in
 // PcClassEnergies' order: Sr, Si, Sijrs, Sijr, Srsi, Srs, Sij, Sir.
 constexpr std::array<double, 8> kVirtualIndices{1, 0, 2, 1, 2, 2, 0, 1};
@@ -615,6 +622,50 @@ std::optional<Weighed> weigh(const Problem &p, const double *c0, const std::span
   return std::move(*out);
 }
 
+// dW/dx and d2W/dx2 over the rotations @p take names, at @p x where @p at
+// is: central differences over kRotation, the CI relaxed at every point.
+// With @p pt2, E's as well.
+struct Slope {
+  std::vector<double> g;
+  std::vector<double> curvature;
+  std::vector<double> g_e;
+  std::vector<double> curvature_e;
+};
+
+fb::Result<Slope> differences(const Problem &p, const double *c0, const std::vector<double> &x,
+                              const Weighed &at, const std::vector<bool> &take, const bool pt2) {
+  const std::size_t n = x.size();
+  Slope out{.g = std::vector<double>(n, 0.0),
+            .curvature = std::vector<double>(n, 0.0),
+            .g_e = std::vector<double>(n, 0.0),
+            .curvature_e = std::vector<double>(n, 0.0)};
+  const std::span<const double> start{at.point.roots.vectors.data(),
+                                      static_cast<std::size_t>(p.rdm.size())};
+  std::vector<double> moved = x;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!take[i]) {
+      continue;
+    }
+    moved[i] = x[i] + kRotation;
+    const std::optional<Weighed> plus = weigh(p, c0, moved, start, pt2, "gradient");
+    moved[i] = x[i] - kRotation;
+    const std::optional<Weighed> minus = weigh(p, c0, moved, start, pt2, "gradient");
+    moved[i] = x[i];
+    if (!plus || !minus) {
+      return fb::err_numerical("differences: a gradient point was refused");
+    }
+    out.g[i] = (plus->w.total - minus->w.total) / (2.0 * kRotation);
+    out.curvature[i] =
+        (plus->w.total - (2.0 * at.w.total) + minus->w.total) / (kRotation * kRotation);
+    if (pt2) {
+      out.g_e[i] = (plus->point.total() - minus->point.total()) / (2.0 * kRotation);
+      out.curvature_e[i] = (plus->point.total() - (2.0 * at.point.total()) + minus->point.total()) /
+                           (kRotation * kRotation);
+    }
+  }
+  return out;
+}
+
 void print_weight(const std::string_view label, const Weight &w) {
   std::print("{:<22} W {:.6f} (reference weight {:.6f});", label, w.total, 1.0 / (1.0 + w.total));
   constexpr std::array<std::string_view, 8> kNames{"Sr",   "Si",  "Sijrs", "Sijr",
@@ -652,32 +703,8 @@ fb::Status maximum_overlap(const Problem &p, const Point &origin, const std::int
   const double e_cas0 = at.point.e_cas;
   const double e_pt20 = at.point.e_pt2;
 
-  // dW/dx and d2W/dx2 over the rotations @p take names, at x.
-  struct Slope {
-    std::vector<double> g;
-    std::vector<double> curvature;
-  };
-  const auto slope = [&](const std::vector<bool> &take) -> fb::Result<Slope> {
-    Slope out{.g = std::vector<double>(n, 0.0), .curvature = std::vector<double>(n, 0.0)};
-    const std::span<const double> start{at.point.roots.vectors.data(), dim};
-    std::vector<double> moved = x;
-    for (std::size_t i = 0; i < n; ++i) {
-      if (!take[i]) {
-        continue;
-      }
-      moved[i] = x[i] + kRotation;
-      const std::optional<Weighed> plus = weigh(p, c0, moved, start, false, "gradient");
-      moved[i] = x[i] - kRotation;
-      const std::optional<Weighed> minus = weigh(p, c0, moved, start, false, "gradient");
-      moved[i] = x[i];
-      if (!plus || !minus) {
-        return fb::err_numerical("maximum_overlap: a gradient point was refused");
-      }
-      out.g[i] = (plus->w.total - minus->w.total) / (2.0 * kRotation);
-      out.curvature[i] =
-          (plus->w.total - (2.0 * at.w.total) + minus->w.total) / (kRotation * kRotation);
-    }
-    return out;
+  const auto slope = [&](const std::vector<bool> &take) {
+    return differences(p, c0, x, at, take, false);
   };
   const auto largest = [&](const std::vector<double> &v, const std::vector<bool> &take) {
     double out = 0.0;
@@ -844,16 +871,258 @@ fb::Status maximum_overlap(const Problem &p, const Point &origin, const std::int
   return {};
 }
 
+// The capped functional (design.html, "Capping the weight"): E minimized
+// over the non-redundant rotations x from @p origin's orbitals under
+// W(x) <= cap, cap = @p factor W(0). E_PT2 >= -W max(D), D the perturbers'
+// denominators, so under the cap E is bounded below, which bare it is not.
+//
+// Both gradients are differences(); the step is the quadratic program's
+// with the one linearized constraint, over a BFGS inverse Hessian of the
+// Lagrangian E + lambda W, backtracked on the merit E + mu max(0, W - cap).
+fb::Status capped(const Problem &p, const Point &origin, const std::int32_t iterations,
+                  const double factor) {
+  fb::DeviceResources &res = p.res;
+  const std::size_t n = origin.fock.gradient.num_elements();
+  const auto dim = static_cast<std::size_t>(p.rdm.size());
+  const double *const c0 = origin.c.data();
+  std::vector<double> x(n, 0.0);
+  std::optional<Weighed> first =
+      weigh(p, c0, x, {origin.roots.vectors.data(), dim}, true, "the CASSCF orbitals");
+  if (!first) {
+    return fb::err_numerical("capped: no weight at the CASSCF orbitals");
+  }
+  Weighed at = std::move(*first);
+  const Weight w0 = at.w;
+  const double cap = factor * w0.total;
+  const double e_cas0 = at.point.e_cas;
+  const double e_pt20 = at.point.e_pt2;
+  const auto dot = [](const std::vector<double> &a, const std::vector<double> &b) {
+    return std::inner_product(a.begin(), a.end(), b.begin(), 0.0);
+  };
+
+  std::vector<bool> free(n, true);
+  Slope s = FBF_TRY(differences(p, c0, x, at, free, true));
+  std::size_t count = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    free[i] = std::abs(s.g[i]) >= kSymmetryZero || std::abs(s.g_e[i]) >= kSymmetryZero;
+    if (free[i]) {
+      ++count;
+    } else {
+      s.g[i] = 0.0;
+      s.g_e[i] = 0.0;
+    }
+  }
+  // The multiplier's first estimate, by least squares, and the inverse
+  // Hessian: the Lagrangian's diagonal curvature, floored.
+  double lambda = std::max(0.0, -dot(s.g_e, s.g) / dot(s.g, s.g));
+  double low = std::numeric_limits<double>::infinity();
+  double high = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (free[i]) {
+      const double curvature = s.curvature_e[i] + (lambda * s.curvature[i]);
+      low = std::min(low, curvature);
+      high = std::max(high, curvature);
+    }
+  }
+  std::println("cap W <= {:.8f} ({} W at the CASSCF orbitals)", cap, factor);
+  std::println("{} rotations, {} with a derivative above {:g}; first multiplier {:.4f} hartree, "
+               "the Lagrangian's curvature {:.3e} to {:.3e}",
+               n, count, kSymmetryZero, lambda, low, high);
+  std::println("     at the CASSCF orbitals |dE/dx| {:.3e}, |dW/dx| {:.3e}, cosine {:.4f}",
+               norm(s.g_e), norm(s.g), dot(s.g_e, s.g) / (norm(s.g_e) * norm(s.g)));
+  const double floor = 0.05 * high;
+  std::vector<double> inverse(n * n, 0.0);
+  const auto reset = [&](const Slope &from, const double multiplier) {
+    std::ranges::fill(inverse, 0.0);
+    for (std::size_t i = 0; i < n; ++i) {
+      if (free[i]) {
+        inverse[(i * n) + i] =
+            1.0 / std::max(from.curvature_e[i] + (multiplier * from.curvature[i]), floor);
+      }
+    }
+  };
+  reset(s, lambda);
+  const auto apply = [&](const std::vector<double> &v) {
+    std::vector<double> out(n, 0.0);
+    for (std::size_t i = 0; i < n; ++i) {
+      for (std::size_t j = 0; j < n; ++j) {
+        out[i] += inverse[(i * n) + j] * v[j];
+      }
+    }
+    return out;
+  };
+  // The quadratic program's step and multiplier at the current point.
+  const auto program = [&] {
+    const std::vector<double> he = apply(s.g_e);
+    const std::vector<double> hw = apply(s.g);
+    const double whw = dot(s.g, hw);
+    const double over = at.w.total - cap;
+    lambda = whw > 0.0 ? std::max(0.0, (over - dot(s.g, he)) / whw) : 0.0;
+    std::vector<double> d(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      d[i] = -(he[i] + (lambda * hw[i]));
+    }
+    return d;
+  };
+  const auto lagrangian = [&](const Slope &from) {
+    double out = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+      if (free[i]) {
+        out = std::max(out, std::abs(from.g_e[i] + (lambda * from.g[i])));
+      }
+    }
+    return out;
+  };
+
+  std::println("{:>4} {:>12} {:>11} {:>16} {:>14} {:>16} {:>9} {:>10} {:>10} {:>8}", "iter", "W",
+               "W - cap", "E_CAS", "E_PT2", "E_total", "lambda", "max|dL|", "|g_CAS|", "t");
+  double mu = 1.0;
+  double t = 0.0;
+  for (std::int32_t iter = 0;; ++iter) {
+    std::vector<double> d = program();
+    const double over = at.w.total - cap;
+    const std::vector<double> g_cas = FBF_TRY(download(res, at.point.fock.gradient.data(), n));
+    std::println("{:>4} {:>12.8f} {:>+11.2e} {:>16.10f} {:>14.10f} {:>16.10f} {:>9.4f} {:>10.3e} "
+                 "{:>10.3e} {:>8}",
+                 iter, at.w.total, over, at.point.e_cas, at.point.e_pt2, at.point.total(), lambda,
+                 lagrangian(s), norm(g_cas), t);
+    if (lagrangian(s) < kLagrangianGradient && over < kCapTolerance) {
+      // The rotations left out: any that has grown a derivative joins.
+      std::vector<bool> rest(n);
+      for (std::size_t i = 0; i < n; ++i) {
+        rest[i] = !free[i];
+      }
+      const Slope others = FBF_TRY(differences(p, c0, x, at, rest, true));
+      std::size_t joined = 0;
+      double worst = 0.0;
+      for (std::size_t i = 0; i < n; ++i) {
+        if (!rest[i]) {
+          continue;
+        }
+        const double g = std::max(std::abs(others.g[i]), std::abs(others.g_e[i]));
+        worst = std::max(worst, g);
+        if (g >= kLagrangianGradient) {
+          free[i] = true;
+          s.g[i] = others.g[i];
+          s.g_e[i] = others.g_e[i];
+          s.curvature[i] = others.curvature[i];
+          s.curvature_e[i] = others.curvature_e[i];
+          inverse[(i * n) + i] =
+              1.0 / std::max(others.curvature_e[i] + (lambda * others.curvature[i]), floor);
+          ++joined;
+        }
+      }
+      std::println("     max |dE|, |dW| over the rotations left out {:.3e}; {} join", worst,
+                   joined);
+      if (joined == 0) {
+        break;
+      }
+      d = program();
+    }
+    if (iter >= iterations) {
+      std::println("not converged in {} iterations", iterations);
+      break;
+    }
+    // The merit's slope along a step: E's, less what the step takes off the
+    // overshoot.
+    const auto merit_slope = [&](const std::vector<double> &step) {
+      return dot(s.g_e, step) - (mu * (std::max(0.0, over) - std::max(0.0, over + dot(s.g, step))));
+    };
+    const auto trust = [&](std::vector<double> &step) {
+      const double longest = std::ranges::max(
+          step | std::views::transform([](const double v) { return std::abs(v); }));
+      if (longest > kTrustStep) {
+        for (double &v : step) {
+          v *= kTrustStep / longest;
+        }
+      }
+    };
+    trust(d);
+    mu = std::max(mu, 2.0 * lambda);
+    double descent = merit_slope(d);
+    if (!(descent < 0.0)) {
+      reset(s, lambda);
+      d = program();
+      trust(d);
+      mu = std::max(mu, 2.0 * lambda);
+      descent = merit_slope(d);
+    }
+    const double step_lambda = lambda;
+    const double merit = at.point.total() + (mu * std::max(0.0, over));
+    std::optional<Weighed> next;
+    std::vector<double> x_next;
+    for (t = 1.0; t >= 1.0 / 128.0 && !next; t /= 2.0) {
+      x_next = x;
+      for (std::size_t i = 0; i < n; ++i) {
+        x_next[i] += t * d[i];
+      }
+      std::optional<Weighed> trial =
+          weigh(p, c0, x_next, {at.point.roots.vectors.data(), dim}, true, "trial");
+      if (trial && trial->point.total() + (mu * std::max(0.0, trial->w.total - cap)) <
+                       merit + (1e-4 * t * descent)) {
+        next = std::move(trial);
+        break;
+      }
+    }
+    if (!next) {
+      std::println("no descent of the merit along the step down to t = 1/128: stopping");
+      break;
+    }
+    std::vector<double> step(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      step[i] = x_next[i] - x[i];
+    }
+    x = std::move(x_next);
+    at = std::move(*next);
+    const Slope fresh = FBF_TRY(differences(p, c0, x, at, free, true));
+    // BFGS on the inverse, over the Lagrangian's gradient at the step's
+    // multiplier: H <- (1 - r s y^T) H (1 - r y s^T) + r s s^T.
+    std::vector<double> y(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      y[i] = (fresh.g_e[i] - s.g_e[i]) + (step_lambda * (fresh.g[i] - s.g[i]));
+    }
+    const double sy = dot(step, y);
+    if (sy > 1e-14) {
+      const double r = 1.0 / sy;
+      const std::vector<double> hy = apply(y);
+      const double yhy = dot(y, hy);
+      for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t j = 0; j < n; ++j) {
+          inverse[(i * n) + j] += (r * (1.0 + (r * yhy)) * step[i] * step[j]) -
+                                  (r * ((hy[i] * step[j]) + (step[i] * hy[j])));
+        }
+      }
+    }
+    s = fresh;
+  }
+  print_weight("CASSCF orbitals:", w0);
+  print_weight("capped:", at.w);
+  std::print(
+      "multiplier {:.6f} hartree; largest rotation {:.4f} rad; occupations", lambda,
+      std::ranges::max(x | std::views::transform([](const double v) { return std::abs(v); })));
+  for (const double o : eigenvalues(at.point.gamma, static_cast<std::size_t>(p.ncas))) {
+    std::print(" {:.4f}", o);
+  }
+  std::println("");
+  std::println("final {:>16.10f} {:>14.10f} {:>16.10f}", at.point.e_cas, at.point.e_pt2,
+               at.point.total());
+  std::println("change over CASSCF orbitals: E_CAS {:+.3e}  E_PT2 {:+.3e}  total {:+.3e} hartree",
+               at.point.e_cas - e_cas0, at.point.e_pt2 - e_pt20,
+               at.point.total() - e_cas0 - e_pt20);
+  return {};
+}
+
 fb::Status run(const std::span<char *const> args) {
-  if (args.size() < 2 || args.size() > 4 ||
-      (args.size() == 4 && std::string_view(args[3]) != "no" && std::string_view(args[3]) != "oo" &&
-       std::string_view(args[3]) != "mo")) {
-    return fb::err_config("usage: {} <config.toml> [iterations] [oo|no|mo]",
+  const std::string_view mode = args.size() >= 4 ? std::string_view(args[3]) : "oo";
+  if (args.size() < 2 || args.size() > 5 ||
+      (mode != "no" && mode != "oo" && mode != "mo" && mode != "cap") ||
+      (args.size() == 5 && mode != "cap")) {
+    return fb::err_config("usage: {} <config.toml> [iterations] [oo|no|mo|cap] [cap factor]",
                           args.empty() ? "free_breakfast_oo_nevpt2" : args[0]);
   }
   const std::filesystem::path config = args[1];
   const std::int32_t iterations = args.size() >= 3 ? std::atoi(args[2]) : 8;
-  const bool natural_orbitals = args.size() == 4 && std::string_view(args[3]) == "no";
+  const bool natural_orbitals = mode == "no";
   const std::filesystem::path out =
       std::filesystem::temp_directory_path() / "free_breakfast_oo_nevpt2";
   fb::Calculation calc = FBF_TRY(fb::read_config(config, config.parent_path(), out));
@@ -958,8 +1227,11 @@ fb::Status run(const std::span<char *const> args) {
     std::println("W by the virtual shift alone and by the core's: off by {:.1e} at the most",
                  worst);
   }
-  if (args.size() == 4 && std::string_view(args[3]) == "mo") {
+  if (mode == "mo") {
     return maximum_overlap(p, at, iterations);
+  }
+  if (mode == "cap") {
+    return capped(p, at, iterations, args.size() == 5 ? std::atof(args[4]) : 1.0);
   }
   if (natural_orbitals) {
     // Natural orbitals of the PT2-corrected density, iterated: no functional
