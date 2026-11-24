@@ -58,7 +58,7 @@
 
 <h1>Orbital-optimized NEVPT2</h1>
 <p class="lede">Design note for <code>experimental/oo_nevpt2/</code>. Status:
-an idea and one probe, nothing under <code>src/</code>. The probe says six
+an idea and one probe, nothing under <code>src/</code>. The probe says seven
 things: the bare functional collapses (<a href="#results">Results</a>);
 natural orbitals of the PT2-corrected density move the energy by only tenths
 of a millihartree (<a href="#natural">Natural orbitals</a>); orbitals that
@@ -73,7 +73,11 @@ cap's value decides the answer
 LiF's state-averaged ionic and covalent pair, the natural orbitals of the
 correlated density move both QD-NEVPT2 states by 4 to 5 mEh and their
 crossing by 0.05 Å
-(<a href="#average">The state average</a>).</p>
+(<a href="#average">The state average</a>); and on ethylene's N and V
+states, where the choice of orbitals does move PC-QD-NEVPT2 by tenths of an
+eV, the passes settle at a different fixed point from every start, 0.75 eV
+apart
+(<a href="#ethylene">Ethylene</a>).</p>
 
 <h2 id="idea">The idea, and the loop that does not work</h2>
 <p>CASSCF chooses its orbitals to minimize the CASSCF energy, which contains
@@ -722,6 +726,115 @@ correction between spaces going into the pass, at 6.25 Å.</p>
   that.</li>
 </ul>
 
+<h2 id="ethylene">Ethylene's V state: where the orbitals do matter</h2>
+<p>Water and LiF are cases where the CASSCF orbitals are slightly off.
+Ethylene's V state (¹B₁u, π → π*) is the textbook case where they are
+wrong in kind: without the σ electrons' dynamic response the π* of a (2,2)
+space comes out far too diffuse, and perturbation theory on those orbitals
+is known to miss the vertical excitation by tenths of an eV. If
+correlated-density orbitals help anywhere, it is here. The
+<code>sa</code> mode runs unchanged; the only new files are two configs.</p>
+<ul>
+  <li><b><code>ethylene_sa.toml</code></b>: SA-CASSCF(2,2) of the two lowest
+  singlets, N and V, over π and π*, aug-cc-pVDZ, all-electron. The active
+  pair is AVAS over C 2p at a threshold of 0.95, which only the two π
+  orbitals pass (0.9 lets two more orbitals in). The two states differ in
+  symmetry, so H₀₁ is zero to round-off and the gap between H_eff's
+  diagonal elements is the vertical excitation energy.</li>
+  <li><b>The SA-CASSCF has two stationary points.</b> The solver first
+  reaches one with the average at −77.895776 (‖g‖ 1.5e-8 after five macro
+  iterations), then leaves it for the minimum at −77.921394, 25.6 mEh
+  lower. The first is a saddle. Between them the V reference moves by
+  57 mEh and N by 6: the CASCI gap is 7.84 eV at the saddle and 6.12 eV at
+  the minimum. Read with the literature, the saddle is the valence-like
+  π* and the minimum the diffuse one; the tree has no second-moment
+  integrals, so the probe does not confirm that with ⟨x²⟩.
+  <code>ethylene_sa_valence.toml</code> is the same config with the CASSCF
+  tolerances at 1e-7 and 1e-6, which stopped at the saddle in three runs
+  of three. At the tight tolerances one run of eight stopped there too.</li>
+  <li><b>The weights.</b> The passes use the config's
+  <code>weights</code> for both the CASSCF and the averaged density, so
+  0.25/0.75 and 0.75/0.25 (N/V) are two more starts: the config with a
+  <code>weights</code> line added.</li>
+</ul>
+
+<h3>Result</h3>
+<div class="box"><p><span class="tag open">answer</span> <b>The orbitals
+matter here, and the passes do not settle the matter.</b> At the CASSCF
+orbitals the four starts give PC-QD-NEVPT2 excitation energies from 7.45 to
+8.09 eV, a spread of 0.64 eV. Every start converges to a fixed point of the
+passes, and the four fixed points run from 7.44 to 8.18 eV: a spread of
+0.75 eV. The passes move one start by 0.36 eV and the others by 0.1 eV or
+less, and never from one basin to the other.</p></div>
+<p>RTX 3080, experimental preset, 2026-11-24. Gaps in eV (H₁₁ − H₀₀, and
+the CASCI roots'); ΔH in mEh, fixed point against CASSCF orbitals. Fixed
+point: the mixing below 1e-6 (16 to 40 passes).</p>
+<div class="tablewrap"><table>
+<tr><th>Weights N/V</th><th>CASSCF solution</th>
+    <th class="num">CASCI gap</th>
+    <th class="num">PT2 gap, CASSCF orbitals</th>
+    <th class="num">PT2 gap, fixed point</th>
+    <th class="num">Change</th>
+    <th class="num">ΔH, N</th><th class="num">ΔH, V</th>
+    <th class="num">First mixing</th></tr>
+<tr><td>0.5 / 0.5</td><td>minimum</td><td class="num">6.116</td>
+    <td class="num">7.450</td><td class="num">7.436</td>
+    <td class="num">−0.014</td><td class="num">+0.78</td>
+    <td class="num">+0.25</td><td class="num">1.5e-2</td></tr>
+<tr><td>0.5 / 0.5</td><td>saddle</td><td class="num">7.836</td>
+    <td class="num">8.085</td><td class="num">8.183</td>
+    <td class="num">+0.098</td><td class="num">+0.50</td>
+    <td class="num">+4.13</td><td class="num">1.1e-2</td></tr>
+<tr><td>0.25 / 0.75</td><td>minimum, past a saddle</td>
+    <td class="num">5.481</td>
+    <td class="num">7.743</td><td class="num">7.711</td>
+    <td class="num">−0.032</td><td class="num">+1.37</td>
+    <td class="num">+0.19</td><td class="num">1.5e-2</td></tr>
+<tr><td>0.75 / 0.25</td><td>the one found</td><td class="num">9.375</td>
+    <td class="num">7.535</td><td class="num">7.892</td>
+    <td class="num">+0.357</td><td class="num">+2.34</td>
+    <td class="num">+15.48</td><td class="num">3.5e-2</td></tr>
+</table></div>
+<ul>
+  <li><b>This note's earlier claim was wrong.</b> It said nothing suggested
+  an untested case would differ by an order of magnitude. Here the choice
+  of orbitals moves the PT2 excitation energy by 0.64 eV (23 mEh), against
+  0.6 mEh between LiF's states. The singles-like perturbers repair a
+  reference that is slightly off; they do not repair a π* of the wrong
+  size.</li>
+  <li><b>One start moves by 0.36 eV.</b> With N at three quarters of the
+  weight the CASSCF π* suits N, the V reference sits 9.4 eV up, and the
+  passes rotate it: V's CASCI energy falls by 28 mEh, N's rises by 13, and
+  PC-QD-NEVPT2's V rises by 15 mEh. The gap goes from 7.54 to 7.89 eV,
+  towards the accepted value near 8 eV (theoretical best estimates of 7.9
+  to 8.0 eV, quoted and not recomputed here). By the bar set before the
+  run (0.1 eV towards it, and the passes settle) this start passes.</li>
+  <li><b>The others do not.</b> From the equal-weight minimum, the solution
+  a converged SA-CASSCF returns and the one read as the diffuse π*, the
+  gap stays at 7.44 eV, half an eV low: the first mixing is 1.5e-2, as
+  large as the saddle's, and the gap changes by 0.014 eV. From the saddle
+  the gap rises from 8.09 to 8.18 eV, away from the accepted value.</li>
+  <li><b>The fixed point is not unique.</b> At equal weights the passes
+  have at least two, 0.75 eV apart, each next to the CASSCF stationary
+  point it started from. A pass is a local step, and what is wrong with
+  the minimum's orbitals is not local. Across the weights the fixed points
+  differ as well, but that much is by construction: the weights are in the
+  averaged density.</li>
+  <li><b>The spread does not shrink.</b> A criterion that picked the right
+  orbitals would bring different starts together. The four gaps are
+  0.64 eV apart before the passes and 0.75 eV apart after.</li>
+  <li><b>An energy criterion would pick the wrong basin.</b> At the two
+  equal-weight fixed points N's energy agrees to 0.13 mEh, and V's is
+  27.6 mEh lower in the minimum's basin. Neither is variational, but a
+  functional that minimized the PT2 energies, bounded or not, would be
+  pulled to that side, the one half an eV from the accepted value.</li>
+  <li><b>Limits.</b> One basis, the smallest active space, PC only, an
+  unrelaxed density. No ⟨x²⟩, so "valence" and "diffuse" are read from
+  the energies and the literature. The judge is a quoted number near
+  8 eV, not an FCI in this basis. The 0.75/0.25 start was not checked for
+  a lower SA-CASSCF solution.</li>
+</ul>
+
 <h2 id="next">Where this leaves the idea</h2>
 <ul>
   <li><b>Not worth a module on this evidence.</b> By the note's own bar
@@ -744,14 +857,21 @@ correction between spaces going into the pass, at 6.25 Å.</p>
   correcting for it: at the natural-orbital fixed point the crossing has
   moved 0.05 Å and the two states 0.6 mEh against each other. The bar was
   a shifted crossing, and this is not one.</li>
+  <li><b>Ethylene shows the problem is real and this is not its
+  answer.</b> On the V state the orbitals move PC-QD-NEVPT2 by 0.64 eV
+  (<a href="#ethylene">Ethylene</a>), so there is something for an orbital
+  criterion to fix. The natural-orbital passes are not that criterion:
+  they have a fixed point in each CASSCF basin, they do not bring the
+  starts together, and the PT2 energy itself is lower in the basin that is
+  half an eV off. The usual remedy is a reference that contains the
+  missing σ response (a larger or restricted active space), and nothing
+  here competes with it.</li>
   <li><b>What is still not tested:</b> a judge for the state average (an
-  FCI-sized pair), a relaxed density, ethylene's V state and 3d metals,
-  and a single-set optimum as opposed to a natural-orbital fixed point.
-  None of the numbers above suggests they would differ by the order of
-  magnitude it would take.</li>
+  FCI-sized pair), a relaxed density, 3d metals, and a single-set optimum
+  as opposed to a natural-orbital fixed point.</li>
   <li><b>If it is reopened</b>, it is for the singles-projected functional
-  on a case with a judge, not for these orbitals: the state average was
-  the reason to continue, and it gave none.</li>
+  on ethylene, with second moments to say which π* it finds, not for
+  these orbitals.</li>
 </ul>
 
 </main>

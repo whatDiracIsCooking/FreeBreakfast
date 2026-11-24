@@ -25,6 +25,15 @@ crossing is at 6.28 Å against 6.34 Å in the CASSCF orbitals. Both states
 rise by 4 to 5 mEh, together: 0.6 mEh between them. Nothing judges which
 orbitals are right; the answer barely depends on them.
 
+**Where the orbitals do matter, the passes do not decide.** Ethylene's N
+and V states (SA-CASSCF(2,2), aug-cc-pVDZ) are the case where CASSCF
+orbitals are wrong in kind. The SA-CASSCF has a saddle and a minimum, and
+with two more sets of weights that is four starts: PC-QD-NEVPT2's
+excitation energy runs from 7.45 to 8.09 eV over them. The passes converge
+from each, to four fixed points from 7.44 to 8.18 eV. One start moves by
+0.36 eV towards the accepted 8 eV; the converged equal-weight CASSCF stays
+half an eV low.
+
 **A bounded replacement does not rescue it.** The probe's `mo` mode
 minimizes W = ⟨Ψ⁽¹⁾|Ψ⁽¹⁾⟩, the first-order wave function's weight
 (Brueckner's maximum overlap at first order), which has a minimum and no
@@ -60,6 +69,8 @@ build-experimental/experimental/oo_nevpt2/free_breakfast_oo_nevpt2 \
   experimental/oo_nevpt2/water_fci.toml 100 cap 1.03  # E under W <= 1.03 W0
 build-experimental/experimental/oo_nevpt2/free_breakfast_oo_nevpt2 \
   experimental/oo_nevpt2/lif_sa.toml 12 sa      # passes over a state average
+build-experimental/experimental/oo_nevpt2/free_breakfast_oo_nevpt2 \
+  experimental/oo_nevpt2/ethylene_sa.toml 16 sa # ethylene's N and V
 ```
 
 The config needs a `[casscf]` of one singlet root over density-fitted
@@ -88,4 +99,6 @@ occupations. Not a ctest entry.
 | `water_fci.toml` | The same water in 6-31G with `[fci]`: the exact answer |
 | `water_stretched_fci.toml`, `water_stretched.xyz` | That with both O–H bonds at 1.8 times their length |
 | `lif_1.6.toml`, `lif_5.0.toml` and their `.xyz` | LiF CASSCF(6,4) by AVAS over F 2p and Li 2s, aug-cc-pVDZ |
+| `ethylene_sa.toml`, `ethylene_sa.xyz` | Ethylene SA-CASSCF(2,2) of N and V over π and π* by AVAS, aug-cc-pVDZ; the weighted starts are this with a `weights` line |
+| `ethylene_sa_valence.toml` | That with CASSCF tolerances loose enough to stop at the saddle, the valence-like solution |
 | `lif_sa.toml`, `lif_sa.xyz` | LiF SA-CASSCF(2,2) of the ionic and covalent ¹Σ⁺ states over F 2pσ and Li 2s, at 6.25 Å; the scan is this with R replaced |
