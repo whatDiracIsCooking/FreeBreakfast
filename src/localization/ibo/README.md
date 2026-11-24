@@ -7,8 +7,8 @@ span its occupied orbitals exactly. The IBOs are the occupied orbitals
 localized over the IAOs' atomic populations: Pipek-Mezey with chemically
 sound populations in place of Mulliken's.
 
-No kernels of its own: `recipes/blas`'s `gemm`, `recipes/cholesky`, wwr's
-`potrs`, `recipes/orthogonalize`, `integrals/one_electron/overlap_mixed`, and
+No kernels of its own: `recipes/blas`'s `gemm`, `recipes/cholesky` (factor and
+solve), `recipes/orthogonalize`, `integrals/one_electron/overlap_mixed`, and
 `localization/pipek_mezey`'s sweep.
 
 ## Module
@@ -68,8 +68,9 @@ A = P12 - C E - C~ F + 2 C O F,   E = C^T S12,  F = C~^T S12,  O = C^T S1 C~
 
 **S^-1 is a Cholesky solve**, never an inverse, as the paper advises:
 `cholesky` once per overlap (not the solver's `potrf`, whose small-matrix
-kernel races on ROCm 7.2: `recipes/cholesky/README.md`), `potrs` per
-right-hand side. S2, a free-atom minimal basis,
+kernel races on ROCm 7.2: `recipes/cholesky/README.md`), `cholesky_solve`
+per right-hand side (not the solver's `potrs`, which allocates outside the
+budget on HIP). S2, a free-atom minimal basis,
 failing to be positive definite is `Numerical`.
 
 **A near-singular S1 falls back to S^-1/2.** A basis read from a path can be

@@ -1,6 +1,7 @@
 /// @file
 /// @brief cholesky: the diagonal blocks by cholesky.cu's kernel, the panel
-/// below each by a trsm and the trailing matrix by a syrk.
+/// below each by a trsm and the trailing matrix by a syrk; cholesky_solve, two
+/// recipe trsm solves over the factor.
 
 module;
 
@@ -16,6 +17,7 @@ import free_breakfast.core.constants; // kOne, kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // trsm, syrk, wwrMemsetAsync, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.recipes.trsm;
 
 #include "diagnostics.h"
 
@@ -55,6 +57,21 @@ Result<int32_t> cholesky(DeviceResources &res, const int32_t n, double *a) {
                                                   panel, n, &kOne<double>, panel + (jb * ld), n)));
   }
   return res.fetch_info();
+}
+
+Status cholesky_solve(DeviceResources &res, const int32_t n, const int32_t nrhs, const double *l,
+                      double *b) {
+  if (n < 0 || nrhs < 0) {
+    return err_config("cholesky_solve: n = {} or nrhs = {} is negative", n, nrhs);
+  }
+  if (n == 0 || nrhs == 0) {
+    return {};
+  }
+  // A = L L^T: L Y = B, then L^T X = Y, both in place over B.
+  FBF_TRY(trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
+                       wwr::WWRBLAS_DIAG_NON_UNIT, n, nrhs, kOne<double>, l, n, b, n));
+  return trsm<double>(res, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
+                      wwr::WWRBLAS_DIAG_NON_UNIT, n, nrhs, kOne<double>, l, n, b, n);
 }
 
 } // namespace free_breakfast

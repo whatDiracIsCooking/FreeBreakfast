@@ -9,12 +9,12 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero, kNegOne, kTwo
 import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
-import free_breakfast.core.wwr; // potrs, dgmm, wwrMemcpy{,2D}Async, gpu_status
+import free_breakfast.core.wwr; // dgmm, wwrMemcpy{,2D}Async, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.core.footprint;
 import free_breakfast.basis;
-import free_breakfast.recipes.blas; // gemm
-import free_breakfast.recipes.cholesky;
+import free_breakfast.recipes.blas;     // gemm
+import free_breakfast.recipes.cholesky; // cholesky, cholesky_solve
 import free_breakfast.recipes.orthogonalize;
 import free_breakfast.integrals.one_electron.overlap_mixed;
 
@@ -37,21 +37,6 @@ namespace free_breakfast::localization {
   // Pageable: the caller synchronizes before src goes away.
   return gpu_status(wwr::wwrMemcpyAsync(dst, src.data(), src.size() * sizeof(double),
                                         wwr::wwrMemcpyHostToDevice, res.stream()));
-}
-
-// The solver's flag: info < 0 is a bad argument, a bug here; info > 0 is
-// the leading minor that is not positive, the matrix's doing.
-[[nodiscard]] Status ibo_check_info(DeviceResources &res, const std::string_view what) {
-  const int32_t info = FBF_TRY(res.fetch_info());
-  if (info < 0) {
-    return err_gpu("localization::intrinsic_atomic_orbitals: {} rejected argument {}", what, -info);
-  }
-  if (info > 0) {
-    return err_numerical(
-        "localization::intrinsic_atomic_orbitals: {} is not positive definite (minor {})", what,
-        info);
-  }
-  return {};
 }
 
 // S = L L^T in place, by recipes/cholesky rather than the solver's potrf (its
@@ -101,12 +86,11 @@ namespace free_breakfast::localization {
   return true;
 }
 
-// B <- S^-1 B for the n x nrhs B, over ibo_cholesky's factor @p l.
+// B <- S^-1 B for the n x nrhs B, over ibo_cholesky's factor @p l: the
+// recipe's solve, not the solver's potrs (recipes/cholesky/README.md).
 [[nodiscard]] Status ibo_solve(DeviceResources &res, const int32_t n, const int32_t nrhs,
                                const double *l, double *b) {
-  FBF_TRY(gpu_status(wwr::potrs<double>(res.solver().get(), wwr::WWRBLAS_FILL_MODE_LOWER, n, nrhs,
-                                        l, n, b, n, res.info().data())));
-  return ibo_check_info(res, "potrs");
+  return cholesky_solve(res, n, nrhs, l, b);
 }
 
 // B <- S1^-1 B for the n x nrhs B: a solve over the Cholesky factor, or, when
