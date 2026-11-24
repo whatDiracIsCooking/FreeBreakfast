@@ -363,9 +363,9 @@ dependencies = [
  "fb-core-log",
  "fb-core-planner",
  "fb-core-thread-pool",
- "fb-core-wwr",
  "fb-io-npy",
  "fb-recipes-cholesky",
+ "fb-recipes-sys",
  "fb-test-support",
  "wwr-sys",
 ]

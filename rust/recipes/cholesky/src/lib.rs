@@ -51,7 +51,7 @@
 //! | the returned flag, `0` or the failing minor | `cholesky check`'s `Numerical` error naming the minor; the pinned row it writes on success, which a later task reads to run only on a good factor |
 //! | `device::kCholeskyBlock` | [`CHOLESKY_BLOCK`], the kernel library's `FB_CHOLESKY_TILE` |
 //! | `device::cholesky_diagonal_block(stream, jb, j, diagonal, ld, info)` | [`cholesky_diagonal`], over a part of L, the tile also written packed into the `tile` scratch row |
-//! | `wwr::trsm<double, int32_t>(…, diagonal, n, panel, n)` | [`trsm`] against the packed tile, over the part of L that starts at the panel |
+//! | `trsm<double>(res, …, diagonal, n, panel, n)` (`src/recipes/trsm`) | [`trsm`], the tree's own and never the library's, against the packed tile, over the part of L that starts at the panel |
 //! | `wwr::syrk<double, int32_t>(…, panel, n, …, panel + jb ld, n)` | [`syrk`], the panel and the trailing matrix the two sides of one cut of L |
 //! | `res.blas()` | the stream worker's handle, [`DeviceStream::blas`], bound to its stream |
 //! | `ScopedDeviceIndex` for the call | nothing: a stream worker's tasks run on its device |
@@ -59,7 +59,7 @@
 //! | nothing: the C++ tree compiles its kernels into the binary | [`fb_recipes_sys::check_library`] first, at planning |
 //!
 //! [`split_at_mut`]: fb_core_wwr::device_slice::split_at_mut
-//! [`trsm`]: fb_core_wwr::blas::trsm
+//! [`trsm`]: fb_recipes_sys::trsm
 //! [`syrk`]: fb_core_wwr::blas::syrk
 //! [`memset::zero`]: fb_core_wwr::memset::zero
 
@@ -73,10 +73,10 @@ use fb_core_error_handling::{Error, Result, Status};
 use fb_core_log::fits_i32;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
-use fb_core_wwr::blas::{syrk, trsm};
+use fb_core_wwr::blas::syrk;
 use fb_core_wwr::device_slice::split_at_mut;
 use fb_core_wwr::memset;
-use fb_recipes_sys::{FB_CHOLESKY_TILE, cholesky_diagonal};
+use fb_recipes_sys::{FB_CHOLESKY_TILE, cholesky_diagonal, trsm};
 use wwr_sys::{wwr_blas_diag_type, wwr_blas_fill_mode, wwr_blas_operation, wwr_blas_side_mode};
 
 /// The order of the diagonal tiles, and so the width of the panels: the

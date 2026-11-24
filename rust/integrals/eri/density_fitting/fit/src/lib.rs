@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! M = L Lᵀ             (fb-recipes-cholesky, lower)
-//! B = L⁻¹ (P|mn)       (one trsm: left, lower, no transpose)
+//! B = L⁻¹ (P|mn)       (fb-recipes-sys's trsm: left, lower, no transpose)
 //! ```
 //!
 //! so that `(mn|ls) ≈ Σ_Q B_Q,mn B_Q,ls = (mn|P) M⁻¹ (P|ls)`, and J and K
@@ -45,14 +45,14 @@
 //! | `density_fit(res, nao, naux, metric, b)`, the metric overwritten by L and the square `b` by B | [`add_cholesky`] once, then [`add_batch_fit`] per batch of kept pairs, each returning its own output row; no square fit (#1721) |
 //! | `cholesky(res, naux, metric)` and its flag, read by one stream sync | [`add_cholesky`]'s `cholesky` and `cholesky check`, the sync the edge between them |
 //! | the trsm queued after the sync | the `density fit` task, which reads `checked` and so runs after the check |
-//! | `wwr::trsm<double, int32_t>(…, LEFT, LOWER, N, NON_UNIT, naux, nao², 1, metric, naux, b, naux)` | [`trsm`], the same modes over the batch's `columns`, on the stream worker's handle |
+//! | `trsm<double>(res, LEFT, LOWER, N, NON_UNIT, naux, nao², 1, metric, naux, b, naux)` (`src/recipes/trsm`) | [`trsm`], the tree's own blocked solve and never the library's, the same modes over the batch's `columns`, on the stream worker's handle |
 //! | `nao == 0` or `naux == 0`: an empty success; a negative count: `InvalidConfig` | contracts: both counts are at least 1 |
 //! | `nao²` past `int32_t`: `InvalidConfig` | an always-on contract on `columns`, since the BLAS's column count is an `i32` |
 //! | `ScopedDeviceIndex` for the call | nothing: a stream worker's tasks run on its device |
 //! | `lindep > 0`, the fit over M's eigenmodes above it (#630) | not ported: no basis the tree carries needs it, and the C++ Eri step never sets it |
 //! | `density_fit_footprint(…)`, nothing on the Cholesky path | the tasks' layouts: L, B, and the factor's scratch, read off the plan's table |
 //!
-//! [`trsm`]: fb_core_wwr::blas::trsm
+//! [`trsm`]: fb_recipes_sys::trsm
 //! [`add_cholesky`]: fb_recipes_cholesky::add_cholesky
 
 #![forbid(unsafe_code)]
@@ -63,7 +63,7 @@ use fb_core_error_handling::Status;
 use fb_core_log::fits_i32;
 use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
-use fb_core_wwr::blas::trsm;
+use fb_recipes_sys::trsm;
 use wwr_sys::{wwr_blas_diag_type, wwr_blas_fill_mode, wwr_blas_operation, wwr_blas_side_mode};
 
 /// Add the fit of a batch of `batch` columns of a three-center tensor of

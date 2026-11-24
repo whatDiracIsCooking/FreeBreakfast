@@ -560,6 +560,55 @@ fn an_export_is_found_and_a_callback_is_not_one() {
     assert!(c_library("a/Cargo.toml", "[lib]\n# crate-type = [\"cdylib\"]\n").is_none());
 }
 
+// ------------------------------------------- no library triangular solve
+
+/// The identifiers of one source that name a library triangular solve of
+/// the C ABI: a word that starts `wwr_` and holds `trsm`, `potrs` or
+/// `getrs`, with its line.
+fn library_triangular_solves(path: &str, source: &str) -> Vec<String> {
+    let code = code_only(source);
+    words(&code)
+        .into_iter()
+        .filter(|(_, w)| {
+            w.starts_with("wwr_") && ["trsm", "potrs", "getrs"].iter().any(|r| w.contains(r))
+        })
+        .map(|(i, w)| {
+            format!(
+                "{path}:{}: {w} is a library triangular solve, whose workspace grows with \
+                 its right-hand sides on ROCm; call fb_recipes_sys::trsm",
+                line_of(source, i)
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_librarys_triangular_solves_are_not_called() {
+    let failures: Vec<String> = workspace_sources()
+        .iter()
+        .flat_map(|(p, s)| library_triangular_solves(p, s))
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{} library triangular solve(s) named under rust/ (docs/gpu_layer.md, \"Layering\"):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn a_library_triangular_solve_is_found_by_its_name() {
+    let bad = "fn f() {\n    wwr_sys::wwr_blas_dtrsm();\n    wwr_solver_dpotrs();\n    \
+               wwr_solver_sgetrs_buffer_size();\n}\n";
+    let f = library_triangular_solves("a.rs", bad);
+    assert_eq!(f.len(), 3, "{f:#?}");
+    assert!(f[0].starts_with("a.rs:2: wwr_blas_dtrsm"), "{f:#?}");
+    // The tree's own, a comment and a literal are not one.
+    let good = "use fb_recipes_sys::trsm;\n// wwr_blas_dtrsm\nconst S: &str = \"wwr_blas_dtrsm\";\n\
+                fn g() {\n    trsm();\n    wwr_blas_dtrsv();\n}\n";
+    assert!(library_triangular_solves("a.rs", good).is_empty());
+}
+
 // ------------------------------------------------------ one name per BLAS call
 
 /// The free functions `fb_core_wwr::blas` exports: each `pub fn` at the
@@ -630,7 +679,16 @@ fn recipes_blas_exports_no_single_call() {
     let root = rust_root();
     let core = std::fs::read_to_string(root.join("core/wwr/src/blas.rs")).unwrap();
     let calls = single_calls(&code_only(&core));
-    for name in ["gemm", "dgmm", "gemv", "geam", "syrk", "trsm"] {
+    for name in [
+        "gemm",
+        "gemm_rows",
+        "dgmm",
+        "gemv",
+        "geam",
+        "syrk",
+        "trsv",
+        "scal",
+    ] {
         assert!(
             calls.contains(name),
             "core/wwr/src/blas.rs: no pub fn {name} found: {calls:?}"
