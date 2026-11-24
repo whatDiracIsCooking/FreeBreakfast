@@ -122,10 +122,10 @@ only in review. Each library exports two entries,
 `fb_<module>_abi_version()` and `fb_<module>_backend()`, defined in its
 `kernels/abi.cu`: the first returns the `FB_<MODULE>_ABI_VERSION` its C
 header defines, bumped by hand with any change to a declaration the header
-reaches (`FB_RECIPES_ABI_VERSION` is 6, bumped as the inverse square root,
+reaches (`FB_RECIPES_ABI_VERSION` is 7, bumped as the inverse square root,
 the symmetrization, the Cholesky diagonal tile and the DIIS solve joined the
 merge sort, then as the inverse square root took its floor's factor from the
-device;
+device, then as the triangular solve's diagonal block joined;
 `FB_INTEGRALS_ABI_VERSION` is 11, bumped as the kinetic and
 nuclear-attraction wrappers with `fb_nuclei_view`, then density fitting's
 metric and three-center launchers, joined the overlap, then as the records'
@@ -226,9 +226,9 @@ spherical transform drives its GEMMs that way (`fb-recipes-matrix-ao`).
 Only this tree's own kernels need a C++ wrapper.
 
 **One BLAS operation has one name: `fb_core_wwr::blas`'s.** A task that
-makes a single call (`gemm`, `gemv`, `geam`, `syrk`, `trsm`, `dgmm`,
-`gemm_strided_batched`) calls the checked wrapper there, every leading
-dimension, op and side passed in, packed or not. `fb-recipes-blas` holds
+makes a single call (`gemm`, `gemm_rows`, `gemv`, `geam`, `syrk`, `trsv`,
+`scal`, `dgmm`, `gemm_strided_batched`) calls the checked wrapper there,
+every leading dimension, op and side passed in, packed or not. `fb-recipes-blas` holds
 only the C++ `src/recipes/blas`'s named compositions, the sandwiches
 `gemmwich` and `gmmwich` (two calls through a caller's work matrix), and
 exports no name of a single call: its packed `gemm` and `dgmm`, the C++'s
@@ -238,6 +238,22 @@ were copied from (#1545); a packed call is a leading dimension written
 out, which costs a caller three arguments and no second name to learn.
 `fb-doc-check` holds it (`tests/source_rules.rs`): no public function of
 `fb-recipes-blas` shares a name with one of `fb_core_wwr::blas`.
+
+**The library's triangular solves are not called.** rocBLAS's `trsm`
+takes workspace that grows with the right-hand sides, about a copy of B
+when the order is not a multiple of 128, so no fixed handle workspace
+covers it and a call past it allocates outside the arena's count; the
+solvers' `potrs` and `getrs` are that trsm underneath. So
+`fb_core_wwr::blas` binds no `trsm`, and a triangular solve is
+`fb_recipes_sys::trsm`, the C++ `src/recipes/trsm`: blocked, each
+diagonal block by a shared-memory kernel of `libfb_recipes_kernels.so`
+and the update between blocks a gemm, with one right-hand side the
+library's `trsv`, which takes no workspace on either backend. It is a
+plain call on the handle's stream that enqueues, takes no workspace of
+its own, and has the library call's signature. One code path on both
+backends, so CUDA runs it too. `fb-doc-check` holds it
+(`tests/source_rules.rs`): no source under `rust/` names a `wwr-sys`
+`trsm`, `potrs` or `getrs`.
 
 **A library handle is the lane's, made before the run.** Each lane of a
 GPU worker owns one handle per library, bound to its stream and on its
@@ -629,9 +645,11 @@ because nvcc accepts code that `clang -x hip` rejects.
 **One shared object per module.** `rust/<module>/kernels/` builds
 `libfb_<module>_kernels.so` at `<build>/<module>/kernels`:
 `libfb_recipes_kernels.so` (the merge sort, the inverse square root, the
-symmetrization, the Cholesky diagonal tile and the DIIS solve:
+symmetrization, the Cholesky diagonal tile, the DIIS solve and the
+triangular solve's diagonal block:
 `fb_merge_sort*`, `fb_inverse_sqrt`, `fb_symmetrize`, `fb_mirror_triangle`,
-`fb_cholesky_diagonal` and `fb_diis_solve`) and `libfb_integrals_kernels.so` (the
+`fb_cholesky_diagonal`, `fb_diis_solve`, `fb_trsm_diagonal_f32` and
+`fb_trsm_diagonal_f64`) and `libfb_integrals_kernels.so` (the
 primitive-pair records, the overlap, the kinetic energy, the nuclear
 attraction, density fitting's metric and packed three-center integrals,
 and the conventional ERI's packed tensor, its exchange

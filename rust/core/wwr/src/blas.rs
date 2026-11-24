@@ -14,8 +14,12 @@
 //! | the same `gemmStridedBatched<T>`, called with raw pointers | [`gemm_strided_batched`], over [`DeviceSlice`]s it checks at every stride; C's matrices apart from one another |
 //! | `gemv<T>` over `wwrblas{S,D,C,Z}gemv` | [`BlasScalar`]'s `gemv_raw` |
 //! | the same `gemv<T>`, called with raw pointers | [`gemv`], over [`DeviceSlice`]s it checks; `incx` and `incy` at least 1 |
-//! | `trsm<T>` and `syrk<T>` over `wwrblas{S,D,C,Z}trsm` and `…syrk` | [`BlasScalar`]'s `trsm_raw` and `syrk_raw` |
-//! | the same `trsm<T>` and `syrk<T>`, called with raw pointers | [`trsm`] and [`syrk`], over [`DeviceSlice`]s they check; B and C never A (no in-place call) |
+//! | `syrk<T>` over `wwrblas{S,D,C,Z}syrk` | [`BlasScalar`]'s `syrk_raw` |
+//! | the same `syrk<T>`, called with raw pointers | [`syrk`], over [`DeviceSlice`]s it checks; C never A (no in-place call) |
+//! | `trsv<T>` and `scal<T>` over `wwrblas{S,D,C,Z}trsv` and `…scal` | [`BlasScalar`]'s `trsv_raw` and `scal_raw` |
+//! | the same `trsv<T>` and `scal<T>`, called with raw pointers | [`trsv`] and [`scal`], over [`DeviceSlice`]s they check; the stride at least 1 |
+//! | `gemm<T>` with B and C blocks of rows of one matrix, as `src/recipes/trsm`'s update calls it | [`gemm_rows`], the two blocks checked apart |
+//! | `trsm<T>` over `wwrblas{S,D,C,Z}trsm` | not bound: the library's trsm takes workspace that grows with the right-hand sides on ROCm, so the tree's own is `fb_recipes_sys::trsm`, over [`gemm`], [`gemm_rows`], [`trsv`] and [`scal`] |
 //! | `geam<T>` over `wwrblas{S,D,C,Z}geam` | [`BlasScalar`]'s `geam_raw` |
 //! | the same `geam<T>`, called with raw pointers | [`geam`], over [`DeviceSlice`]s it checks; C never A or B (no in-place call) |
 //! | `kOne<T>`, `kZero<T>` (`core/constants`), the BLAS scalars one and zero by address | [`BlasScalar::ONE`] and [`BlasScalar::ZERO`], by value |
@@ -38,8 +42,8 @@
 //! method per routine, implemented for the four types the library computes
 //! in, each forwarding to its letter's C ABI call. It takes raw pointers
 //! and is `unsafe`, as the C ABI is; only this crate calls it. [`gemm`],
-//! [`gemm_strided_batched`], [`gemv`], [`dgmm`], [`trsm`], [`syrk`] and
-//! [`geam`] are the safe calls over it: their operands are [`DeviceSlice`]s, each extent
+//! [`gemm_rows`], [`gemm_strided_batched`], [`gemv`], [`dgmm`], [`syrk`],
+//! [`geam`], [`trsv`] and [`scal`] are the safe calls over it: their operands are [`DeviceSlice`]s, each extent
 //! the call will touch is checked against the slice's length before
 //! anything is enqueued, and a slice too short panics, as an index out of
 //! a slice's bounds does. That check is what makes it safe, so it is on in
@@ -51,10 +55,12 @@
 //! [`dgmm`] offers no in-place form: C is always memory of its own. Its
 //! stride `incx` is at least 1, as [`gemv`]'s are: the library's 0 (one
 //! entry for every row or column) and negative strides (a vector read
-//! backwards) are refused, as nothing in the tree asks for them. Likewise [`trsm`]'s B and [`syrk`]'s
-//! C are memory of their own, apart from A: a caller whose operands are
+//! backwards) are refused, as nothing in the tree asks for them. Likewise [`syrk`]'s
+//! C is memory of its own, apart from A: a caller whose operands are
 //! blocks of one matrix cuts it into disjoint parts first
-//! ([`split_at_mut`](crate::device_slice::split_at_mut)). So is
+//! ([`split_at_mut`](crate::device_slice::split_at_mut)), and where the
+//! blocks are rows of the same columns, which no cut parts,
+//! [`gemm_rows`] takes the matrix whole and checks the rows apart. So is
 //! [`geam`]'s C, apart from A and B: the library's in-place forms (C over A
 //! or over B) are left out with `dgmm`'s.
 
@@ -76,7 +82,7 @@ use crate::runtime::Stream;
 use crate::{gpu_log_error_at, gpu_status};
 use contracts::requires;
 use fb_core_error_handling::{Status, check_or_abort};
-use fb_core_log::le;
+use fb_core_log::{fits_i32, le};
 
 /// `wwrblasStatus_t`, as the C ABI hands it back. The name is the
 /// enumerator's; wwr's would be the vendor's (`CUBLAS_STATUS_ALLOC_FAILED`),
@@ -288,8 +294,9 @@ impl DeviceHandleStream for BlasHandle {
 
 /// A type the BLAS computes in: `f32`, `f64`, [`wwr_complex64`] and
 /// [`wwr_complex128`], wwr's `usual_fp`. Each method is the C ABI call of
-/// the type's letter. Sealed, since [`gemm`], [`gemm_strided_batched`],
-/// [`gemv`], [`dgmm`], [`trsm`], [`syrk`] and [`geam`] trust each method to
+/// the type's letter. Sealed, since [`gemm`], [`gemm_rows`],
+/// [`gemm_strided_batched`], [`gemv`], [`dgmm`], [`syrk`], [`geam`],
+/// [`trsv`] and [`scal`] trust each method to
 /// be that call.
 pub trait BlasScalar: Copy + sealed::Sealed {
     /// One (`1 + 0i` on a complex type), the `alpha` of a plain product:
@@ -381,38 +388,52 @@ pub trait BlasScalar: Copy + sealed::Sealed {
         ldc: i32,
     ) -> wwr_blas_status;
 
-    /// `wwrblas<t>trsm`: `op(A) X = alpha B` (`WWR_BLAS_SIDE_LEFT`) or
-    /// `X op(A) = alpha B` (`_RIGHT`), X written over B, column-major, A
-    /// triangular m × m on the left and n × n on the right, its `fill`
-    /// triangle read, B m × n.
+    /// `wwrblas<t>trsv`: `op(A) x = b`, x written over b, column-major, A
+    /// triangular n × n, its `fill` triangle read, x of n entries at its
+    /// stride.
     ///
     /// # Safety
-    /// The library's: `handle` is live; A and B are device memory on its
-    /// device covering their extents at `lda` and `ldb`; B apart from A;
-    /// `alpha` read as the handle's pointer mode says; all of it alive
-    /// until the work enqueued on the handle's stream has finished.
+    /// The library's: `handle` is live; A and x are device memory on its
+    /// device covering their extents at `lda` and `incx`; x apart from A;
+    /// all of it alive until the work enqueued on the handle's stream has
+    /// finished.
     #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
-    unsafe fn trsm_raw(
+    unsafe fn trsv_raw(
         handle: wwr_blas_handle,
-        side: wwr_blas_side_mode,
         fill: wwr_blas_fill_mode,
         op: wwr_blas_operation,
         diag: wwr_blas_diag_type,
-        m: i32,
         n: i32,
-        alpha: *const Self,
         a: *const Self,
         lda: i32,
-        b: *mut Self,
-        ldb: i32,
+        x: *mut Self,
+        incx: i32,
+    ) -> wwr_blas_status;
+
+    /// `wwrblas<t>scal`: `x = alpha x`, x of n entries at its stride.
+    ///
+    /// # Safety
+    /// The library's: `handle` is live; x is device memory on its device
+    /// covering its extent at `incx`; `alpha` read as the handle's pointer
+    /// mode says; all of it alive until the work enqueued on the handle's
+    /// stream has finished.
+    unsafe fn scal_raw(
+        handle: wwr_blas_handle,
+        n: i32,
+        alpha: *const Self,
+        x: *mut Self,
+        incx: i32,
     ) -> wwr_blas_status;
 
     /// `wwrblas<t>syrk`: `C = alpha op(A) op(A)ᵀ + beta C` on C's `fill`
     /// triangle, column-major, `op(A)` n × k, C n × n.
     ///
     /// # Safety
-    /// As [`BlasScalar::trsm_raw`], with C in B's place and `beta` read as
-    /// `alpha` is.
+    /// The library's: `handle` is live; A and C are device memory on its
+    /// device covering their extents at `lda` and `ldc`; C apart from A;
+    /// `alpha` and `beta` read as the handle's pointer mode says; all of
+    /// it alive until the work enqueued on the handle's stream has
+    /// finished.
     #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
     unsafe fn syrk_raw(
         handle: wwr_blas_handle,
@@ -488,7 +509,7 @@ mod sealed {
 }
 
 macro_rules! blas_scalar {
-    ($($t:ty => $gemm:ident, $batched:ident, $dgmm:ident, $trsm:ident, $syrk:ident,
+    ($($t:ty => $gemm:ident, $batched:ident, $dgmm:ident, $trsv:ident, $scal:ident, $syrk:ident,
         $gemv:ident, $geam:ident, $one:expr, $zero:expr);* $(;)?) => {$(
         impl sealed::Sealed for $t {}
 
@@ -565,24 +586,30 @@ macro_rules! blas_scalar {
                 unsafe { wwr_sys::$dgmm(handle, side, m, n, a, lda, x, incx, c, ldc) }
             }
 
-            unsafe fn trsm_raw(
+            unsafe fn trsv_raw(
                 handle: wwr_blas_handle,
-                side: wwr_blas_side_mode,
                 fill: wwr_blas_fill_mode,
                 op: wwr_blas_operation,
                 diag: wwr_blas_diag_type,
-                m: i32,
                 n: i32,
-                alpha: *const Self,
                 a: *const Self,
                 lda: i32,
-                b: *mut Self,
-                ldb: i32,
+                x: *mut Self,
+                incx: i32,
             ) -> wwr_blas_status {
                 // SAFETY: the caller's, which are the call's.
-                unsafe {
-                    wwr_sys::$trsm(handle, side, fill, op, diag, m, n, alpha, a, lda, b, ldb)
-                }
+                unsafe { wwr_sys::$trsv(handle, fill, op, diag, n, a, lda, x, incx) }
+            }
+
+            unsafe fn scal_raw(
+                handle: wwr_blas_handle,
+                n: i32,
+                alpha: *const Self,
+                x: *mut Self,
+                incx: i32,
+            ) -> wwr_blas_status {
+                // SAFETY: the caller's, which are the call's.
+                unsafe { wwr_sys::$scal(handle, n, alpha, x, incx) }
             }
 
             unsafe fn syrk_raw(
@@ -645,15 +672,15 @@ macro_rules! blas_scalar {
 }
 
 blas_scalar! {
-    f32 => wwr_blas_sgemm, wwr_blas_sgemm_strided_batched, wwr_blas_sdgmm, wwr_blas_strsm,
+    f32 => wwr_blas_sgemm, wwr_blas_sgemm_strided_batched, wwr_blas_sdgmm, wwr_blas_strsv, wwr_blas_sscal,
         wwr_blas_ssyrk, wwr_blas_sgemv, wwr_blas_sgeam, 1.0, 0.0;
-    f64 => wwr_blas_dgemm, wwr_blas_dgemm_strided_batched, wwr_blas_ddgmm, wwr_blas_dtrsm,
+    f64 => wwr_blas_dgemm, wwr_blas_dgemm_strided_batched, wwr_blas_ddgmm, wwr_blas_dtrsv, wwr_blas_dscal,
         wwr_blas_dsyrk, wwr_blas_dgemv, wwr_blas_dgeam, 1.0, 0.0;
     wwr_complex64 => wwr_blas_cgemm, wwr_blas_cgemm_strided_batched, wwr_blas_cdgmm,
-        wwr_blas_ctrsm, wwr_blas_csyrk, wwr_blas_cgemv, wwr_blas_cgeam,
+        wwr_blas_ctrsv, wwr_blas_cscal, wwr_blas_csyrk, wwr_blas_cgemv, wwr_blas_cgeam,
         wwr_complex64 { re: 1.0, im: 0.0 }, wwr_complex64 { re: 0.0, im: 0.0 };
     wwr_complex128 => wwr_blas_zgemm, wwr_blas_zgemm_strided_batched, wwr_blas_zdgmm,
-        wwr_blas_ztrsm, wwr_blas_zsyrk, wwr_blas_zgemv, wwr_blas_zgeam,
+        wwr_blas_ztrsv, wwr_blas_zscal, wwr_blas_zsyrk, wwr_blas_zgemv, wwr_blas_zgeam,
         wwr_complex128 { re: 1.0, im: 0.0 }, wwr_complex128 { re: 0.0, im: 0.0 };
 }
 
@@ -1063,70 +1090,167 @@ pub fn dgmm<T: BlasScalar>(
     })
 }
 
-/// `op(A) X = alpha B` (`side` `WWR_BLAS_SIDE_LEFT`) or `X op(A) = alpha B`
-/// (`_RIGHT`) on `handle`'s stream, X written over B: column-major, A
-/// triangular, m × m on the left and n × n on the right, only its `fill`
-/// triangle read (its diagonal taken as ones under `WWR_BLAS_DIAG_UNIT`), B
-/// m × n, each at its leading dimension. wwr's `trsm<T>`, with every matrix
-/// a slice it checks.
+/// `B(dst.., :) = alpha op_a(A) B(src.., :) + beta B(dst.., :)` on
+/// `handle`'s stream: a [`gemm`] whose B and C are two blocks of rows of
+/// one column-major matrix `b` of n columns at leading dimension `ldb`,
+/// the k rows from `src` read and the m rows from `dst` written, `op_a(A)`
+/// m × k. The update between the diagonal blocks of a left-sided blocked
+/// triangular solve (`fb_recipes_sys::trsm`), where the rows solved and the rows
+/// still to come lie in the same columns, so no cut of `b` parts them
+/// ([`split_at_mut`](crate::device_slice::split_at_mut)); here the two
+/// blocks are checked apart instead.
 ///
-/// `alpha` is a host value, read in the handle's default pointer mode. The
-/// borrow checker keeps B apart from A; blocks of one matrix are its
-/// disjoint parts ([`split_at_mut`](crate::device_slice::split_at_mut)). A
-/// singular A is not detected: X comes back Inf or NaN.
+/// A is stored m × k under `WWR_BLAS_OP_N` and k × m under `_T` or `_C`.
+/// `alpha` and `beta` are host values, read in the handle's default pointer
+/// mode. The rows of `b` outside the two blocks are neither read nor
+/// written. The borrow checker keeps `b` apart from A.
 ///
 /// # Errors
 /// The library's refusal, as a `GpuRuntime` error naming the status.
 ///
 /// # Panics
-/// If a leading dimension is less than its matrix's row count (or 1), or a
-/// slice is shorter than its matrix at its leading dimension; before
-/// anything is enqueued.
+/// If a leading dimension is less than its matrix's row count (or 1; for
+/// `b`, the end of the later block), or a slice is shorter than its matrix
+/// at its leading dimension; before anything is enqueued.
 #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
-#[requires(le!(0, m) && le!(0, n), "m and n are not negative")]
+#[requires(le!(0, m) && le!(0, n) && le!(0, k), "m, n and k are not negative")]
+#[requires(le!(0, src) && le!(0, dst), "the blocks' first rows are not negative")]
+#[requires(
+    fits_i32!(src.checked_add(k)) && fits_i32!(dst.checked_add(m)),
+    "each block's end fits an i32"
+)]
+#[requires(
+    src + k <= dst || dst + m <= src,
+    "the rows read and the rows written are apart"
+)]
 #[track_caller]
-pub fn trsm<T: BlasScalar>(
+pub fn gemm_rows<T: BlasScalar>(
     handle: &BlasHandle,
-    side: wwr_blas_side_mode,
-    fill: wwr_blas_fill_mode,
-    op: wwr_blas_operation,
-    diag: wwr_blas_diag_type,
+    op_a: wwr_blas_operation,
     m: i32,
     n: i32,
+    k: i32,
     alpha: T,
     a: &impl DeviceSlice<T>,
     lda: i32,
     b: &mut impl DeviceSliceMut<T>,
     ldb: i32,
+    src: i32,
+    beta: T,
+    dst: i32,
 ) -> Status {
-    let order = match side {
-        wwr_blas_side_mode::WWR_BLAS_SIDE_LEFT => m,
-        wwr_blas_side_mode::WWR_BLAS_SIDE_RIGHT => n,
+    let (a_rows, a_cols) = if op_a == wwr_blas_operation::WWR_BLAS_OP_N {
+        (m, k)
+    } else {
+        (k, m)
     };
-    check_extent("trsm", "A", a.len(), order, order, lda);
-    check_extent("trsm", "B", b.len(), m, n, ldb);
+    check_extent("gemm_rows", "A", a.len(), a_rows, a_cols, lda);
+    // Both blocks lie in the rows before the later one's end.
+    check_extent("gemm_rows", "B", b.len(), (src + k).max(dst + m), n, ldb);
     let b = b.as_mut_ptr();
+    // `wrapping_add`, as in split_at_mut: with n zero the slice may be empty.
+    let (read, written) = (
+        b.wrapping_add(src as usize).cast_const(),
+        b.wrapping_add(dst as usize),
+    );
     // SAFETY: the handle is live; each slice is device memory covering its
     // extent, checked above, and stays so until the enqueued work finishes
-    // (DeviceSlice's promise); B is its memory's only user
-    // (DeviceSliceMut's), so apart from A; alpha is a host value, the
-    // handle's default pointer mode.
+    // (DeviceSlice's promise); b is its memory's only user
+    // (DeviceSliceMut's), so apart from A, and within it the product reads
+    // rows src to src + k and writes rows dst to dst + m of each column,
+    // which the contract holds apart, so no element is both read and
+    // written; the scalars are host values, the handle's default pointer
+    // mode.
     gpu_status(unsafe {
-        T::trsm_raw(
+        T::gemm_raw(
             handle.get(),
-            side,
-            fill,
-            op,
-            diag,
+            op_a,
+            wwr_blas_operation::WWR_BLAS_OP_N,
             m,
             n,
+            k,
             &alpha,
             a.as_ptr(),
             lda,
-            b,
+            read,
+            ldb,
+            &beta,
+            written,
             ldb,
         )
     })
+}
+
+/// `op(A) x = b` on `handle`'s stream, x written over b: column-major, A
+/// triangular n × n at its leading dimension, only its `fill` triangle read
+/// (its diagonal taken as ones under `WWR_BLAS_DIAG_UNIT`), the vector n
+/// entries at stride `incx`. wwr's `trsv<T>`, with both operands slices it
+/// checks. It takes no workspace on either backend.
+///
+/// The borrow checker keeps x apart from A. The stride is at least 1: the
+/// library's negative ones are refused. A singular A is not detected: x
+/// comes back Inf or NaN.
+///
+/// # Errors
+/// The library's refusal, as a `GpuRuntime` error naming the status.
+///
+/// # Panics
+/// If A's leading dimension is less than n (or 1), the stride is less than
+/// 1, or a slice is shorter than its operand's extent; before anything is
+/// enqueued.
+#[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+#[requires(le!(0, n), "n is not negative")]
+#[track_caller]
+pub fn trsv<T: BlasScalar>(
+    handle: &BlasHandle,
+    fill: wwr_blas_fill_mode,
+    op: wwr_blas_operation,
+    diag: wwr_blas_diag_type,
+    n: i32,
+    a: &impl DeviceSlice<T>,
+    lda: i32,
+    x: &mut impl DeviceSliceMut<T>,
+    incx: i32,
+) -> Status {
+    check_extent("trsv", "A", a.len(), n, n, lda);
+    check_vector("trsv", "x", x.len(), n, incx);
+    let x = x.as_mut_ptr();
+    // SAFETY: the handle is live; each slice is device memory covering its
+    // extent, checked above, and stays so until the enqueued work finishes
+    // (DeviceSlice's promise); x is its memory's only user
+    // (DeviceSliceMut's), so apart from A.
+    gpu_status(unsafe { T::trsv_raw(handle.get(), fill, op, diag, n, a.as_ptr(), lda, x, incx) })
+}
+
+/// `x = alpha x` on `handle`'s stream: the vector n entries at stride
+/// `incx`, the entries between them left as they were. wwr's `scal<T>`,
+/// with x a slice it checks.
+///
+/// `alpha` is a host value, read in the handle's default pointer mode. The
+/// stride is at least 1.
+///
+/// # Errors
+/// The library's refusal, as a `GpuRuntime` error naming the status.
+///
+/// # Panics
+/// If the stride is less than 1, or the slice is shorter than the vector's
+/// extent; before anything is enqueued.
+#[requires(le!(0, n), "n is not negative")]
+#[track_caller]
+pub fn scal<T: BlasScalar>(
+    handle: &BlasHandle,
+    n: i32,
+    alpha: T,
+    x: &mut impl DeviceSliceMut<T>,
+    incx: i32,
+) -> Status {
+    check_vector("scal", "x", x.len(), n, incx);
+    let x = x.as_mut_ptr();
+    // SAFETY: the handle is live; x is device memory covering its extent,
+    // checked above, and stays so, with no other user, until the enqueued
+    // work finishes (DeviceSliceMut's promise); alpha is a host value, the
+    // handle's default pointer mode.
+    gpu_status(unsafe { T::scal_raw(handle.get(), n, &alpha, x, incx) })
 }
 
 /// `C = alpha op(A) op(A)ᵀ + beta C` on `handle`'s stream, only C's `fill`
@@ -1766,29 +1890,81 @@ mod tests {
         a
     }
 
-    /// One trsm on a card, with A's strict upper triangle and every padding
-    /// row NaN: X is the exact solution, B's padding rows come back as
-    /// they were, and nothing NaN reaches X.
-    fn check_trsm(side: wwr_blas_side_mode, op: wwr_blas_operation) {
-        let (m, n) = (5, 3);
-        let left = side == LEFT;
-        let order = if left { m } else { n };
-        let (lda, ldb) = (order + 2, m + 1);
-        let a = unit_lower(order, lda);
-        // X small integers; B = op(A) X (left) or X op(A) (right), exact.
-        let x = matrix(m, n, 4);
+    /// One trsv on a card after a scal, `op(A) x = 2 b`, with A's strict
+    /// upper triangle and its padding rows NaN and the vector at stride 2:
+    /// x is the exact solution, and the entries between its own come back
+    /// as they were.
+    fn check_trsv(op: wwr_blas_operation) {
+        let (n, lda, inc) = (5, 7, 2);
+        let a = unit_lower(n, lda);
+        let x = matrix(n, 1, 4);
         let at = |i: usize, j: usize| {
             let (i, j) = if op == OP_N { (i, j) } else { (j, i) };
             if i >= j { a[i + j * lda] } else { 0.0 }
         };
-        let mut b = vec![UNREAD; ldb * n];
+        // b = op(A) x / 2 at stride 2, exact in halves; NaN between.
+        let mut b = vec![UNREAD; 1 + (n - 1) * inc];
+        for i in 0..n {
+            b[i * inc] = (0..n).map(|l| at(i, l) * x[l]).sum::<f64>() / 2.0;
+        }
+        let owner = Arc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner.clone());
+        let (da, mut db) = (
+            DeviceBytes::upload(&a, &owner),
+            DeviceBytes::upload(&b, &owner),
+        );
+        scal::<f64>(&blas, n as i32, 2.0, &mut db, inc as i32).unwrap();
+        trsv::<f64>(
+            &blas, LOWER, op, NON_UNIT, n as i32, &da, lda as i32, &mut db, inc as i32,
+        )
+        .unwrap();
+        let got = download(&db, &owner);
+        for (r, g) in got.iter().enumerate() {
+            if r % inc == 0 {
+                assert_eq!(*g, x[r / inc], "x({})", r / inc);
+            } else {
+                assert!(g.is_nan(), "the entry between, {r}, is {g}");
+            }
+        }
+    }
+
+    /// Needs a GPU. `L x = 2 b`, one right-hand side of a left-sided solve.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn scal_then_trsv_solves_one_right_hand_side() {
+        check_trsv(OP_N);
+    }
+
+    /// Needs a GPU. `Lᵀ x = 2 b`.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn scal_then_trsv_solves_against_the_transpose() {
+        check_trsv(OP_T);
+    }
+
+    /// One gemm_rows on a card, `B(dst.., :) = -op(A) B(src.., :) + 2
+    /// B(dst.., :)`, every leading dimension padded: the rows written are
+    /// the host's, exact on small integers, and every other row of B comes
+    /// back as it was.
+    fn check_gemm_rows(op: wwr_blas_operation, src: usize, dst: usize) {
+        let (m, n, k) = (3, 4, 2);
+        let (ldb, lda) = (8, if op == OP_N { m + 1 } else { k + 1 });
+        let a = matrix(lda, if op == OP_N { k } else { m }, 1);
+        let b = matrix(ldb, n, 2);
+        let mut want = b.clone();
         for j in 0..n {
             for i in 0..m {
-                b[i + j * ldb] = if left {
-                    (0..m).map(|l| at(i, l) * x[l + j * m]).sum()
-                } else {
-                    (0..n).map(|l| x[i + l * m] * at(l, j)).sum()
-                };
+                let dot: f64 = (0..k)
+                    .map(|l| {
+                        let at = if op == OP_N {
+                            a[i + l * lda]
+                        } else {
+                            a[l + i * lda]
+                        };
+                        at * b[src + l + j * ldb]
+                    })
+                    .sum();
+                want[dst + i + j * ldb] = -dot + 2.0 * b[dst + i + j * ldb];
             }
         }
         let owner = Arc::new(Stream::new(0));
@@ -1798,48 +1974,80 @@ mod tests {
             DeviceBytes::upload(&b, &owner),
         );
         let i = |v: usize| v as i32;
-        trsm::<f64>(
+        gemm_rows::<f64>(
             &blas,
-            side,
-            LOWER,
             op,
-            NON_UNIT,
             i(m),
             i(n),
-            1.0,
+            i(k),
+            -1.0,
             &da,
             i(lda),
             &mut db,
             i(ldb),
+            i(src),
+            2.0,
+            i(dst),
         )
         .unwrap();
-        let got = download(&db, &owner);
-        for j in 0..n {
-            for r in 0..ldb {
-                let (g, w) = (got[r + j * ldb], b[r + j * ldb]);
-                if r < m {
-                    assert_eq!(g, x[r + j * m], "X({r}, {j})");
-                } else {
-                    assert!(g.is_nan() && w.is_nan(), "B's padding ({r}, {j}) is {g}");
-                }
-            }
-        }
+        assert_eq!(download(&db, &owner), want);
     }
 
-    /// Needs a GPU. `X L11ᵀ = A21`, the right-sided transposed solve of a
-    /// Cholesky panel: exact, A's upper triangle unread.
+    /// Needs a GPU. The rows written below the rows read, a lower solve's
+    /// update.
     #[test]
     #[ignore = "tier 4: needs a GPU"]
-    fn trsm_solves_on_the_right_against_the_transpose() {
-        check_trsm(RIGHT, OP_T);
+    fn gemm_rows_updates_the_rows_below() {
+        check_gemm_rows(OP_N, 1, 3);
     }
 
-    /// Needs a GPU. `L X = B`, the left-sided plain solve a density fit's
-    /// `L⁻¹ (P|mn)` is.
+    /// Needs a GPU. The rows written above the rows read, with A stored
+    /// transposed: an upper solve's update.
     #[test]
     #[ignore = "tier 4: needs a GPU"]
-    fn trsm_solves_on_the_left() {
-        check_trsm(LEFT, OP_N);
+    fn gemm_rows_updates_the_rows_above() {
+        check_gemm_rows(OP_T, 4, 1);
+    }
+
+    /// Needs a GPU. Rows 1 to 3 read and rows 2 to 5 written share row 2,
+    /// and the contract refuses them before anything is enqueued.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    #[should_panic(expected = "the rows read and the rows written are apart")]
+    fn gemm_rows_refuses_blocks_that_overlap() {
+        let owner = Arc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner);
+        let a = DeviceBytes::new(6 * size_of::<f64>());
+        let mut b = DeviceBytes::new(32 * size_of::<f64>());
+        let _ = gemm_rows::<f64>(&blas, OP_N, 3, 4, 2, 1.0, &a, 3, &mut b, 8, 1, 1.0, 2);
+    }
+
+    /// Needs a GPU. The later block ends at row 6, past a leading dimension
+    /// of 5, and panics before anything is enqueued.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    #[should_panic(expected = "gemm_rows: B's leading dimension 5 is less than max(1, 6 rows)")]
+    fn gemm_rows_refuses_a_block_past_the_leading_dimension() {
+        let owner = Arc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner);
+        let a = DeviceBytes::new(6 * size_of::<f64>());
+        let mut b = DeviceBytes::new(32 * size_of::<f64>());
+        let _ = gemm_rows::<f64>(&blas, OP_N, 3, 4, 2, 1.0, &a, 3, &mut b, 5, 0, 1.0, 3);
+    }
+
+    /// Needs a GPU. A vector of 4 entries at stride 2 needs 7 elements, so
+    /// a slice of 6 panics before anything is enqueued.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    #[should_panic(
+        expected = "trsv: x is 4 entries at stride 2, 7 elements, but its slice holds 6"
+    )]
+    fn trsv_refuses_a_short_slice() {
+        let owner = Arc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner);
+        let a = DeviceBytes::new(16 * size_of::<f64>());
+        let mut x = DeviceBytes::new(6 * size_of::<f64>());
+        let _ = trsv::<f64>(&blas, UPPER, OP_N, NON_UNIT, 4, &a, 4, &mut x, 2);
     }
 
     /// One syrk on a card, `C = -op(A) op(A)ᵀ + 2 C` on the lower triangle,
@@ -1914,23 +2122,6 @@ mod tests {
     #[ignore = "tier 4: needs a GPU"]
     fn syrk_reads_a_transposed_a() {
         check_syrk(OP_T);
-    }
-
-    /// Needs a GPU. On the right A is n × n, so an A holding m × m (fewer)
-    /// is short, and panics before anything is enqueued.
-    #[test]
-    #[ignore = "tier 4: needs a GPU"]
-    #[should_panic(
-        expected = "trsm: A is 4 x 4 at leading dimension 4, 16 elements, but its slice holds 9"
-    )]
-    fn trsm_refuses_a_short_slice() {
-        let owner = Arc::new(Stream::new(0));
-        let blas = BlasHandle::new(owner);
-        let a = DeviceBytes::new(9 * size_of::<f64>());
-        let mut b = DeviceBytes::new(12 * size_of::<f64>());
-        let _ = trsm::<f64>(
-            &blas, RIGHT, UPPER, OP_N, NON_UNIT, 3, 4, 1.0, &a, 4, &mut b, 3,
-        );
     }
 
     /// Needs a GPU. A C one element short of n × n panics before anything

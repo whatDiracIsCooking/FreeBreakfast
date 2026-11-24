@@ -16,6 +16,12 @@
 //! | `symmetrize(stream, n, a, lda)` and `mirror_triangle(stream, from_lower, n, a, lda)` (`src/recipes/symmetrize`), `lda` an `int64_t` | [`fb_symmetrize`] and [`fb_mirror_triangle`], `lda` the module's `int32_t`, the module's argument checks moved in as refusals |
 //! | `cholesky_diagonal_block(stream, jb, first, a, lda, info)` (`src/recipes/cholesky`), `lda` an `int64_t`, `kCholeskyBlock` | [`fb_cholesky_diagonal`]`(stream, jb, first, a, lda, l11, info)`, `lda` the module's `int32_t`, the factored tile also written packed into `l11` for the panel's trsm, null pointers refused too; [`FB_CHOLESKY_TILE`] |
 //! | `diis_solve(stream, m, ld, newest, gram, coeff, singular_out)` (`src/recipes/diis`), `kDiisSolveMaxDim` | [`fb_diis_solve`], the C++ doc comment's bounds and null pointers refused; [`FB_DIIS_SOLVE_MAX_DIM`] |
+//! | `trsm_diagonal_block(stream, jb, ncols, s, a, lda, a_trans, upper, unit, b, ldb, b_trans)` (`src/recipes/trsm`), overloaded on `float` and `double`, `lda` and `ldb` `int64_t`s, `kTrsmBlock` | [`fb_trsm_diagonal_f32`] and [`fb_trsm_diagonal_f64`], one entry per element type, `lda` and `ldb` the module's `int32_t`, a leading dimension under its column and null pointers refused too; [`FB_TRSM_TILE`] |
+//! | `trsm<T>(res, side, fill, op, diag, m, n, alpha, a, lda, b, ldb)` (`src/recipes/trsm`'s `.cppm` and `.cpp`), `T` `float` or `double` | [`trsm`]`(blas, side, fill, op, diag, m, n, alpha, a, lda, b, ldb)`, `T` a [`TrsmScalar`], `f32` or `f64` |
+//! | its `DeviceResources &res`: `res.blas()`, `res.stream()`, and a `ScopedDeviceIndex` for the call | the [`BlasHandle`](fb_core_wwr::blas::BlasHandle) and the stream it is bound to, so the kernel and the BLAS calls cannot land on two streams; the caller has its device current, as for every BLAS call |
+//! | its `InvalidConfig` for a `side`, `fill`, `op` or `diag` that is none of its values | nothing: the four are Rust enums |
+//! | its `InvalidConfig` for a negative `m` or `n`, an `lda` below `max(1, k)` or an `ldb` below `max(1, m)`; `a` and `b` trusted | always-on contracts, on the slices' extents too; the borrow checker keeps B apart from A |
+//! | its `wwr::gemm<T, int32_t>` with B and C rows of one matrix; `wwr::scal`, `wwr::trsv` | `fb_core_wwr::blas`'s `gemm_rows` on the left and `gemm` between the two sides of a cut on the right; its `scal` and `trsv` |
 //! | `wwrError_t` | [`fb_launch_status`]: 0, a positive `wwr_status`, or a negative refusal ([`FB_LAUNCH_INVALID_ARGUMENT`]) |
 //! | nothing: the C++ tree compiles its kernels into the binary | [`check_library`], the library's [`fb_recipes_abi_version`] and [`fb_recipes_backend`] against the bindings' |
 //! | `gather_columns` and every other recipe | not forked yet |
@@ -31,17 +37,31 @@
 //! beside the generated bindings, not in a crate of their own: this crate
 //! is already where the library's `unsafe` is allowed, and it is never
 //! published.
+//!
+//! **The triangular solve.** [`trsm`] is BLAS's trsm, the tree's own and
+//! never the library's: blocked, each diagonal block by
+//! [`fb_trsm_diagonal_f64`] or [`fb_trsm_diagonal_f32`] and the update
+//! between blocks a gemm, a plain call that enqueues on its BLAS handle's
+//! stream and takes no workspace. It is the one call here that is more
+//! than a launch, the port of `src/recipes/trsm`'s module above the
+//! bridge, and it lives here rather than in a crate of its own because
+//! one more crate over `fb-core-wwr` passes the reverse-dependents bar
+//! (`docs/testing.md`, "Selection: the workspace graph is the selection
+//! graph"); its module (`trsm.rs`) holds no `unsafe`.
 
 #![allow(non_camel_case_types, reason = "the C header's names, kept as written")]
 
 #[rustfmt::skip]
 mod bindings;
+mod trsm;
 
 pub use bindings::*;
+pub use trsm::trsm;
 
 use contracts::{debug_requires, requires};
 use fb_core_error_handling::Status;
-use fb_core_log::{eq, le};
+use fb_core_log::{eq, fits_i32, le};
+use fb_core_wwr::blas::BlasScalar;
 use fb_core_wwr::common::wwr_status_from_code;
 use fb_core_wwr::device_slice::{DeviceSlice, DeviceSliceMut};
 use fb_core_wwr::gpu_status_at;
@@ -482,4 +502,186 @@ pub fn diis_solve(
         )
     };
     launched("fb_diis_solve", status)
+}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// An element type [`trsm`] solves in: `f32` and `f64`, the C++ `real_fp`.
+/// Its method is the diagonal block's launch wrapper of the type's suffix.
+/// Sealed, since the safe call over it trusts the method to be that wrapper.
+pub trait TrsmScalar:
+    BlasScalar + PartialEq + std::ops::Neg<Output = Self> + sealed::Sealed
+{
+    /// The launch wrapper's name, for its status.
+    #[doc(hidden)]
+    const TRSM_DIAGONAL: &str;
+
+    /// [`fb_trsm_diagonal_f64`] or [`fb_trsm_diagonal_f32`].
+    ///
+    /// # Safety
+    /// The wrapper's: `stream` is live; `a` and `b` are device memory on its
+    /// device covering the block and the right-hand sides at `lda` and
+    /// `ldb`, apart from each other, alive until the enqueued work has
+    /// finished, `b` with no other user.
+    #[allow(clippy::too_many_arguments, reason = "the launch wrapper's signature")]
+    unsafe fn trsm_diagonal_raw(
+        stream: wwr_stream,
+        jb: i32,
+        ncols: i32,
+        s: Self,
+        a: *const Self,
+        lda: i32,
+        a_trans: bool,
+        upper: bool,
+        unit: bool,
+        b: *mut Self,
+        ldb: i32,
+        b_trans: bool,
+    ) -> fb_launch_status;
+}
+
+macro_rules! trsm_scalar {
+    ($($t:ty => $launch:ident);* $(;)?) => {$(
+        impl sealed::Sealed for $t {}
+
+        impl TrsmScalar for $t {
+            const TRSM_DIAGONAL: &str = stringify!($launch);
+
+            unsafe fn trsm_diagonal_raw(
+                stream: wwr_stream,
+                jb: i32,
+                ncols: i32,
+                s: Self,
+                a: *const Self,
+                lda: i32,
+                a_trans: bool,
+                upper: bool,
+                unit: bool,
+                b: *mut Self,
+                ldb: i32,
+                b_trans: bool,
+            ) -> fb_launch_status {
+                // SAFETY: the caller's, which are the wrapper's.
+                unsafe {
+                    $launch(stream, jb, ncols, s, a, lda, a_trans, upper, unit, b, ldb, b_trans)
+                }
+            }
+        }
+    )*};
+}
+
+trsm_scalar! {
+    f32 => fb_trsm_diagonal_f32;
+    f64 => fb_trsm_diagonal_f64;
+}
+
+/// Solves `M X = s B` in place for one `jb × jb` triangular diagonal block
+/// M and `ncols` right-hand sides, on `stream`: [`fb_trsm_diagonal_f64`] or
+/// [`fb_trsm_diagonal_f32`], over slices it checks. One block of a blocked
+/// triangular solve ([`trsm`]).
+///
+/// `M(p, q)` is `a[q + p lda]` when `a_trans`, else `a[p + q lda]`; it is
+/// upper triangular when `upper`, else lower, and only that triangle is
+/// read. With `unit` its diagonal is taken as 1 and not read. `B(r, c)` is
+/// `b[c + r ldb]` when `b_trans`, else `b[r + c ldb]`, and X overwrites it;
+/// nothing else of `b` is read or written. With `s` zero, X is zero and
+/// neither M nor B is read (BLAS's `alpha = 0`). A singular M is not
+/// detected: X comes back Inf or NaN. The borrow checker keeps `b` apart
+/// from `a`; a block of a larger matrix is a part of it
+/// ([`split_at`](fb_core_wwr::device_slice::split_at),
+/// [`split_at_mut`](fb_core_wwr::device_slice::split_at_mut)).
+///
+/// # Errors
+/// The launch's failure, as [`fb_kernel_abi::launch_status`] maps it. A
+/// fault inside the kernel surfaces at the next synchronization.
+///
+/// # Panics
+/// If `a` is shorter than the block, `lda (jb - 1) + jb` elements, or `b`
+/// shorter than the right-hand sides, `ldb (ncols - 1) + jb` elements, or
+/// `ldb (jb - 1) + ncols` when `b_trans`; before anything is enqueued.
+#[allow(clippy::too_many_arguments, reason = "the launch wrapper's signature")]
+#[requires(
+    fits_i32!(ncols) && fits_i32!(lda) && fits_i32!(ldb),
+    "ncols, lda and ldb fit the launch's i32"
+)]
+// RELEASE: the body clamps jb to one past FB_TRSM_TILE, and the launcher
+// refuses a jb outside 1 to FB_TRSM_TILE as FB_LAUNCH_INVALID_ARGUMENT
+// before anything is touched.
+#[debug_requires(
+    (1..=FB_TRSM_TILE as usize).contains(&jb),
+    "the block's order is 1 to FB_TRSM_TILE"
+)]
+// RELEASE: the launcher refuses an ncols of 0 as FB_LAUNCH_INVALID_ARGUMENT.
+#[debug_requires(ncols >= 1, "at least one right-hand side")]
+// RELEASE: the launcher refuses an lda below jb as FB_LAUNCH_INVALID_ARGUMENT.
+#[debug_requires(lda >= jb, "A's leading dimension covers a column")]
+// RELEASE: the launcher refuses an ldb below jb, or below ncols when
+// b_trans, as FB_LAUNCH_INVALID_ARGUMENT.
+#[debug_requires(
+    ldb >= if b_trans { ncols } else { jb },
+    "B's leading dimension covers a column"
+)]
+#[track_caller]
+pub(crate) fn trsm_diagonal<T: TrsmScalar>(
+    stream: &Stream,
+    jb: usize,
+    ncols: usize,
+    s: T,
+    a: &impl DeviceSlice<T>,
+    lda: usize,
+    a_trans: bool,
+    upper: bool,
+    unit: bool,
+    b: &mut impl DeviceSliceMut<T>,
+    ldb: usize,
+    b_trans: bool,
+) -> Status {
+    // A jb past the block is refused by the launcher before anything is
+    // touched; clamped here only so the extents below cannot overflow.
+    let jb = jb.min(FB_TRSM_TILE as usize + 1);
+    // The last element of M is (jb - 1, jb - 1), at lda (jb - 1) + jb - 1,
+    // and of B (jb - 1, ncols - 1), at ldb (ncols - 1) + jb - 1, or at
+    // ldb (jb - 1) + ncols - 1 transposed; with a leading dimension below
+    // its column the launcher refuses first.
+    let (need_a, need_b) = match (jb, ncols) {
+        (0, _) | (_, 0) => (0, 0),
+        _ if b_trans => (lda * (jb - 1) + jb, ldb * (jb - 1) + ncols),
+        _ => (lda * (jb - 1) + jb, ldb * (ncols - 1) + jb),
+    };
+    assert!(
+        a.len() >= need_a,
+        "trsm_diagonal: the {jb} × {jb} block at lda {lda} needs {need_a} elements, but a holds {}",
+        a.len()
+    );
+    assert!(
+        b.len() >= need_b,
+        "trsm_diagonal: {ncols} right-hand sides of {jb} rows at ldb {ldb} need {need_b} \
+         elements, but b holds {}",
+        b.len()
+    );
+    let b = b.as_mut_ptr();
+    // SAFETY: the stream is live; a holds the block at lda and b the
+    // right-hand sides at ldb, checked above; each stays so until the
+    // enqueued work finishes, b with no other user (DeviceSlice's and
+    // DeviceSliceMut's promises), so the two are apart. jb is at most one
+    // past the block, and ncols, lda and ldb fit an i32 by the contract.
+    let status = unsafe {
+        T::trsm_diagonal_raw(
+            stream.stream(),
+            jb as i32,
+            ncols as i32,
+            s,
+            a.as_ptr(),
+            lda as i32,
+            a_trans,
+            upper,
+            unit,
+            b,
+            ldb as i32,
+            b_trans,
+        )
+    };
+    launched(T::TRSM_DIAGONAL, status)
 }
