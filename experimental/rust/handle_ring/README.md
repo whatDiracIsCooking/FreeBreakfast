@@ -118,6 +118,14 @@ during a call was 0.
 
 ## What it means for the ring
 
+**Outcome, 2026-11-24:** neither the ring nor a handle per step. The decision
+is one handle set per card under one lock, held for a step's whole run, with a
+fixed 128 MiB BLAS workspace (`docs/rust-redesign.html`, "One handle set per
+card, under one lock"). The overlap the ring would buy, between library-using
+steps the DAG leaves unordered on one card, is worth little when heavy steps
+fill the card on their own. The points below still apply to that design: the
+cost per set, the binding order, and HIP's growth past a small workspace.
+
 1. **The ring wins over a handle per step**, by the pipeline's length over
    its width, at about 20 MiB per handle set on CUDA and 52 on HIP. For
    example, ten library-using steps on one card with a ring of two: on HIP,
