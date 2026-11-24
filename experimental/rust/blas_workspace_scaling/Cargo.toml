@@ -1,0 +1,16 @@
+[package]
+name = "fb-blas-workspace-scaling"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Probe: the device memory a dtrsm needs from its BLAS handle, against its shape"
+
+[[bin]]
+name = "blas-workspace-scaling"
+path = "src/main.rs"
+
+[dependencies]
+wwr-sys = { path = "../../../deps/WarpWraps/src/capi/wwr-sys", default-features = false, features = [
+    "runtime_api",
+    "blas",
+] }
