@@ -1718,8 +1718,8 @@ stream and joins back; B reads A's <code>Output</code>; C is independent of both
 
 <h3 id="ring">A ring of library handles, and no library stream</h3>
 
-<p><span class="tag prop">proposed</span> 2026-11-24, in discussion; nothing below is
-run. It would replace the device's one library stream, its mutex, the fork and join
+<p><span class="tag prop">proposed</span> 2026-11-24, in discussion; only its two
+measurements are run (at the end of this section). It would replace the device's one library stream, its mutex, the fork and join
 events and the fixed handle workspace, all of which the text above still describes as
 decided. It answers the <a href="#open">open question</a> on the step-end sync and the
 library stream.</p>
@@ -1824,15 +1824,27 @@ side only" and "one handle set per device, on one stream"; the handle's workspac
 closure and the step-end sync); the final budget node's duties; and item 2 of the
 <a href="#retire">order of work</a>.</p>
 
-<p><strong>To measure first</strong>, by two cases added to
-<code>experimental/library_handle_workspace</code>, on both cards:</p>
+<p><strong>What the two measurements showed</strong> <span class="tag run">run</span>
+2026-11-24, RTX 3080 and RX 9060 XT, through <code>wwr-sys</code>
+(<code>experimental/rust/handle_ring</code>, whose README has every reading):</p>
 <ol>
-<li>What a second, third and fourth handle cost in one process, BLAS and solver. This
-  picks between the ring and a handle per step.</li>
-<li>One idle handle moved between two streams, a workspace per stream: that the call uses
-  the workspace it was given after <code>SetStream</code> then
-  <code>SetWorkspace</code>, on hipBLAS as on cuBLAS; that nothing is taken or grown by
-  the move; and what the two calls cost in time.</li>
+<li><strong>A further handle is not nearly free.</strong> Each BLAS handle after the
+  first takes 8&nbsp;MiB on cuBLAS and 58 on hipBLAS, each solver handle 12 on cuSOLVER
+  and 58 on hipSOLVER; on HIP each gives back rocBLAS's 32&nbsp;MiB pool once it has a
+  caller's workspace. So a handle set costs about 20&nbsp;MiB on CUDA and 52 on HIP, and
+  the first-call growth (10 on HIP, 0 to 14 on cuSOLVER) is once per process. A handle per
+  step costs the pipeline's length times that, the ring its width: <strong>the ring is
+  the better form</strong>.</li>
+<li><strong>The move is safe in one order only.</strong> On cuBLAS a call made after
+  <code>SetStream</code> then <code>SetWorkspace</code> used the workspace it was given;
+  with the two reversed, <code>SetStream</code> silently put the handle back on cuBLAS's
+  own workspace, outside the budget, with no error (read from the result of a split-K
+  <code>gemm</code> whose algorithm follows the workspace length). rocBLAS's
+  <code>gemm</code> uses no workspace, so HIP could not show the order. Nothing is taken
+  by a move on either backend, and an idle switch costs 0.02&nbsp;&micro;s on CUDA and
+  0.15 on HIP; the first <code>SetWorkspace</code> of a hipBLAS handle costs about
+  150&nbsp;&micro;s, the pool's free, once per handle at budget time. The two calls belong
+  in one wrapper function that nothing else reorders.</li>
 </ol>
 
 <h3>Resources</h3>
@@ -2344,7 +2356,8 @@ Rust tree's task layer and not an edit to it.</p>
   <code>DeviceResources</code> guard records the join into the step's stream when it is
   dropped. Raised in review, 2026-11-23. Discussed 2026-11-24: the proposal is to drop
   the library stream, with <a href="#ring">a ring of library handles</a> assigned by the
-  closure, or a handle per step; two measurements pick between them.
+  closure, or a handle per step. The two measurements favour the ring, with
+  <code>SetStream</code> before <code>SetWorkspace</code> (<a href="#ring">the ring</a>).
   <span class="tag prop">proposed</span></li>
 <li><strong>Packing <code>Output</code>s too</strong>, by the same closure, held until
   the measurement says <code>Output</code>s are what stacks.
@@ -2357,10 +2370,6 @@ Rust tree's task layer and not an edit to it.</p>
 
 <h3>To measure, verify or pick a value for</h3>
 <ul>
-<li><strong>The handle ring's two measurements</strong>: what each handle after the
-  first costs in one process, and one idle handle moved between two streams with a
-  workspace per stream, on both backends (<a href="#ring">the ring</a>). The cases are
-  written on the <code>handle-ring</code> branch and not yet run.</li>
 <li><strong>The blocking sync.</strong> Which scheduling flag makes a worker waiting on
   its step's stream sleep, on each backend. If what it costs on the SCF iteration argues
   for a cheaper replacement, the replacement has to keep pinned scratch safe as well as

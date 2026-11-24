@@ -1,0 +1,17 @@
+[package]
+name = "fb-handle-ring"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Probe: what each further BLAS/solver handle costs, and one handle moved between two streams"
+
+[[bin]]
+name = "handle-ring"
+path = "src/main.rs"
+
+[dependencies]
+wwr-sys = { path = "../../../deps/WarpWraps/src/capi/wwr-sys", default-features = false, features = [
+    "runtime_api",
+    "blas",
+    "solver",
+] }
