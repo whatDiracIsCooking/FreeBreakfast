@@ -58,7 +58,7 @@
 
 <h1>Orbital-optimized NEVPT2</h1>
 <p class="lede">Design note for <code>experimental/oo_nevpt2/</code>. Status:
-an idea and one probe, nothing under <code>src/</code>. The probe says five
+an idea and one probe, nothing under <code>src/</code>. The probe says six
 things: the bare functional collapses (<a href="#results">Results</a>);
 natural orbitals of the PT2-corrected density move the energy by only tenths
 of a millihartree (<a href="#natural">Natural orbitals</a>); orbitals that
@@ -66,10 +66,14 @@ minimize the weight of the first-order wave function, a bounded and
 parameter-free replacement, move the energy away from FCI
 (<a href="#overlap">Maximum overlap</a>); the exact state's own natural
 orbitals recover only 2 to 5% of NEVPT2's error on water
-(<a href="#fci">Against FCI</a>); and the energy minimized with that weight
+(<a href="#fci">Against FCI</a>); the energy minimized with that weight
 capped at its CASSCF value converges and moves 0.2 mEh towards FCI, but the
 cap's value decides the answer
-(<a href="#cap">Capping the weight</a>).</p>
+(<a href="#cap">Capping the weight</a>); and on the case the idea was for,
+LiF's state-averaged ionic and covalent pair, the natural orbitals of the
+correlated density move both QD-NEVPT2 states by 4 to 5 mEh and their
+crossing by 0.05 Å
+(<a href="#average">The state average</a>).</p>
 
 <h2 id="idea">The idea, and the loop that does not work</h2>
 <p>CASSCF chooses its orbitals to minimize the CASSCF energy, which contains
@@ -605,6 +609,119 @@ in mEh; Δ is against the CASSCF orbitals; λ in hartree per unit of W.</p>
   orbital and CI gradient, an adjoint the tree does not have.</li>
 </ul>
 
+<h2 id="average">The state average: LiF across the crossing</h2>
+<p>Everything above is one state. The case the idea was for is a state
+average, whose orbitals are a compromise: LiF's ionic and covalent ¹Σ⁺
+states want a different F 2pσ, F⁻'s diffuse and F's compact. The probe's
+<code>sa</code> mode puts the natural-orbital pass of
+<a href="#natural">Natural orbitals</a> there, the cheapest test there is,
+and asks one thing: does the crossing of the two PC-QD-NEVPT2 states
+move?</p>
+<ul>
+  <li><b>D = D_SA + ∂E[W]/∂h</b>, E[W] = Σ_I w_I H_II the weighted trace of
+  the effective Hamiltonian's correlation part:
+  <code>qd_pc_adjoint</code>'s <code>h_bar</code> at W = diag(w) plus the
+  canonical condition's <code>zc</code>. At equal weights the trace does not
+  depend on how the model space is rotated, so D is the average of the QD
+  states' unrelaxed correlated densities.</li>
+  <li><b>Its natural orbitals</b>, the spaces picked by overlap as before;
+  a CASCI of both roots in them, the core and virtuals canonical over the
+  state-averaged Fock, and <code>qd_pc_energy</code>'s H_eff, symmetrized
+  as the pipeline's is. Repeat.</li>
+  <li><b>The crossing</b> is read where H_eff's two diagonal elements are
+  equal, by linear interpolation on a 0.25 Å grid from 5.5 to 7.0 Å. The
+  CASCI roots are 22 to 63 mEh apart there over the passes, so they are the covalent
+  (root 0) and ionic (root 1) states to a good approximation, and the gap
+  at the crossing is 2|H₀₁|.</li>
+</ul>
+<p><code>lif_sa.toml</code>: SA-CASSCF(2,2) of two singlets at equal
+weights over F 2pσ and Li 2s, aug-cc-pVDZ, all-electron. On a 0.5 Å grid
+the CASSCF states come closest at 4.5 Å (27 mEh); PC-QD-NEVPT2 at the
+CASSCF orbitals puts the crossing at 6.34 Å.</p>
+
+<h3>Result</h3>
+<div class="box"><p><span class="tag open">answer</span> <b>The crossing
+does not move.</b> One pass shifts it by 0.46 Å, the next shifts it back
+past where it started, and the passes settle at 6.28 Å: 0.05 Å from the
+CASSCF orbitals' 6.34 Å. Both states rise by 4 to 5 mEh on the way, ten
+times what a single state moved, but they rise together: the difference
+between them at the fixed point is about 0.6 mEh.</p></div>
+<p>RTX 3080, experimental preset, 2026-11-24. ΔH in mEh against the CASSCF
+orbitals, at 6.25 Å; the mixing is the largest element of the density
+correction between spaces going into the pass, at 6.25 Å.</p>
+<div class="tablewrap"><table>
+<tr><th class="num">Pass</th><th class="num">Crossing, Å</th>
+    <th class="num">Gap there, mEh</th>
+    <th class="num">ΔH₀₀ (covalent)</th><th class="num">ΔH₁₁ (ionic)</th>
+    <th class="num">ΔE_CAS, covalent</th><th class="num">ΔE_CAS, ionic</th>
+    <th class="num">Mixing</th></tr>
+<tr><td class="num">0</td><td class="num">6.337</td><td class="num">3.19</td>
+    <td class="num"></td><td class="num"></td><td class="num"></td>
+    <td class="num"></td><td class="num"></td></tr>
+<tr><td class="num">1</td><td class="num">5.878</td><td class="num">5.21</td>
+    <td class="num">−0.56</td><td class="num">+5.23</td>
+    <td class="num">+12.24</td><td class="num">−8.61</td>
+    <td class="num">5.3e-2</td></tr>
+<tr><td class="num">2</td><td class="num">6.458</td><td class="num">2.85</td>
+    <td class="num">+4.29</td><td class="num">+2.81</td>
+    <td class="num">+6.56</td><td class="num">−2.70</td>
+    <td class="num">1.2e-2</td></tr>
+<tr><td class="num">3</td><td class="num">6.122</td><td class="num">4.07</td>
+    <td class="num">+2.94</td><td class="num">+5.65</td>
+    <td class="num">+11.90</td><td class="num">−6.30</td>
+    <td class="num">9.1e-3</td></tr>
+<tr><td class="num">4</td><td class="num">6.388</td><td class="num">3.08</td>
+    <td class="num">+4.79</td><td class="num">+4.16</td>
+    <td class="num">+8.56</td><td class="num">−3.37</td>
+    <td class="num">4.5e-3</td></tr>
+<tr><td class="num">8</td><td class="num">6.314</td><td class="num">3.32</td>
+    <td class="num">+4.55</td><td class="num">+4.83</td>
+    <td class="num">+9.80</td><td class="num">−4.12</td>
+    <td class="num">1.0e-3</td></tr>
+<tr><td class="num">11</td><td class="num">6.272</td><td class="num">3.45</td>
+    <td class="num">+4.32</td><td class="num">+5.11</td>
+    <td class="num">+10.37</td><td class="num">−4.57</td>
+    <td class="num">3.9e-4</td></tr>
+<tr><td class="num">12</td><td class="num">6.292</td><td class="num">3.39</td>
+    <td class="num">+4.43</td><td class="num">+4.98</td>
+    <td class="num">+10.10</td><td class="num">−4.36</td>
+    <td class="num">2.8e-4</td></tr>
+</table></div>
+<ul>
+  <li><b>The orbitals do move here.</b> The first correction mixes the
+  spaces by 5.3e-2, twice the single-state LiF's 2.6e-2, and the CASCI
+  energies shift by +12 and −9 mEh: the correlated density wants an F 2pσ
+  that suits F⁻ better, and the ionic reference gains what the covalent
+  one loses. That is the compromise the idea was aimed at, and it is
+  real.</li>
+  <li><b>PC-QD-NEVPT2 takes it back.</b> Of the 21 mEh the first pass moves
+  the two references apart, the perturbation theory returns 27: the ionic
+  state ends 5.8 mEh <em>higher</em> against the covalent one, not lower.
+  The references' orbital error is first order in the energy, and the
+  singles-like perturbers were already correcting it.</li>
+  <li><b>One pass is misleading.</b> It moves the crossing inward by
+  0.46 Å. The passes then alternate with a shrinking swing (5.88, 6.46,
+  6.12, 6.39, …, 6.27, 6.29 Å) while the mixing falls to 2.8e-4, so this
+  iteration, unlike single-state LiF's, has a fixed point: the orbitals
+  whose averaged correlated density has no element between the spaces, a
+  Brueckner-like condition on the state average.</li>
+  <li><b>At the fixed point the two states have moved together.</b> H₀₀ is
+  up by about 4.4 mEh and H₁₁ by about 5.0. The 0.6 mEh between them, over
+  a slope of 12.4 mEh/Å in H₁₁ − H₀₀, is the 0.05 Å. The gap at the
+  crossing goes from 3.2 to 3.4 mEh.</li>
+  <li><b>No judge.</b> Nothing here says whether 6.28 Å is better than
+  6.34 Å, or whether the 4 to 5 mEh rise is an improvement: neither set of
+  energies is variational, and LiF in aug-cc-pVDZ is far past the tree's
+  FCI. The measurement is that the answer barely depends on the choice,
+  not which choice is right.</li>
+  <li><b>Limits.</b> One molecule, one basis, the smallest active space
+  that holds both states, equal weights, PC only. The density is
+  unrelaxed, as in the single-state passes. At 3.0 Å RHF orbital 5 is a
+  2pπ, the two roots do not couple (H₀₁ = 0) and the config's
+  <code>active</code> would need to name orbital 3; the scan starts above
+  that.</li>
+</ul>
+
 <h2 id="next">Where this leaves the idea</h2>
 <ul>
   <li><b>Not worth a module on this evidence.</b> By the note's own bar
@@ -620,15 +737,21 @@ in mEh; Δ is against the CASSCF orbitals; λ in hartree per unit of W.</p>
   gains 2 to 3% of the error, and any larger gain is bought by choosing f.
   What remains untried is a functional with the Brillouin-violating part of
   V projected out, the analogue of OO-MP2's missing singles.</li>
-  <li><b>What was not tested</b> is the case the idea was for: a reference
-  whose orbitals CASSCF gets qualitatively wrong. Single-state ground-state
-  LiF is not one; the ionic/covalent pair in a state average is, and so are
-  ethylene's V state and 3d metals. Those need the multi-state functional,
-  which this probe does not have.</li>
-  <li><b>If it is reopened</b>, the order is: the natural-orbital pass on a
-  state-averaged LiF pair across the crossing (through
-  <code>qd_pc_adjoint</code>'s <code>h_bar</code>); only if that moves the
-  crossing, a Brillouin–Wigner or regularized functional on this probe.</li>
+  <li><b>The case the idea was for says the same.</b> A state average's
+  orbitals are a compromise, and on LiF's ionic/covalent pair the
+  correlated density does ask for different ones
+  (<a href="#average">The state average</a>). QD-NEVPT2 was already
+  correcting for it: at the natural-orbital fixed point the crossing has
+  moved 0.05 Å and the two states 0.6 mEh against each other. The bar was
+  a shifted crossing, and this is not one.</li>
+  <li><b>What is still not tested:</b> a judge for the state average (an
+  FCI-sized pair), a relaxed density, ethylene's V state and 3d metals,
+  and a single-set optimum as opposed to a natural-orbital fixed point.
+  None of the numbers above suggests they would differ by the order of
+  magnitude it would take.</li>
+  <li><b>If it is reopened</b>, it is for the singles-projected functional
+  on a case with a judge, not for these orbitals: the state average was
+  the reason to continue, and it gave none.</li>
 </ul>
 
 </main>
