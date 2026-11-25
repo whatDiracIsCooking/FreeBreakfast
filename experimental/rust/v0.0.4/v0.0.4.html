@@ -332,7 +332,7 @@ Cargo workspace of its own, in no gate, never merged into <code>rust/</code>.</p
 </tr>
 <tr>
 <td><strong>pair column</strong></td>
-<td>One orbital shell-pair function index μν of B. A <strong>Cartesian column</strong> is the same before the spherical transform; neither is used bare</td>
+<td>One orbital shell-pair function index μν of B, in spherical functions. Not used bare</td>
 </tr>
 <tr>
 <td><strong>pair batch</strong></td>
@@ -645,6 +645,12 @@ as the rest of the buffer holds. A pass uploads each uncached batch into
 the one buffer and syncs before the next; a ring of two there is <em>Open</em>
 until the per-batch sync is measured.</li>
 </ol>
+<p><strong>(μν|P) is spherical from the kernel.</strong> FelizJueves's <code>ssperi3&lt;la, lb, lP&gt;</code>
+(#745) writes all three indices as real solid harmonics, each pair's block at
+its spherical pair column, the layout the fit reads. No bra transform runs,
+and the ring holds no Cartesian batch, no transform scratch and no orbital U.
+It is plain FP64: the mixed-precision and screened forms of the same kernels
+are not used. No array in the DF-RHF chain has a Cartesian index.</p>
 <p><strong>B is built over pairs and contracted over aux functions.</strong> A pair column of
 B depends on every P, so a batch of P cannot be fitted alone; a batch of pairs
 can. Each GPU takes its own pair batches, forms (μν|P) in its ring, fits it
@@ -944,7 +950,7 @@ work. Nothing in an entry is a pointer, so every array is sized by counting.</p>
 <tr>
 <td><code>gather_at</code>, <code>gather_weight</code></td>
 <td>work list</td>
-<td>Cartesian column: its μ and ν, and 1 or 2</td>
+<td>pair column: its μ and ν, and 1 or 2</td>
 <td>2 × <code>n_col</code> i32, <code>n_col</code> f64</td>
 <td>4.3 MB</td>
 </tr>
@@ -1812,9 +1818,11 @@ commits to.</p>
 <li><strong>The top three levels are setup.</strong> The reads, the electron count, the
 nuclear repulsion and the two basis sets are small host work, unbudgeted,
 and they fill <code>Dims</code>. Budget mode starts below them.</li>
-<li><strong>The one-electron matrices and the metric are host steps.</strong> S, T, V and
-(P|Q) are built directly in the solid harmonics on rayon's threads, so no
-spherical transform is a node, and uploaded: S and H to gpu0, the metric to
+<li><strong>The one-electron matrices and the metric are host steps.</strong> S, T and
+(P|Q) are built directly in the solid harmonics on rayon's threads; V turns
+each contracted shell pair's Cartesian block spherical through the
+harmonics' nonzeros, so no Cartesian matrix exists and no spherical
+transform is a node. They are uploaded: S and H to gpu0, the metric to
 every GPU. They take no lock and overlap the GPU work.</li>
 <li><strong>Three steps hold gpu0's lock</strong>: the orthogonalizer (an eigensolve), <code>eri</code>
 (the factor and the fits, on every GPU) and the SCF. The orthogonalizer and
@@ -1922,6 +1930,10 @@ the C ABI.</p>
 <tr>
 <td><code>fb-integrals-sys</code>'s launch functions, <code>fb-recipes-sys</code>'s <code>trsm</code></td>
 <td>Written again over the same extern declarations, taking slices</td>
+</tr>
+<tr>
+<td>The three-centre kernels: <code>rust/</code>'s are <code>speri3</code>, with a Cartesian bra</td>
+<td>Not used: <code>eri</code> links <code>ssperi3</code>'s library as <code>df_batched/single_gpu_spherical/kernels</code> builds it, and binds it over that C ABI</td>
 </tr>
 <tr>
 <td>The planner, the arena, the thread pool, every <code>add_*</code> builder, <code>rust/pipeline</code></td>
