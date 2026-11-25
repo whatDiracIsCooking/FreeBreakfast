@@ -658,7 +658,7 @@ const GLY = {
   scr:   {d: 1404936, parts: "342² bounds and the 58,653-pair list"},
   S:     {d: SQ, p: SQ, parts: "S on gpu0; its pinned staging, scratch"},
   mnP:   {d: 2147483648, p: 268435456,
-          parts: "the ERI buffer on every GPU, mem_per_gpu = 2 GiB: the build’s ring of two pair batches with their records and work lists, then the J/K ring, the fragments and the cache; pinned, the ring’s staging"},
+          parts: "the ERI buffer on every GPU, mem_per_gpu = 2 GiB: the build’s ring of two pair batches with their records and work lists, then the fragments, the J/K batch buffer and the cache; pinned, the ring’s staging"},
   PQ:    {d: AUX2, p: AUX2, parts: "the metric on every GPU; its pinned staging, scratch"},
   X:     {d: SQ, parts: "X 4.3 MB; its eigensolve’s work is the scratch row"},
   H:     {d: SQ, p: SQ, parts: "H on gpu0; its pinned staging, scratch"},
