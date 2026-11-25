@@ -91,16 +91,16 @@ svg .fh{fill:currentColor}
 </head>
 <body>
 <div class="wrap">
-<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#vocabulary">Vocabulary</a></li><li class="l2"><a href="#the-shape">The shape</a></li><li class="l2"><a href="#steps-and-the-mainbus">Steps and the MainBus</a></li><li class="l2"><a href="#the-erimanager">The EriManager</a></li><li class="l2"><a href="#the-memory-budget">The memory budget</a></li><li class="l3"><a href="#what-is-budgeted-by-kind">What is budgeted, by kind</a></li><li class="l3"><a href="#host-heap">Host heap</a></li><li class="l3"><a href="#caps-and-margins">Caps and margins</a></li><li class="l3"><a href="#what-the-budget-leaves-out">What the budget leaves out</a></li><li class="l2"><a href="#lengths-counted-in-setup-built-by-the-step">Lengths: counted in setup, built by the step</a></li><li class="l2"><a href="#step-scratch">Step scratch</a></li><li class="l2"><a href="#batched-only">Batched only</a></li><li class="l2"><a href="#gpus-streams-and-locks">GPUs, streams and locks</a></li><li class="l3"><a href="#which-gpus-a-step-runs-on">Which GPUs a step runs on</a></li><li class="l3"><a href="#streams">Streams</a></li><li class="l3"><a href="#one-handle-set-per-gpu-under-its-lock">One handle set per GPU, under its lock</a></li><li class="l3"><a href="#lock-order">Lock order</a></li><li class="l3"><a href="#a-step-with-streams-of-its-own-and-library-calls">A step with streams of its own and library calls</a></li><li class="l3"><a href="#library-workspace-and-work-buffers">Library workspace and work buffers</a></li><li class="l2"><a href="#the-step-dag-on-rustflow">The step DAG on rustflow</a></li><li class="l2"><a href="#failure-diagnostics-determinism">Failure, diagnostics, determinism</a></li><li class="l2"><a href="#enforcement">Enforcement</a></li><li class="l2"><a href="#example-the-df-hf-setup-dag">Example: the DF-HF setup DAG</a></li><li class="l3"><a href="#nodes">Nodes</a></li><li class="l3"><a href="#how-it-maps-onto-this-design">How it maps onto this design</a></li><li class="l3"><a href="#choices-the-graph-leaves-open">Choices the graph leaves open</a></li><li class="l2"><a href="#the-v004-prototype">The v0.0.4 prototype</a></li><li class="l3"><a href="#built-from-scratch-over-the-c-abi">Built from scratch over the C ABI</a></li><li class="l3"><a href="#the-df-rhf-chain">The DF-RHF chain</a></li><li class="l3"><a href="#what-it-is-held-against">What it is held against</a></li><li class="l3"><a href="#what-it-runs-that-no-prototype-has">What it runs that no prototype has</a></li><li class="l3"><a href="#not-in-it">Not in it</a></li><li class="l2"><a href="#the-order-of-work">The order of work</a></li><li class="l2"><a href="#open-questions">Open questions</a></li><li class="l2"><a href="#this-page-as-html">This page as HTML</a></li></ol></nav>
+<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#vocabulary">Vocabulary</a></li><li class="l2"><a href="#the-shape">The shape</a></li><li class="l2"><a href="#steps-and-the-mainbus">Steps and the MainBus</a></li><li class="l2"><a href="#the-erimanager">The EriManager</a></li><li class="l2"><a href="#the-memory-budget">The memory budget</a></li><li class="l3"><a href="#what-is-budgeted-by-kind">What is budgeted, by kind</a></li><li class="l3"><a href="#host-heap">Host heap</a></li><li class="l3"><a href="#caps-and-margins">Caps and margins</a></li><li class="l3"><a href="#what-the-budget-leaves-out">What the budget leaves out</a></li><li class="l2"><a href="#lengths-counted-in-setup-built-by-the-step">Lengths: counted in setup, built by the step</a></li><li class="l2"><a href="#step-scratch">Step scratch</a></li><li class="l2"><a href="#batched-only">Batched only</a></li><li class="l2"><a href="#gpus-streams-and-locks">GPUs, streams and locks</a></li><li class="l3"><a href="#which-gpus-a-step-runs-on">Which GPUs a step runs on</a></li><li class="l3"><a href="#streams">Streams</a></li><li class="l3"><a href="#one-handle-set-per-gpu-under-its-lock">One handle set per GPU, under its lock</a></li><li class="l3"><a href="#lock-order">Lock order</a></li><li class="l3"><a href="#a-step-with-streams-of-its-own-and-library-calls">A step with streams of its own and library calls</a></li><li class="l3"><a href="#library-workspace-and-work-buffers">Library workspace and work buffers</a></li><li class="l2"><a href="#the-step-dag-on-rustflow">The step DAG on rustflow</a></li><li class="l2"><a href="#failure-diagnostics-determinism">Failure, diagnostics, determinism</a></li><li class="l2"><a href="#enforcement">Enforcement</a></li><li class="l2"><a href="#example-the-df-hf-setup-dag">Example: the DF-HF setup DAG</a></li><li class="l3"><a href="#nodes">Nodes</a></li><li class="l3"><a href="#how-it-maps-onto-this-design">How it maps onto this design</a></li><li class="l3"><a href="#choices-the-graph-leaves-open">Choices the graph leaves open</a></li><li class="l2"><a href="#the-v004-prototype">The v0.0.4 prototype</a></li><li class="l3"><a href="#built-from-scratch-over-the-c-abi">Built from scratch over the C ABI</a></li><li class="l3"><a href="#the-df-rhf-chain">The DF-RHF chain</a></li><li class="l3"><a href="#what-it-is-held-against">What it is held against</a></li><li class="l3"><a href="#what-it-runs-that-no-prototype-has">What it runs that no prototype has</a></li><li class="l3"><a href="#what-it-showed">What it showed</a></li><li class="l3"><a href="#where-the-code-departs-from-this-page">Where the code departs from this page</a></li><li class="l3"><a href="#what-is-not-built">What is not built</a></li><li class="l3"><a href="#build-and-run">Build and run</a></li><li class="l3"><a href="#not-in-it">Not in it</a></li><li class="l2"><a href="#the-order-of-work">The order of work</a></li><li class="l2"><a href="#open-questions">Open questions</a></li><li class="l2"><a href="#this-page-as-html">This page as HTML</a></li></ol></nav>
 <main>
 <h1><span class="pre">rust/v0.0.4</span>The design, and the prototype built from scratch</h1>
 <p><strong>The design of the Rust rebuild as it stands at v0.0.4, and what v0.0.4 will
 build.</strong> A calculation is a DAG of steps on
 <a href="https://github.com/whatDiracIsCooking/rustflow">rustflow</a>. Each step has one
 function that counts and allocates its memory up front, and one that runs.
-There is no planner. Nothing here is built yet: the code is the earlier
-prototypes <code>../v0.0.2</code> and <code>../v0.0.3</code>, and nothing under <code>rust/</code>. <code>rust/docs/</code>
-describes the tree as it is, and changes with the implementation.</p>
+There is no planner. The prototype is built, in this directory (<code>src/</code>,
+<code>tests/</code>, <code>examples/</code>); nothing under <code>rust/</code> is. <code>rust/docs/</code> describes the
+tree as it is, and changes with the implementation.</p>
 <p><strong>This page is self-contained.</strong> It says what the design is now, not how it
 got here. Each prototype's page carries the whole design forward as it stands
 at that prototype; the earlier pages (<code>../v0.0.2</code>, <code>../v0.0.3</code>) and git
@@ -1906,8 +1906,8 @@ as drawn; one that also uses √(P|P) adds an edge from the auxiliary set.</li>
 <p>Symmetry, frozen orbitals and effective core potentials are left out; none
 changes the shape.</p>
 <h2 id="the-v004-prototype">The v0.0.4 prototype</h2>
-<p>Not yet built. Item 3 of the order of work: the DF-RHF chain as steps on
-<code>num_gpus</code> GPUs, batched. The first prototype to run the GPU's stream under
+<p>Built: <a href="#what-it-showed">what it showed</a>. Item 3 of the order of work: the
+DF-RHF chain as steps on <code>num_gpus</code> GPUs, batched. The first prototype to run the GPU's stream under
 its lock, a step with streams of its own and library calls, the <code>EriManager</code>
 with its cache, and the lock order; and the first written from scratch over
 the C ABI.</p>
@@ -2198,6 +2198,110 @@ which catches code that is right only for two.</p>
 the old path's planner block for the same run. One-off times are printed, not
 benchmarked; the question that matters is at gly10's size, which this
 prototype does not run.</p>
+<h3 id="what-it-showed">What it showed</h3>
+<p>RTX A6000 (CUDA), 2026-11-25, one run each, cc-pVDZ over cc-pVDZ-JKFIT.
+<code>|ΔE|</code> in hartree against the bar of 1e-9. The recorded energies are
+<code>../v0.0.2/README.md</code>'s, each within 1.2e-12 of PySCF's DF-RHF and of the old
+Rust path.</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>What</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Water, one GPU</td>
+<td>−76.026751140543 in 11 iterations, 4.5e-13 from the recorded energy</td>
+</tr>
+<tr>
+<td>Benzene, one GPU</td>
+<td>−230.721729270921 in 11 iterations, 3.7e-13</td>
+</tr>
+<tr>
+<td>Ethylene (#865's geometry), one GPU</td>
+<td>−77.867545824336 in 52 iterations, 3.8e-13</td>
+</tr>
+<tr>
+<td>Water at forced batches: <code>mem_per_gpu</code> at its least, 94.59 KiB, NaN-filled</td>
+<td>18 pair batches, aux batches of 2, 20 of 116 rows cached and 96 uploaded per pass; 1.4e-14 from the default run</td>
+</tr>
+<tr>
+<td>Water at the default 2 GiB</td>
+<td>The whole share cached; nothing uploaded after the first pass</td>
+</tr>
+<tr>
+<td>B from the ring of two against the ring of one, water, forced batches</td>
+<td>The same bits</td>
+</tr>
+<tr>
+<td>A replay of water</td>
+<td>7.1e-14 from the first run, in 2 iterations from the carried D; the allocation count unchanged</td>
+</tr>
+<tr>
+<td><code>mem_per_gpu</code> one byte under the least</td>
+<td>Refused, naming <code>[eri] mem_per_gpu</code>, its value and the 96,864 B it needs</td>
+</tr>
+<tr>
+<td>Lock order, water, eight workers</td>
+<td>Every step's locks taken in rank order and released together after the sync; gpu0's three holders never overlap; the orthogonalizer's and <code>eri</code>'s scratch disjoint on gpu0</td>
+</tr>
+<tr>
+<td>A <code>syevd</code> with a work buffer under its size query</td>
+<td>Panics at the caller's line before the solver is called</td>
+</tr>
+<tr>
+<td>Benzene on two logical GPUs, and on 2, 3 and 4 real ones, NaN-filled, whole share cached and forced batches, on 8 workers and on 2</td>
+<td>Each within 1.7e-13 of one GPU</td>
+</tr>
+</tbody>
+</table></div>
+<p>One-off times on water, release build: setup 0.96 s (the GPU's handles), budget
+mode 9 ms, execute mode 243 ms, of which <code>eri</code> 102 ms and the SCF's 11
+iterations 34 ms.</p>
+<h3 id="where-the-code-departs-from-this-page">Where the code departs from this page</h3>
+<ul>
+<li><strong>The SCF's loop is a plain loop inside <code>run</code></strong>, not a condition loop in a
+subflow. A step's fan-out across GPUs is scoped threads, joined before <code>run</code>
+returns, not rustflow inner tasks.</li>
+<li><strong>The manager's lock is a <code>Mutex&lt;()&gt;</code> on the MainBus</strong>, taken by the wrapper
+in rank order; the state inside the <code>EriManager</code> sits behind a <code>Mutex</code> of its
+own that is only ever <code>try_lock</code>ed under it. <code>build_jk</code> takes the <code>Held</code>
+guards and has no path to a GPU's <code>Mutex</code>.</li>
+<li><strong>The ring's streams are <code>eri</code>'s own</strong> (two per GPU, declared by the step),
+not the manager's. A J/K pass runs wholly on each GPU's stream, in the order
+it is enqueued.</li>
+<li><strong>The ERI buffer is charged at what the two layouts use</strong>, the ring's or the
+J/K pass's with its cache, whichever is larger; <code>mem_per_gpu</code> only bounds it.</li>
+<li><strong>Two changes to v0.0.3's flow layer</strong>: <code>run</code> receives the guards, and a
+step declares how many streams of its own it has per GPU.</li>
+<li><strong><code>--budget-only</code> reports each solver call's work buffer as zero</strong>, as the
+page says; every other length is exact.</li>
+</ul>
+<h3 id="what-is-not-built">What is not built</h3>
+<p>Rows of the two tables above that have no test here:</p>
+<ul>
+<li>The energies against the old Rust path in the same process: they are held
+against the recorded ones instead. S, H and the metric against the old
+path's. B against v0.0.3's.</li>
+<li>The two negative controls (the skipped sync, the removed event).</li>
+<li>The three <code>compile_fail</code> doctests.</li>
+<li>The default cap against a reading taken by hand.</li>
+<li>An undeclared <code>syevd</code> refused naming the step: the binding panics naming
+the call and its size query.</li>
+<li>The budget total against the old path's planner block.</li>
+</ul>
+<h3 id="build-and-run">Build and run</h3>
+<p><code>rust/</code>'s CMake project and the <code>ssperi3</code> kernel library first (<code>build.rs</code> has
+the two directories and their environment overrides), then, from this
+directory:</p>
+<pre><code class="language-sh">cargo test                                                        # the device-free tests
+cargo test --test chain -- --include-ignored --test-threads=1     # with the device cases
+cargo run --release --example run -- examples/h2o.toml            # setup, budget mode, execute mode
+cargo run --release --example run -- --budget-only examples/h2o.toml
+cargo run --release --example run -- examples/h2o.toml --devices 0,1 --mem-per-gpu-mib 1
+</code></pre>
 <h3 id="not-in-it">Not in it</h3>
 <ul>
 <li>Any change under <code>rust/</code>.</li>
@@ -2218,7 +2322,7 @@ slab, the closure and the packing, the two-mode DAG on rustflow. Built in
 v0.0.3.</li>
 <li><strong>One step, batched, on <code>num_gpus</code> GPUs</strong>: built in v0.0.3 (<code>eri</code> and the
 J/K build, on one GPU and two logical GPUs).</li>
-<li><strong>The DF-RHF chain as steps</strong>: v0.0.4.</li>
+<li><strong>The DF-RHF chain as steps</strong>: built in v0.0.4.</li>
 <li><strong>Measure</strong>: the budget's total against the planner's block for the same
 runs, and what the step-end sync costs on the SCF iteration.</li>
 <li><strong>The enforcement checks and HIP.</strong> Batching and every GPU are not on this

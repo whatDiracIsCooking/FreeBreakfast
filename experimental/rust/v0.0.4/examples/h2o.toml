@@ -1,0 +1,26 @@
+# DF-RHF of water in cc-pVDZ over cc-pVDZ-JKFIT, on one GPU. One table per
+# step: a step whose table is absent is not in the DAG.
+
+[molecule]
+xyz = "../../../../rust/integrals/one_electron/overlap/tests/data/h2o.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[eri]
+aux_basis = "cc-pvdz-jkfit"
+# mem_per_gpu_mib = 2048   # the step limit: each GPU's ERI buffer
+# ring = 2                 # the build's ring depth, 1 or 2
+
+[scf]
+# max_iterations = 100
+# energy_tolerance = 1e-10
+# commutator_tolerance = 1e-7
+# diis_history = 8
+
+[resources]
+devices = [0]
+threads = 4
+# device_cap_mib = 512   # absent: the GPU's free memory after its handles, less its margin
+# host_cap_mib = 4096    # absent: the host's available memory, less its margin
+# nan_fill = true        # test mode: every scratch lease NaN before run
