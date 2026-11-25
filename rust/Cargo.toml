@@ -124,7 +124,7 @@ jiff = "0.2.43"
 # dev-dependency only).
 guppy = "0.19.1"
 libc = "0.2"
-# The executor the redesign moves to (docs/rust-redesign.html, "The step DAG
+# The executor the redesign moves to (experimental/rust/v0.0.4/v0.0.4.html, "The step DAG
 # on rustflow"). Unpublished, so a git dependency pinned by its full commit,
 # here alone; a prototype under experimental/rust/, a workspace of its own,
 # names the same rev (docs/testing.md, "What runs when"). No member depends

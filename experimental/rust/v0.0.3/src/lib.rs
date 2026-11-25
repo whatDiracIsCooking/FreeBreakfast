@@ -1,4 +1,4 @@
-//! The second prototype of the rustflow redesign (`docs/rust-redesign.html`),
+//! The second prototype of the rustflow redesign (`experimental/rust/v0.0.4/v0.0.4.html`),
 //! covering items 1 and 2 of its order of work: the device-free core, with
 //! step scratch declared per step and packed by the DAG's closure, and
 //! batched steps on `num_gpus` cards under one lock per card. `README.md`
