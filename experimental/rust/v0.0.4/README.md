@@ -91,7 +91,7 @@ Each word below means one thing on this page.
 | **aux batch** | A run of aux functions P, the unit a J/K pass works in |
 | **J/K pass** | One sweep over all of B building J and K for a set of densities |
 | **`EriManager`** | `eri`'s `Output`: B, the metric's factor, and per GPU the ERI buffer, its streams and the cache's state. Reached by its readers under its lock |
-| **ERI buffer** | One device buffer per GPU of `[eri] mem_per_gpu` bytes, owned by the `EriManager`: the build's ring, then the J/K ring, the J and K fragments and the cache |
+| **ERI buffer** | One device buffer per GPU of `[eri] mem_per_gpu` bytes, owned by the `EriManager`: the build's ring, then the J and K fragments, the J/K batch buffer and the cache |
 | **ring** | The buffers of the batches in flight: two, one filling while the other is used |
 | **cache** | The aux batches of B a GPU keeps in its ERI buffer across J/K passes |
 | **records** | Per-primitive input data a kernel reads: centre, exponent, weighted coefficient |
@@ -214,15 +214,21 @@ after the other, since the DAG orders `eri` before every reader:
 
 1. **During `eri`'s run** it holds the build's ring: two pair batches in
    flight per GPU, each with its records and work lists.
-2. **Afterwards** it holds, per GPU, the J and K fragments, the J/K ring of
-   two aux batches, and the cache: as many of that GPU's aux batches as the
-   rest of the buffer holds.
+2. **Afterwards** it holds, per GPU, the J and K fragments, one aux batch's
+   buffer for the J/K pass, and the cache: as many of that GPU's aux batches
+   as the rest of the buffer holds. A pass uploads each uncached batch into
+   the one buffer and syncs before the next; a ring of two there is *Open*
+   until the per-batch sync is measured.
 
 **B is built over pairs and contracted over aux functions.** A pair column of
 B depends on every P, so a batch of P cannot be fitted alone; a batch of pairs
 can. Each GPU takes its own pair batches, forms (μν|P) in its ring, fits it
 against its own L, and downloads it into B's slab. No GPU needs anything from
-another. A J/K pass then runs over aux batches: each GPU contracts its own,
+another. B is pair-fastest, so one pair batch's columns are a strided run in
+every row of P, and two GPUs' batches interleave in memory: no slice cut parts
+them. Each batch is scattered through a raw pointer, the second `unsafe` of
+the memory model, with its invariant beside it: the pair batches partition
+the pair columns, so a batch owns its columns and no two write one. A J/K pass then runs over aux batches: each GPU contracts its own,
 and the fragments are summed onto gpu0 through the host.
 
 **The cache.** A GPU's aux range is fixed: the aux functions are split across
@@ -240,7 +246,7 @@ ruled out by size; the cache is a part of the one host copy, held on the GPUs.
 | Below the ring at a width of one | A refusal naming `[eri]`, its limit and the least it needs |
 | About the ring | Batched build and passes, no cache: the tests' many-batch case on water |
 | Enough for the GPU's share of B | One aux batch per GPU, nothing uploaded after the first pass |
-| Default | A fixed constant, not a fraction of the cap, so `--budget-only` is exact. *Open*: its value |
+| Default | 2 GiB: a fixed constant, not a fraction of the cap, so `--budget-only` is exact. A placeholder; *Open*: the measured value |
 
 The buffer is held for the whole calculation, so what it takes is not
 available to later steps. The budget table shows it as its own row.
@@ -413,7 +419,9 @@ FIGURE-03 (fig)
 - **Setup counts every length that scales; it builds none of those arrays.**
   It has read the geometry and both bases, so it adds `n_aux_prim`,
   `n_aux_shell`, `n_shell_pair` and the per-class counts to `Dims` by a
-  counting walk over the shells. Any array whose length scales with a pair
+  counting walk over the shells. The walk is the new layer's own:
+  `fb_integrals_mmd::record_tables` builds every shell pair's bra, ket and
+  record-prefix arrays to count from, which this rule forbids. Any array whose length scales with a pair
   count, or a product of shell counts, belongs to a step and is budgeted.
 - **`mem_budget` charges, `run` builds.** `mem_budget` declares the records
   and work lists as scratch, pinned and device, at their lengths from `Dims`.
@@ -783,6 +791,7 @@ pinned at `f184bcab`.
 | A step reads only the `Output`s it declared | By type: `run` receives its View, not the bus |
 | Nothing takes a lock inside `run` | By type: `run` never sees a `Mutex`, only the guards the wrapper took |
 | Scratch dies with its step | By type: the lease borrows for the length of `run` |
+| Two GPUs never write the same columns of B | By construction: the pair batches partition the columns, checked when the batch list is made; the scatter is the one `unsafe` outside the arena |
 | A step relies on nothing its scratch held on entry | In a test mode the wrapper fills each lease with NaN |
 | Two steps share scratch bytes only if the DAG orders them | By construction: the final node packs from the closure; a test packs DAGs and checks every overlapping pair against reachability |
 | A library call's work buffer is at least its size query | By the binding, before the call; a `doc_check` test holds every solver binding to it |
@@ -885,7 +894,8 @@ device-free crates and plain data, and nothing else of `rust/`: no type that
 owns or names a stream, a library handle or anything of the arena. Anything from the
 wrapper or task layers appears only under `[dev-dependencies]`, as the old path
 the tests hold the new one against. It takes v0.0.3's device-free core (the
-bus, the flow layer, the budget and the packer) and writes the rest: one
+bus, the flow layer, the budget and the packer) and writes the rest: setup's
+counting walk, one
 module holding the stream, the event, the copies, the guard with its BLAS and
 solver calls, the `trsm` and Cholesky recipes over the guard, and one launch
 function per kernel family the steps use.
@@ -970,11 +980,12 @@ prototype does not run.
 - Any change under `rust/`.
 - HIP. CUDA only.
 - A step with further handles of its own; two fits in flight on one GPU.
-- A ring in `build_jk` beyond the cache's; more than one density.
+- A ring in `build_jk`; more than one density.
 - gly10, or any size where B does not fit on the GPUs.
 - The enforcement lints: the clippy bans, the allocation record, the
   unbudgeted-heap row.
-- Screening, the default step limit's value, packing `Output`s, several nodes.
+- Screening, measuring the default step limit (2 GiB stands in), packing
+  `Output`s, several nodes.
 
 ## The order of work
 
@@ -1015,7 +1026,8 @@ the implementation, not before.
 
 **To measure, verify or pick a value for**
 
-- **The default step limit** for `eri` and its value; the threshold of the
+- **The default step limit** for `eri`: the value in place of the 2 GiB
+  placeholder; the threshold of the
   allocation record.
 - **The blocking sync**: which scheduling flag makes a waiting worker sleep, on
   each backend, and what the sync costs per SCF iteration.
