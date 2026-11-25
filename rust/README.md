@@ -1641,3 +1641,19 @@ for all 70 at six jobs); the largest stack is `speri3<3,3,6>`'s 7,072 B,
 down from `peri3<3,3,6>`'s 8,256 B. Compiled for HIP
 (`devtools/cross-backend-check.sh --device-only`, PASS); not run on the
 gfx1200.
+
+2026-11-24, `recipes/trsm` (`fb_recipes_sys::trsm`, the tree's own blocked
+triangular solve, its diagonal block forked as `fb_trsm_diagonal_f32` and
+`_f64`, ABI version 7; `fb_core_wwr::blas` without its `trsm` binding and
+with `trsv`, `scal` and `gemm_rows`; the Cholesky panel and the density
+fit moved onto it), on the RTX 3080 (CUDA), the `default` preset:
+`devtools/test.py pr --only cargo` passes at 9cb6a400, tier 3 396 tests;
+tier 4 540 passed, the 13 tier-5 cases not run (one card visible). Every
+side, fill, op and unit flag in `f32` and `f64` at orders 1 to 200 around
+the 64-row block's edges and 1 to 97 right-hand sides, the unread triangle
+and every padding row NaN, within `8 k ε` of the host's substitution; A and
+B's padding bitwise as they went in; `alpha = 0` over an all-NaN A and B
+exactly zero; `_C` the bits of `_T`. Compiled for HIP
+(`devtools/cross-backend-check.sh --device-only`, PASS); not run on the
+gfx1200. Not timed against the libraries here: the C++ recipe's README has
+that table.
