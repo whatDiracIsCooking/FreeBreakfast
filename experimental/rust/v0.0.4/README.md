@@ -86,7 +86,7 @@ Each word below means one thing on this page.
 | Word | Means |
 |---|---|
 | **B** | The fitted three-centre tensor B<sub>μν</sub><sup>P</sup>, on the host heap |
-| **pair column** | One orbital shell-pair function index μν of B. A **Cartesian column** is the same before the spherical transform; neither is used bare |
+| **pair column** | One orbital shell-pair function index μν of B, in spherical functions. Not used bare |
 | **pair batch** | A run of pair columns, the unit the build of B works in |
 | **aux batch** | A run of aux functions P, the unit a J/K pass works in |
 | **J/K pass** | One sweep over all of B building J and K for a set of densities |
@@ -219,6 +219,13 @@ after the other, since the DAG orders `eri` before every reader:
    as the rest of the buffer holds. A pass uploads each uncached batch into
    the one buffer and syncs before the next; a ring of two there is *Open*
    until the per-batch sync is measured.
+
+**(μν|P) is spherical from the kernel.** FelizJueves's `ssperi3<la, lb, lP>`
+(#745) writes all three indices as real solid harmonics, each pair's block at
+its spherical pair column, the layout the fit reads. No bra transform runs,
+and the ring holds no Cartesian batch, no transform scratch and no orbital U.
+It is plain FP64: the mixed-precision and screened forms of the same kernels
+are not used. No array in the DF-RHF chain has a Cartesian index.
 
 **B is built over pairs and contracted over aux functions.** A pair column of
 B depends on every P, so a batch of P cannot be fitted alone; a batch of pairs
@@ -408,7 +415,7 @@ The density-fitting arrays on gly10 in cc-pVDZ / cc-pVDZ-JKFIT, unbatched (from
 | `aux_records` | records | aux primitive: x, y, z, α, c(π/α)<sup>3/2</sup> | 5 × `n_aux_prim` f64 | 51 kB |
 | `metric_pairs` | work list | aux shell pair P ≤ Q, by class (l<sub>P</sub>, l<sub>Q</sub>) | 6 × `n_aux_shell`(`n_aux_shell`+1)/2 i32 | 19.4 MB |
 | `cells` | work list | orbital shell pair × aux shell, by (orbital class, l<sub>P</sub>) | 6 × `n_shell_pair` × `n_aux_shell` i32 | 1.79 GB |
-| `gather_at`, `gather_weight` | work list | Cartesian column: its μ and ν, and 1 or 2 | 2 × `n_col` i32, `n_col` f64 | 4.3 MB |
+| `gather_at`, `gather_weight` | work list | pair column: its μ and ν, and 1 or 2 | 2 × `n_col` i32, `n_col` f64 | 4.3 MB |
 
 Batched, `cells` is a pair batch's share, in the ERI buffer's ring.
 
@@ -827,9 +834,11 @@ FIGURE-NODES (the node table: one row per node, filled by the page's script)
 - **The top three levels are setup.** The reads, the electron count, the
   nuclear repulsion and the two basis sets are small host work, unbudgeted,
   and they fill `Dims`. Budget mode starts below them.
-- **The one-electron matrices and the metric are host steps.** S, T, V and
-  (P|Q) are built directly in the solid harmonics on rayon's threads, so no
-  spherical transform is a node, and uploaded: S and H to gpu0, the metric to
+- **The one-electron matrices and the metric are host steps.** S, T and
+  (P|Q) are built directly in the solid harmonics on rayon's threads; V turns
+  each contracted shell pair's Cartesian block spherical through the
+  harmonics' nonzeros, so no Cartesian matrix exists and no spherical
+  transform is a node. They are uploaded: S and H to gpu0, the metric to
   every GPU. They take no lock and overlap the GPU work.
 - **Three steps hold gpu0's lock**: the orthogonalizer (an eigensolve), `eri`
   (the factor and the fits, on every GPU) and the SCF. The orthogonalizer and
@@ -887,6 +896,7 @@ The new layer is written as if nothing in `rust/` above the C ABI existed.
 | The device-free crates: `fb-basis`, `fb-molecule`, `fb-io-*`, `fb-sad`, `fb-integrals-mmd`, `fb-kernel-abi`, `fb-core-error-handling` | Kept, as dependencies |
 | `fb-core-wwr`'s streams, events, copies and handles | Written again: here they live inside the GPU's guard |
 | `fb-integrals-sys`'s launch functions, `fb-recipes-sys`'s `trsm` | Written again over the same extern declarations, taking slices |
+| The three-centre kernels: `rust/`'s are `speri3`, with a Cartesian bra | Not used: `eri` links `ssperi3`'s library as `df_batched/single_gpu_spherical/kernels` builds it, and binds it over that C ABI |
 | The planner, the arena, the thread pool, every `add_*` builder, `rust/pipeline` | Not used; retired when the layer lands in `rust/` |
 
 **The rule the prototype is held to.** Its code names the C ABI, the
