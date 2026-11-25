@@ -286,7 +286,12 @@ impl MemBudget for ScfStep {
         // Dies with the run: F, the DIIS ring, syevd's work. One region,
         // packed by the final node, lent to run by the layout.
         budget.scratch(Gpu(0), Kind::Device, ScfLayout::new(bus).bytes());
-        budget.locks(&[Lock::Eri, Lock::AllGpus]);
+        // The manager and every GPU; the wrapper takes them in rank order.
+        budget.locks(
+            [LockId::Manager(ManagerId::Eri)]
+                .into_iter()
+                .chain(bus.gpus().map(LockId::Gpu)),
+        );
         *bus.scf.write() = Some(output);
     }
 }
@@ -359,8 +364,9 @@ FIGURE-02 (fig)
   after its handles exist, less the margin: the larger of 512 MiB and 5% of
   the GPU's total memory.
 - **A defaulted host cap** is the host's available memory, read once in setup
-  (cgroup-aware, `fb_core_arena::host_available`), less the larger of 1 GiB
-  and 5%. With B on the host heap, this is the cap a large density-fitted run
+  (cgroup-aware: the smaller of the machine's available memory and the
+  cgroup's limit less its use), less the larger of 1 GiB and 5%. The reading
+  is the new layer's own function; it names nothing of the arena. With B on the host heap, this is the cap a large density-fitted run
   meets first.
 - **Every cap is clamped to the reading.** An explicit cap past the machine is
   clamped to the reading itself, no margin taken. The table prints the cap as
@@ -893,19 +899,25 @@ The new layer is written as if nothing in `rust/` above the C ABI existed.
 | In `rust/` | In the new layer |
 |---|---|
 | The kernel libraries and the C ABI: what `rust/CMakeLists.txt` builds, `wwr-sys`, the extern declarations in each binding crate's `bindings.rs` | Kept, linked as they are |
-| The device-free crates: `fb-basis`, `fb-molecule`, `fb-io-*`, `fb-sad`, `fb-integrals-mmd`, `fb-kernel-abi`, `fb-core-error-handling` | Kept, as dependencies |
+| The device-free crates: `fb-basis`, `fb-molecule`, `fb-io-*`, `fb-sad`, `fb-integrals-mmd`, `fb-kernel-abi`, `fb-core-error-handling`, `fb-core-primitives` | Kept, as dependencies |
 | `fb-core-wwr`'s streams, events, copies and handles | Written again: here they live inside the GPU's guard |
 | `fb-integrals-sys`'s launch functions, `fb-recipes-sys`'s `trsm` | Written again over the same extern declarations, taking slices |
 | The three-centre kernels: `rust/`'s are `speri3`, with a Cartesian bra | Not used: `eri` links `ssperi3`'s library as `df_batched/single_gpu_spherical/kernels` builds it, and binds it over that C ABI |
 | The planner, the arena, the thread pool, every `add_*` builder, `rust/pipeline` | Not used; retired when the layer lands in `rust/` |
 
+The host steps' integrals are not in `rust/`: they are the library crates of
+`s_overlap_host`, `t_kinetic_host`, `v_potential_en_host` and `df_metric`
+here, device-free, taken as path dependencies.
+
 **The rule the prototype is held to.** Its code names the C ABI, the
 device-free crates and plain data, and nothing else of `rust/`: no type that
 owns or names a stream, a library handle or anything of the arena. Anything from the
 wrapper or task layers appears only under `[dev-dependencies]`, as the old path
-the tests hold the new one against. It takes v0.0.3's device-free core (the
-bus, the flow layer, the budget and the packer) and writes the rest: setup's
-counting walk, one
+the tests hold the new one against. It takes v0.0.3's flow layer and packer
+as they are, which name no device. v0.0.3's bus and budget are written again
+over the new module: they name `fb_core_wwr`'s device slices and device
+index, `fb_integrals_sys`'s record tables and the arena's host reading. The
+rest is new: setup's counting walk, the host reading, one
 module holding the stream, the event, the copies, the guard with its BLAS and
 solver calls, the `trsm` and Cholesky recipes over the guard, and one launch
 function per kernel family the steps use.
@@ -951,7 +963,7 @@ old Rust path" is `rust/` as merged, a dev-dependency of the tests only.
 | The same at forced batches: `mem_per_gpu` at about the ring, so no cache | The default run | 1e-9 Eh |
 | The same with the whole share cached | The default run | 1e-9 Eh |
 | The same on two GPUs, NaN-filled | One GPU | 1e-9 Eh |
-| B from the ring of two | v0.0.3's B, one batch in flight | 1e-10 of the largest element |
+| B from the ring of two | The same build at ring depth 1; and v0.0.3's B, from `speri3` with a Cartesian bra and one batch in flight, a check across kernels | 1e-10 of the largest element |
 | S, H and the metric from the host steps | The old Rust path's, on the GPU | 1e-12 of the largest element |
 | A replay | The run before it | The same energy to 1e-9 Eh; the allocation count unchanged |
 

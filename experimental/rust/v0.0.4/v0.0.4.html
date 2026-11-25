@@ -721,7 +721,12 @@ impl MemBudget for ScfStep {
         // Dies with the run: F, the DIIS ring, syevd's work. One region,
         // packed by the final node, lent to run by the layout.
         budget.scratch(Gpu(0), Kind::Device, ScfLayout::new(bus).bytes());
-        budget.locks(&amp;[Lock::Eri, Lock::AllGpus]);
+        // The manager and every GPU; the wrapper takes them in rank order.
+        budget.locks(
+            [LockId::Manager(ManagerId::Eri)]
+                .into_iter()
+                .chain(bus.gpus().map(LockId::Gpu)),
+        );
         *bus.scf.write() = Some(output);
     }
 }
@@ -868,8 +873,9 @@ written; the user owns the margin.</li>
 after its handles exist, less the margin: the larger of 512 MiB and 5% of
 the GPU's total memory.</li>
 <li><strong>A defaulted host cap</strong> is the host's available memory, read once in setup
-(cgroup-aware, <code>fb_core_arena::host_available</code>), less the larger of 1 GiB
-and 5%. With B on the host heap, this is the cap a large density-fitted run
+(cgroup-aware: the smaller of the machine's available memory and the
+cgroup's limit less its use), less the larger of 1 GiB and 5%. The reading
+is the new layer's own function; it names nothing of the arena. With B on the host heap, this is the cap a large density-fitted run
 meets first.</li>
 <li><strong>Every cap is clamped to the reading.</strong> An explicit cap past the machine is
 clamped to the reading itself, no margin taken. The table prints the cap as
@@ -1920,7 +1926,7 @@ the C ABI.</p>
 <td>Kept, linked as they are</td>
 </tr>
 <tr>
-<td>The device-free crates: <code>fb-basis</code>, <code>fb-molecule</code>, <code>fb-io-*</code>, <code>fb-sad</code>, <code>fb-integrals-mmd</code>, <code>fb-kernel-abi</code>, <code>fb-core-error-handling</code></td>
+<td>The device-free crates: <code>fb-basis</code>, <code>fb-molecule</code>, <code>fb-io-*</code>, <code>fb-sad</code>, <code>fb-integrals-mmd</code>, <code>fb-kernel-abi</code>, <code>fb-core-error-handling</code>, <code>fb-core-primitives</code></td>
 <td>Kept, as dependencies</td>
 </tr>
 <tr>
@@ -1941,13 +1947,18 @@ the C ABI.</p>
 </tr>
 </tbody>
 </table></div>
+<p>The host steps' integrals are not in <code>rust/</code>: they are the library crates of
+<code>s_overlap_host</code>, <code>t_kinetic_host</code>, <code>v_potential_en_host</code> and <code>df_metric</code>
+here, device-free, taken as path dependencies.</p>
 <p><strong>The rule the prototype is held to.</strong> Its code names the C ABI, the
 device-free crates and plain data, and nothing else of <code>rust/</code>: no type that
 owns or names a stream, a library handle or anything of the arena. Anything from the
 wrapper or task layers appears only under <code>[dev-dependencies]</code>, as the old path
-the tests hold the new one against. It takes v0.0.3's device-free core (the
-bus, the flow layer, the budget and the packer) and writes the rest: setup's
-counting walk, one
+the tests hold the new one against. It takes v0.0.3's flow layer and packer
+as they are, which name no device. v0.0.3's bus and budget are written again
+over the new module: they name <code>fb_core_wwr</code>'s device slices and device
+index, <code>fb_integrals_sys</code>'s record tables and the arena's host reading. The
+rest is new: setup's counting walk, the host reading, one
 module holding the stream, the event, the copies, the guard with its BLAS and
 solver calls, the <code>trsm</code> and Cholesky recipes over the guard, and one launch
 function per kernel family the steps use.</p>
@@ -2096,7 +2107,7 @@ old Rust path&quot; is <code>rust/</code> as merged, a dev-dependency of the tes
 </tr>
 <tr>
 <td>B from the ring of two</td>
-<td>v0.0.3's B, one batch in flight</td>
+<td>The same build at ring depth 1; and v0.0.3's B, from <code>speri3</code> with a Cartesian bra and one batch in flight, a check across kernels</td>
 <td>1e-10 of the largest element</td>
 </tr>
 <tr>
