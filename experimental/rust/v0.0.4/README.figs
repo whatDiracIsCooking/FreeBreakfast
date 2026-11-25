@@ -119,10 +119,10 @@ figure.fig { margin: 1.2rem 0 1.6rem; background: var(--panel);
   <text class="m s" x="344" y="92" text-anchor="middle">n_atom, n_ao, n_aux, n_occ</text>
   <rect class="f-la" x="464" y="56" width="184" height="46" rx="6"/>
   <text class="b" x="556" y="75" text-anchor="middle">caps and counters</text>
-  <text class="m s" x="556" y="92" text-anchor="middle">sum per kind; scratch max</text>
+  <text class="m s" x="556" y="92" text-anchor="middle">sum per kind; scratch packed</text>
   <rect class="f-scf" x="676" y="56" width="184" height="46" rx="6"/>
-  <text class="mono" x="768" y="75" text-anchor="middle">CardResources</text>
-  <text class="m s" x="768" y="92" text-anchor="middle">one per device, one lock</text>
+  <text class="mono" x="768" y="75" text-anchor="middle">GpuResources</text>
+  <text class="m s" x="768" y="92" text-anchor="middle">one per GPU, one lock</text>
   <text class="m s" x="40" y="136">One Output per step: allocated in budget mode, filled in execute mode, rewritten in place on a replay</text>
   <rect class="f-int" x="40" y="150" width="184" height="46" rx="6"/>
   <text class="mono" x="132" y="169" text-anchor="middle">RwLock&lt;XOutput&gt;</text>
@@ -132,7 +132,7 @@ figure.fig { margin: 1.2rem 0 1.6rem; background: var(--panel);
   <path class="f-hot" marker-end="url(#fah)" d="M110,262 L110,198"/>
   <path class="f-read" marker-end="url(#fag)" d="M190,196 C190,232 312,226 312,260"/>
   <rect class="f-int" x="252" y="150" width="184" height="46" rx="6"/>
-  <text class="mono" x="344" y="169" text-anchor="middle">RwLock&lt;EriOutput&gt;</text>
+  <text class="mono" x="344" y="169" text-anchor="middle">RwLock&lt;EriManager&gt;</text>
   <text class="m s" x="344" y="186" text-anchor="middle">bus.eri</text>
   <rect class="f-la" x="274" y="262" width="140" height="34" rx="6"/>
   <text class="b" x="344" y="284" text-anchor="middle">EriStep</text>
@@ -162,12 +162,12 @@ locks are never contended.</figcaption>
 </figure>
 @@ replace-pre FIGURE-02
 <figure class="fig">
-<svg viewBox="0 0 900 274" role="img" aria-label="One device's counters: Output allocations add along a bar toward the cap; scratch declarations are packed by the closure of the DAG, and the final node adds the packed peak at the end">
+<svg viewBox="0 0 900 274" role="img" aria-label="One GPU's counters: Output allocations add along a bar toward the cap; scratch declarations are packed by the closure of the DAG, and the final node adds the packed peak at the end">
   <defs>
     <marker id="fbh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="hot" d="M0,1 L10,5 L0,9 z"/></marker>
     <marker id="fbg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="grey" d="M0,1 L10,5 L0,9 z"/></marker>
   </defs>
-  <text class="b" x="20" y="34">Device 0: the sum counter</text>
+  <text class="b" x="20" y="34">gpu0: the sum counter</text>
   <text class="m s" x="20" y="85">each Output adds</text>
   <rect class="f-int" x="150" y="60" width="30" height="40"/>
   <text class="s" x="165" y="52" text-anchor="middle">X</text>
@@ -185,26 +185,26 @@ locks are never contended.</figcaption>
   <path class="f-read" marker-end="url(#fbg)" d="M150,112 L688,112"/>
   <text class="m s" x="150" y="128">charged and allocated step by step, in any order, during the budget DAG</text>
 
-  <text class="b" x="20" y="152">Device 0: the scratch slab</text>
+  <text class="b" x="20" y="152">gpu0: the scratch slab</text>
   <text class="m s" x="20" y="203">each declaration a region</text>
   <rect class="f-scf" x="150" y="166" width="60" height="16"/>
   <text class="s" x="218" y="179">X: eigensolve's work at n_ao</text>
   <rect class="f-scf" x="150" y="190" width="60" height="16"/>
   <text class="s" x="218" y="203">SCF: eigensolve's work at n_ao</text>
   <rect class="f-scf" x="150" y="214" width="38" height="16"/>
-  <text class="s" x="218" y="227">ERI: B's build intermediates</text>
+  <text class="s" x="218" y="227">ERI: its orbital records</text>
   <path class="f-hot" marker-end="url(#fbh)" d="M400,186 C560,186 720,170 720,104"/>
   <text class="s" x="470" y="214">the final node packs them: ordered steps</text>
   <text class="s" x="470" y="230">share bytes, unordered ones do not</text>
   <text class="m s" x="20" y="262">Over the cap at any point: the flag is set, allocation stops, counting continues, and the final node prints the table and exits.</text>
 </svg>
-<figcaption>What one device's two counters hold. <code>Output</code>s are a sum; step
+<figcaption>What one GPU's two counters hold. <code>Output</code>s are a sum; step
 scratch, which holds every library call's work buffer, is packed, and its peak is known
 only when every step has declared, which is why the final node exists. The SCF follows
 both X and ERI, so its region may overlap either; X and ERI are unordered, so theirs stay
 apart, though both take gpu0's lock and so run one after the other
-(<a href="#one-handle-set-per-card-under-one-lock">below</a>). The bar's scratch segment also
-carries the fixed BLAS-handle workspace. Bars not to scale.</figcaption>
+(<a href="#one-handle-set-per-gpu-under-its-lock">below</a>). The bar's scratch segment also
+carries the fixed handle workspace. Bars not to scale.</figcaption>
 </figure>
 @@ replace-pre FIGURE-03
 <figure class="fig">
@@ -238,7 +238,7 @@ carries the fixed BLAS-handle workspace. Bars not to scale.</figcaption>
   </g>
   <!-- orbital pair records -->
   <text x="470" y="40" class="b">orbital pair records</text>
-  <text x="612" y="40" class="m s">the records step's Output, on the device</text>
+  <text x="612" y="40" class="m s">eri's scratch, on the device</text>
   <rect class="f-int" x="470" y="52" width="400" height="22" rx="4"/>
   <rect class="f-hot" x="595" y="52" width="75" height="22"/>
   <text x="632" y="68" text-anchor="middle" class="s">[begin, end)</text>
@@ -258,7 +258,7 @@ carries the fixed BLAS-handle workspace. Bars not to scale.</figcaption>
   <text x="462" y="190" text-anchor="end" class="mono">c·w</text>
   <!-- slab -->
   <text x="470" y="234" class="b">(μν|P)</text>
-  <text x="522" y="234" class="m s">built into B's slab, n_col × n_aux_cart</text>
+  <text x="522" y="234" class="m s">into a ring buffer: a pair batch × n_aux</text>
   <rect class="f-int" x="470" y="244" width="400" height="24" rx="4"/>
   <rect class="f-hot" x="640" y="244" width="24" height="24"/>
   <!-- arrows -->
@@ -269,7 +269,7 @@ carries the fixed BLAS-handle workspace. Bars not to scale.</figcaption>
   <text x="110" y="278" class="m s">which the symmetry weight counts once.</text>
 </svg>
 <figcaption>What a work list entry is. One entry of <code>cells</code> is six integers:
-two ranges into record arrays (the orbital pairs the records step formed, and this
+two ranges into record arrays (the orbital pairs eri's records hold, and this
 step's own aux records), and where in the slab the kernel writes. The other work
 lists are the same shape with other fields. Nothing in an entry is a pointer, so every
 array is sized by counting, before anything is built.</figcaption>
@@ -319,7 +319,7 @@ shown.</figcaption>
 </figure>
 @@ replace-pre FIGURE-05
 <figure class="fig">
-<svg viewBox="0 0 900 400" role="img" aria-label="Left: the dummy DAG of twelve steps with each step's scratch in MiB; T, V, X and eri, mutually unordered, are outlined as the heaviest antichain, 2049 MiB. Right: device 0's slab as packed; eri, nevpt2, casscf, scf, metric and factor all start at offset 0, since the DAG orders them; X, S, V and T are placed above 2040. Below: the plain sum 3318, the lock's max 2040, the packed peak 2049.">
+<svg viewBox="0 0 900 384" role="img" aria-label="Left: the dummy DAG of twelve steps with each step's scratch in MiB; T, V, X and eri, mutually unordered, are outlined as the heaviest antichain, 2049 MiB. Right: gpu0's slab as packed; eri, nevpt2, casscf, scf, metric and factor all start at offset 0, since the DAG orders them; X, S, V and T are placed above 2040. Below: the plain sum 3318 and the packed peak 2049.">
   <defs>
     <marker id="cmg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="grey" d="M0,1 L10,5 L0,9 z"/></marker>
   </defs>
@@ -372,7 +372,7 @@ shown.</figcaption>
   <text class="s" x="20" y="320">1 + 2 + 6 + 2040 = 2049,</text>
   <text class="s" x="20" y="335">the lower bound</text>
 
-  <text class="b" x="480" y="24">Device 0's slab, as packed</text>
+  <text class="b" x="480" y="24">gpu0's slab, as packed</text>
   <text class="m s" x="480" y="42">offset in MiB; the axis is ×16 wider past 2040</text>
   <line class="f-rule" x1="740" y1="54" x2="740" y2="286" stroke-dasharray="3 3"/>
   <text class="s" x="480" y="76">eri</text><rect class="f-int" x="540" y="64" width="200" height="16"/>
@@ -400,24 +400,20 @@ shown.</figcaption>
   <line class="f-cap" x1="884" y1="54" x2="884" y2="292"/>
   <text class="s" x="884" y="302" text-anchor="end">peak 2049</text>
 
-  <text class="b" x="480" y="332">The same declarations, three ways (linear)</text>
+  <text class="b" x="480" y="332">The same declarations, two ways (linear)</text>
   <text class="s" x="480" y="352">plain sum</text>
   <rect class="f-plain" x="560" y="341" width="320" height="14"/>
   <text class="s" x="874" y="352" text-anchor="end">3318</text>
-  <text class="s" x="480" y="372">lock's max</text>
-  <rect class="f-plain" x="560" y="361" width="197" height="14"/>
-  <text class="s" x="763" y="372">2040, with waits</text>
-  <text class="s" x="480" y="392">packed</text>
-  <rect class="f-scf" x="560" y="381" width="198" height="14"/>
-  <text class="s" x="764" y="392">2049, none</text>
+  <text class="s" x="480" y="372">packed</text>
+  <rect class="f-scf" x="560" y="361" width="198" height="14"/>
+  <text class="s" x="764" y="372">2049</text>
 </svg>
 <figcaption>The dummy DAG and its packing (MiB, not measurements). Every step from
 <code>metric</code> to <code>nevpt2</code> lies on one path, so all six start at offset 0
 and share the bottom 2040 MiB. S, T, V and X are unordered with <code>eri</code>, so
 they go above it; S may share with X, which it precedes, and does. The peak equals the
-heaviest antichain, so no packing that keeps unordered regions apart does better. Against
-the first form, one max per device under a lock, packing costs 9 MiB and removes
-the wait between <code>eri</code> and X.</figcaption>
+heaviest antichain, so no packing that keeps unordered regions apart does better. From
+<code>dag_transitive_closure</code>'s model, in plain Python.</figcaption>
 </figure>
 @@ replace-pre FIGURE-06
 <figure class="fig">
@@ -485,34 +481,40 @@ the sync is a change to the scratch rule too (<a href="#step-scratch">above</a>)
 <figcaption>What each node's <code>mem_budget</code> charges on gly10 in cc-pVDZ /
 cc-pVDZ-JKFIT (n_ao 734, n_aux 3606, 270,497 pair columns), by kind. Log scale: the
 charges span eight decades. Computed from the formulas in the node table, with
-(μν|P) and B one step, as decided; the scratch row is the LAPACK formula for the
-eigensolve's work at n_ao, not a cuSOLVER query, and the SCF is left out, as in the graph.
-B's build intermediates, which would raise the scratch row, and the fixed 128 MiB
-handle workspace are not drawn. Hover a bar for its parts.</figcaption>
+the factor, (μν|P) and B one step, <code>eri</code>, and its ERI buffer at an example
+<code>mem_per_gpu</code> of 2 GiB. Device charges are per GPU: on every GPU for the metric,
+its factor and the ERI buffer, on gpu0 for the rest. The scratch row is the LAPACK formula
+for the eigensolve's work at n_ao, not a cuSOLVER query, and the SCF is left out, as in
+the graph. The fixed 128 MiB handle workspace is not drawn. Hover a bar for its parts.</figcaption>
 </figure>
 @@ replace-pre FIGURE-13
 <figure class="fig">
 <div class="legend" style="margin:2px 0 6px">
-  <span><i class="sw" style="background:var(--c1);border-color:var(--c1)"></i>B's slab 7.80 GB</span>
-  <span><i class="sw" style="background:var(--c2);border-color:var(--c2)"></i>records and work lists 1.81 GB</span>
-  <span><i class="sw" style="background:var(--c3);border-color:var(--c3)"></i>metric and factor 0.21 GB</span>
-  <span><i class="sw" style="background:var(--c4);border-color:var(--c4)"></i>everything else 0.04 GB</span>
+  <span><i class="sw" style="background:var(--c1);border-color:var(--c1)"></i>the ERI buffer; B's slab</span>
+  <span><i class="sw" style="background:var(--c2);border-color:var(--c2)"></i>metric and factor; pinned</span>
+  <span><i class="sw" style="background:var(--c3);border-color:var(--c3)"></i>handle workspace</span>
+  <span><i class="sw" style="background:var(--c4);border-color:var(--c4)"></i>everything else</span>
 </div>
-<svg viewBox="0 0 900 78" role="img" aria-label="Device 0 on gly10, 9.86 GB in all: B's slab 79 percent, the records and work lists 18 percent, the metric and its factor 2 percent, everything else under half a percent">
+<svg viewBox="0 0 900 118" role="img" aria-label="gpu0 holds 2.52 GB: the ERI buffer 2.15, the metric and its factor 0.21, the handle workspace 0.13, everything else 0.03. The host holds 8.19 GB: B's slab 7.80 on the heap and 0.39 pinned.">
   <g>
-    <rect x="10" y="12" width="688" height="26" rx="4" style="fill:var(--c1)"><title>B's slab: 7.80 GB (79.1%)</title></rect>
-    <rect x="700" y="12" width="157" height="26" style="fill:var(--c2)"><title>Records and work lists: 1.81 GB (18.4%); cells alone 1.79 GB</title></rect>
-    <rect x="859" y="12" width="16" height="26" style="fill:var(--c3)"><title>The metric and its factor: 0.21 GB (2.1%)</title></rect>
-    <rect x="877" y="12" width="13" height="26" rx="2" style="fill:var(--c4)"><title>Everything else, the eigensolve's scratch included: 0.04 GB (0.4%)</title></rect>
+    <rect x="10" y="12" width="204" height="22" style="fill:var(--c1)"><title>The ERI buffer: 2.15 GB at mem_per_gpu = 2 GiB</title></rect>
+    <rect x="216" y="12" width="20" height="22" style="fill:var(--c2)"><title>The metric and its factor: 0.21 GB</title></rect>
+    <rect x="238" y="12" width="13" height="22" style="fill:var(--c3)"><title>The handle workspace: 0.13 GB (128 MiB)</title></rect>
+    <rect x="253" y="12" width="4" height="22" style="fill:var(--c4)"><title>Everything else: S, H, X, D₀, the screening map and the eigensolve's scratch, 0.027 GB</title></rect>
   </g>
-  <text x="10" y="58" class="s">0</text>
-  <text x="890" y="58" text-anchor="end" class="s">9.86 GB on device 0</text>
-  <text x="354" y="58" text-anchor="middle" class="m s">79%</text>
-  <text x="778" y="58" text-anchor="middle" class="m s">18%</text>
-  <text x="10" y="74" class="m s">Linear, one bar: the sum the counter holds when the final node checks the cap.</text>
+  <text x="265" y="28" class="s">gpu0: 2.52 GB, device</text>
+  <g>
+    <rect x="10" y="62" width="742" height="22" style="fill:var(--c1)"><title>B's slab on the host heap: 7.80 GB</title></rect>
+    <rect x="754" y="62" width="37" height="22" style="fill:var(--c2)"><title>Pinned: the ERI ring's staging and the host steps' staging: 0.39 GB</title></rect>
+  </g>
+  <text x="791" y="100" text-anchor="end" class="s">the host: 8.19 GB, heap and pinned</text>
+  <text x="10" y="114" class="m s">Linear, one scale: what the counters hold when the final node checks the caps, with mem_per_gpu = 2 GiB.</text>
 </svg>
-<figcaption>The same budget as one device's total. The two smallest segments are drawn at
-a minimum width so they stay visible; their share is in the legend and the tooltips.</figcaption>
+<figcaption>The same budget as two totals. B is on the host, so the host's cap is the
+one a large density-fitted run meets first; a GPU holds its O(N²) data, the ERI buffer and
+the handle workspace. Unbatched, with B and the <code>cells</code> work list on gpu0, the
+same molecule took 9.86 GB of device memory. The smallest segment is drawn at a minimum
+width; its size is in its tooltip.</figcaption>
 </figure>
 @@ replace-pre FIGURE-GRAPH
 <div class="legend">
@@ -590,90 +592,78 @@ const NODES = [
    note:"Same construction as the orbital set, over the fitting shells."},
 
   // initial guess: superposition of atomic densities, read from a table
-  {id:"guess", ph:'step', mb:'Heap: n_ao² (assembled on the host). Device: n_ao² (the upload)', layer:3, x:1.93, kind:"setup", label:"initial guess (SAD)",
+  {id:"guess", ph:"host", mb:"Device: n_ao² on gpu0 (D₀). Pinned scratch: its staging. Assembled on the host", layer:3, x:1.93, kind:"setup", label:"initial guess (SAD)",
    sub:"read D_atom, D₀ = ⊕ D_atom", deps:["obs"],
    out:"A starting density: each atom's block is its element's tabulated atomic density, and blocks between atoms are zero",
    size:"N × N, symmetric, block diagonal",
-   note:"Reads one precomputed atomic density per distinct element, for this orbital basis, and places it on every atom of that element. The basis set says which elements occur and where each atom's functions sit. No integral, S, H, X or electron count is needed: the atoms are neutral, and the first SCF diagonalization imposes the occupation."},
+   note:"Reads one precomputed atomic density per distinct element, for this orbital basis, and places it on every atom of that element. No integral, S, H, X or electron count is needed: the atoms are neutral, and the first SCF diagonalization imposes the occupation."},
 
-  // transforms and screening
-  {id:"sph", ph:'step', mb:'Device: one small table per l', layer:3, x:2.88, kind:"setup", label:"orbital spherical transform",
-   sub:"Cartesian → spherical, per l", deps:["obs"],
-   out:"For each angular momentum l up to the orbital set's largest: the (2l+1) × (l+1)(l+2)/2 coefficient matrix",
-   size:"one small matrix per l",
-   note:"Depends on the orbital basis set only through its largest l."},
-  {id:"scr", ph:'step', mb:'Device: n_shell² bounds, and the kept-pair list at its bound', layer:3, x:7.4, kind:"int", label:"pair screening map",
+  // screening
+  {id:"scr", ph:"step", mb:"Device: n_shell² bounds, and the kept-pair list at its bound", layer:3, x:7.4, kind:"int", label:"pair screening map",
    sub:"Q_μν = √(μν|μν)", deps:["obs"],
    out:"A bound for every orbital shell pair, and the list of pairs large enough to keep",
    size:"N_shell × N_shell bounds; N_pair kept",
-   note:"The Schwarz bound: |(μν|P)| ≤ Q_μν √(P|P). It decides which shell pairs the three-centre integrals compute, and so the pair dimension of (μν|P) and of B."},
-  {id:"asph", ph:'step', mb:'Device: one small table per l', layer:3, x:10.8, kind:"setup", label:"auxiliary spherical transform",
-   sub:"Cartesian → spherical, per l", deps:["abs"],
-   out:"The same matrices, up to the fitting set's largest l",
-   size:"one small matrix per l",
-   note:"Separate from the orbital one because the fitting set usually reaches two or more l higher."},
+   note:"The Schwarz bound: |(μν|P)| ≤ Q_μν √(P|P). It decides which shell pairs the three-centre integrals compute. Not in v0.0.4, which screens nothing."},
 
-  // integrals
-  {id:"S", ph:'step', mb:'Device: n_ao²', layer:4, x:3.0, kind:"int", label:"overlap", sub:"S = (μ|ν)",
-   deps:["obs","sph"], out:"Overlap matrix", size:"N × N, symmetric",
-   note:"One-electron, two-centre."},
-  {id:"T", ph:'step', mb:'Device: n_ao²', layer:4, x:4.0, kind:"int", label:"kinetic", sub:"T = (μ|−½∇²|ν)",
-   deps:["obs","sph"], out:"Kinetic energy matrix", size:"N × N, symmetric",
-   note:"One-electron, two-centre."},
-  {id:"V", ph:'step', mb:'Device: n_ao²', layer:4, x:5.0, kind:"int", label:"nuclear attraction",
-   sub:"V = (μ|−Σ Z_A/r_A|ν)", deps:["obs","sph","read_xyz"],
+  // integrals: the one-electron matrices and the metric on the host
+  {id:"S", ph:"host", mb:"Device: n_ao² on gpu0 (the upload). Pinned scratch: its staging. No library, no lock", layer:4, x:3.0, kind:"int", label:"overlap", sub:"S = (μ|ν)",
+   deps:["obs"], out:"Overlap matrix", size:"N × N, symmetric",
+   note:"One-electron, two-centre. Built on the host directly in the solid harmonics (s_overlap_host)."},
+  {id:"T", ph:"host", mb:"Nothing: host scratch of the core-Hamiltonian step, O(n_ao²), outside the budget by policy", layer:4, x:4.0, kind:"int", label:"kinetic", sub:"T = (μ|−½∇²|ν)",
+   deps:["obs"], out:"Kinetic energy matrix", size:"N × N, symmetric",
+   note:"One-electron, two-centre, on the host (t_kinetic_host)."},
+  {id:"V", ph:"host", mb:"Nothing: host scratch of the core-Hamiltonian step, O(n_ao²), outside the budget by policy", layer:4, x:5.0, kind:"int", label:"nuclear attraction",
+   sub:"V = (μ|−Σ Z_A/r_A|ν)", deps:["obs","read_xyz"],
    out:"Nuclear attraction matrix", size:"N × N, symmetric",
-   note:"The only one-electron integral that needs the nuclei themselves, not just the shell centres."},
-  {id:"mnP", ph:'step', mb:'Device: n_pair × n_aux, n_pair at its bound, built into B\u2019s slab: the largest charge. Pinned and device scratch: its records and work lists (cells, gather, aux records), the second largest', layer:4, x:7.4, kind:"int", label:"three-centre integrals",
-   sub:"(μν|P)", deps:["obs","abs","sph","asph","scr"],
-   out:"Coulomb integrals between each orbital pair and each fitting function",
-   size:"N_pair × N_aux, N_pair ≤ N(N+1)/2",
-   note:"The largest object and the most expensive node in the graph."},
-  {id:"PQ", ph:'step', mb:'Device: n_aux². Pinned and device scratch: its records and work lists (metric pairs, aux records)', layer:4, x:9.8, kind:"int", label:"fitting metric", sub:"J = (P|Q)",
-   deps:["abs","asph"], out:"Coulomb metric of the fitting basis",
+   note:"The only one-electron integral that needs the nuclei themselves, not just the shell centres. On the host (v_potential_en_host)."},
+  {id:"mnP", ph:"step", mb:"Part of eri: built a pair batch at a time in the ERI buffer's ring, on every GPU. Device: the ERI buffer, mem_per_gpu per GPU. Pinned: the ring's staging", layer:4, x:7.4, kind:"int", label:"three-centre integrals",
+   sub:"(μν|P), a pair batch at a time", deps:["obs","abs","scr"],
+   out:"Coulomb integrals between each orbital pair and each fitting function, one pair batch at a time",
+   size:"a pair batch × N_aux, in the ring",
+   note:"The most expensive node in the graph. Never resident whole: each GPU forms its own pair batches and fits them at once."},
+  {id:"PQ", ph:"host", mb:"Device: n_aux² on every GPU (the upload). Pinned scratch: its staging. No library, no lock", layer:4, x:9.8, kind:"int", label:"fitting metric", sub:"J = (P|Q)",
+   deps:["abs"], out:"Coulomb metric of the fitting basis",
    size:"N_aux × N_aux, symmetric positive definite",
-   note:"Two-centre, two-electron. Needs no orbital basis."},
+   note:"Two-centre, two-electron, on the host (df_metric). Needs no orbital basis. An Output: the derivative steps read it too."},
 
   // linear algebra
-  {id:"X", ph:'step', mb:'Device: n_ao². Scratch: the eigensolve’s work at n_ao. Holds gpu0's library lock', layer:5, x:3.55, kind:"la", label:"orthogonalizer", sub:"X: XᵀSX = 1",
+  {id:"X", ph:"step", mb:"Device: n_ao² on gpu0. Scratch: the eigensolve’s work at n_ao. Holds gpu0’s lock", layer:5, x:3.55, kind:"la", label:"orthogonalizer", sub:"X: XᵀSX = 1",
    deps:["S"], out:"The transform to an orthonormal basis", size:"N × N (or N × N_kept)",
    note:"Symmetric S^(−1/2), or canonical with small eigenvalues of S dropped."},
-  {id:"H", ph:'step', mb:'Device: n_ao². Holds gpu0's library lock', layer:5, x:4.6, kind:"la", label:"core Hamiltonian", sub:"H = T + V",
+  {id:"H", ph:"host", mb:"Device: n_ao² on gpu0 (the upload). Pinned scratch: its staging. No library, no lock", layer:5, x:4.6, kind:"la", label:"core Hamiltonian", sub:"H = T + V",
    deps:["T","V"], out:"The one-electron part of the Fock matrix",
-   size:"N × N, symmetric", note:"A sum. The SCF never needs T and V apart."},
-  {id:"L", ph:'step', mb:'Device: n_aux²', layer:5, x:9.8, kind:"la", label:"factor the metric", sub:"J = L Lᵀ",
-   deps:["PQ"], out:"A factor of the metric (Cholesky), or J^(−1/2)",
+   size:"N × N, symmetric", note:"A sum, on the host. The SCF never needs T and V apart, so they are the step's scratch and only H is uploaded."},
+  {id:"L", ph:"step", mb:"Part of eri: device n_aux² on every GPU, in the EriManager. Holds every GPU’s lock", layer:5, x:9.8, kind:"la", label:"factor the metric", sub:"J = L Lᵀ",
+   deps:["PQ"], out:"The Cholesky factor of the metric, on every GPU",
    size:"N_aux × N_aux",
-   note:"The \"orthogonalize (P|Q)\" step: it makes the fitting functions orthonormal in the Coulomb metric."},
-  {id:"B", ph:'step', mb:'n_pair × n_aux as its own step; nothing more if solved in place in one step with (μν|P). Holds gpu0's library lock', layer:6, x:8.6, kind:"la", label:"fitting vectors",
-   sub:"B = (μν|Q) L⁻ᵀ", deps:["mnP","L"],
+   note:"The tree's own Cholesky recipe, on the GPU's stream before the first batch, overlapping that batch's kernels."},
+  {id:"B", ph:"step", mb:"Part of eri: heap n_pair × n_aux at the unscreened bound, in the EriManager: the largest charge", layer:6, x:8.6, kind:"la", label:"fitting vectors",
+   sub:"B = (μν|Q) L⁻ᵀ, on the host", deps:["mnP","L"],
    out:"B_μν^P, with (μν|λσ) ≈ Σ_P B_μν^P B_λσ^P", size:"N_pair × N_aux",
-   note:"A triangular solve against the factor, over every orbital pair. Once built, (μν|P) and the factor are no longer needed."},
+   note:"Each pair batch is fitted against L by the tree's trsm recipe on the GPU's stream, then downloaded into B's slab on the host heap. J/K passes contract it over aux batches, the cached ones from the GPUs' ERI buffers."},
 
   // boundary
-  {id:"scf", ph:'step', mb:'The SCF step’s own: C, F, D, the DIIS rings. Scratch: the eigensolve’s work at n_ao', layer:7, x:0, kind:"scf", wide:true, label:"SCF iterations",
+  {id:"scf", ph:"step", mb:"The SCF step’s own: C, D, the orbital energies. Scratch: F, the DIIS ring, the eigensolve’s work at n_ao. Holds the EriManager’s lock and every GPU’s", layer:7, x:0, kind:"scf", wide:true, label:"SCF iterations",
    sub:"not executed: the graph ends here", deps:["nelec","enuc","S","X","H","B","guess"],
-   out:"Nothing here. Each iteration would build J and K from B and the density, add H, and diagonalize in the basis X gives.",
+   out:"Nothing here. Each iteration would call the EriManager's build_jk with the density, add H, and diagonalize in the basis X gives.",
    size:"", note:"S is still needed inside: the convergence error FDS − SDF uses it."}
 ];
 
 // What each node's mem_budget charges on gly10 in cc-pVDZ / cc-pVDZ-JKFIT, in bytes:
-// d device, p pinned, h host heap; parts for the tooltip. From the formulas above.
+// d device (per GPU), p pinned, h host heap; parts for the tooltip. The ERI
+// buffer is at an example mem_per_gpu of 2 GiB; its ring staging is illustrative.
 const SQ = 4310048, AUX2 = 104025888;
 const GLY = {
-  guess: {d: SQ, h: SQ, parts: "D\u2080 assembled on the host, and its upload"},
-  sph:   {d: 320, parts: "one matrix per l up to d"},
-  scr:   {d: 1404936, parts: "342\u00b2 bounds and the 58,653-pair list"},
-  asph:  {d: 1960, parts: "one matrix per l up to g"},
-  S: {d: SQ}, T: {d: SQ}, V: {d: SQ},
-  mnP:   {d: 7803297456 + 1794937616, p: 1794937616,
-          parts: "B\u2019s slab 7.80 GB; records and work lists 1.79 GB on each side, scratch (cells 1.79 GB, gather 4.3 MB, aux records 51 kB)"},
-  PQ:    {d: AUX2 + 19481952, p: 19481952,
-          parts: "the metric 104 MB; records and work lists 19.5 MB on each side, scratch (metric pairs 19.4 MB, aux records 51 kB)"},
-  X: {d: SQ, parts: "X 4.3 MB; its eigensolve's work is the scratch row"},
-  H: {d: SQ},
-  L: {d: AUX2},
-  B: {d: 0, parts: "nothing: solved in place in the three-centre step\u2019s slab"},
+  guess: {d: SQ, p: SQ, parts: "D₀ on gpu0; its pinned staging, scratch"},
+  scr:   {d: 1404936, parts: "342² bounds and the 58,653-pair list"},
+  S:     {d: SQ, p: SQ, parts: "S on gpu0; its pinned staging, scratch"},
+  mnP:   {d: 2147483648, p: 268435456,
+          parts: "the ERI buffer on every GPU, mem_per_gpu = 2 GiB: the build’s ring of two pair batches with their records and work lists, then the J/K ring, the fragments and the cache; pinned, the ring’s staging"},
+  PQ:    {d: AUX2, p: AUX2, parts: "the metric on every GPU; its pinned staging, scratch"},
+  X:     {d: SQ, parts: "X 4.3 MB; its eigensolve’s work is the scratch row"},
+  H:     {d: SQ, p: SQ, parts: "H on gpu0; its pinned staging, scratch"},
+  L:     {d: AUX2, parts: "the factor on every GPU, in the EriManager"},
+  B:     {h: 7803297456, parts: "B’s slab on the host heap, 270,497 pair columns × 3606"},
 };
 const fmtB = b => {
   if (!b) return "0";
@@ -691,11 +681,12 @@ const glyText = id => {
 const logFrac = b => b <= 0 ? 0 : Math.max(0, Math.min(1, (Math.log10(b) - 2) / 8));
 
 const U = 216, W = 200, HH = 48, LY = 104, PX = 18, PY = 16;
-const XMAX = 10.8;
+const XMAX = 9.8;
 const TARGET_X = {};
 const SIDE_EXIT = {"read_xyz>V": 3.2};
 const PHASE = {config: "config", setup: "setup (not budgeted)",
-               step: "a step: budget mode, then execute mode"};
+               step: "a GPU step: budget mode, then execute mode",
+               host: "a host step: built on rayon's threads, then uploaded"};
 const byId = Object.fromEntries(NODES.map(n => [n.id, n]));
 NODES.forEach(n => { n.deps = n.deps || []; n.kids = []; });
 NODES.forEach(n => n.deps.forEach(d => byId[d].kids.push(n.id)));
@@ -898,7 +889,7 @@ for (const n of NODES) {
 {
   const bsvg = document.getElementById("budgetbars");
   const rows = NODES.filter(n => GLY[n.id]).map(n => ({label: n.label, id: n.id, ...GLY[n.id]}));
-  rows.push({label: "scratch (final node, a max)", d: 8655336,
+  rows.push({label: "scratch (final node, packed)", d: 8655336,
              parts: "the eigensolve at n_ao, by the LAPACK formula; X and the SCF share it"});
   const LX = 236, X0 = 250, X1 = 790, TOP = 22, BH = 7, GAP = 2;
   const kindsOf = r => [["d", "var(--c1)", "device"], ["p", "var(--c2)", "pinned"],
@@ -927,9 +918,9 @@ for (const n of NODES) {
     el("rect", {x: 0, y: ry - 4, width: Wd, height: h + 8, fill: "transparent"}, g);
     const lt = el("text", {x: LX, y: ry + h / 2 + 4, "text-anchor": "end"}, g);
     lt.textContent = r.label;
-    if (!ks.length || (ks.length === 1 && !r.d)) {
+    if (!ks.length || ks.every(k => !r[k[0]])) {
       const z = el("text", {x: X0 + 4, y: ry + h / 2 + 4, class: "m s"}, g);
-      z.textContent = "nothing: in place in the three-centre step";
+      z.textContent = "nothing";
       continue;
     }
     ks.forEach(([k, col], i) => {
@@ -944,9 +935,9 @@ for (const n of NODES) {
 }
 })();
 </script>
-@@ replace-pre card's stream:  eri [
+@@ replace-pre GPU's stream:  eri [
 <figure><div class="scroll">
-<svg viewBox="0 0 800 244" role="img" aria-label="Streams on gpu0 over time. eri holds gpu0's lock: on the card's stream it factors the metric, then fits batches 0, 1 and 2 one after another. On eri's own two slot streams, drawn above and below it, each batch's kernels run before its fit and its copy after it, joined to the card's stream by events, so batch 1's kernels overlap batch 0's fit. After the wrapper's sync eri releases the lock and the orthogonalizer takes it, putting its eigensolve and gemms on the card's stream. guess, which calls no library, runs on its own stream throughout and holds no lock.">
+<svg viewBox="0 0 800 244" role="img" aria-label="Streams on gpu0 over time. eri holds gpu0's lock: on the GPU's stream it factors the metric, then fits batches 0, 1 and 2 one after another. On eri's own two ring streams, drawn above and below it, each batch's kernels run before its fit and its copy after it, joined to the GPU's stream by events, so batch 1's kernels overlap batch 0's fit. After the wrapper's sync eri releases the lock and the orthogonalizer takes it, putting its eigensolve and gemms on the GPU's stream. The host steps' uploads (S, H, the guess) call no library, run on their own streams and hold no lock.">
 <defs>
 <marker id="v4e" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="at" d="M0,0L10,5L0,10z"/></marker>
 </defs>
@@ -955,12 +946,12 @@ for (const n of NODES) {
 <text class="sm" x="392" y="42" text-anchor="middle">eri holds it for its whole run</text>
 <rect class="ab" x="625" y="30" width="145" height="16"/>
 <text class="sm" x="697" y="42" text-anchor="middle">orthogonalizer</text>
-<text class="sm" x="20" y="79">eri's stream, slot 1</text>
+<text class="sm" x="20" y="79">eri's ring stream 1</text>
 <rect class="row" x="276" y="64" width="80" height="22"/>
 <text class="sm" x="316" y="79" text-anchor="middle">kernels 1</text>
 <rect class="row" x="436" y="64" width="46" height="22"/>
 <text class="sm" x="459" y="79" text-anchor="middle">copy 1</text>
-<text class="sm" x="20" y="119">the card's stream</text>
+<text class="sm" x="20" y="119">gpu0's stream</text>
 <rect class="row" x="180" y="104" width="70" height="22"/>
 <text class="sm" x="215" y="119" text-anchor="middle">factor L</text>
 <rect class="row" x="284" y="104" width="62" height="22"/>
@@ -971,7 +962,7 @@ for (const n of NODES) {
 <text class="sm" x="511" y="119" text-anchor="middle">fit 2</text>
 <rect class="row" x="630" y="104" width="135" height="22"/>
 <text class="sm" x="697" y="119" text-anchor="middle">syevd, gemms</text>
-<text class="sm" x="20" y="159">eri's stream, slot 0</text>
+<text class="sm" x="20" y="159">eri's ring stream 0</text>
 <rect class="row" x="190" y="144" width="84" height="22"/>
 <text class="sm" x="232" y="159" text-anchor="middle">kernels 0</text>
 <rect class="row" x="354" y="144" width="46" height="22"/>
@@ -980,9 +971,9 @@ for (const n of NODES) {
 <text class="sm" x="440" y="159" text-anchor="middle">kernels 2</text>
 <rect class="row" x="550" y="144" width="46" height="22"/>
 <text class="sm" x="573" y="159" text-anchor="middle">copy 2</text>
-<text class="sm" x="20" y="205">guess's stream</text>
+<text class="sm" x="20" y="205">host steps' streams</text>
 <rect class="box" x="230" y="190" width="170" height="22"/>
-<text class="sm" x="315" y="205" text-anchor="middle">no library, no lock</text>
+<text class="sm" x="315" y="205" text-anchor="middle">uploads: no library, no lock</text>
 <path class="al" d="M274,144L286,128" marker-end="url(#v4e)"/>
 <path class="al" d="M346,126L356,143" marker-end="url(#v4e)"/>
 <path class="al" d="M356,86L368,102" marker-end="url(#v4e)"/>
@@ -993,49 +984,41 @@ for (const n of NODES) {
 <text class="sm mt" x="614" y="236" text-anchor="middle">the wrapper syncs every stream, then releases</text>
 <text class="sm at" x="180" y="236">arrows: events inside eri</text>
 </svg></div>
-<figcaption>Streams on gpu0. <code>eri</code> holds the lock, so the card's stream is its own for the run: the factor, then each batch's fit. Its two slot streams carry the kernels and the copies, joined to the card's stream by events, so a batch's kernels overlap the batch before's fit and two fits never overlap. The orthogonalizer waits for the lock. <code>guess</code> calls no library and overlaps all of it. Not to scale.</figcaption>
+<figcaption>Streams on gpu0. <code>eri</code> holds the lock, so the GPU's stream is its own for the run: the factor, then each pair batch's fit. Its two ring streams carry the kernels and the copies, joined to the GPU's stream by events, so a batch's kernels overlap the batch before's fit and two fits never overlap. The orthogonalizer waits for the lock. The host steps' uploads call no library and overlap all of it. Every other GPU runs the same for <code>eri</code>'s share. Not to scale.</figcaption>
 </figure>
-@@ replace-pre harmonics ─┬─&gt; overlap
+@@ replace-pre overlap ──&gt; orthogonalizer
 <figure><div class="scroll">
-<svg viewBox="0 0 800 262" role="img" aria-label="The step graph of DF-RHF. harmonics and records are each read by overlap, core_hamiltonian and eri. overlap is read by orthogonalizer. orthogonalizer, core_hamiltonian, eri and guess are read by scf. overlap, core_hamiltonian, orthogonalizer, eri and scf call the library and hold a card's lock; harmonics, records and guess do not.">
+<svg viewBox="0 0 800 262" role="img" aria-label="The step graph of DF-RHF. overlap, core_hamiltonian, metric and guess are host steps that upload and take no lock. overlap is read by orthogonalizer, metric by eri. orthogonalizer, core_hamiltonian, eri and guess are read by scf. orthogonalizer holds gpu0's lock, eri every GPU's, and scf the EriManager's and every GPU's.">
 <defs>
 <marker id="v4a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
 </defs>
-<rect class="box" x="20" y="20" width="130" height="44" rx="4"/>
-<text class="t" x="85" y="38" text-anchor="middle">harmonics</text>
-<text class="sm mt" x="85" y="54" text-anchor="middle">gpu0</text>
-<rect class="box" x="20" y="80" width="130" height="44" rx="4"/>
-<text class="t" x="85" y="98" text-anchor="middle">records</text>
-<text class="sm mt" x="85" y="114" text-anchor="middle">all GPUs</text>
-<rect class="box" x="20" y="200" width="130" height="44" rx="4"/>
-<text class="t" x="85" y="218" text-anchor="middle">guess</text>
-<text class="sm mt" x="85" y="234" text-anchor="middle">gpu0</text>
-<rect class="ab" x="220" y="20" width="170" height="44" rx="4"/>
-<text class="t" x="305" y="38" text-anchor="middle">overlap</text>
-<text class="sm mt" x="305" y="54" text-anchor="middle">gpu0, holds its lock</text>
-<rect class="ab" x="220" y="80" width="170" height="44" rx="4"/>
-<text class="t" x="305" y="98" text-anchor="middle">core_hamiltonian</text>
-<text class="sm mt" x="305" y="114" text-anchor="middle">gpu0, holds its lock</text>
-<rect class="ab" x="220" y="140" width="170" height="44" rx="4"/>
-<text class="t" x="305" y="158" text-anchor="middle">eri</text>
-<text class="sm mt" x="305" y="174" text-anchor="middle">all GPUs, each lock, a ring</text>
-<rect class="ab" x="440" y="20" width="160" height="44" rx="4"/>
-<text class="t" x="520" y="38" text-anchor="middle">orthogonalizer</text>
-<text class="sm mt" x="520" y="54" text-anchor="middle">gpu0, holds its lock</text>
-<rect class="ab" x="640" y="110" width="140" height="44" rx="4"/>
-<text class="t" x="710" y="128" text-anchor="middle">scf</text>
-<text class="sm mt" x="710" y="144" text-anchor="middle">all GPUs, each lock</text>
-<path class="ln" d="M150,42C185,42 185,36 218,36" marker-end="url(#v4a)"/>
-<path class="ln" d="M150,42C185,42 185,94 218,94" marker-end="url(#v4a)"/>
-<path class="ln" d="M150,42C185,42 185,154 218,154" marker-end="url(#v4a)"/>
-<path class="ln" d="M150,102C185,102 185,50 218,50" marker-end="url(#v4a)"/>
-<path class="ln" d="M150,102C185,102 185,108 218,108" marker-end="url(#v4a)"/>
-<path class="ln" d="M150,102C185,102 185,168 218,168" marker-end="url(#v4a)"/>
-<path class="ln" d="M390,42H438" marker-end="url(#v4a)"/>
-<path class="ln" d="M600,42C622,42 618,118 638,118" marker-end="url(#v4a)"/>
-<path class="ln" d="M390,102C500,102 560,127 638,127" marker-end="url(#v4a)"/>
-<path class="ln" d="M390,162C500,162 560,137 638,137" marker-end="url(#v4a)"/>
-<path class="ln" d="M150,222C450,222 560,147 638,147" marker-end="url(#v4a)"/>
+<rect class="box" x="20" y="20" width="170" height="44" rx="4"/>
+<text class="t" x="105" y="38" text-anchor="middle">overlap</text>
+<text class="sm mt" x="105" y="54" text-anchor="middle">host, then gpu0</text>
+<rect class="box" x="20" y="80" width="170" height="44" rx="4"/>
+<text class="t" x="105" y="98" text-anchor="middle">core_hamiltonian</text>
+<text class="sm mt" x="105" y="114" text-anchor="middle">host, then gpu0</text>
+<rect class="box" x="20" y="140" width="170" height="44" rx="4"/>
+<text class="t" x="105" y="158" text-anchor="middle">metric</text>
+<text class="sm mt" x="105" y="174" text-anchor="middle">host, then every GPU</text>
+<rect class="box" x="20" y="200" width="170" height="44" rx="4"/>
+<text class="t" x="105" y="218" text-anchor="middle">guess</text>
+<text class="sm mt" x="105" y="234" text-anchor="middle">host, then gpu0</text>
+<rect class="ab" x="260" y="20" width="180" height="44" rx="4"/>
+<text class="t" x="350" y="38" text-anchor="middle">orthogonalizer</text>
+<text class="sm mt" x="350" y="54" text-anchor="middle">gpu0, holds its lock</text>
+<rect class="ab" x="260" y="140" width="180" height="44" rx="4"/>
+<text class="t" x="350" y="158" text-anchor="middle">eri</text>
+<text class="sm mt" x="350" y="174" text-anchor="middle">every GPU, each lock</text>
+<rect class="ab" x="560" y="110" width="200" height="44" rx="4"/>
+<text class="t" x="660" y="128" text-anchor="middle">scf</text>
+<text class="sm mt" x="660" y="144" text-anchor="middle">EriManager, every GPU</text>
+<path class="ln" d="M190,42H258" marker-end="url(#v4a)"/>
+<path class="ln" d="M190,162H258" marker-end="url(#v4a)"/>
+<path class="ln" d="M440,42C500,42 500,118 558,118" marker-end="url(#v4a)"/>
+<path class="ln" d="M190,102C380,102 470,127 558,127" marker-end="url(#v4a)"/>
+<path class="ln" d="M440,162C500,162 500,137 558,137" marker-end="url(#v4a)"/>
+<path class="ln" d="M190,222C400,222 480,147 558,147" marker-end="url(#v4a)"/>
 </svg></div>
-<figcaption>The step DAG. The five outlined steps call the library, so the wrapper holds a card's lock for their run: <code>overlap</code>, <code>core_hamiltonian</code> and <code>eri</code> are unordered and take gpu0's one after another, and the orthogonalizer is unordered with the last two. The SCF's loop is inside its node. Budget mode adds one final node after all eight.</figcaption>
+<figcaption>The step DAG. The four host steps build on rayon's threads and upload; an upload calls no library, so they take no lock and overlap the GPU work. The three outlined steps call the library: the orthogonalizer and <code>eri</code> are unordered and take gpu0's lock one after the other, and <code>scf</code> takes the <code>EriManager</code>'s lock and then every GPU's, in rank order. The SCF's loop is inside its node. Budget mode adds one final node after all seven.</figcaption>
 </figure>
