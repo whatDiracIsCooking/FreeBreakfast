@@ -1,0 +1,59 @@
+[package]
+name = "fb-v03"
+version = "0.3.0"
+edition = "2024"
+publish = false
+description = "Prototype of the rustflow redesign: the device-free core with packed step scratch, and batched DF B and J/K on num_gpus cards"
+
+# A workspace of its own: rust/'s lints and lock do not apply to a prototype,
+# and rust/'s gates never see it. Cargo is run by hand (README.md).
+[workspace]
+
+[lib]
+name = "fb_v03"
+path = "src/lib.rs"
+
+[dependencies]
+rustflow = { git = "https://github.com/whatDiracIsCooking/rustflow", rev = "f184bcabac5ab01dec0def8c3f369d1bbdb3bbaf" }
+log = { version = "0.4", features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+
+wwr-sys = { path = "../../../deps/WarpWraps/src/capi/wwr-sys", default-features = false, features = [
+    "runtime_api",
+    "blas",
+] }
+
+# The lower layer the redesign keeps: the wwr wrappers, the kernel bindings'
+# raw externs, and the host-side tables.
+fb-core-wwr = { path = "../../../rust/core/wwr" }
+fb-core-error-handling = { path = "../../../rust/core/error_handling" }
+fb-core-arena = { path = "../../../rust/core/arena", default-features = false }
+fb-kernel-abi = { path = "../../../rust/kernel_abi" }
+fb-recipes-sys = { path = "../../../rust/recipes/sys" }
+fb-integrals-sys = { path = "../../../rust/integrals/sys" }
+fb-integrals-mmd = { path = "../../../rust/integrals/mmd" }
+fb-basis = { path = "../../../rust/basis" }
+fb-molecule = { path = "../../../rust/molecule" }
+fb-io-basis = { path = "../../../rust/io/basis" }
+fb-io-xyz = { path = "../../../rust/io/xyz" }
+fb-io-sad = { path = "../../../rust/io/sad" }
+fb-sad = { path = "../../../rust/sad" }
+
+[dev-dependencies]
+# The old path, for the B it is held against (tests/gpu.rs).
+fb-core-arena = { path = "../../../rust/core/arena", features = ["device"] }
+fb-core-planner = { path = "../../../rust/core/planner" }
+fb-core-thread-pool = { path = "../../../rust/core/thread_pool", features = ["device"] }
+fb-integrals-eri-density-fitting-metric = { path = "../../../rust/integrals/eri/density_fitting/metric" }
+fb-integrals-eri-density-fitting-pair-map = { path = "../../../rust/integrals/eri/density_fitting/pair_map" }
+fb-integrals-eri-density-fitting-three-center = { path = "../../../rust/integrals/eri/density_fitting/three_center" }
+fb-recipes-cholesky = { path = "../../../rust/recipes/cholesky" }
+
+# The tests' host reference contractions are plain loops.
+[profile.dev]
+opt-level = 1
+
+# The atomic SCF behind a SAD stamp is slow unoptimized (rust/Cargo.toml).
+[profile.dev.package.fb-sad]
+opt-level = 3
