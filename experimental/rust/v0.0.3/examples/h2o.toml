@@ -1,0 +1,25 @@
+# The DF J and K of water's SAD density in cc-pVDZ over cc-pVDZ-JKFIT, on
+# one card. One table per step: a step whose table is absent is not in the
+# DAG.
+
+[molecule]
+xyz = "../../../../rust/integrals/one_electron/overlap/tests/data/h2o.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[eri]
+aux_basis = "cc-pvdz-jkfit"
+# limit_mib = 0.52   # the step's own limit: absent, 1/8 of the card's cap
+
+[guess]
+
+[jk]
+# limit_mib = 0.41
+
+[resources]
+devices = [0]
+threads = 4
+# device_cap_mib = 512   # absent: the card's free memory at setup, less its margin
+# host_cap_mib = 4096    # absent: the host's available memory, less its margin
+# nan_fill = true        # test mode: every scratch lease NaN before run

@@ -1,0 +1,100 @@
+@@ replace-pre records ──&gt; eri
+<figure><div class="scroll">
+<svg viewBox="0 0 680 190" role="img" aria-label="The step graph. records, an all-GPU step, is read by eri. eri, an all-GPU step that calls the library, and guess, a gpu0 step, are read by jk, an all-GPU step that calls the library. After every step, in budget mode only, a final node packs the scratch and accepts or refuses the plan.">
+<defs>
+<marker id="v3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<rect class="box" x="20" y="24" width="150" height="50" rx="4"/>
+<text class="t" x="95" y="44" text-anchor="middle">records</text>
+<text class="sm mt" x="95" y="61" text-anchor="middle">all GPUs</text>
+<rect class="ab" x="220" y="24" width="170" height="50" rx="4"/>
+<text class="t" x="305" y="44" text-anchor="middle">eri</text>
+<text class="sm mt" x="305" y="61" text-anchor="middle">all GPUs, holds each card's lock</text>
+<rect class="ab" x="440" y="62" width="170" height="50" rx="4"/>
+<text class="t" x="525" y="82" text-anchor="middle">jk</text>
+<text class="sm mt" x="525" y="99" text-anchor="middle">all GPUs, holds each card's lock</text>
+<rect class="box" x="220" y="100" width="170" height="50" rx="4"/>
+<text class="t" x="305" y="120" text-anchor="middle">guess</text>
+<text class="sm mt" x="305" y="137" text-anchor="middle">gpu0</text>
+<path class="ln" d="M170,49H218" marker-end="url(#v3a)"/>
+<path class="ln" d="M390,49C415,49 415,80 438,80" marker-end="url(#v3a)"/>
+<path class="ln" d="M390,125C415,125 415,94 438,94" marker-end="url(#v3a)"/>
+<text class="sm mt" x="20" y="176">Edges are the steps' declared reads and nothing else. Budget mode adds one final node after all four: pack, accept or refuse.</text>
+</svg></div>
+<figcaption>The step DAG. <code>eri</code> and <code>jk</code> declare the library on every card, so the wrapper holds each card's lock for their run. <code>guess</code> has no path to <code>records</code> or <code>eri</code>, so its scratch may share bytes with neither.</figcaption>
+</figure>
+@@ after <p>The packed scratch of that run
+<figure><div class="scroll">
+<svg viewBox="0 0 680 318" role="img" aria-label="The two scratch slabs of card 0 for benzene on two logical cards. The device slab is 42.22 MiB: jk's region is all of it from offset 0, eri's 9.47 MiB from offset 0, records' 23.75 KiB from offset 0. The pinned slab is 9.00 MiB: jk's region is all of it, eri's 3.49 MiB from offset 0, guess's 101.75 KiB from offset 3.49 MiB, records' 23.75 KiB from offset 0. Each slab's packed peak equals its lower bound; the plain sums are 51.71 and 12.61 MiB.">
+<text class="t" x="20" y="20">device scratch, card 0: one slab of 42.22 MiB</text>
+<text class="sm mt" x="660" y="20" text-anchor="end">plain sum 51.71 MiB; lower bound 42.22 MiB (jk)</text>
+<text class="sm" x="20" y="48">jk</text>
+<rect class="ab" x="100" y="34" width="560" height="22"/>
+<text class="sm" x="380" y="49" text-anchor="middle">42.22 MiB at offset 0</text>
+<text class="sm" x="20" y="76">eri</text>
+<rect class="row" x="100" y="62" width="126" height="22"/>
+<text class="sm" x="232" y="77">9.47 MiB at offset 0</text>
+<text class="sm" x="20" y="104">records</text>
+<rect class="row" x="100" y="90" width="3" height="22"/>
+<text class="sm" x="110" y="105">23.75 KiB at offset 0</text>
+<path class="ml" d="M100,120H660"/>
+<text class="sm mt" x="100" y="134">0</text>
+<text class="sm mt" x="660" y="134" text-anchor="end">42.22 MiB</text>
+<text class="t" x="20" y="172">pinned scratch, card 0: one slab of 9.00 MiB</text>
+<text class="sm mt" x="660" y="172" text-anchor="end">plain sum 12.61 MiB; lower bound 9.00 MiB (jk)</text>
+<text class="sm" x="20" y="200">jk</text>
+<rect class="ab" x="100" y="186" width="560" height="22"/>
+<text class="sm" x="380" y="201" text-anchor="middle">9.00 MiB at offset 0</text>
+<text class="sm" x="20" y="228">eri</text>
+<rect class="row" x="100" y="214" width="217" height="22"/>
+<text class="sm" x="208" y="229" text-anchor="middle">3.49 MiB at offset 0</text>
+<text class="sm" x="20" y="256">guess</text>
+<rect class="row" x="317" y="242" width="6" height="22"/>
+<path class="al dash" d="M317,208V268"/>
+<text class="sm at" x="330" y="257">101.75 KiB at offset 3.49 MiB: unordered with eri, so above it</text>
+<text class="sm" x="20" y="284">records</text>
+<rect class="row" x="100" y="270" width="3" height="22"/>
+<text class="sm" x="110" y="285">23.75 KiB at offset 0</text>
+<path class="ml" d="M100,300H660"/>
+<text class="sm mt" x="100" y="314">0</text>
+<text class="sm mt" x="660" y="314" text-anchor="end">9.00 MiB</text>
+</svg></div>
+<figcaption>Each row is one step's region, drawn at its offset in the slab; rows that share a horizontal extent share bytes. <code>records</code>, <code>eri</code> and <code>jk</code> are on one path and start at 0. <code>guess</code> is ordered against <code>jk</code> only. Each bar is to scale within its slab; the two thinnest are drawn at a minimum width. From the run of the table above.</figcaption>
+</figure>
+@@ after <p>The locks of that run
+<figure><div class="scroll">
+<svg viewBox="0 0 680 232" role="img" aria-label="Execute mode of benzene on two logical cards, as a timeline that is not to scale. records and guess run first and take no lock; records ends at 0.22 milliseconds. eri then holds card 0's lock and card 1's lock from 0.23 to 191.50 milliseconds: on each card its own stream carries its kernels, the gemms, the tree's trsm and the downloads, and the wrapper synchronizes both streams before it releases the two locks. jk then holds both locks from 191.50 to 205.40 milliseconds.">
+<text class="sm mt" x="20" y="18">execute mode, benzene on two logical cards; not to scale</text>
+<text class="t" x="20" y="60">card 0</text>
+<text class="t" x="20" y="150">card 1</text>
+<text class="sm mt" x="20" y="76">lock</text>
+<text class="sm mt" x="20" y="100">streams</text>
+<text class="sm mt" x="20" y="166">lock</text>
+<text class="sm mt" x="20" y="190">streams</text>
+<rect class="ab" x="170" y="64" width="330" height="16"/>
+<text class="sm at" x="335" y="76" text-anchor="middle">held by eri</text>
+<rect class="ab" x="504" y="64" width="150" height="16"/>
+<text class="sm at" x="579" y="76" text-anchor="middle">held by jk</text>
+<rect class="ab" x="170" y="154" width="330" height="16"/>
+<text class="sm at" x="335" y="166" text-anchor="middle">held by eri</text>
+<rect class="ab" x="504" y="154" width="150" height="16"/>
+<text class="sm at" x="579" y="166" text-anchor="middle">held by jk</text>
+<rect class="row" x="80" y="86" width="40" height="20"/><text class="sm" x="100" y="100" text-anchor="middle">rec.</text>
+<rect class="row" x="124" y="86" width="40" height="20"/><text class="sm" x="144" y="100" text-anchor="middle">guess</text>
+<rect class="box" x="170" y="86" width="330" height="20"/>
+<text class="sm" x="335" y="100" text-anchor="middle">eri's stream: metric, Cholesky, its batches, the sync</text>
+<rect class="box" x="504" y="86" width="150" height="20"/>
+<text class="sm" x="579" y="100" text-anchor="middle">jk's stream</text>
+<rect class="row" x="80" y="176" width="40" height="20"/><text class="sm" x="100" y="190" text-anchor="middle">rec.</text>
+<rect class="box" x="170" y="176" width="330" height="20"/>
+<text class="sm" x="335" y="190" text-anchor="middle">eri's stream: metric, Cholesky, its batches, the sync</text>
+<rect class="box" x="504" y="176" width="150" height="20"/>
+<text class="sm" x="579" y="190" text-anchor="middle">jk's stream</text>
+<path class="ml dash" d="M170,40V206M502,40V206M654,40V206"/>
+<text class="sm mt" x="170" y="36" text-anchor="middle">0.23 ms</text>
+<text class="sm mt" x="502" y="36" text-anchor="middle">191.50 ms</text>
+<text class="sm mt" x="654" y="36" text-anchor="end">205.40 ms</text>
+<text class="sm mt" x="20" y="224">Each step takes card 0's lock, then card 1's, and releases both only after both of its streams are synchronized.</text>
+</svg></div>
+<figcaption>The locks as the bus recorded them. <code>records</code> and <code>guess</code> call no library and take no lock. Both cards are device 0 here, so the two rows are two locks, two workspaces and two sets of streams on one physical card.</figcaption>
+</figure>
