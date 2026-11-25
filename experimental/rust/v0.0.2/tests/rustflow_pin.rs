@@ -1,5 +1,5 @@
 //! What the design leans on from rustflow at its pinned revision, checked
-//! rather than read ("The step DAG on rustflow" in `docs/rust-redesign.html`):
+//! rather than read ("The step DAG on rustflow" in `experimental/rust/v0.0.4/v0.0.4.html`):
 //! a condition loop built inside a subflow runs, and joins before the
 //! subflow's node finishes; and a multi-condition sends a loop back to a body
 //! of several sources at once, so the body needs no empty entry node.

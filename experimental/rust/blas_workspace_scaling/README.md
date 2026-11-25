@@ -1,6 +1,6 @@
 # experimental/rust/blas_workspace_scaling — what a `dtrsm` needs from its handle
 
-`docs/rust-redesign.html`, "One handle set per card, under one lock", gives
+`experimental/rust/v0.0.4/v0.0.4.html`, "One handle set per card, under one lock", gives
 each card's BLAS handle a fixed 128 MiB workspace.
 `experimental/rust/handle_ring` had one reading behind that number: a
 4096 × 4096 `dtrsm` on hipBLAS writes 8 MiB of its workspace, and takes 8 MiB

@@ -1,6 +1,6 @@
 # rust/v0.0.3: packed step scratch, and batched steps on num_gpus cards
 
-The second prototype of the redesign in `docs/rust-redesign.html` ("Rust
+The second prototype of the redesign in `experimental/rust/v0.0.4/v0.0.4.html` ("Rust
 rebuild: steps, the memory budget and rustflow"), built against the design as
 it stood on 2026-11-24. It covers items 1 and 2 of that document's order of
 work and nothing more:

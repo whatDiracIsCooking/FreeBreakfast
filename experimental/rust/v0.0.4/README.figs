@@ -1,3 +1,949 @@
+@@ before <h2 id="the-shape">
+<style>
+/* The design figures, from docs/rust-redesign.html. Their palette is scoped
+   to the figures, so it does not touch the page's own variables. */
+figure.fig, .legend, .tools, .frame, #detail {
+  --panel: #ffffff; --ink: #1c1d21; --muted: #666a73;
+  --line: #d9d7cf; --hot: #c2410c;
+  --setup-bg: #e2f1ee; --setup-bd: #2b8a7a;
+  --int-bg: #e6e8fb; --int-bd: #4b55c4;
+  --la-bg: #fbeeda; --la-bd: #b7791f;
+  --edge: #9a9da6; --input-bg: #efeee9; --input-bd: #a3a6ad;
+  --scf-bg: #f1e9f5; --scf-bd: #8a4fa3;
+  --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #eda100;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) :is(figure.fig, .legend, .tools, .frame, #detail) {
+    --panel: #1f2126; --ink: #e8e8ea; --muted: #9a9ea8;
+    --line: #33363d; --hot: #fb923c;
+    --setup-bg: #17332f; --setup-bd: #4fb8a6;
+    --int-bg: #23274f; --int-bd: #8891f0;
+    --la-bg: #3a2c14; --la-bd: #e0a84a;
+    --edge: #6d717b; --input-bg: #26282e; --input-bd: #747985;
+    --scf-bg: #33233b; --scf-bd: #c08ad6;
+    --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500;
+  }
+}
+figure.fig { margin: 1.2rem 0 1.6rem; background: var(--panel);
+             border: 1px solid var(--line); border-radius: 8px;
+             padding: 10px 12px 8px; overflow-x: auto; color: var(--ink); }
+.fig svg { display: block; width: 100%; min-width: 700px; height: auto; }
+.fig text { fill: var(--ink); font: 12.5px system-ui, -apple-system, "Segoe UI", sans-serif; }
+.fig text.m { fill: var(--muted); }
+.fig text.b { font-weight: 600; }
+.fig text.s { font-size: 11.5px; }
+.fig text.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+                 font-size: 11.5px; }
+.fig rect, .fig path, .fig line { stroke-width: 1.5; }
+.fig .f-bus { fill: none; stroke: var(--edge); }
+.fig .f-plain { fill: var(--input-bg); stroke: var(--input-bd); }
+.fig .f-setup { fill: var(--setup-bg); stroke: var(--setup-bd); }
+.fig .f-int { fill: var(--int-bg); stroke: var(--int-bd); }
+.fig .f-la { fill: var(--la-bg); stroke: var(--la-bd); }
+.fig .f-scf { fill: var(--scf-bg); stroke: var(--scf-bd); }
+.fig .f-wait { fill: var(--panel); stroke: var(--input-bd); stroke-dasharray: 4 3; }
+.fig .f-hot { fill: none; stroke: var(--hot); }
+.fig .f-read { fill: none; stroke: var(--edge); stroke-dasharray: 5 3; }
+.fig .f-rule { stroke: var(--line); }
+.fig .f-cap { stroke: var(--hot); stroke-dasharray: 6 4; }
+.fig marker path.hot { fill: var(--hot); stroke: none; }
+.fig marker path.grey { fill: var(--edge); stroke: none; }
+.fig figcaption { color: var(--muted); margin-top: 6px; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 12px 0 10px;
+          font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+          color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 14px; height: 14px; border-radius: 3px; border: 1.5px solid; }
+.sw.input { background: var(--input-bg); border-color: var(--input-bd); border-style: dashed; }
+.sw.setup { background: var(--setup-bg); border-color: var(--setup-bd); }
+.sw.int { background: var(--int-bg); border-color: var(--int-bd); }
+.sw.la { background: var(--la-bg); border-color: var(--la-bd); }
+.sw.scf { background: var(--scf-bg); border-color: var(--scf-bd); border-style: dashed; }
+.frame { background: var(--panel); border: 1px solid var(--line);
+         border-radius: 10px; overflow: hidden; height: min(80vh, 860px);
+         touch-action: none; cursor: grab; }
+.frame.drag { cursor: grabbing; }
+.tools { display: flex; gap: 6px; align-items: center; margin: 0 0 8px;
+         font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+         color: var(--muted); flex-wrap: wrap; }
+.tools button { font: inherit; color: var(--ink); background: var(--panel);
+                border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px;
+                cursor: pointer; min-width: 34px; }
+.tools button:hover { border-color: var(--edge); }
+.frame svg { display: block; width: 100%; height: 100%; }
+.node rect { stroke-width: 1.5; rx: 7; }
+.node { cursor: pointer; }
+.node text { fill: var(--ink); pointer-events: none; }
+.node .t { font-size: 13.5px; font-weight: 600; }
+.node .s { font-size: 12px; fill: var(--muted); }
+.k-input rect { fill: var(--input-bg); stroke: var(--input-bd); stroke-dasharray: 5 3; }
+.k-setup rect { fill: var(--setup-bg); stroke: var(--setup-bd); }
+.k-int rect { fill: var(--int-bg); stroke: var(--int-bd); }
+.k-la rect { fill: var(--la-bg); stroke: var(--la-bd); }
+.k-scf rect { fill: var(--scf-bg); stroke: var(--scf-bd); stroke-dasharray: 7 4; }
+.edge { fill: none; stroke: var(--edge); stroke-width: 1.3; }
+.edge.on { stroke: var(--hot); stroke-width: 2.2; }
+.dim { opacity: 0.18; }
+.node.sel rect { stroke: var(--hot); stroke-width: 2.6; }
+#mk path { fill: var(--edge); } #mkon path { fill: var(--hot); }
+#detail { margin: 12px 0 14px; padding: 12px 14px; background: var(--panel);
+          color: var(--ink); border: 1px solid var(--line); border-radius: 10px;
+          min-height: 92px;
+          font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+#detail h3 { margin: 0 0 4px; font-size: 15px; }
+#detail p { margin: 0; }
+#detail dl { margin: 0; display: grid; grid-template-columns: 110px 1fr; gap: 2px 10px;
+             font-size: 14px; }
+#detail dt { color: var(--muted); }
+#detail dd { margin: 0; }
+#budgetbars .bar { transition: opacity .12s; }
+#budgetbars g.brow:hover .bar { opacity: .75; }
+#budgetbars .grid { stroke: var(--line); stroke-width: 1; }
+.node .mb { fill: var(--c1); }
+</style>
+@@ replace-pre FIGURE-01
+<figure class="fig">
+<svg viewBox="0 0 900 330" role="img" aria-label="The MainBus: shared state on top, one Output slot per step, each step writing its own slot and reading earlier ones">
+  <defs>
+    <marker id="fah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="hot" d="M0,1 L10,5 L0,9 z"/></marker>
+    <marker id="fag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="grey" d="M0,1 L10,5 L0,9 z"/></marker>
+  </defs>
+  <rect class="f-bus" x="18" y="14" width="864" height="200" rx="12"/>
+  <text class="b" x="34" y="38">MainBus</text>
+  <text class="m s" x="100" y="38">shared by every task body as Arc&lt;MainBus&gt;</text>
+  <rect class="f-plain" x="40" y="56" width="184" height="46" rx="6"/>
+  <text class="b" x="132" y="75" text-anchor="middle">config</text>
+  <text class="m s" x="132" y="92" text-anchor="middle">options and limits</text>
+  <rect class="f-setup" x="252" y="56" width="184" height="46" rx="6"/>
+  <text class="b" x="344" y="75" text-anchor="middle">dimensions</text>
+  <text class="m s" x="344" y="92" text-anchor="middle">n_atom, n_ao, n_aux, n_occ</text>
+  <rect class="f-la" x="464" y="56" width="184" height="46" rx="6"/>
+  <text class="b" x="556" y="75" text-anchor="middle">caps and counters</text>
+  <text class="m s" x="556" y="92" text-anchor="middle">sum per kind; scratch max</text>
+  <rect class="f-scf" x="676" y="56" width="184" height="46" rx="6"/>
+  <text class="mono" x="768" y="75" text-anchor="middle">CardResources</text>
+  <text class="m s" x="768" y="92" text-anchor="middle">one per device, one lock</text>
+  <text class="m s" x="40" y="136">One Output per step: allocated in budget mode, filled in execute mode, rewritten in place on a replay</text>
+  <rect class="f-int" x="40" y="150" width="184" height="46" rx="6"/>
+  <text class="mono" x="132" y="169" text-anchor="middle">RwLock&lt;XOutput&gt;</text>
+  <text class="m s" x="132" y="186" text-anchor="middle">bus.orthogonalizer</text>
+  <rect class="f-la" x="62" y="262" width="140" height="34" rx="6"/>
+  <text class="b" x="132" y="284" text-anchor="middle">XStep</text>
+  <path class="f-hot" marker-end="url(#fah)" d="M110,262 L110,198"/>
+  <path class="f-read" marker-end="url(#fag)" d="M190,196 C190,232 312,226 312,260"/>
+  <rect class="f-int" x="252" y="150" width="184" height="46" rx="6"/>
+  <text class="mono" x="344" y="169" text-anchor="middle">RwLock&lt;EriOutput&gt;</text>
+  <text class="m s" x="344" y="186" text-anchor="middle">bus.eri</text>
+  <rect class="f-la" x="274" y="262" width="140" height="34" rx="6"/>
+  <text class="b" x="344" y="284" text-anchor="middle">EriStep</text>
+  <path class="f-hot" marker-end="url(#fah)" d="M322,262 L322,198"/>
+  <path class="f-read" marker-end="url(#fag)" d="M402,196 C402,232 524,226 524,260"/>
+  <rect class="f-int" x="464" y="150" width="184" height="46" rx="6"/>
+  <text class="mono" x="556" y="169" text-anchor="middle">RwLock&lt;ScfOutput&gt;</text>
+  <text class="m s" x="556" y="186" text-anchor="middle">bus.scf</text>
+  <rect class="f-la" x="486" y="262" width="140" height="34" rx="6"/>
+  <text class="b" x="556" y="284" text-anchor="middle">ScfStep</text>
+  <path class="f-hot" marker-end="url(#fah)" d="M534,262 L534,198"/>
+  <path class="f-read" marker-end="url(#fag)" d="M614,196 C614,232 736,226 736,260"/>
+  <rect class="f-int" x="676" y="150" width="184" height="46" rx="6"/>
+  <text class="mono" x="768" y="169" text-anchor="middle">RwLock&lt;CasscfOutput&gt;</text>
+  <text class="m s" x="768" y="186" text-anchor="middle">bus.casscf</text>
+  <rect class="f-la" x="698" y="262" width="140" height="34" rx="6"/>
+  <text class="b" x="768" y="284" text-anchor="middle">CasscfStep</text>
+  <path class="f-hot" marker-end="url(#fah)" d="M746,262 L746,198"/>
+  <path class="f-hot" marker-end="url(#fah)" d="M40,316 L76,316"/>
+  <text class="s" x="84" y="320">write(): the owning step only</text>
+  <path class="f-read" marker-end="url(#fag)" d="M300,316 L336,316"/>
+  <text class="s" x="344" y="320">read(): through the reader's declared View; the builder makes these the DAG's edges</text>
+</svg>
+<figcaption>The <code>MainBus</code>. Everything above the slots is filled before budget
+mode. Each step writes one slot and reads what it needs from the others; on a chain the
+locks are never contended.</figcaption>
+</figure>
+@@ replace-pre FIGURE-02
+<figure class="fig">
+<svg viewBox="0 0 900 274" role="img" aria-label="One device's counters: Output allocations add along a bar toward the cap; scratch declarations are packed by the closure of the DAG, and the final node adds the packed peak at the end">
+  <defs>
+    <marker id="fbh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="hot" d="M0,1 L10,5 L0,9 z"/></marker>
+    <marker id="fbg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="grey" d="M0,1 L10,5 L0,9 z"/></marker>
+  </defs>
+  <text class="b" x="20" y="34">Device 0: the sum counter</text>
+  <text class="m s" x="20" y="85">each Output adds</text>
+  <rect class="f-int" x="150" y="60" width="30" height="40"/>
+  <text class="s" x="165" y="52" text-anchor="middle">X</text>
+  <rect class="f-int" x="180" y="60" width="300" height="40"/>
+  <text x="330" y="85" text-anchor="middle">ERI</text>
+  <rect class="f-int" x="480" y="60" width="120" height="40"/>
+  <text x="540" y="85" text-anchor="middle">SCF</text>
+  <rect class="f-int" x="600" y="60" width="90" height="40"/>
+  <text x="645" y="85" text-anchor="middle">CASSCF</text>
+  <rect class="f-scf" x="690" y="60" width="60" height="40"/>
+  <text class="s" x="720" y="52" text-anchor="middle">scratch</text>
+  <line class="f-cap" x1="800" y1="40" x2="800" y2="116"/>
+  <text class="s" x="806" y="52">cap</text>
+  <text class="m s" x="775" y="128" text-anchor="middle">room left</text>
+  <path class="f-read" marker-end="url(#fbg)" d="M150,112 L688,112"/>
+  <text class="m s" x="150" y="128">charged and allocated step by step, in any order, during the budget DAG</text>
+
+  <text class="b" x="20" y="152">Device 0: the scratch slab</text>
+  <text class="m s" x="20" y="203">each declaration a region</text>
+  <rect class="f-scf" x="150" y="166" width="60" height="16"/>
+  <text class="s" x="218" y="179">X: eigensolve's work at n_ao</text>
+  <rect class="f-scf" x="150" y="190" width="60" height="16"/>
+  <text class="s" x="218" y="203">SCF: eigensolve's work at n_ao</text>
+  <rect class="f-scf" x="150" y="214" width="38" height="16"/>
+  <text class="s" x="218" y="227">ERI: B's build intermediates</text>
+  <path class="f-hot" marker-end="url(#fbh)" d="M400,186 C560,186 720,170 720,104"/>
+  <text class="s" x="470" y="214">the final node packs them: ordered steps</text>
+  <text class="s" x="470" y="230">share bytes, unordered ones do not</text>
+  <text class="m s" x="20" y="262">Over the cap at any point: the flag is set, allocation stops, counting continues, and the final node prints the table and exits.</text>
+</svg>
+<figcaption>What one device's two counters hold. <code>Output</code>s are a sum; step
+scratch, which holds every library call's work buffer, is packed, and its peak is known
+only when every step has declared, which is why the final node exists. The SCF follows
+both X and ERI, so its region may overlap either; X and ERI are unordered, so theirs stay
+apart, though both take gpu0's lock and so run one after the other
+(<a href="#one-handle-set-per-card-under-one-lock">below</a>). The bar's scratch segment also
+carries the fixed BLAS-handle workspace. Bars not to scale.</figcaption>
+</figure>
+@@ replace-pre FIGURE-03
+<figure class="fig">
+<svg viewBox="0 0 900 300" role="img" aria-label="One cells entry: six fields, read field-major; the first two give a range of orbital pair records, the next two a range of aux records, the fifth the block of the slab the result is written to">
+  <defs>
+    <marker id="mf-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="grey" d="M0,1 L10,5 L0,9 z"/></marker>
+  </defs>
+  <text x="110" y="40" class="b">cells</text>
+  <text x="152" y="40" class="m s">field-major: each field one segment, entries along it</text>
+  <g>
+    <!-- 6 fields x 7 entries; entry k highlighted -->
+    <rect class="f-plain" x="110" y="52" width="238" height="132" rx="4"/>
+    <rect class="f-la" x="212" y="52" width="34" height="132"/>
+    <line class="f-rule" x1="110" y1="74" x2="348" y2="74"/>
+    <line class="f-rule" x1="110" y1="96" x2="348" y2="96"/>
+    <line class="f-rule" x1="110" y1="118" x2="348" y2="118"/>
+    <line class="f-rule" x1="110" y1="140" x2="348" y2="140"/>
+    <line class="f-rule" x1="110" y1="162" x2="348" y2="162"/>
+    <line class="f-rule" x1="144" y1="52" x2="144" y2="184"/>
+    <line class="f-rule" x1="178" y1="52" x2="178" y2="184"/>
+    <line class="f-rule" x1="280" y1="52" x2="280" y2="184"/>
+    <line class="f-rule" x1="314" y1="52" x2="314" y2="184"/>
+    <text x="102" y="67" text-anchor="end" class="mono">orb begin</text>
+    <text x="102" y="89" text-anchor="end" class="mono">orb end</text>
+    <text x="102" y="111" text-anchor="end" class="mono">aux begin</text>
+    <text x="102" y="133" text-anchor="end" class="mono">aux end</text>
+    <text x="102" y="155" text-anchor="end" class="mono">out offset</text>
+    <text x="102" y="177" text-anchor="end" class="mono">diagonal</text>
+    <text x="229" y="200" text-anchor="middle" class="s b">entry k</text>
+    <text x="229" y="216" text-anchor="middle" class="m s">one (shell pair, aux shell)</text>
+  </g>
+  <!-- orbital pair records -->
+  <text x="470" y="40" class="b">orbital pair records</text>
+  <text x="612" y="40" class="m s">the records step's Output, on the device</text>
+  <rect class="f-int" x="470" y="52" width="400" height="22" rx="4"/>
+  <rect class="f-hot" x="595" y="52" width="75" height="22"/>
+  <text x="632" y="68" text-anchor="middle" class="s">[begin, end)</text>
+  <!-- aux records -->
+  <text x="470" y="104" class="b">aux_records</text>
+  <text x="556" y="104" class="m s">5 fields × n_aux_prim</text>
+  <rect class="f-la" x="470" y="114" width="400" height="80" rx="4"/>
+  <line class="f-rule" x1="470" y1="130" x2="870" y2="130"/>
+  <line class="f-rule" x1="470" y1="146" x2="870" y2="146"/>
+  <line class="f-rule" x1="470" y1="162" x2="870" y2="162"/>
+  <line class="f-rule" x1="470" y1="178" x2="870" y2="178"/>
+  <rect class="f-hot" x="695" y="114" width="50" height="80"/>
+  <text x="462" y="126" text-anchor="end" class="mono">x</text>
+  <text x="462" y="142" text-anchor="end" class="mono">y</text>
+  <text x="462" y="158" text-anchor="end" class="mono">z</text>
+  <text x="462" y="174" text-anchor="end" class="mono">α</text>
+  <text x="462" y="190" text-anchor="end" class="mono">c·w</text>
+  <!-- slab -->
+  <text x="470" y="234" class="b">(μν|P)</text>
+  <text x="522" y="234" class="m s">built into B's slab, n_col × n_aux_cart</text>
+  <rect class="f-int" x="470" y="244" width="400" height="24" rx="4"/>
+  <rect class="f-hot" x="640" y="244" width="24" height="24"/>
+  <!-- arrows -->
+  <path class="f-read" marker-end="url(#mf-a)" d="M246,74 C400,74 450,63 593,63"/>
+  <path class="f-read" marker-end="url(#mf-a)" d="M246,118 C420,118 560,154 693,154"/>
+  <path class="f-read" marker-end="url(#mf-a)" d="M246,151 C380,151 560,256 638,256"/>
+  <text x="110" y="262" class="m s">"diagonal" marks a shell's pair with itself,</text>
+  <text x="110" y="278" class="m s">which the symmetry weight counts once.</text>
+</svg>
+<figcaption>What a work list entry is. One entry of <code>cells</code> is six integers:
+two ranges into record arrays (the orbital pairs the records step formed, and this
+step's own aux records), and where in the slab the kernel writes. The other work
+lists are the same shape with other fields. Nothing in an entry is a pointer, so every
+array is sized by counting, before anything is built.</figcaption>
+</figure>
+@@ replace-pre FIGURE-04
+<figure class="fig">
+<svg viewBox="0 0 900 250" role="img" aria-label="Records and work lists across the three phases: setup counts their lengths into Dims; budget mode declares them as scratch and builds nothing; execute mode builds into the pinned region, uploads and launches">
+  <defs>
+    <marker id="mf-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="grey" d="M0,1 L10,5 L0,9 z"/></marker>
+  </defs>
+  <rect class="f-setup" x="10" y="20" width="270" height="214" rx="9"/>
+  <rect class="f-la" x="310" y="20" width="280" height="214" rx="9"/>
+  <rect class="f-int" x="620" y="20" width="270" height="214" rx="9"/>
+  <text x="26" y="44" class="b">Setup</text>
+  <text x="80" y="44" class="m s">outside the DAG, unbudgeted</text>
+  <text x="26" y="70">reads the geometry and both bases,</text>
+  <text x="26" y="88">and counts; builds no array</text>
+  <text style="white-space:pre" x="26" y="116" class="mono">n_aux_prim    1,272</text>
+  <text style="white-space:pre" x="26" y="134" class="mono">n_aux_shell   1,272</text>
+  <text style="white-space:pre" x="26" y="152" class="mono">n_shell_pair  58,653</text>
+  <text style="white-space:pre" x="26" y="170" class="mono">n_col         270,497</text>
+  <text x="26" y="212" class="m">→ Dims, on the bus</text>
+  <text x="326" y="44" class="b">Budget mode</text>
+  <text x="416" y="44" class="m s">mem_budget, per step</text>
+  <text style="white-space:pre" x="326" y="70">1  declare length × field bytes,</text>
+  <text style="white-space:pre" x="326" y="88">    pinned and device scratch</text>
+  <text style="white-space:pre" x="326" y="112">2  final node packs and allocates</text>
+  <text style="white-space:pre" x="326" y="136">3  build nothing</text>
+  <rect class="f-wait" x="326" y="156" width="248" height="62" rx="6"/>
+  <text x="338" y="176" class="s">refused, or --budget-only:</text>
+  <text x="338" y="193" class="s">empty buffers, nothing built,</text>
+  <text x="338" y="210" class="s">every length in the table exact</text>
+  <text x="636" y="44" class="b">Execute mode</text>
+  <text x="742" y="44" class="m s">run, every replay</text>
+  <text style="white-space:pre" x="636" y="70">1  build into the pinned region</text>
+  <text style="white-space:pre" x="636" y="88" class="m s">     in place: the centres move</text>
+  <text style="white-space:pre" x="636" y="112">2  upload on the step's stream</text>
+  <text style="white-space:pre" x="636" y="136">3  launch over the work lists</text>
+  <text x="636" y="176" class="m s">allocates nothing; the lengths</text>
+  <text x="636" y="193" class="m s">never change between replays</text>
+  <path class="f-bus" marker-end="url(#mf-b)" d="M280,127 L308,127"/>
+  <path class="f-bus" marker-end="url(#mf-b)" d="M590,127 L618,127"/>
+</svg>
+<figcaption>Where a step's records and work lists have their three facts: their length
+in setup, their bytes in budget mode, their contents in execute mode. gly10's counts
+shown.</figcaption>
+</figure>
+@@ replace-pre FIGURE-05
+<figure class="fig">
+<svg viewBox="0 0 900 400" role="img" aria-label="Left: the dummy DAG of twelve steps with each step's scratch in MiB; T, V, X and eri, mutually unordered, are outlined as the heaviest antichain, 2049 MiB. Right: device 0's slab as packed; eri, nevpt2, casscf, scf, metric and factor all start at offset 0, since the DAG orders them; X, S, V and T are placed above 2040. Below: the plain sum 3318, the lock's max 2040, the packed peak 2049.">
+  <defs>
+    <marker id="cmg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="grey" d="M0,1 L10,5 L0,9 z"/></marker>
+  </defs>
+  <text class="b" x="20" y="24">The dummy DAG: scratch per step, MiB</text>
+  <!-- edges -->
+  <path class="f-bus" marker-end="url(#cmg)" d="M62,80 L62,98"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M132,80 L160,98"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M202,80 L174,98"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M362,80 L362,98"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M362,134 L362,152"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M62,134 L196,228"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M167,134 L206,228"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M272,80 L218,228"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M362,188 L232,228"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M212,264 L212,288"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M212,324 L212,348"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M394,171 C440,171 440,307 246,307"/>
+  <path class="f-bus" marker-end="url(#cmg)" d="M394,180 C462,180 462,367 246,367"/>
+  <!-- nodes -->
+  <rect class="f-setup" x="30" y="46" width="64" height="34" rx="6"/>
+  <text class="b" x="62" y="61" text-anchor="middle">S</text><text class="m s" x="62" y="75" text-anchor="middle">1</text>
+  <rect class="f-setup" x="100" y="46" width="64" height="34" rx="6"/>
+  <text class="b" x="132" y="61" text-anchor="middle">T</text><text class="m s" x="132" y="75" text-anchor="middle">1</text>
+  <rect class="f-setup" x="170" y="46" width="64" height="34" rx="6"/>
+  <text class="b" x="202" y="61" text-anchor="middle">V</text><text class="m s" x="202" y="75" text-anchor="middle">2</text>
+  <rect class="f-setup" x="240" y="46" width="64" height="34" rx="6"/>
+  <text class="b" x="272" y="61" text-anchor="middle">guess</text><text class="m s" x="272" y="75" text-anchor="middle">0</text>
+  <rect class="f-int" x="330" y="46" width="64" height="34" rx="6"/>
+  <text class="b" x="362" y="61" text-anchor="middle">metric</text><text class="m s" x="362" y="75" text-anchor="middle">20</text>
+  <rect class="f-la" x="30" y="100" width="64" height="34" rx="6"/>
+  <text class="b" x="62" y="115" text-anchor="middle">X</text><text class="m s" x="62" y="129" text-anchor="middle">6</text>
+  <rect class="f-setup" x="135" y="100" width="64" height="34" rx="6"/>
+  <text class="b" x="167" y="115" text-anchor="middle">H</text><text class="m s" x="167" y="129" text-anchor="middle">0</text>
+  <rect class="f-int" x="330" y="100" width="64" height="34" rx="6"/>
+  <text class="b" x="362" y="115" text-anchor="middle">factor</text><text class="m s" x="362" y="129" text-anchor="middle">8</text>
+  <rect class="f-int" x="330" y="154" width="64" height="34" rx="6"/>
+  <text class="b" x="362" y="169" text-anchor="middle">eri</text><text class="m s" x="362" y="183" text-anchor="middle">2040</text>
+  <rect class="f-scf" x="180" y="230" width="64" height="34" rx="6"/>
+  <text class="b" x="212" y="245" text-anchor="middle">scf</text><text class="m s" x="212" y="259" text-anchor="middle">40</text>
+  <rect class="f-scf" x="180" y="290" width="64" height="34" rx="6"/>
+  <text class="b" x="212" y="305" text-anchor="middle">casscf</text><text class="m s" x="212" y="319" text-anchor="middle">300</text>
+  <rect class="f-scf" x="180" y="350" width="64" height="34" rx="6"/>
+  <text class="b" x="212" y="365" text-anchor="middle">nevpt2</text><text class="m s" x="212" y="379" text-anchor="middle">900</text>
+  <!-- the heaviest antichain -->
+  <rect class="f-hot" x="97" y="43" width="140" height="40" rx="8" stroke-width="2.2"/>
+  <rect class="f-hot" x="27" y="97" width="70" height="40" rx="8" stroke-width="2.2"/>
+  <rect class="f-hot" x="327" y="151" width="70" height="40" rx="8" stroke-width="2.2"/>
+  <text class="s" x="20" y="290">outlined: T, V, X, eri,</text>
+  <text class="s" x="20" y="305">no two ordered by a path;</text>
+  <text class="s" x="20" y="320">1 + 2 + 6 + 2040 = 2049,</text>
+  <text class="s" x="20" y="335">the lower bound</text>
+
+  <text class="b" x="480" y="24">Device 0's slab, as packed</text>
+  <text class="m s" x="480" y="42">offset in MiB; the axis is ×16 wider past 2040</text>
+  <line class="f-rule" x1="740" y1="54" x2="740" y2="286" stroke-dasharray="3 3"/>
+  <text class="s" x="480" y="76">eri</text><rect class="f-int" x="540" y="64" width="200" height="16"/>
+  <text class="s" x="480" y="98">nevpt2</text><rect class="f-scf" x="540" y="86" width="88" height="16"/>
+  <text class="s" x="480" y="120">casscf</text><rect class="f-scf" x="540" y="108" width="29" height="16"/>
+  <text class="s" x="480" y="142">scf</text><rect class="f-scf" x="540" y="130" width="4" height="16"/>
+  <text class="s" x="480" y="164">metric</text><rect class="f-int" x="540" y="152" width="2" height="16"/>
+  <text class="s" x="480" y="186">factor</text><rect class="f-int" x="540" y="174" width="2" height="16"/>
+  <text class="s" x="480" y="208">X</text><rect class="f-la" x="740" y="196" width="96" height="16"/>
+  <text class="s" x="480" y="230">S</text><rect class="f-setup" x="740" y="218" width="16" height="16"/>
+  <text class="s" x="480" y="252">V</text><rect class="f-setup" x="836" y="240" width="32" height="16"/>
+  <text class="s" x="480" y="274">T</text><rect class="f-setup" x="868" y="262" width="16" height="16"/>
+  <text class="m s" x="636" y="98">0–900</text>
+  <text class="m s" x="577" y="120">0–300</text>
+  <text class="m s" x="552" y="142">0–40</text>
+  <text class="m s" x="552" y="164">0–20</text>
+  <text class="m s" x="552" y="186">0–8: all six chained, all at 0</text>
+  <text class="m s" x="734" y="208" text-anchor="end">2040–2046</text>
+  <text class="m s" x="762" y="230">2040–2041</text>
+  <text class="m s" x="830" y="252" text-anchor="end">2046–2048</text>
+  <text class="m s" x="862" y="274" text-anchor="end">2048–2049</text>
+  <line class="f-rule" x1="540" y1="288" x2="884" y2="288"/>
+  <text class="m s" x="540" y="302" text-anchor="middle">0</text>
+  <text class="m s" x="740" y="302" text-anchor="middle">2040</text>
+  <line class="f-cap" x1="884" y1="54" x2="884" y2="292"/>
+  <text class="s" x="884" y="302" text-anchor="end">peak 2049</text>
+
+  <text class="b" x="480" y="332">The same declarations, three ways (linear)</text>
+  <text class="s" x="480" y="352">plain sum</text>
+  <rect class="f-plain" x="560" y="341" width="320" height="14"/>
+  <text class="s" x="874" y="352" text-anchor="end">3318</text>
+  <text class="s" x="480" y="372">lock's max</text>
+  <rect class="f-plain" x="560" y="361" width="197" height="14"/>
+  <text class="s" x="763" y="372">2040, with waits</text>
+  <text class="s" x="480" y="392">packed</text>
+  <rect class="f-scf" x="560" y="381" width="198" height="14"/>
+  <text class="s" x="764" y="392">2049, none</text>
+</svg>
+<figcaption>The dummy DAG and its packing (MiB, not measurements). Every step from
+<code>metric</code> to <code>nevpt2</code> lies on one path, so all six start at offset 0
+and share the bottom 2040 MiB. S, T, V and X are unordered with <code>eri</code>, so
+they go above it; S may share with X, which it precedes, and does. The peak equals the
+heaviest antichain, so no packing that keeps unordered regions apart does better. Against
+the first form, one max per device under a lock, packing costs 9 MiB and removes
+the wait between <code>eri</code> and X.</figcaption>
+</figure>
+@@ replace-pre FIGURE-06
+<figure class="fig">
+<svg viewBox="0 0 900 318" role="img" aria-label="Three timelines of step A followed by step B, whose scratch shares bytes. With the step-end sync, B starts after A's kernels end. Without it, A's node finishes after its host part, and B's kernels run on the shared bytes while A's are still running. With event chaining, B's kernels wait on A's event and are safe, but B's host write to pinned scratch overlaps A's pending copy from it.">
+  <defs>
+    <marker id="cmh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="hot" d="M0,1 L10,5 L0,9 z"/></marker>
+  </defs>
+  <!-- panel 1: with the sync -->
+  <text class="b" x="20" y="16">With the step-end sync: safe</text>
+  <text class="m s" x="20" y="38">host</text>
+  <text class="m s" x="20" y="62">A's stream</text>
+  <text class="m s" x="20" y="86">B's stream</text>
+  <rect class="f-int" x="160" y="26" width="90" height="18"/><text class="s" x="205" y="39" text-anchor="middle">run A</text>
+  <rect class="f-wait" x="250" y="26" width="180" height="18"/><text class="m s" x="340" y="39" text-anchor="middle">wrapper syncs A's stream</text>
+  <rect class="f-int" x="190" y="50" width="240" height="18"/><text class="s" x="310" y="63" text-anchor="middle">A's kernels, on the shared bytes</text>
+  <line class="f-cap" x1="430" y1="22" x2="430" y2="94"/>
+  <text class="s" x="436" y="20">A's node finishes</text>
+  <rect class="f-la" x="440" y="26" width="90" height="18"/><text class="s" x="485" y="39" text-anchor="middle">run B</text>
+  <rect class="f-la" x="470" y="74" width="230" height="18"/><text class="s" x="585" y="87" text-anchor="middle">B's kernels, the same bytes</text>
+
+  <!-- panel 2: without -->
+  <text class="b" x="20" y="122">Without it, the negative control: 2395 of 3000 runs collide</text>
+  <text class="m s" x="20" y="144">host</text>
+  <text class="m s" x="20" y="168">A's stream</text>
+  <text class="m s" x="20" y="192">B's stream</text>
+  <rect class="f-int" x="160" y="132" width="90" height="18"/><text class="s" x="205" y="145" text-anchor="middle">run A</text>
+  <rect class="f-int" x="190" y="156" width="240" height="18"/><text class="s" x="250" y="169" text-anchor="middle">A's kernels</text>
+  <line class="f-cap" x1="250" y1="128" x2="250" y2="200"/>
+  <text class="s" x="358" y="145">A's node finished at the line; its kernels run on</text>
+  <rect class="f-la" x="260" y="132" width="90" height="18"/><text class="s" x="305" y="145" text-anchor="middle">run B</text>
+  <rect class="f-la" x="290" y="180" width="230" height="18"/><text class="s" x="470" y="193" text-anchor="middle">B's kernels</text>
+  <rect class="f-hot" x="290" y="154" width="140" height="46" stroke-width="2.2"/>
+  <text class="s" x="530" y="168">both in use on the same bytes</text>
+
+  <!-- panel 3: event chaining, pinned -->
+  <text class="b" x="20" y="228">Event chaining instead: device scratch safe, pinned not</text>
+  <text class="m s" x="20" y="250">host</text>
+  <text class="m s" x="20" y="274">A's stream</text>
+  <text class="m s" x="20" y="298">B's stream</text>
+  <rect class="f-int" x="160" y="238" width="90" height="18"/><text class="s" x="205" y="251" text-anchor="middle">A writes pinned</text>
+  <rect class="f-int" x="190" y="262" width="250" height="18"/><text class="s" x="300" y="275" text-anchor="middle">kernels, then the copy from pinned</text>
+  <line class="f-cap" x1="250" y1="234" x2="250" y2="306"/>
+  <rect class="f-la" x="260" y="238" width="110" height="18"/><text class="s" x="315" y="251" text-anchor="middle">B writes pinned</text>
+  <rect class="f-wait" x="290" y="286" width="150" height="18"/><text class="m s" x="365" y="299" text-anchor="middle">waits on A's event</text>
+  <rect class="f-la" x="440" y="286" width="200" height="18"/><text class="s" x="540" y="299" text-anchor="middle">B's kernels: after A's, safe</text>
+  <rect class="f-hot" x="258" y="236" width="182" height="46" stroke-width="2.2"/>
+  <path class="f-hot" marker-end="url(#cmh)" d="M560,252 L446,252"/>
+  <text class="s" x="566" y="256">the host write is on no stream: it overtakes A's copy</text>
+</svg>
+<figcaption>A and B share scratch bytes, which the closure allows since a path orders
+them. What makes that safe is the wrapper's sync: a finished node is finished device
+work. The model's negative control drops it and finds two byte-sharing regions in use at
+once in 2395 of 3000 runs, so the simulation can see a collision, and sees none in 3500
+runs with the sync. The third row is not in the model: the reason a cheaper replacement for
+the sync is a change to the scratch rule too (<a href="#step-scratch">above</a>).</figcaption>
+</figure>
+@@ replace-pre FIGURE-12
+<figure class="fig" id="budgetfig">
+<div class="legend" style="margin:2px 0 6px">
+  <span><i class="sw" style="background:var(--c1);border-color:var(--c1)"></i>device</span>
+  <span><i class="sw" style="background:var(--c2);border-color:var(--c2)"></i>pinned</span>
+  <span><i class="sw" style="background:var(--c3);border-color:var(--c3)"></i>host heap</span>
+</div>
+<svg id="budgetbars" role="img" aria-label="Each node's mem_budget charge on gly10, by kind, on a log scale from 100 bytes to 10 GB"></svg>
+<figcaption>What each node's <code>mem_budget</code> charges on gly10 in cc-pVDZ /
+cc-pVDZ-JKFIT (n_ao 734, n_aux 3606, 270,497 pair columns), by kind. Log scale: the
+charges span eight decades. Computed from the formulas in the node table, with
+(μν|P) and B one step, as decided; the scratch row is the LAPACK formula for the
+eigensolve's work at n_ao, not a cuSOLVER query, and the SCF is left out, as in the graph.
+B's build intermediates, which would raise the scratch row, and the fixed 128 MiB
+handle workspace are not drawn. Hover a bar for its parts.</figcaption>
+</figure>
+@@ replace-pre FIGURE-13
+<figure class="fig">
+<div class="legend" style="margin:2px 0 6px">
+  <span><i class="sw" style="background:var(--c1);border-color:var(--c1)"></i>B's slab 7.80 GB</span>
+  <span><i class="sw" style="background:var(--c2);border-color:var(--c2)"></i>records and work lists 1.81 GB</span>
+  <span><i class="sw" style="background:var(--c3);border-color:var(--c3)"></i>metric and factor 0.21 GB</span>
+  <span><i class="sw" style="background:var(--c4);border-color:var(--c4)"></i>everything else 0.04 GB</span>
+</div>
+<svg viewBox="0 0 900 78" role="img" aria-label="Device 0 on gly10, 9.86 GB in all: B's slab 79 percent, the records and work lists 18 percent, the metric and its factor 2 percent, everything else under half a percent">
+  <g>
+    <rect x="10" y="12" width="688" height="26" rx="4" style="fill:var(--c1)"><title>B's slab: 7.80 GB (79.1%)</title></rect>
+    <rect x="700" y="12" width="157" height="26" style="fill:var(--c2)"><title>Records and work lists: 1.81 GB (18.4%); cells alone 1.79 GB</title></rect>
+    <rect x="859" y="12" width="16" height="26" style="fill:var(--c3)"><title>The metric and its factor: 0.21 GB (2.1%)</title></rect>
+    <rect x="877" y="12" width="13" height="26" rx="2" style="fill:var(--c4)"><title>Everything else, the eigensolve's scratch included: 0.04 GB (0.4%)</title></rect>
+  </g>
+  <text x="10" y="58" class="s">0</text>
+  <text x="890" y="58" text-anchor="end" class="s">9.86 GB on device 0</text>
+  <text x="354" y="58" text-anchor="middle" class="m s">79%</text>
+  <text x="778" y="58" text-anchor="middle" class="m s">18%</text>
+  <text x="10" y="74" class="m s">Linear, one bar: the sum the counter holds when the final node checks the cap.</text>
+</svg>
+<figcaption>The same budget as one device's total. The two smallest segments are drawn at
+a minimum width so they stay visible; their share is in the legend and the tooltips.</figcaption>
+</figure>
+@@ replace-pre FIGURE-GRAPH
+<div class="legend">
+    <span><i class="sw input"></i>input</span>
+    <span><i class="sw setup"></i>parsing and setup</span>
+    <span><i class="sw int"></i>integrals</span>
+    <span><i class="sw la"></i>linear algebra</span>
+    <span><i class="sw scf"></i>not executed</span>
+    <span>Hover or click a node to trace what it needs and what needs it.</span>
+  </div>
+<div class="tools">
+    <button id="zout" title="Zoom out">−</button>
+    <button id="zin" title="Zoom in">+</button>
+    <button id="zfit">Fit all</button>
+    <button id="zone">Readable size</button>
+    <span>Drag to pan. Ctrl or ⌘ + scroll, or pinch, to zoom.</span>
+  </div>
+<div class="frame" id="frame"><svg id="dag" role="img"
+    aria-label="Dependency graph of the density-fitted Hartree-Fock setup"></svg></div>
+<div id="detail"></div>
+@@ replace-pre FIGURE-NODES
+<div class="table"><table id="tbl">
+<thead><tr><th>Node</th><th>Produces</th><th>Size</th><th>Needs</th><th>Phase</th><th><code>mem_budget</code> charges</th><th>On gly10</th></tr></thead>
+<tbody></tbody>
+</table></div>
+@@ after spliced in after this paragraph
+<script>
+(() => {
+const NODES = [
+  // inputs
+  {id:"in_q", ph:'config', mb:'',   layer:0, x:0,    kind:"input", label:"charge, multiplicity", sub:"input",
+   out:"Net charge and spin multiplicity", size:"2 integers", note:"Given by the user."},
+  {id:"in_xyz", ph:'config', mb:'', layer:0, x:1.0,  kind:"input", label:"geometry file", sub:"input",
+   out:"Element symbols and Cartesian coordinates, as text", size:"N_atom lines",
+   note:"Given by the user."},
+  {id:"in_ob", ph:'config', mb:'',  layer:0, x:5.0,  kind:"input", label:"orbital basis name", sub:"input",
+   out:"Which orbital basis library entry to use", size:"a name",
+   note:"Given by the user."},
+  {id:"in_ab", ph:'config', mb:'',  layer:0, x:9.8,  kind:"input", label:"auxiliary basis name", sub:"input",
+   out:"Which fitting basis library entry to use", size:"a name",
+   note:"Given by the user, or chosen to match the orbital basis."},
+
+  // reads
+  {id:"read_xyz", ph:'setup', mb:'Not budgeted: small host data, under the exclusion. Fills n_atom', layer:1, x:1.0, kind:"setup", label:"read geometry", sub:"Z_A, R_A",
+   deps:["in_xyz"], out:"Atomic numbers Z_A and positions R_A, in bohr",
+   size:"N_atom × 4", note:"Parses the file and converts units."},
+  {id:"read_ob", ph:'setup', mb:'Not budgeted',  layer:1, x:5.0, kind:"setup", label:"read orbital basis",
+   sub:"shells per element", deps:["in_ob"],
+   out:"Per element: each shell's angular momentum, exponents and contraction coefficients",
+   size:"per element", note:"A library lookup. Knows nothing about the molecule yet."},
+  {id:"read_ab", ph:'setup', mb:'Not budgeted',  layer:1, x:9.8, kind:"setup", label:"read auxiliary basis",
+   sub:"shells per element", deps:["in_ab"],
+   out:"Per element: each fitting shell's angular momentum, exponents and coefficients",
+   size:"per element",
+   note:"Density fitting needs a second basis, so it needs a second read."},
+
+  // derived setup
+  {id:"nelec", ph:'setup', mb:'Not budgeted. Fills n_occ', layer:2, x:0, kind:"setup", label:"electron count", sub:"N_occ",
+   deps:["in_q","read_xyz"],
+   out:"Number of electrons and of occupied orbitals", size:"integers",
+   note:"Sum of Z_A minus the charge. Fixes the occupation the SCF fills."},
+  {id:"enuc", ph:'setup', mb:'Not budgeted',  layer:2, x:1.0, kind:"setup", label:"nuclear repulsion", sub:"E_nuc",
+   deps:["read_xyz"],
+   out:"E_nuc = Σ_{A<B} Z_A Z_B / |R_A − R_B|", size:"1 number",
+   note:"A constant added to the electronic energy."},
+  {id:"obs", ph:'setup', mb:'Not budgeted. Fills n_ao and the shell counts',   layer:2, x:5.0, kind:"setup", label:"create orbital basis set",
+   sub:"shells on centres", deps:["read_xyz","read_ob"],
+   out:"The molecule's shell list: centre, angular momentum, exponents, normalized coefficients; and the shell-to-function map",
+   size:"N_shell; N functions",
+   note:"Places each element's shells on every atom of that element and normalizes them."},
+  {id:"abs", ph:'setup', mb:'Not budgeted. Fills n_aux, n_aux_shell and n_aux_prim: the records\u2019 and work lists\u2019 lengths, counted',   layer:2, x:9.8, kind:"setup", label:"create auxiliary basis set",
+   sub:"shells on centres", deps:["read_xyz","read_ab"],
+   out:"The fitting shell list and its shell-to-function map",
+   size:"N_aux functions, typically 3 to 5 N",
+   note:"Same construction as the orbital set, over the fitting shells."},
+
+  // initial guess: superposition of atomic densities, read from a table
+  {id:"guess", ph:'step', mb:'Heap: n_ao² (assembled on the host). Device: n_ao² (the upload)', layer:3, x:1.93, kind:"setup", label:"initial guess (SAD)",
+   sub:"read D_atom, D₀ = ⊕ D_atom", deps:["obs"],
+   out:"A starting density: each atom's block is its element's tabulated atomic density, and blocks between atoms are zero",
+   size:"N × N, symmetric, block diagonal",
+   note:"Reads one precomputed atomic density per distinct element, for this orbital basis, and places it on every atom of that element. The basis set says which elements occur and where each atom's functions sit. No integral, S, H, X or electron count is needed: the atoms are neutral, and the first SCF diagonalization imposes the occupation."},
+
+  // transforms and screening
+  {id:"sph", ph:'step', mb:'Device: one small table per l', layer:3, x:2.88, kind:"setup", label:"orbital spherical transform",
+   sub:"Cartesian → spherical, per l", deps:["obs"],
+   out:"For each angular momentum l up to the orbital set's largest: the (2l+1) × (l+1)(l+2)/2 coefficient matrix",
+   size:"one small matrix per l",
+   note:"Depends on the orbital basis set only through its largest l."},
+  {id:"scr", ph:'step', mb:'Device: n_shell² bounds, and the kept-pair list at its bound', layer:3, x:7.4, kind:"int", label:"pair screening map",
+   sub:"Q_μν = √(μν|μν)", deps:["obs"],
+   out:"A bound for every orbital shell pair, and the list of pairs large enough to keep",
+   size:"N_shell × N_shell bounds; N_pair kept",
+   note:"The Schwarz bound: |(μν|P)| ≤ Q_μν √(P|P). It decides which shell pairs the three-centre integrals compute, and so the pair dimension of (μν|P) and of B."},
+  {id:"asph", ph:'step', mb:'Device: one small table per l', layer:3, x:10.8, kind:"setup", label:"auxiliary spherical transform",
+   sub:"Cartesian → spherical, per l", deps:["abs"],
+   out:"The same matrices, up to the fitting set's largest l",
+   size:"one small matrix per l",
+   note:"Separate from the orbital one because the fitting set usually reaches two or more l higher."},
+
+  // integrals
+  {id:"S", ph:'step', mb:'Device: n_ao²', layer:4, x:3.0, kind:"int", label:"overlap", sub:"S = (μ|ν)",
+   deps:["obs","sph"], out:"Overlap matrix", size:"N × N, symmetric",
+   note:"One-electron, two-centre."},
+  {id:"T", ph:'step', mb:'Device: n_ao²', layer:4, x:4.0, kind:"int", label:"kinetic", sub:"T = (μ|−½∇²|ν)",
+   deps:["obs","sph"], out:"Kinetic energy matrix", size:"N × N, symmetric",
+   note:"One-electron, two-centre."},
+  {id:"V", ph:'step', mb:'Device: n_ao²', layer:4, x:5.0, kind:"int", label:"nuclear attraction",
+   sub:"V = (μ|−Σ Z_A/r_A|ν)", deps:["obs","sph","read_xyz"],
+   out:"Nuclear attraction matrix", size:"N × N, symmetric",
+   note:"The only one-electron integral that needs the nuclei themselves, not just the shell centres."},
+  {id:"mnP", ph:'step', mb:'Device: n_pair × n_aux, n_pair at its bound, built into B\u2019s slab: the largest charge. Pinned and device scratch: its records and work lists (cells, gather, aux records), the second largest', layer:4, x:7.4, kind:"int", label:"three-centre integrals",
+   sub:"(μν|P)", deps:["obs","abs","sph","asph","scr"],
+   out:"Coulomb integrals between each orbital pair and each fitting function",
+   size:"N_pair × N_aux, N_pair ≤ N(N+1)/2",
+   note:"The largest object and the most expensive node in the graph."},
+  {id:"PQ", ph:'step', mb:'Device: n_aux². Pinned and device scratch: its records and work lists (metric pairs, aux records)', layer:4, x:9.8, kind:"int", label:"fitting metric", sub:"J = (P|Q)",
+   deps:["abs","asph"], out:"Coulomb metric of the fitting basis",
+   size:"N_aux × N_aux, symmetric positive definite",
+   note:"Two-centre, two-electron. Needs no orbital basis."},
+
+  // linear algebra
+  {id:"X", ph:'step', mb:'Device: n_ao². Scratch: the eigensolve’s work at n_ao. Holds gpu0's library lock', layer:5, x:3.55, kind:"la", label:"orthogonalizer", sub:"X: XᵀSX = 1",
+   deps:["S"], out:"The transform to an orthonormal basis", size:"N × N (or N × N_kept)",
+   note:"Symmetric S^(−1/2), or canonical with small eigenvalues of S dropped."},
+  {id:"H", ph:'step', mb:'Device: n_ao². Holds gpu0's library lock', layer:5, x:4.6, kind:"la", label:"core Hamiltonian", sub:"H = T + V",
+   deps:["T","V"], out:"The one-electron part of the Fock matrix",
+   size:"N × N, symmetric", note:"A sum. The SCF never needs T and V apart."},
+  {id:"L", ph:'step', mb:'Device: n_aux²', layer:5, x:9.8, kind:"la", label:"factor the metric", sub:"J = L Lᵀ",
+   deps:["PQ"], out:"A factor of the metric (Cholesky), or J^(−1/2)",
+   size:"N_aux × N_aux",
+   note:"The \"orthogonalize (P|Q)\" step: it makes the fitting functions orthonormal in the Coulomb metric."},
+  {id:"B", ph:'step', mb:'n_pair × n_aux as its own step; nothing more if solved in place in one step with (μν|P). Holds gpu0's library lock', layer:6, x:8.6, kind:"la", label:"fitting vectors",
+   sub:"B = (μν|Q) L⁻ᵀ", deps:["mnP","L"],
+   out:"B_μν^P, with (μν|λσ) ≈ Σ_P B_μν^P B_λσ^P", size:"N_pair × N_aux",
+   note:"A triangular solve against the factor, over every orbital pair. Once built, (μν|P) and the factor are no longer needed."},
+
+  // boundary
+  {id:"scf", ph:'step', mb:'The SCF step’s own: C, F, D, the DIIS rings. Scratch: the eigensolve’s work at n_ao', layer:7, x:0, kind:"scf", wide:true, label:"SCF iterations",
+   sub:"not executed: the graph ends here", deps:["nelec","enuc","S","X","H","B","guess"],
+   out:"Nothing here. Each iteration would build J and K from B and the density, add H, and diagonalize in the basis X gives.",
+   size:"", note:"S is still needed inside: the convergence error FDS − SDF uses it."}
+];
+
+// What each node's mem_budget charges on gly10 in cc-pVDZ / cc-pVDZ-JKFIT, in bytes:
+// d device, p pinned, h host heap; parts for the tooltip. From the formulas above.
+const SQ = 4310048, AUX2 = 104025888;
+const GLY = {
+  guess: {d: SQ, h: SQ, parts: "D\u2080 assembled on the host, and its upload"},
+  sph:   {d: 320, parts: "one matrix per l up to d"},
+  scr:   {d: 1404936, parts: "342\u00b2 bounds and the 58,653-pair list"},
+  asph:  {d: 1960, parts: "one matrix per l up to g"},
+  S: {d: SQ}, T: {d: SQ}, V: {d: SQ},
+  mnP:   {d: 7803297456 + 1794937616, p: 1794937616,
+          parts: "B\u2019s slab 7.80 GB; records and work lists 1.79 GB on each side, scratch (cells 1.79 GB, gather 4.3 MB, aux records 51 kB)"},
+  PQ:    {d: AUX2 + 19481952, p: 19481952,
+          parts: "the metric 104 MB; records and work lists 19.5 MB on each side, scratch (metric pairs 19.4 MB, aux records 51 kB)"},
+  X: {d: SQ, parts: "X 4.3 MB; its eigensolve's work is the scratch row"},
+  H: {d: SQ},
+  L: {d: AUX2},
+  B: {d: 0, parts: "nothing: solved in place in the three-centre step\u2019s slab"},
+};
+const fmtB = b => {
+  if (!b) return "0";
+  const u = [["GB", 1e9], ["MB", 1e6], ["kB", 1e3]];
+  for (const [n, v] of u) if (b >= v) return (b / v >= 100 ? (b / v).toFixed(0) : (b / v).toPrecision(3)) + "\u00a0" + n;
+  return b + "\u00a0B";
+};
+const glyText = id => {
+  const g = GLY[id];
+  if (!g) return "";
+  const kinds = [["device", g.d], ["pinned", g.p], ["heap", g.h]].filter(k => k[1] !== undefined)
+    .map(([k, v]) => `${k} ${fmtB(v)}`).join(", ");
+  return g.parts ? `${kinds} (${g.parts})` : kinds;
+};
+const logFrac = b => b <= 0 ? 0 : Math.max(0, Math.min(1, (Math.log10(b) - 2) / 8));
+
+const U = 216, W = 200, HH = 48, LY = 104, PX = 18, PY = 16;
+const XMAX = 10.8;
+const TARGET_X = {};
+const SIDE_EXIT = {"read_xyz>V": 3.2};
+const PHASE = {config: "config", setup: "setup (not budgeted)",
+               step: "a step: budget mode, then execute mode"};
+const byId = Object.fromEntries(NODES.map(n => [n.id, n]));
+NODES.forEach(n => { n.deps = n.deps || []; n.kids = []; });
+NODES.forEach(n => n.deps.forEach(d => byId[d].kids.push(n.id)));
+
+const svgW = PX * 2 + W + XMAX * U, svgH = PY * 2 + 7 * LY + HH;
+const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("dag");
+const el = (tag, attrs, parent) => {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+};
+
+const defs = el("defs", {}, svg);
+for (const id of ["mk", "mkon"]) {
+  const m = el("marker", {id, viewBox: "0 0 10 10", refX: 9, refY: 5,
+    markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse"}, defs);
+  el("path", {d: "M0,1 L10,5 L0,9 z"}, m);
+}
+
+const left = n => PX + n.x * U;
+const width = n => n.wide ? W + XMAX * U : W;
+const cx = n => left(n) + width(n) / 2;
+const top = n => PY + n.layer * LY;
+
+const gEdges = el("g", {}, svg), gNodes = el("g", {}, svg);
+const edgeEls = [];
+NODES.forEach(t => t.deps.forEach(sid => {
+  const s = byId[sid];
+  const key = sid + ">" + t.id;
+  const sx = cx(s), sy = top(s) + HH;
+  let tx = t.wide ? sx : cx(t);
+  if (TARGET_X[key] !== undefined) tx = PX + TARGET_X[key] * U;
+  const ty = top(t) - 2;
+  const k = (ty - sy) * 0.5;
+  let d = `M${sx},${sy} C${sx},${sy + k} ${tx},${ty - k} ${tx},${ty}`;
+  if (SIDE_EXIT[key] !== undefined) {
+    const x0 = left(s) + width(s), y0 = top(s) + HH / 2;
+    d = `M${x0},${y0} C${PX + SIDE_EXIT[key] * U},${y0} ` +
+        `${tx},${y0 + (ty - y0) * 0.45} ${tx},${ty}`;
+  }
+  const p = el("path", {class: "edge", "marker-end": "url(#mk)", d}, gEdges);
+  edgeEls.push({s: sid, t: t.id, p});
+}));
+
+const nodeEls = {};
+NODES.forEach(n => {
+  const g = el("g", {class: `node k-${n.kind}`, tabindex: 0}, gNodes);
+  el("rect", {x: left(n), y: top(n), width: width(n), height: HH}, g);
+  const t = el("text", {class: "t", x: cx(n), y: top(n) + 20, "text-anchor": "middle"}, g);
+  t.textContent = n.label;
+  const s = el("text", {class: "s", x: cx(n), y: top(n) + 37, "text-anchor": "middle"}, g);
+  s.textContent = n.sub;
+  if (GLY[n.id]) {
+    const g0 = GLY[n.id], tot = (g0.d || 0) + (g0.p || 0) + (g0.h || 0);
+    const r = el("rect", {class: "mb", x: left(n) + 8, y: top(n) + HH - 6,
+      width: Math.max(2, (width(n) - 16) * logFrac(tot)), height: 3, rx: 1.5}, g);
+    const tt = el("title", {}, r); tt.textContent = "gly10: " + glyText(n.id);
+  }
+  for (const [node, px] of [[t, 13.5], [s, 12]]) {
+    const room = width(n) - 16, len = node.getComputedTextLength();
+    if (len > room) node.style.fontSize = (px * room / len).toFixed(2) + "px";
+  }
+  nodeEls[n.id] = g;
+  g.addEventListener("mouseenter", () => { if (!pinned) show(n.id); });
+  g.addEventListener("mouseleave", () => { if (!pinned) show(null); });
+  g.addEventListener("click", e => {
+    e.stopPropagation();
+    if (moved) return;
+    pinned = pinned === n.id ? null : n.id;
+    show(pinned || n.id);
+  });
+  g.addEventListener("keydown", e => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); g.dispatchEvent(new Event("click")); }
+  });
+});
+svg.addEventListener("click", () => { if (moved) return; pinned = null; show(null); });
+
+let pinned = null;
+
+// Pan and zoom: the view is a window (x, y, scale k) onto the graph.
+const frame = document.getElementById("frame");
+const view = {x: 0, y: 0, k: 1};
+let moved = false;
+const size = () => frame.getBoundingClientRect();
+function apply() {
+  const r = size();
+  svg.setAttribute("viewBox", `${view.x} ${view.y} ${r.width / view.k} ${r.height / view.k}`);
+}
+function fit() {
+  const r = size();
+  view.k = Math.min(r.width / svgW, r.height / svgH);
+  view.x = -(r.width / view.k - svgW) / 2;
+  view.y = -(r.height / view.k - svgH) / 2;
+  apply();
+}
+function readable() {
+  const r = size();
+  view.k = Math.min(1, r.height / svgH);
+  view.x = Math.min(0, -(r.width / view.k - svgW) / 2);
+  view.y = -(r.height / view.k - svgH) / 2;
+  apply();
+}
+function zoomAt(px, py, f) {
+  const k = Math.min(3, Math.max(0.15, view.k * f));
+  view.x += px / view.k - px / k;
+  view.y += py / view.k - py / k;
+  view.k = k;
+  apply();
+}
+const centre = f => { const r = size(); zoomAt(r.width / 2, r.height / 2, f); };
+document.getElementById("zin").onclick = () => centre(1.25);
+document.getElementById("zout").onclick = () => centre(0.8);
+document.getElementById("zfit").onclick = fit;
+document.getElementById("zone").onclick = readable;
+frame.addEventListener("wheel", e => {
+  if (!e.ctrlKey && !e.metaKey) return;
+  e.preventDefault();
+  const r = size();
+  zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * 0.01));
+}, {passive: false});
+let grab = null;
+frame.addEventListener("pointerdown", e => {
+  if (e.button !== 0) return;
+  moved = false;
+  grab = {px: e.clientX, py: e.clientY, x: view.x, y: view.y};
+});
+window.addEventListener("pointermove", e => {
+  if (!grab) return;
+  const dx = e.clientX - grab.px, dy = e.clientY - grab.py;
+  if (!moved && Math.hypot(dx, dy) < 4) return;
+  moved = true;
+  frame.classList.add("drag");
+  view.x = grab.x - dx / view.k;
+  view.y = grab.y - dy / view.k;
+  apply();
+});
+window.addEventListener("pointerup", () => { grab = null; frame.classList.remove("drag"); });
+window.addEventListener("resize", apply);
+readable();
+const reach = (id, key) => {
+  const seen = new Set(), stack = [id];
+  while (stack.length) for (const m of byId[stack.pop()][key])
+    if (!seen.has(m)) { seen.add(m); stack.push(m); }
+  return seen;
+};
+const names = ids => ids.length ? ids.map(i => byId[i].label).join(", ") : "nothing";
+
+const detail = document.getElementById("detail");
+function show(id) {
+  const up = id ? reach(id, "deps") : null, down = id ? reach(id, "kids") : null;
+  for (const n of NODES) {
+    const g = nodeEls[n.id];
+    g.classList.toggle("dim", !!id && n.id !== id && !up.has(n.id) && !down.has(n.id));
+    g.classList.toggle("sel", n.id === id);
+  }
+  for (const e of edgeEls) {
+    const on = !!id && ((e.t === id || up.has(e.t)) && up.has(e.s) ||
+                        (e.s === id || down.has(e.s)) && down.has(e.t));
+    e.p.classList.toggle("on", on);
+    e.p.classList.toggle("dim", !!id && !on);
+    e.p.setAttribute("marker-end", on ? "url(#mkon)" : "url(#mk)");
+  }
+  detail.textContent = "";
+  if (!id) {
+    const p = document.createElement("p");
+    p.style.color = "var(--muted)"; p.style.margin = "0";
+    p.textContent = "Select a node to see what it produces, how big that is, and what it depends on.";
+    detail.appendChild(p);
+    return;
+  }
+  const n = byId[id];
+  const h = document.createElement("h3");
+  h.textContent = n.label;
+  const dl = document.createElement("dl");
+  const rows = [["Produces", n.out], ["Size", n.size], ["Needs", names(n.deps)],
+                ["Needed by", names(n.kids)], ["Phase", PHASE[n.ph]],
+                ["mem_budget", n.mb], ["On gly10", glyText(n.id)], ["Note", n.note]];
+  for (const [k, v] of rows) {
+    if (!v) continue;
+    const dt = document.createElement("dt"), dd = document.createElement("dd");
+    dt.textContent = k; dd.textContent = v; dl.append(dt, dd);
+  }
+  detail.append(h, dl);
+}
+show(null);
+
+const tbody = document.querySelector("#tbl tbody");
+for (const n of NODES) {
+  if (n.kind === "input" || n.kind === "scf") continue;
+  const tr = document.createElement("tr");
+  for (const v of [n.label, n.out, n.size, names(n.deps), n.ph, n.mb, glyText(n.id)]) {
+    const td = document.createElement("td"); td.textContent = v; tr.appendChild(td);
+  }
+  tbody.appendChild(tr);
+}
+
+// The per-node budget chart: one row per step node and the scratch, log scale.
+{
+  const bsvg = document.getElementById("budgetbars");
+  const rows = NODES.filter(n => GLY[n.id]).map(n => ({label: n.label, id: n.id, ...GLY[n.id]}));
+  rows.push({label: "scratch (final node, a max)", d: 8655336,
+             parts: "the eigensolve at n_ao, by the LAPACK formula; X and the SCF share it"});
+  const LX = 236, X0 = 250, X1 = 790, TOP = 22, BH = 7, GAP = 2;
+  const kindsOf = r => [["d", "var(--c1)", "device"], ["p", "var(--c2)", "pinned"],
+                        ["h", "var(--c3)", "heap"]].filter(k => r[k[0]] !== undefined);
+  let y = TOP;
+  const placed = rows.map(r => {
+    const ks = kindsOf(r), h = Math.max(1, ks.length) * (BH + GAP) - GAP;
+    const row = {r, ks, y, h: Math.max(h, 14)};
+    y += row.h + 10;
+    return row;
+  });
+  const H = y + 4, Wd = 900;
+  bsvg.setAttribute("viewBox", `0 0 ${Wd} ${H}`);
+  const xOf = b => X0 + (X1 - X0) * logFrac(b);
+  const ticks = ["100 B", "1 kB", "10 kB", "100 kB", "1 MB", "10 MB", "100 MB", "1 GB", "10 GB"];
+  ticks.forEach((t, i) => {
+    const x = X0 + (X1 - X0) * i / 8;
+    el("line", {class: "grid", x1: x, y1: TOP - 6, x2: x, y2: H - 4}, bsvg);
+    const tx = el("text", {x, y: 12, "text-anchor": "middle", class: "m s"}, bsvg);
+    tx.textContent = t;
+  });
+  for (const {r, ks, y: ry, h} of placed) {
+    const g = el("g", {class: "brow"}, bsvg);
+    const tl = el("title", {}, g);
+    tl.textContent = r.label + ": " + glyText(r.id) + (r.id ? "" : `device ${fmtB(r.d)} (${r.parts})`);
+    el("rect", {x: 0, y: ry - 4, width: Wd, height: h + 8, fill: "transparent"}, g);
+    const lt = el("text", {x: LX, y: ry + h / 2 + 4, "text-anchor": "end"}, g);
+    lt.textContent = r.label;
+    if (!ks.length || (ks.length === 1 && !r.d)) {
+      const z = el("text", {x: X0 + 4, y: ry + h / 2 + 4, class: "m s"}, g);
+      z.textContent = "nothing: in place in the three-centre step";
+      continue;
+    }
+    ks.forEach(([k, col], i) => {
+      const by = ry + i * (BH + GAP) + (h - (ks.length * (BH + GAP) - GAP)) / 2;
+      const xe = Math.max(X0 + 2, xOf(r[k]));
+      el("rect", {class: "bar", x: X0, y: by, width: xe - X0, height: BH, rx: 2,
+                  style: `fill:${col}`}, g);
+      const v = el("text", {x: xe + 5, y: by + BH - 0.5, class: "m s"}, g);
+      v.textContent = fmtB(r[k]);
+    });
+  }
+}
+})();
+</script>
 @@ replace-pre card's stream:  eri [
 <figure><div class="scroll">
 <svg viewBox="0 0 800 244" role="img" aria-label="Streams on gpu0 over time. eri holds gpu0's lock: on the card's stream it factors the metric, then fits batches 0, 1 and 2 one after another. On eri's own two slot streams, drawn above and below it, each batch's kernels run before its fit and its copy after it, joined to the card's stream by events, so batch 1's kernels overlap batch 0's fit. After the wrapper's sync eri releases the lock and the orthogonalizer takes it, putting its eigensolve and gemms on the card's stream. guess, which calls no library, runs on its own stream throughout and holds no lock.">

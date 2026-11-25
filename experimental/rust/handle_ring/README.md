@@ -1,6 +1,6 @@
 # experimental/rust/handle_ring — the handle ring's two measurements
 
-`docs/rust-redesign.html`, "A ring of library handles, and no library
+`experimental/rust/v0.0.4/v0.0.4.html`, "A ring of library handles, and no library
 stream", proposes that every library call run on the calling step's own
 stream. A handle set (BLAS + solver) belongs to one step for the length of
 its `run`, and steps share one only if the DAG orders them. Two measurements
@@ -120,7 +120,7 @@ during a call was 0.
 
 **Outcome, 2026-11-24:** neither the ring nor a handle per step. The decision
 is one handle set per card under one lock, held for a step's whole run, with a
-fixed 128 MiB BLAS workspace (`docs/rust-redesign.html`, "One handle set per
+fixed 128 MiB BLAS workspace (`experimental/rust/v0.0.4/v0.0.4.html`, "One handle set per
 card, under one lock"). The overlap the ring would buy, between library-using
 steps the DAG leaves unordered on one card, is worth little when heavy steps
 fill the card on their own. The points below still apply to that design: the
@@ -142,7 +142,7 @@ cost per set, the binding order, and HIP's growth past a small workspace.
    is open: rocBLAS has a size query (`rocblas_start_device_memory_size_query`),
    but it may not be reachable through hipBLAS and `wwr-sys` (to check). The
    alternative is a measured allowance per routine and shape. The allocator
-   record (`docs/rust-redesign.html`, enforcement) would catch a miss only
+   record (`experimental/rust/v0.0.4/v0.0.4.html`, enforcement) would catch a miss only
    after the fact.
 4. **The handles row of the budget table** should carry per-backend numbers:
    20 MiB per set on CUDA and 52 on HIP (after the pool is given back), plus a

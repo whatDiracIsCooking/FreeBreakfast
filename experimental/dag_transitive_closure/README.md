@@ -2,7 +2,7 @@
 
 Does packing each step's scratch region from the transitive closure of the
 step DAG behave as the Rust redesign says
-([`docs/rust-redesign.html`](../../docs/rust-redesign.html#scratch), "Step
+([`experimental/rust/v0.0.4/v0.0.4.html`](../rust/v0.0.4/v0.0.4.html#step-scratch), "Step
 scratch")? Two regions may overlap only when the DAG orders their steps, so no
 edge is added for memory.
 
