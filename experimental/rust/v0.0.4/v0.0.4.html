@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>The card&#x27;s stream under its lock, and the df-rhf chain — rust/v0.0.4</title>
+<!-- Generated from README.md by md2html.py; edit the .md, not this. -->
+<style>
+:root{--bg:#fbfaf7;--fg:#1f2328;--muted:#5d6670;--rule:#e3e0d8;--accent:#8a4b16;
+--code-bg:#f1eee6;--th-bg:#f4f1ea;--link:#0b5cad;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#16181c;
+--fg:#e4e6ea;--muted:#9aa3ad;--rule:#2c3038;--accent:#e0a36a;--code-bg:#22262d;
+--th-bg:#1d2026;--link:#7fb4ff;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#16181c;--fg:#e4e6ea;--muted:#9aa3ad;--rule:#2c3038;
+--accent:#e0a36a;--code-bg:#22262d;--th-bg:#1d2026;--link:#7fb4ff;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+font:16px/1.65 Charter,"Bitstream Charter","Iowan Old Style",Georgia,serif;
+padding-inline:16px}
+.wrap{max-width:72rem;margin:0 auto;display:grid;grid-template-columns:15rem minmax(0,
+1fr);
+gap:3rem;padding-block:2.5rem 4rem}
+nav{position:sticky;top:1.5rem;align-self:start;max-height:calc(100vh - 3rem);
+overflow:auto;
+font:13.5px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+nav .kicker{text-transform:uppercase;letter-spacing:.08em;font-size:11px;
+color:var(--muted);
+margin-bottom:.6rem}
+nav ol{list-style:none;margin:0;padding:0}
+nav li{margin:.3rem 0}
+nav li.l3{padding-left:.9rem;font-size:12.5px}
+nav a{color:var(--muted);text-decoration:none}
+nav a:hover{color:var(--accent)}
+nav .sib{margin-top:1.4rem;padding-top:.8rem;border-top:1px solid var(--rule)}
+main{max-width:44rem}
+h1,h2,h3{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.25;
+letter-spacing:-.01em}
+h1{font-size:2rem;margin:0 0 1.5rem}
+h1 .pre{display:block;font-size:.8rem;font-weight:600;text-transform:uppercase;
+letter-spacing:.1em;color:var(--accent);margin-bottom:.4rem}
+h2{font-size:1.35rem;margin:3rem 0 .9rem;padding-top:1.2rem;
+border-top:1px solid var(--rule)}
+h3{font-size:1.08rem;margin:2.2rem 0 .7rem}
+h2 a.hl,h3 a.hl{color:inherit;text-decoration:none}
+p,li{hyphens:auto}
+strong{font-weight:650}
+a{color:var(--link);text-underline-offset:2px}
+code{font:.86em/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+background:var(--code-bg);padding:.1em .3em;border-radius:3px}
+pre{background:var(--code-bg);padding:1rem 1.1rem;border-radius:6px;overflow-x:auto;
+line-height:1.45}
+pre code{background:none;padding:0;font-size:13.5px}
+.table{overflow-x:auto;margin:1.2rem 0}
+table{border-collapse:collapse;font:14px/1.45 system-ui,-apple-system,"Segoe UI",
+sans-serif;
+min-width:100%}
+th,td{border-bottom:1px solid var(--rule);padding:.5rem .7rem;text-align:left;
+vertical-align:top}
+th{background:var(--th-bg);font-weight:600}
+td code,th code{font-size:12.5px}
+ol,ul{padding-left:1.4rem}
+@media (max-width:860px){.wrap{grid-template-columns:1fr;gap:0;
+padding-block:1.5rem 3rem}
+nav{position:static;max-height:none;margin-bottom:1rem;padding-bottom:1rem;
+border-bottom:1px solid var(--rule)}}
+:root{--acc-fill:rgba(138,75,22,.15);--row:#e9e5da}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+--acc-fill:rgba(224,163,106,.2);--row:#2a2f37}}
+:root[data-theme="dark"]{--acc-fill:rgba(224,163,106,.2);--row:#2a2f37}
+figure{margin:1.8rem 0}
+figure .scroll{overflow-x:auto}
+figure svg{display:block;width:100%;min-width:520px;height:auto;color:var(--fg)}
+figcaption{font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+color:var(--muted);
+margin-top:.6rem}
+svg text{font:12px system-ui,-apple-system,"Segoe UI",sans-serif;fill:currentColor}
+svg .t{font-weight:600}
+svg .sm{font-size:11px}
+svg .mt{fill:var(--muted)}
+svg .at{fill:var(--accent)}
+svg .ln{stroke:currentColor;fill:none;stroke-width:1.3}
+svg .ml{stroke:var(--muted);fill:none;stroke-width:1}
+svg .al{stroke:var(--accent);fill:none;stroke-width:1.6}
+svg .dash{stroke-dasharray:5 4}
+svg .box{fill:var(--code-bg);stroke:currentColor;stroke-width:1.2}
+svg .row{fill:var(--row);stroke:currentColor;stroke-width:1}
+svg .ab{fill:var(--acc-fill);stroke:var(--accent);stroke-width:1.5}
+svg .ah{fill:var(--accent)}
+svg .fh{fill:currentColor}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#what-v003-could-not-build">What v0.0.3 could not build</a></li><li class="l2"><a href="#the-cards-library-a-stream-the-handles-and-the-workspace-under-one-lock">The card's library: a stream, the handles and the workspace, under one lock</a></li><li class="l2"><a href="#a-step-with-streams-of-its-own-and-library-calls">A step with streams of its own and library calls</a></li><li class="l2"><a href="#where-the-handles-and-the-workspace-are-made">Where the handles and the workspace are made</a></li><li class="l2"><a href="#the-df-rhf-chain">The DF-RHF chain</a></li><li class="l2"><a href="#what-it-is-held-against">What it is held against</a></li><li class="l2"><a href="#what-it-runs-that-no-prototype-has">What it runs that no prototype has</a></li><li class="l2"><a href="#carried-from-v003-and-what-stays-open">Carried from v0.0.3, and what stays open</a></li><li class="l2"><a href="#not-in-it">Not in it</a></li><li class="l2"><a href="#this-page-as-html">This page as HTML</a></li></ol></nav>
+<main>
+<h1><span class="pre">rust/v0.0.4</span>The card&#x27;s stream under its lock, and the df-rhf chain</h1>
+<p><strong>A design, not yet built.</strong> This page says what the third prototype of the
+redesign in <code>docs/rust-redesign.html</code> (&quot;Rust rebuild: steps, the memory budget
+and rustflow&quot;) will build, and how it will be held. There is no crate beside
+it yet. Written 2026-11-25, after <code>../v0.0.3</code>.</p>
+<p>It covers two things:</p>
+<ol>
+<li><strong>One handle set per card, revised.</strong> v0.0.3 could not build it as the
+design words it. Decided 2026-11-25: the card owns a stream, and the card's
+lock guards that stream with the handles. A step owns its own streams; a
+step that calls the library also borrows the card's.</li>
+<li><strong>The DF-RHF chain as steps</strong> (item 3 of the design's order of work), on
+<code>num_gpus</code> cards, batched, over v0.0.3's core: the one-electron steps, the
+orthogonalizer, the guess, <code>eri</code>, and an SCF that calls <code>build_jk</code> on every
+trip.</li>
+</ol>
+<p>Like its two predecessors it will be throwaway: a crate and a workspace of its
+own, in no gate, never merged into <code>rust/</code>.</p>
+<p>Three marks are used below. <strong>Decided</strong> was agreed in discussion on
+2026-11-25. <strong>Carried</strong> is v0.0.3's or the design's, unchanged. <strong>Proposed</strong>
+is this page's suggestion and not agreed.</p>
+<h2 id="what-v003-could-not-build">What v0.0.3 could not build</h2>
+<p>The design has one BLAS handle per card, rebound to the holder's stream at
+every acquisition of the card's lock (<code>SetStream</code>, then <code>SetWorkspace</code>).
+v0.0.3 found three things in the way (its README, &quot;What the prototype says to
+change&quot;, item 1):</p>
+<ul>
+<li><code>fb_core_wwr::blas::BlasHandle</code> keeps the <code>Arc&lt;Stream&gt;</code> it was made on and
+has no rebind.</li>
+<li><code>fb_recipes_sys::trsm</code> launches its diagonal kernels on that stream
+(<code>blas.owner()</code>) and its gemms through the handle. A handle rebound through
+the raw call would run one solve on two streams with nothing ordering them.</li>
+<li><code>BlasHandle::bind_workspace</code> takes ownership of the workspace, where the
+design's workspace is the card's and outlives every binding.</li>
+</ul>
+<p>So v0.0.3 made a BLAS handle per library-using step per card: the form the
+design had rejected for its cost on HIP (58 MiB a handle).</p>
+<h2 id="the-cards-library-a-stream-the-handles-and-the-workspace-under-one-lock">The card's library: a stream, the handles and the workspace, under one lock</h2>
+<p><strong>Decided.</strong> It replaces the rebind in the design's &quot;One handle set per card,
+under one lock&quot;.</p>
+<ul>
+<li><strong>The card owns a stream.</strong> Each card's <code>CardResources</code> holds one stream, a
+BLAS handle and a dense-solver handle made on that stream, and the fixed
+128 MiB BLAS workspace. The handles keep that stream for the life of the
+process. Nothing is rebound: <code>SetStream</code> is never called after creation, and
+the workspace is set once.</li>
+<li><strong>The lock guards all of it.</strong> <code>CardResources</code> is a <code>Mutex</code> around the
+stream, the handles and the workspace, not a <code>Mutex&lt;()&gt;</code> beside them. They
+are reachable only through the guard.</li>
+<li><strong>A step owns its streams.</strong> A GPU step has streams of its own on each card
+it spans: one by default, more if it declares them. The wrapper makes them
+in budget mode and keeps them in the step's slot.</li>
+<li><strong>A library-using step also borrows the card's.</strong> It declares the library
+per card in <code>mem_budget</code>, as in v0.0.3. For its <code>run</code> it holds that card's
+guard, and its library calls go on the card's stream.</li>
+<li><strong>The wrapper syncs all of them before release.</strong> Before <code>run</code> it takes the
+guard of every card the step declared, in card order. After <code>run</code> it
+synchronizes every stream the step has on each card, and each held card's
+stream, and only then drops the guards.</li>
+</ul>
+<div class="table"><table>
+<thead>
+<tr>
+<th></th>
+<th>A step's own streams</th>
+<th>The card's stream</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>How many</td>
+<td>One per GPU step per card by default; more if declared</td>
+<td>One per card</td>
+</tr>
+<tr>
+<td>Made</td>
+<td>By the wrapper, in budget mode</td>
+<td>In setup, with the handles</td>
+</tr>
+<tr>
+<td>Reached through</td>
+<td>The step's lane</td>
+<td>The card's guard</td>
+</tr>
+<tr>
+<td>What goes on it</td>
+<td>The step's kernels and copies</td>
+<td>Library calls; and a holder's kernels and copies, if it wants one order with no event</td>
+</tr>
+<tr>
+<td>Who may use it</td>
+<td>Its step</td>
+<td>The step holding the card's lock, for its whole <code>run</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>A step that calls no library holds no guard and overlaps other steps on the
+card as before.</p>
+<figure><div class="scroll">
+<svg viewBox="0 0 800 244" role="img" aria-label="Streams on gpu0 over time. eri holds gpu0's lock: on the card's stream it factors the metric, then fits batches 0, 1 and 2 one after another. On eri's own two slot streams, drawn above and below it, each batch's kernels run before its fit and its copy after it, joined to the card's stream by events, so batch 1's kernels overlap batch 0's fit. After the wrapper's sync eri releases the lock and the orthogonalizer takes it, putting its eigensolve and gemms on the card's stream. guess, which calls no library, runs on its own stream throughout and holds no lock.">
+<defs>
+<marker id="v4e" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="at" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<text class="sm mt" x="20" y="42">gpu0's lock</text>
+<rect class="ab" x="180" y="30" width="425" height="16"/>
+<text class="sm" x="392" y="42" text-anchor="middle">eri holds it for its whole run</text>
+<rect class="ab" x="625" y="30" width="145" height="16"/>
+<text class="sm" x="697" y="42" text-anchor="middle">orthogonalizer</text>
+<text class="sm" x="20" y="79">eri's stream, slot 1</text>
+<rect class="row" x="276" y="64" width="80" height="22"/>
+<text class="sm" x="316" y="79" text-anchor="middle">kernels 1</text>
+<rect class="row" x="436" y="64" width="46" height="22"/>
+<text class="sm" x="459" y="79" text-anchor="middle">copy 1</text>
+<text class="sm" x="20" y="119">the card's stream</text>
+<rect class="row" x="180" y="104" width="70" height="22"/>
+<text class="sm" x="215" y="119" text-anchor="middle">factor L</text>
+<rect class="row" x="284" y="104" width="62" height="22"/>
+<text class="sm" x="315" y="119" text-anchor="middle">fit 0</text>
+<rect class="row" x="366" y="104" width="62" height="22"/>
+<text class="sm" x="397" y="119" text-anchor="middle">fit 1</text>
+<rect class="row" x="480" y="104" width="62" height="22"/>
+<text class="sm" x="511" y="119" text-anchor="middle">fit 2</text>
+<rect class="row" x="630" y="104" width="135" height="22"/>
+<text class="sm" x="697" y="119" text-anchor="middle">syevd, gemms</text>
+<text class="sm" x="20" y="159">eri's stream, slot 0</text>
+<rect class="row" x="190" y="144" width="84" height="22"/>
+<text class="sm" x="232" y="159" text-anchor="middle">kernels 0</text>
+<rect class="row" x="354" y="144" width="46" height="22"/>
+<text class="sm" x="377" y="159" text-anchor="middle">copy 0</text>
+<rect class="row" x="408" y="144" width="64" height="22"/>
+<text class="sm" x="440" y="159" text-anchor="middle">kernels 2</text>
+<rect class="row" x="550" y="144" width="46" height="22"/>
+<text class="sm" x="573" y="159" text-anchor="middle">copy 2</text>
+<text class="sm" x="20" y="205">guess's stream</text>
+<rect class="box" x="230" y="190" width="170" height="22"/>
+<text class="sm" x="315" y="205" text-anchor="middle">no library, no lock</text>
+<path class="al" d="M274,144L286,128" marker-end="url(#v4e)"/>
+<path class="al" d="M346,126L356,143" marker-end="url(#v4e)"/>
+<path class="al" d="M356,86L368,102" marker-end="url(#v4e)"/>
+<path class="al" d="M428,104L438,88" marker-end="url(#v4e)"/>
+<path class="al" d="M472,144L482,128" marker-end="url(#v4e)"/>
+<path class="al" d="M542,126L552,143" marker-end="url(#v4e)"/>
+<path class="ln dash" d="M614,24V218"/>
+<text class="sm mt" x="614" y="236" text-anchor="middle">the wrapper syncs every stream, then releases</text>
+<text class="sm at" x="180" y="236">arrows: events inside eri</text>
+</svg></div>
+<figcaption>Streams on gpu0. <code>eri</code> holds the lock, so the card's stream is its own for the run: the factor, then each batch's fit. Its two slot streams carry the kernels and the copies, joined to the card's stream by events, so a batch's kernels overlap the batch before's fit and two fits never overlap. The orthogonalizer waits for the lock. <code>guess</code> calls no library and overlaps all of it. Not to scale.</figcaption>
+</figure>
+
+<p><strong>Why this is not the old library stream.</strong> The design dropped the device's
+library stream on 2026-11-24 for a hole: the orthogonalizer enqueued
+<code>syevd(S)</code> on it, its wrapper synchronized the step's own, empty stream, and
+the SCF then wrote over <code>syevd</code>'s work. Two things made the hole, and neither
+is here:</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th></th>
+<th>The library stream, as dropped</th>
+<th>The card's stream</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Who may enqueue on it</td>
+<td>Any step, under a mutex held per call</td>
+<td>The lock's holder alone, for its whole <code>run</code></td>
+</tr>
+<tr>
+<td>What the wrapper synchronizes</td>
+<td>The step's own stream</td>
+<td>The step's own streams and the card's, before the lock is released</td>
+</tr>
+</tbody>
+</table></div>
+<p>So a finished node is still finished device work, on every stream the step
+touched, and the scratch argument of the design is unchanged.</p>
+<p><strong>What it buys.</strong></p>
+<ul>
+<li><strong>Safe by construction.</strong> The rebind was safe by measurement, on one release
+of each library: cuBLAS drops the workspace at <code>SetStream</code>, hipBLAS keeps
+it, and what the solver handles do was not measured. With no rebind there
+is nothing to measure and no sentinel test to keep.</li>
+<li><strong>Exclusive use by type.</strong> The handles are behind the guard, so &quot;no handle
+is shared with work in flight&quot; is the borrow checker's.</li>
+<li><strong>The recipes are right as written.</strong> <code>trsm</code>'s kernels and its gemms land on
+one stream because the handle has only ever had one.</li>
+<li><strong>The default cap sees the handles.</strong> They are made in setup, so &quot;one read
+per device, after its handles exist&quot; holds as the design words it, and
+their memory no longer grows with the number of library-using steps.</li>
+</ul>
+<p><strong>What it gives up.</strong> Narrowing the lock to a step's library phases later. A
+holder's library calls are on the card's stream, so two library-using steps
+cannot interleave on a card without a second handle set. The design already
+holds the lock through a step's whole <code>run</code> and declined the ring of handle
+sets, so nothing decided is lost.</p>
+<p><strong>Not taken.</strong></p>
+<ul>
+<li><strong>(a) A rebind.</strong> <code>BlasHandle::rebind(&amp;mut self, Arc&lt;Stream&gt;, workspace)</code>,
+with the recipes reading the stream from the current binding. It keeps
+&quot;every step's library calls on its own stream&quot;, at the price of resting on
+the measured <code>SetStream</code> behaviour above.</li>
+<li><strong>(b) Every recipe takes its stream explicitly.</strong> It does not remove the
+rebind; it only moves the stream out of the handle.</li>
+<li><strong>Rebinding inside a step, per call, to each of its streams.</strong> Two library
+calls in flight on two streams would share the one fixed workspace.</li>
+</ul>
+<h2 id="a-step-with-streams-of-its-own-and-library-calls">A step with streams of its own and library calls</h2>
+<p><code>experimental/rust/df_batched/multi_gpu_spherical</code> is the case: each card
+builds its share of B over a ring of two batches in flight, and every trip
+has kernels, a library solve and a download. v0.0.4's <code>eri</code> is built that
+way, so the rule above is run in the form that needs events.</p>
+<p>Per card, with a ring of depth 2:</p>
+<ul>
+<li><strong>The ring's slots are the step's own streams</strong>, one per slot. A slot's
+stream carries its batch's table upload, its three-centre kernels and its
+download.</li>
+<li><strong>The fit goes on the card's stream.</strong> It waits on the event the slot
+recorded after its kernels, and the slot's download waits on the event
+recorded after the fit.</li>
+<li><strong>The host waits on a slot's last event</strong>, not on a whole stream, before it
+scatters that batch into B and writes the slot's pinned bytes again.</li>
+<li><strong>The metric's factor</strong> is on the card's stream before the loop, and
+overlaps the first batch's kernels.</li>
+</ul>
+<p>The events are those the design keeps <code>ForkStream</code> for: a step's own inner
+fan-out. Whoever fans out, joins: every event is waited on before <code>run</code>
+returns, and the wrapper's sync is the last word.</p>
+<p><strong>What serializes.</strong> The two slots' fits run one after the other on the one
+card's stream. The ring overlaps a batch's copies and kernels with the
+previous batch's fit; it does not overlap two fits. Expected to cost little,
+since two solves on one card time-slice. Not measured.</p>
+<p><strong>Further handles are not built.</strong> A step that needs concurrent library calls
+inside itself declares handles of its own, each with a workspace it budgets,
+as the design already says. No step here needs it.</p>
+<p><strong>The ring is part of the layout.</strong> A slot's device and pinned bytes are
+tenants of <code>eri</code>'s scratch, so the layout holds two of each, and the width is
+the widest whose ring fits the step's limit, as that experiment sizes it.</p>
+<p>A simple library user needs none of this. The orthogonalizer and the SCF put
+everything on the card's stream, in the order they enqueue, with no event.</p>
+<h2 id="where-the-handles-and-the-workspace-are-made">Where the handles and the workspace are made</h2>
+<ul>
+<li><strong>Setup</strong> makes each card's stream and its two handles. <em>Decided.</em></li>
+<li><strong>Setup then reads the card's free memory</strong> for the default cap. <em>Carried.</em></li>
+<li><strong>The final budget node allocates the 128 MiB workspace</strong> and binds it to
+the card's BLAS handle, once. It stays a row of the budget table, charged
+against the cap. <em>Carried.</em> Binding it in setup would put it before the
+reading, and the row would then count it twice.</li>
+<li><strong>A device-free <code>--budget-only</code></strong> makes no handles and reports each solver
+call's work buffer as zero. <em>Carried.</em></li>
+</ul>
+<h2 id="the-df-rhf-chain">The DF-RHF chain</h2>
+<p>v0.0.2's graph, over v0.0.3's core. What changes against v0.0.2: <code>eri</code> is
+v0.0.3's batched build with the ring above, there is no manager, the SCF
+calls <code>build_jk</code> itself, and every step runs on <code>num_gpus</code> cards or on gpu0.</p>
+<figure><div class="scroll">
+<svg viewBox="0 0 800 262" role="img" aria-label="The step graph of DF-RHF. harmonics and records are each read by overlap, core_hamiltonian and eri. overlap is read by orthogonalizer. orthogonalizer, core_hamiltonian, eri and guess are read by scf. overlap, core_hamiltonian, orthogonalizer, eri and scf call the library and hold a card's lock; harmonics, records and guess do not.">
+<defs>
+<marker id="v4a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<rect class="box" x="20" y="20" width="130" height="44" rx="4"/>
+<text class="t" x="85" y="38" text-anchor="middle">harmonics</text>
+<text class="sm mt" x="85" y="54" text-anchor="middle">gpu0</text>
+<rect class="box" x="20" y="80" width="130" height="44" rx="4"/>
+<text class="t" x="85" y="98" text-anchor="middle">records</text>
+<text class="sm mt" x="85" y="114" text-anchor="middle">all GPUs</text>
+<rect class="box" x="20" y="200" width="130" height="44" rx="4"/>
+<text class="t" x="85" y="218" text-anchor="middle">guess</text>
+<text class="sm mt" x="85" y="234" text-anchor="middle">gpu0</text>
+<rect class="ab" x="220" y="20" width="170" height="44" rx="4"/>
+<text class="t" x="305" y="38" text-anchor="middle">overlap</text>
+<text class="sm mt" x="305" y="54" text-anchor="middle">gpu0, holds its lock</text>
+<rect class="ab" x="220" y="80" width="170" height="44" rx="4"/>
+<text class="t" x="305" y="98" text-anchor="middle">core_hamiltonian</text>
+<text class="sm mt" x="305" y="114" text-anchor="middle">gpu0, holds its lock</text>
+<rect class="ab" x="220" y="140" width="170" height="44" rx="4"/>
+<text class="t" x="305" y="158" text-anchor="middle">eri</text>
+<text class="sm mt" x="305" y="174" text-anchor="middle">all GPUs, each lock, a ring</text>
+<rect class="ab" x="440" y="20" width="160" height="44" rx="4"/>
+<text class="t" x="520" y="38" text-anchor="middle">orthogonalizer</text>
+<text class="sm mt" x="520" y="54" text-anchor="middle">gpu0, holds its lock</text>
+<rect class="ab" x="640" y="110" width="140" height="44" rx="4"/>
+<text class="t" x="710" y="128" text-anchor="middle">scf</text>
+<text class="sm mt" x="710" y="144" text-anchor="middle">all GPUs, each lock</text>
+<path class="ln" d="M150,42C185,42 185,36 218,36" marker-end="url(#v4a)"/>
+<path class="ln" d="M150,42C185,42 185,94 218,94" marker-end="url(#v4a)"/>
+<path class="ln" d="M150,42C185,42 185,154 218,154" marker-end="url(#v4a)"/>
+<path class="ln" d="M150,102C185,102 185,50 218,50" marker-end="url(#v4a)"/>
+<path class="ln" d="M150,102C185,102 185,108 218,108" marker-end="url(#v4a)"/>
+<path class="ln" d="M150,102C185,102 185,168 218,168" marker-end="url(#v4a)"/>
+<path class="ln" d="M390,42H438" marker-end="url(#v4a)"/>
+<path class="ln" d="M600,42C622,42 618,118 638,118" marker-end="url(#v4a)"/>
+<path class="ln" d="M390,102C500,102 560,127 638,127" marker-end="url(#v4a)"/>
+<path class="ln" d="M390,162C500,162 560,137 638,137" marker-end="url(#v4a)"/>
+<path class="ln" d="M150,222C450,222 560,147 638,147" marker-end="url(#v4a)"/>
+</svg></div>
+<figcaption>The step DAG. The five outlined steps call the library, so the wrapper holds a card's lock for their run: <code>overlap</code>, <code>core_hamiltonian</code> and <code>eri</code> are unordered and take gpu0's one after another, and the orthogonalizer is unordered with the last two. The SCF's loop is inside its node. Budget mode adds one final node after all eight.</figcaption>
+</figure>
+
+<div class="table"><table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Runs on</th>
+<th>Library</th>
+<th>Its <code>Output</code></th>
+<th>Its scratch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>harmonics</code></td>
+<td>gpu0</td>
+<td>no</td>
+<td>U, the Cartesian-to-spherical transform</td>
+<td>The pinned staging</td>
+</tr>
+<tr>
+<td><code>records</code></td>
+<td>all GPUs</td>
+<td>no</td>
+<td>The orbital records, on every card</td>
+<td>The pinned staging</td>
+</tr>
+<tr>
+<td><code>guess</code></td>
+<td>gpu0</td>
+<td>no</td>
+<td>The SAD density</td>
+<td>The pinned staging</td>
+</tr>
+<tr>
+<td><code>overlap</code></td>
+<td>gpu0</td>
+<td>yes</td>
+<td>S</td>
+<td>The Cartesian matrix</td>
+</tr>
+<tr>
+<td><code>core_hamiltonian</code></td>
+<td>gpu0</td>
+<td>yes</td>
+<td>H = T + V</td>
+<td>The Cartesian matrix, the nuclei</td>
+</tr>
+<tr>
+<td><code>orthogonalizer</code></td>
+<td>gpu0</td>
+<td>yes</td>
+<td>X = S^(-1/2)</td>
+<td><code>syevd</code>'s work at <code>n_ao</code>, the eigenvectors</td>
+</tr>
+<tr>
+<td><code>eri</code></td>
+<td>all GPUs</td>
+<td>yes, every card</td>
+<td>B, on the host heap</td>
+<td>The metric, its factor, and a ring of two batches per card</td>
+</tr>
+<tr>
+<td><code>scf</code></td>
+<td>all GPUs</td>
+<td>yes, every card</td>
+<td>C, the orbital energies, D, the energy</td>
+<td><code>build_jk</code>'s per card; on gpu0 also F, the DIIS ring and <code>syevd</code>'s work</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>The SCF's loop is inside its node.</strong> A condition loop in <code>ScfStep</code>'s
+subflow, as the design has it; v0.0.2 had it in the outer graph. One trip
+is <code>build_jk</code> over the carried D, F, the energy, the residual, the DIIS
+step and the Roothaan step. <em>Carried.</em></li>
+<li><strong><code>build_jk</code> is v0.0.3's</strong>, unchanged: batches of aux functions, each card
+contracting its share, reduced onto gpu0 through the host, a blocking sync
+per batch. The SCF declares <code>JkLayout</code>'s bytes per card in its own layout
+and passes its lease. <em>Carried.</em></li>
+<li><strong>The SCF's solver calls are on gpu0's guard.</strong> <code>syevd</code>'s work buffer is a
+tenant of the SCF's scratch, sized by the query in <code>mem_budget</code>, and the
+binding checks the slice against the query before the call. <em>Carried.</em></li>
+<li><strong>Five steps hold gpu0's lock</strong>, and the DAG leaves several pairs of them
+unordered: <code>overlap</code>, <code>core_hamiltonian</code> and <code>eri</code> among themselves, and
+the orthogonalizer against the last two. This is the first DAG in which a
+step waits for a card's lock.</li>
+<li><strong>Crudest forms stay</strong>: K from D with no occupied factor, no screening, a
+neutral closed-shell molecule, built-in bases.</li>
+</ul>
+<h2 id="what-it-is-held-against">What it is held against</h2>
+<p>One run each, in one process per molecule, the bars fixed by analysis and
+not bitwise:</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>What</th>
+<th>Against</th>
+<th>Bar</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>The energy of water, benzene and ethylene (#865's geometry), cc-pVDZ over cc-pVDZ-JKFIT</td>
+<td>The old Rust path in the same process; PySCF's DF-RHF as v0.0.2's README records it</td>
+<td>1e-9 Eh, the old test's</td>
+</tr>
+<tr>
+<td>The same at forced batches (<code>eri</code> and the SCF's <code>build_jk</code>)</td>
+<td>The default run</td>
+<td>1e-9 Eh</td>
+</tr>
+<tr>
+<td>The same on two logical cards (<code>devices = [0, 0]</code>), NaN-filled</td>
+<td>One card</td>
+<td>1e-9 Eh</td>
+</tr>
+<tr>
+<td>B from the ring of two</td>
+<td>v0.0.3's B, one batch in flight</td>
+<td>1e-10 of the largest element</td>
+</tr>
+<tr>
+<td>A replay</td>
+<td>The run before it</td>
+<td>The same energy to 1e-9 Eh; the ledger's allocation count unchanged</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="what-it-runs-that-no-prototype-has">What it runs that no prototype has</h2>
+<div class="table"><table>
+<thead>
+<tr>
+<th>The design says, or this page does</th>
+<th>Held by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A library-using step's work is finished on every stream it touched before its lock is released</td>
+<td>The orthogonalizer schedule that broke the library stream: the SCF's scratch laid over the orthogonalizer's, twenty runs on eight workers, NaN-filled, X held against a host <code>S^(-1/2)</code></td>
+</tr>
+<tr>
+<td>The handles are reachable only through the guard</td>
+<td>A <code>compile_fail</code> doctest: a <code>run</code> that keeps the handle past the guard</td>
+</tr>
+<tr>
+<td>Locks are taken in card order and released after the sync</td>
+<td>The acquisitions the bus records, as in v0.0.3, now with waits: a step that found gpu0's lock held is recorded as having waited</td>
+</tr>
+<tr>
+<td>Unordered lock holders keep disjoint scratch</td>
+<td>The budget table's offsets for <code>overlap</code>, <code>core_hamiltonian</code>, <code>eri</code> and the orthogonalizer on gpu0</td>
+</tr>
+<tr>
+<td>A step's own streams and the card's are ordered by events inside the step</td>
+<td><code>eri</code> at ring depth 2 against depth 1, to the bar above; and a negative control with the event before the fit removed, expected to fail under the NaN fill</td>
+</tr>
+<tr>
+<td>A solver call's work buffer is step scratch, checked against the size query</td>
+<td>The SCF and the orthogonalizer run on it; an undeclared <code>syevd</code> is refused naming the step</td>
+</tr>
+<tr>
+<td>The default cap is read after the handles exist</td>
+<td>The table's <code>cap used</code> against a reading taken by hand after setup</td>
+</tr>
+<tr>
+<td>The SCF is a condition loop inside its step's subflow</td>
+<td>The node after <code>scf</code> sees the loop done; the trip counts against v0.0.2's</td>
+</tr>
+</tbody>
+</table></div>
+<p>One measurement beside them, with no bar: each molecule's budget total
+against the old path's planner block for the same run (item 4 of the
+design's order of work).</p>
+<p>One-off times are printed as v0.0.3's were: benzene's <code>eri</code> at 206 forced
+batches took 347 ms there with a blocking sync per batch, and the ring is
+what should move it. Not a benchmark; the real question is at gly10's size,
+which this prototype does not run.</p>
+<h2 id="carried-from-v003-and-what-stays-open">Carried from v0.0.3, and what stays open</h2>
+<p>v0.0.3's README lists fourteen things for the design to change. Item 1 is
+settled above, and item 2 with it. The rest:</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>v0.0.3's item</th>
+<th>Here</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>3. What a step's limit covers</td>
+<td><strong>Proposed:</strong> the limit bounds the batch (here, the ring) and not the O(N²) residents, which the cap admits or refuses; a refusal names both parts. Built as v0.0.3 has it until agreed</td>
+</tr>
+<tr>
+<td>4. <code>mem_budget</code> depends on the cap through the default limit</td>
+<td><strong>Proposed:</strong> the default limit is an absolute constant, so a dry budget is exact. Built as v0.0.3 has it until agreed</td>
+</tr>
+<tr>
+<td>5. Pinned scratch forces a sync per batch, or a ring</td>
+<td>The ring is built for <code>eri</code>. <code>build_jk</code> keeps the blocking sync</td>
+</tr>
+<tr>
+<td>6. Setup builds a pair-scaling array to count from</td>
+<td><strong>Proposed:</strong> a counting walk in <code>fb-integrals-mmd</code>. Not built here</td>
+</tr>
+<tr>
+<td>7. The layout function called by the wrapper, once</td>
+<td><strong>Proposed:</strong> the layout as an associated type of <code>Step</code>. Built here, since the ring's slots make a double carve easy to write</td>
+</tr>
+<tr>
+<td>8. An all-GPU step's layout takes the card</td>
+<td>Carried</td>
+</tr>
+<tr>
+<td>9. Largest-first against the bound</td>
+<td>Carried: the table's lower-bound row, on a wider DAG than v0.0.3's</td>
+</tr>
+<tr>
+<td>10. <code>run</code> takes its lane by <code>&amp;mut</code></td>
+<td>Changed by the guard: a step's inner task for a card takes that card's guard and the step's streams on it</td>
+</tr>
+<tr>
+<td>11. B written by several cards needs an <code>unsafe</code></td>
+<td>Carried, and listed as the memory model's second <code>unsafe</code></td>
+</tr>
+<tr>
+<td>12. The reduction and the broadcast go through the host</td>
+<td>Carried</td>
+</tr>
+<tr>
+<td>13. <code>Dims</code> carries per-class counts</td>
+<td>Carried</td>
+</tr>
+<tr>
+<td>14. Logical cards as a test facility</td>
+<td>Carried</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Proposed, about <code>rust/</code>.</strong> The library bindings and the recipes take the
+card's guard, stream and handles together, in place of a handle and a stream
+passed apart. A step with streams of its own can then not hand a recipe the
+wrong one, and <code>blas.owner()</code> goes. v0.0.4 wraps the calls it makes that way
+inside the prototype; the change to <code>fb-core-wwr</code> and <code>fb-recipes-sys</code>
+follows if it holds.</p>
+<h2 id="not-in-it">Not in it</h2>
+<ul>
+<li><strong>Real multi-card.</strong> Two logical cards on device 0, as v0.0.3. A launch on
+the wrong card's context still cannot fail.</li>
+<li><strong>HIP.</strong> CUDA only. With no rebind, what was untested there is smaller: the
+workspace set once on a hipBLAS handle, and rocBLAS's hard need for it.</li>
+<li><strong>A step with further handles of its own</strong>, and two fits in flight on one
+card.</li>
+<li><strong>A ring in <code>build_jk</code></strong>, and batches of B kept on the cards between
+passes: every SCF trip uploads all of B, a batch at a time.</li>
+<li><strong>gly10, or any size where B does not fit a card.</strong></li>
+<li><strong>The enforcement checks</strong>: the clippy bans, the allocator record, the
+unbudgeted-heap row.</li>
+<li><strong>Screening, the default limit's value, packing <code>Output</code>s, several
+nodes.</strong></li>
+<li><strong>The replay reset.</strong> v0.0.2's reset mode is kept; what carries over is
+the SCF's orbitals and nothing in scratch.</li>
+</ul>
+<h2 id="this-page-as-html">This page as HTML</h2>
+<p><code>v0.0.4.html</code> beside this file is this README rendered by
+<code>rust/docs/md2html.py</code>, with the hand-drawn figures of <code>README.figs</code> spliced
+in (they replace the two text diagrams above). The <code>.md</code> and the <code>.figs</code> are
+the source; after editing either, from this directory:</p>
+<pre><code class="language-sh">uv run --no-project --with markdown-it-py python ../../../rust/docs/md2html.py README.md v0.0.4.html README.figs
+</code></pre>
+</main>
+</div>
+</body>
+</html>
