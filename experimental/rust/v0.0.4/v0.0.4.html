@@ -2196,8 +2196,8 @@ which catches code that is right only for two.</p>
 </table></div>
 <p>One measurement beside them, with no bar: each molecule's budget total against
 the old path's planner block for the same run. One-off times are printed, not
-benchmarked; the question that matters is at gly10's size, which this
-prototype does not run.</p>
+benchmarked; the question that matters is at gly10's size, which
+<a href="#what-it-showed">what it showed</a> has on 1, 2 and 4 GPUs.</p>
 <h3 id="what-it-showed">What it showed</h3>
 <p>RTX A6000 (CUDA), 2026-11-25, one run each, cc-pVDZ over cc-pVDZ-JKFIT.
 <code>|ΔE|</code> in hartree against the bar of 1e-9. The recorded energies are
@@ -2260,6 +2260,119 @@ Rust path.</p>
 <p>One-off times on water, release build: setup 0.96 s (the GPU's handles), budget
 mode 9 ms, execute mode 243 ms, of which <code>eri</code> 102 ms and the SCF's 11
 iterations 34 ms.</p>
+<p><strong>The glycine chains on 1, 2 and 4 GPUs.</strong> 4× RTX A6000, release build, one
+run each, 19 iterations every time. PySCF is its DF-RHF over the same two
+sets, run for this table. The ERI buffer is <code>[eri] mem_per_gpu</code>: at 2 GiB a
+GPU's cache holds part of its share of gly10's B, at 16 GiB all of it.</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Molecule</th>
+<th>ERI buffer</th>
+<th>GPUs</th>
+<th>E, hartree</th>
+<th>|E − PySCF|</th>
+<th><code>eri</code></th>
+<th><code>scf</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>gly5: 379 AOs, 1861 aux</td>
+<td>2 GiB</td>
+<td>1</td>
+<td>−1110.135779508227</td>
+<td>3.9e-11</td>
+<td>1.1 s</td>
+<td>15.4 s</td>
+</tr>
+<tr>
+<td></td>
+<td>2 GiB</td>
+<td>2</td>
+<td>−1110.135779508228</td>
+<td>3.8e-11</td>
+<td>0.8 s</td>
+<td>8.9 s</td>
+</tr>
+<tr>
+<td></td>
+<td>2 GiB</td>
+<td>4</td>
+<td>−1110.135779508228</td>
+<td>3.8e-11</td>
+<td>0.6 s</td>
+<td>4.7 s</td>
+</tr>
+<tr>
+<td>gly10: 734 AOs, 3606 aux</td>
+<td>2 GiB</td>
+<td>1</td>
+<td>−2144.284111689078</td>
+<td>5.4e-11</td>
+<td>17.5 s</td>
+<td>233.6 s</td>
+</tr>
+<tr>
+<td></td>
+<td>2 GiB</td>
+<td>2</td>
+<td>−2144.284111689077</td>
+<td>5.5e-11</td>
+<td>10.5 s</td>
+<td>116.4 s</td>
+</tr>
+<tr>
+<td></td>
+<td>2 GiB</td>
+<td>4</td>
+<td>−2144.284111689077</td>
+<td>5.5e-11</td>
+<td>7.5 s</td>
+<td>57.7 s</td>
+</tr>
+<tr>
+<td></td>
+<td>16 GiB</td>
+<td>1</td>
+<td>−2144.284111689079</td>
+<td>5.3e-11</td>
+<td>17.5 s</td>
+<td>217.8 s</td>
+</tr>
+<tr>
+<td></td>
+<td>16 GiB</td>
+<td>2</td>
+<td>−2144.284111689077</td>
+<td>5.5e-11</td>
+<td>10.9 s</td>
+<td>109.1 s</td>
+</tr>
+<tr>
+<td></td>
+<td>16 GiB</td>
+<td>4</td>
+<td>−2144.284111689077</td>
+<td>5.5e-11</td>
+<td>7.4 s</td>
+<td>55.3 s</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>The energy does not depend on the GPU count or the buffer</strong>: 2e-12 across
+the nine runs, 5.5e-11 from PySCF, against the bar of 1e-9.</li>
+<li><strong>The SCF scales with the GPUs</strong>: 2.0× on two and 4.0× on four at gly10. The
+build of B scales less, 1.7× and 2.3×; where its time goes is not
+measured.</li>
+<li><strong>The cache buys little here</strong>: holding the whole share takes gly10's SCF
+from 234 s to 218 s. The time is the contraction, K from D with no
+occupied factor, not the uploads.</li>
+<li><strong>Budget mode is not free at this size</strong>: 10 s on one GPU at gly10 and 28 s
+on four at 16 GiB, touching the pages of B's slab and of each GPU's pinned
+staging.</li>
+</ul>
 <h3 id="where-the-code-departs-from-this-page">Where the code departs from this page</h3>
 <ul>
 <li><strong>The SCF's loop is a plain loop inside <code>run</code></strong>, not a condition loop in a
@@ -2308,7 +2421,6 @@ cargo run --release --example run -- examples/h2o.toml --devices 0,1 --mem-per-g
 <li>HIP. CUDA only.</li>
 <li>A step with further handles of its own; two fits in flight on one GPU.</li>
 <li>A ring in <code>build_jk</code>; more than one density.</li>
-<li>gly10, or any size where B does not fit on the GPUs.</li>
 <li>The enforcement lints: the clippy bans, the allocation record, the
 unbudgeted-heap row.</li>
 <li>Screening, measuring the default step limit (2 GiB stands in), packing

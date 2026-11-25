@@ -994,8 +994,8 @@ which catches code that is right only for two.
 
 One measurement beside them, with no bar: each molecule's budget total against
 the old path's planner block for the same run. One-off times are printed, not
-benchmarked; the question that matters is at gly10's size, which this
-prototype does not run.
+benchmarked; the question that matters is at gly10's size, which
+[what it showed](#what-it-showed) has on 1, 2 and 4 GPUs.
 
 ### What it showed
 
@@ -1021,6 +1021,35 @@ Rust path.
 One-off times on water, release build: setup 0.96 s (the GPU's handles), budget
 mode 9 ms, execute mode 243 ms, of which `eri` 102 ms and the SCF's 11
 iterations 34 ms.
+
+**The glycine chains on 1, 2 and 4 GPUs.** 4× RTX A6000, release build, one
+run each, 19 iterations every time. PySCF is its DF-RHF over the same two
+sets, run for this table. The ERI buffer is `[eri] mem_per_gpu`: at 2 GiB a
+GPU's cache holds part of its share of gly10's B, at 16 GiB all of it.
+
+| Molecule | ERI buffer | GPUs | E, hartree | \|E − PySCF\| | `eri` | `scf` |
+|---|---|---|---|---|---|---|
+| gly5: 379 AOs, 1861 aux | 2 GiB | 1 | −1110.135779508227 | 3.9e-11 | 1.1 s | 15.4 s |
+| | 2 GiB | 2 | −1110.135779508228 | 3.8e-11 | 0.8 s | 8.9 s |
+| | 2 GiB | 4 | −1110.135779508228 | 3.8e-11 | 0.6 s | 4.7 s |
+| gly10: 734 AOs, 3606 aux | 2 GiB | 1 | −2144.284111689078 | 5.4e-11 | 17.5 s | 233.6 s |
+| | 2 GiB | 2 | −2144.284111689077 | 5.5e-11 | 10.5 s | 116.4 s |
+| | 2 GiB | 4 | −2144.284111689077 | 5.5e-11 | 7.5 s | 57.7 s |
+| | 16 GiB | 1 | −2144.284111689079 | 5.3e-11 | 17.5 s | 217.8 s |
+| | 16 GiB | 2 | −2144.284111689077 | 5.5e-11 | 10.9 s | 109.1 s |
+| | 16 GiB | 4 | −2144.284111689077 | 5.5e-11 | 7.4 s | 55.3 s |
+
+- **The energy does not depend on the GPU count or the buffer**: 2e-12 across
+  the nine runs, 5.5e-11 from PySCF, against the bar of 1e-9.
+- **The SCF scales with the GPUs**: 2.0× on two and 4.0× on four at gly10. The
+  build of B scales less, 1.7× and 2.3×; where its time goes is not
+  measured.
+- **The cache buys little here**: holding the whole share takes gly10's SCF
+  from 234 s to 218 s. The time is the contraction, K from D with no
+  occupied factor, not the uploads.
+- **Budget mode is not free at this size**: 10 s on one GPU at gly10 and 28 s
+  on four at 16 GiB, touching the pages of B's slab and of each GPU's pinned
+  staging.
 
 ### Where the code departs from this page
 
@@ -1075,7 +1104,6 @@ cargo run --release --example run -- examples/h2o.toml --devices 0,1 --mem-per-g
 - HIP. CUDA only.
 - A step with further handles of its own; two fits in flight on one GPU.
 - A ring in `build_jk`; more than one density.
-- gly10, or any size where B does not fit on the GPUs.
 - The enforcement lints: the clippy bans, the allocation record, the
   unbudgeted-heap row.
 - Screening, measuring the default step limit (2 GiB stands in), packing
