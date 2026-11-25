@@ -1,0 +1,95 @@
+@@ replace-pre card's stream:  eri [
+<figure><div class="scroll">
+<svg viewBox="0 0 800 244" role="img" aria-label="Streams on gpu0 over time. eri holds gpu0's lock: on the card's stream it factors the metric, then fits batches 0, 1 and 2 one after another. On eri's own two slot streams, drawn above and below it, each batch's kernels run before its fit and its copy after it, joined to the card's stream by events, so batch 1's kernels overlap batch 0's fit. After the wrapper's sync eri releases the lock and the orthogonalizer takes it, putting its eigensolve and gemms on the card's stream. guess, which calls no library, runs on its own stream throughout and holds no lock.">
+<defs>
+<marker id="v4e" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="at" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<text class="sm mt" x="20" y="42">gpu0's lock</text>
+<rect class="ab" x="180" y="30" width="425" height="16"/>
+<text class="sm" x="392" y="42" text-anchor="middle">eri holds it for its whole run</text>
+<rect class="ab" x="625" y="30" width="145" height="16"/>
+<text class="sm" x="697" y="42" text-anchor="middle">orthogonalizer</text>
+<text class="sm" x="20" y="79">eri's stream, slot 1</text>
+<rect class="row" x="276" y="64" width="80" height="22"/>
+<text class="sm" x="316" y="79" text-anchor="middle">kernels 1</text>
+<rect class="row" x="436" y="64" width="46" height="22"/>
+<text class="sm" x="459" y="79" text-anchor="middle">copy 1</text>
+<text class="sm" x="20" y="119">the card's stream</text>
+<rect class="row" x="180" y="104" width="70" height="22"/>
+<text class="sm" x="215" y="119" text-anchor="middle">factor L</text>
+<rect class="row" x="284" y="104" width="62" height="22"/>
+<text class="sm" x="315" y="119" text-anchor="middle">fit 0</text>
+<rect class="row" x="366" y="104" width="62" height="22"/>
+<text class="sm" x="397" y="119" text-anchor="middle">fit 1</text>
+<rect class="row" x="480" y="104" width="62" height="22"/>
+<text class="sm" x="511" y="119" text-anchor="middle">fit 2</text>
+<rect class="row" x="630" y="104" width="135" height="22"/>
+<text class="sm" x="697" y="119" text-anchor="middle">syevd, gemms</text>
+<text class="sm" x="20" y="159">eri's stream, slot 0</text>
+<rect class="row" x="190" y="144" width="84" height="22"/>
+<text class="sm" x="232" y="159" text-anchor="middle">kernels 0</text>
+<rect class="row" x="354" y="144" width="46" height="22"/>
+<text class="sm" x="377" y="159" text-anchor="middle">copy 0</text>
+<rect class="row" x="408" y="144" width="64" height="22"/>
+<text class="sm" x="440" y="159" text-anchor="middle">kernels 2</text>
+<rect class="row" x="550" y="144" width="46" height="22"/>
+<text class="sm" x="573" y="159" text-anchor="middle">copy 2</text>
+<text class="sm" x="20" y="205">guess's stream</text>
+<rect class="box" x="230" y="190" width="170" height="22"/>
+<text class="sm" x="315" y="205" text-anchor="middle">no library, no lock</text>
+<path class="al" d="M274,144L286,128" marker-end="url(#v4e)"/>
+<path class="al" d="M346,126L356,143" marker-end="url(#v4e)"/>
+<path class="al" d="M356,86L368,102" marker-end="url(#v4e)"/>
+<path class="al" d="M428,104L438,88" marker-end="url(#v4e)"/>
+<path class="al" d="M472,144L482,128" marker-end="url(#v4e)"/>
+<path class="al" d="M542,126L552,143" marker-end="url(#v4e)"/>
+<path class="ln dash" d="M614,24V218"/>
+<text class="sm mt" x="614" y="236" text-anchor="middle">the wrapper syncs every stream, then releases</text>
+<text class="sm at" x="180" y="236">arrows: events inside eri</text>
+</svg></div>
+<figcaption>Streams on gpu0. <code>eri</code> holds the lock, so the card's stream is its own for the run: the factor, then each batch's fit. Its two slot streams carry the kernels and the copies, joined to the card's stream by events, so a batch's kernels overlap the batch before's fit and two fits never overlap. The orthogonalizer waits for the lock. <code>guess</code> calls no library and overlaps all of it. Not to scale.</figcaption>
+</figure>
+@@ replace-pre harmonics ─┬─&gt; overlap
+<figure><div class="scroll">
+<svg viewBox="0 0 800 262" role="img" aria-label="The step graph of DF-RHF. harmonics and records are each read by overlap, core_hamiltonian and eri. overlap is read by orthogonalizer. orthogonalizer, core_hamiltonian, eri and guess are read by scf. overlap, core_hamiltonian, orthogonalizer, eri and scf call the library and hold a card's lock; harmonics, records and guess do not.">
+<defs>
+<marker id="v4a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<rect class="box" x="20" y="20" width="130" height="44" rx="4"/>
+<text class="t" x="85" y="38" text-anchor="middle">harmonics</text>
+<text class="sm mt" x="85" y="54" text-anchor="middle">gpu0</text>
+<rect class="box" x="20" y="80" width="130" height="44" rx="4"/>
+<text class="t" x="85" y="98" text-anchor="middle">records</text>
+<text class="sm mt" x="85" y="114" text-anchor="middle">all GPUs</text>
+<rect class="box" x="20" y="200" width="130" height="44" rx="4"/>
+<text class="t" x="85" y="218" text-anchor="middle">guess</text>
+<text class="sm mt" x="85" y="234" text-anchor="middle">gpu0</text>
+<rect class="ab" x="220" y="20" width="170" height="44" rx="4"/>
+<text class="t" x="305" y="38" text-anchor="middle">overlap</text>
+<text class="sm mt" x="305" y="54" text-anchor="middle">gpu0, holds its lock</text>
+<rect class="ab" x="220" y="80" width="170" height="44" rx="4"/>
+<text class="t" x="305" y="98" text-anchor="middle">core_hamiltonian</text>
+<text class="sm mt" x="305" y="114" text-anchor="middle">gpu0, holds its lock</text>
+<rect class="ab" x="220" y="140" width="170" height="44" rx="4"/>
+<text class="t" x="305" y="158" text-anchor="middle">eri</text>
+<text class="sm mt" x="305" y="174" text-anchor="middle">all GPUs, each lock, a ring</text>
+<rect class="ab" x="440" y="20" width="160" height="44" rx="4"/>
+<text class="t" x="520" y="38" text-anchor="middle">orthogonalizer</text>
+<text class="sm mt" x="520" y="54" text-anchor="middle">gpu0, holds its lock</text>
+<rect class="ab" x="640" y="110" width="140" height="44" rx="4"/>
+<text class="t" x="710" y="128" text-anchor="middle">scf</text>
+<text class="sm mt" x="710" y="144" text-anchor="middle">all GPUs, each lock</text>
+<path class="ln" d="M150,42C185,42 185,36 218,36" marker-end="url(#v4a)"/>
+<path class="ln" d="M150,42C185,42 185,94 218,94" marker-end="url(#v4a)"/>
+<path class="ln" d="M150,42C185,42 185,154 218,154" marker-end="url(#v4a)"/>
+<path class="ln" d="M150,102C185,102 185,50 218,50" marker-end="url(#v4a)"/>
+<path class="ln" d="M150,102C185,102 185,108 218,108" marker-end="url(#v4a)"/>
+<path class="ln" d="M150,102C185,102 185,168 218,168" marker-end="url(#v4a)"/>
+<path class="ln" d="M390,42H438" marker-end="url(#v4a)"/>
+<path class="ln" d="M600,42C622,42 618,118 638,118" marker-end="url(#v4a)"/>
+<path class="ln" d="M390,102C500,102 560,127 638,127" marker-end="url(#v4a)"/>
+<path class="ln" d="M390,162C500,162 560,137 638,137" marker-end="url(#v4a)"/>
+<path class="ln" d="M150,222C450,222 560,147 638,147" marker-end="url(#v4a)"/>
+</svg></div>
+<figcaption>The step DAG. The five outlined steps call the library, so the wrapper holds a card's lock for their run: <code>overlap</code>, <code>core_hamiltonian</code> and <code>eri</code> are unordered and take gpu0's one after another, and the orthogonalizer is unordered with the last two. The SCF's loop is inside its node. Budget mode adds one final node after all eight.</figcaption>
+</figure>
