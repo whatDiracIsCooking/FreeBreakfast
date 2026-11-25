@@ -4,9 +4,9 @@
 build.** A calculation is a DAG of steps on
 [rustflow](https://github.com/whatDiracIsCooking/rustflow). Each step has one
 function that counts and allocates its memory up front, and one that runs.
-There is no planner. Nothing here is built yet: the code is the earlier
-prototypes `../v0.0.2` and `../v0.0.3`, and nothing under `rust/`. `rust/docs/`
-describes the tree as it is, and changes with the implementation.
+There is no planner. The prototype is built, in this directory (`src/`,
+`tests/`, `examples/`); nothing under `rust/` is. `rust/docs/` describes the
+tree as it is, and changes with the implementation.
 
 **This page is self-contained.** It says what the design is now, not how it
 got here. Each prototype's page carries the whole design forward as it stands
@@ -886,8 +886,8 @@ changes the shape.
 
 ## The v0.0.4 prototype
 
-Not yet built. Item 3 of the order of work: the DF-RHF chain as steps on
-`num_gpus` GPUs, batched. The first prototype to run the GPU's stream under
+Built: [what it showed](#what-it-showed). Item 3 of the order of work: the
+DF-RHF chain as steps on `num_gpus` GPUs, batched. The first prototype to run the GPU's stream under
 its lock, a step with streams of its own and library calls, the `EriManager`
 with its cache, and the lock order; and the first written from scratch over
 the C ABI.
@@ -997,6 +997,78 @@ the old path's planner block for the same run. One-off times are printed, not
 benchmarked; the question that matters is at gly10's size, which this
 prototype does not run.
 
+### What it showed
+
+RTX A6000 (CUDA), 2026-11-25, one run each, cc-pVDZ over cc-pVDZ-JKFIT.
+`|ΔE|` in hartree against the bar of 1e-9. The recorded energies are
+`../v0.0.2/README.md`'s, each within 1.2e-12 of PySCF's DF-RHF and of the old
+Rust path.
+
+| What | Result |
+|---|---|
+| Water, one GPU | −76.026751140543 in 11 iterations, 4.5e-13 from the recorded energy |
+| Benzene, one GPU | −230.721729270921 in 11 iterations, 3.7e-13 |
+| Ethylene (#865's geometry), one GPU | −77.867545824336 in 52 iterations, 3.8e-13 |
+| Water at forced batches: `mem_per_gpu` at its least, 94.59 KiB, NaN-filled | 18 pair batches, aux batches of 2, 20 of 116 rows cached and 96 uploaded per pass; 1.4e-14 from the default run |
+| Water at the default 2 GiB | The whole share cached; nothing uploaded after the first pass |
+| B from the ring of two against the ring of one, water, forced batches | The same bits |
+| A replay of water | 7.1e-14 from the first run, in 2 iterations from the carried D; the allocation count unchanged |
+| `mem_per_gpu` one byte under the least | Refused, naming `[eri] mem_per_gpu`, its value and the 96,864 B it needs |
+| Lock order, water, eight workers | Every step's locks taken in rank order and released together after the sync; gpu0's three holders never overlap; the orthogonalizer's and `eri`'s scratch disjoint on gpu0 |
+| A `syevd` with a work buffer under its size query | Panics at the caller's line before the solver is called |
+| Benzene on two logical GPUs, and on 2, 3 and 4 real ones, NaN-filled, whole share cached and forced batches, on 8 workers and on 2 | Each within 1.7e-13 of one GPU |
+
+One-off times on water, release build: setup 0.96 s (the GPU's handles), budget
+mode 9 ms, execute mode 243 ms, of which `eri` 102 ms and the SCF's 11
+iterations 34 ms.
+
+### Where the code departs from this page
+
+- **The SCF's loop is a plain loop inside `run`**, not a condition loop in a
+  subflow. A step's fan-out across GPUs is scoped threads, joined before `run`
+  returns, not rustflow inner tasks.
+- **The manager's lock is a `Mutex<()>` on the MainBus**, taken by the wrapper
+  in rank order; the state inside the `EriManager` sits behind a `Mutex` of its
+  own that is only ever `try_lock`ed under it. `build_jk` takes the `Held`
+  guards and has no path to a GPU's `Mutex`.
+- **The ring's streams are `eri`'s own** (two per GPU, declared by the step),
+  not the manager's. A J/K pass runs wholly on each GPU's stream, in the order
+  it is enqueued.
+- **The ERI buffer is charged at what the two layouts use**, the ring's or the
+  J/K pass's with its cache, whichever is larger; `mem_per_gpu` only bounds it.
+- **Two changes to v0.0.3's flow layer**: `run` receives the guards, and a
+  step declares how many streams of its own it has per GPU.
+- **`--budget-only` reports each solver call's work buffer as zero**, as the
+  page says; every other length is exact.
+
+### What is not built
+
+Rows of the two tables above that have no test here:
+
+- The energies against the old Rust path in the same process: they are held
+  against the recorded ones instead. S, H and the metric against the old
+  path's. B against v0.0.3's.
+- The two negative controls (the skipped sync, the removed event).
+- The three `compile_fail` doctests.
+- The default cap against a reading taken by hand.
+- An undeclared `syevd` refused naming the step: the binding panics naming
+  the call and its size query.
+- The budget total against the old path's planner block.
+
+### Build and run
+
+`rust/`'s CMake project and the `ssperi3` kernel library first (`build.rs` has
+the two directories and their environment overrides), then, from this
+directory:
+
+```sh
+cargo test                                                        # the device-free tests
+cargo test --test chain -- --include-ignored --test-threads=1     # with the device cases
+cargo run --release --example run -- examples/h2o.toml            # setup, budget mode, execute mode
+cargo run --release --example run -- --budget-only examples/h2o.toml
+cargo run --release --example run -- examples/h2o.toml --devices 0,1 --mem-per-gpu-mib 1
+```
+
 ### Not in it
 
 - Any change under `rust/`.
@@ -1017,7 +1089,7 @@ prototype does not run.
    v0.0.3.
 2. **One step, batched, on `num_gpus` GPUs**: built in v0.0.3 (`eri` and the
    J/K build, on one GPU and two logical GPUs).
-3. **The DF-RHF chain as steps**: v0.0.4.
+3. **The DF-RHF chain as steps**: built in v0.0.4.
 4. **Measure**: the budget's total against the planner's block for the same
    runs, and what the step-end sync costs on the SCF iteration.
 5. **The enforcement checks and HIP.** Batching and every GPU are not on this
