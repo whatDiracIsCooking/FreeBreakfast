@@ -18,9 +18,8 @@
 
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::runtime::tests::DeviceBytes;
-use fb_recipes_sys::{
-    FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, fb_inverse_sqrt, inverse_sqrt,
-};
+use fb_recipes_launch::inverse_sqrt;
+use fb_recipes_sys::{FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, fb_inverse_sqrt};
 
 /// The orthogonalizer's default floor, the C++ `kOrthogonalizeEigenvalueFloor`.
 const FLOOR: f64 = 1e-10;

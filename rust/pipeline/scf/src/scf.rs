@@ -20,7 +20,7 @@ use fb_molecule::{Molecule, nuclear_repulsion_energy};
 use fb_pipeline_eri::Eri;
 use fb_recipes_diagonalize::add_diagonalize;
 use fb_recipes_diis::{DIIS_MAX_HISTORY_LIMIT, Diis, add_diis};
-use fb_recipes_sys::inverse_sqrt;
+use fb_recipes_launch::inverse_sqrt;
 use serde::Deserialize;
 use wwr_sys::wwr_blas_operation::WWR_BLAS_OP_N as OP_N;
 use wwr_sys::wwr_blas_side_mode::{WWR_BLAS_SIDE_LEFT as LEFT, WWR_BLAS_SIDE_RIGHT as RIGHT};

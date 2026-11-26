@@ -273,6 +273,8 @@ dependencies = [
  "contracts",
  "fb-core-error-handling",
  "fb-core-log",
+ "fb-kernel-abi",
+ "fb-recipes-sys",
  "wwr-sys",
 ]
 
@@ -422,7 +424,7 @@ dependencies = [
  "fb-core-thread-pool",
  "fb-io-npy",
  "fb-recipes-cholesky",
- "fb-recipes-sys",
+ "fb-recipes-launch",
  "fb-test-support",
  "wwr-sys",
 ]
@@ -951,8 +953,8 @@ dependencies = [
  "fb-pipeline-guess",
  "fb-recipes-diagonalize",
  "fb-recipes-diis",
+ "fb-recipes-launch",
  "fb-recipes-orthogonalize",
- "fb-recipes-sys",
  "fb-test-support",
  "log",
  "serde",
@@ -982,6 +984,7 @@ dependencies = [
  "fb-core-thread-pool",
  "fb-core-wwr",
  "fb-io-npy",
+ "fb-recipes-launch",
  "fb-recipes-sys",
  "fb-test-support",
  "wwr-sys",
@@ -1015,8 +1018,22 @@ dependencies = [
  "fb-core-thread-pool",
  "fb-core-wwr",
  "fb-io-npy",
+ "fb-recipes-launch",
  "fb-recipes-sys",
  "fb-test-support",
+ "wwr-sys",
+]
+
+[[package]]
+name = "fb-recipes-launch"
+version = "0.1.0"
+dependencies = [
+ "contracts",
+ "fb-core-error-handling",
+ "fb-core-log",
+ "fb-core-wwr",
+ "fb-kernel-abi",
+ "fb-recipes-sys",
  "wwr-sys",
 ]
 
@@ -1048,6 +1065,7 @@ dependencies = [
  "fb-io-npy",
  "fb-recipes-blas",
  "fb-recipes-diagonalize",
+ "fb-recipes-launch",
  "fb-recipes-sys",
  "fb-test-support",
 ]
@@ -1059,6 +1077,7 @@ dependencies = [
  "fb-core-error-handling",
  "fb-core-wwr",
  "fb-io-npy",
+ "fb-recipes-launch",
  "fb-recipes-sys",
  "wwr-sys",
 ]
@@ -1067,10 +1086,6 @@ dependencies = [
 name = "fb-recipes-sys"
 version = "0.1.0"
 dependencies = [
- "contracts",
- "fb-core-error-handling",
- "fb-core-log",
- "fb-core-wwr",
  "fb-kernel-abi",
  "wwr-sys",
 ]

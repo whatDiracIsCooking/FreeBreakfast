@@ -16,9 +16,9 @@
 use fb_core_wwr::device_slice::{DeviceSlice, split_at_mut};
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::runtime::tests::DeviceBytes;
+use fb_recipes_launch::{merge_sort, merge_sort_keys, merge_sort_workspace_bytes};
 use fb_recipes_sys::{
-    FB_DEVICE_ALIGNMENT, FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, fb_merge_sort, merge_sort,
-    merge_sort_keys, merge_sort_workspace_bytes,
+    FB_DEVICE_ALIGNMENT, FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, fb_merge_sort,
 };
 
 const SIZES: &[u32] = &[

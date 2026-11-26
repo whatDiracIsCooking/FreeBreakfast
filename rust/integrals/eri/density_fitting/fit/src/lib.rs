@@ -52,7 +52,7 @@
 //! | `lindep > 0`, the fit over M's eigenmodes above it (#630) | not ported: no basis the tree carries needs it, and the C++ Eri step never sets it |
 //! | `density_fit_footprint(…)`, nothing on the Cholesky path | the tasks' layouts: L, B, and the factor's scratch, read off the plan's table |
 //!
-//! [`trsm`]: fb_recipes_sys::trsm
+//! [`trsm`]: fb_recipes_launch::trsm
 //! [`add_cholesky`]: fb_recipes_cholesky::add_cholesky
 
 #![forbid(unsafe_code)]
@@ -63,7 +63,7 @@ use fb_core_error_handling::Status;
 use fb_core_log::fits_i32;
 use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
-use fb_recipes_sys::trsm;
+use fb_recipes_launch::trsm;
 use wwr_sys::{wwr_blas_diag_type, wwr_blas_fill_mode, wwr_blas_operation, wwr_blas_side_mode};
 
 /// Add the fit of a batch of `batch` columns of a three-center tensor of

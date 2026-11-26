@@ -1,15 +1,12 @@
-//! Point the link at WarpWraps' runtime_api C ABI library
-//! (`rust/capi_dir.rs`). wwr-sys's own build.rs names the library; its rpath
-//! applies to its own targets only, so this crate's tests carry their own.
-//! Under `FB_RUST_DOC_ONLY=1` it links nothing.
+//! Point the link at `libfb_recipes_kernels.so` and WarpWraps' C ABI
+//! libraries beside `libwwr_capi_runtime_api.so` (`rust/kernel_lib.rs`):
+//! fb-recipes-sys's and wwr-sys's rpaths reach their own targets only, so
+//! this crate's tests carry their own. Under `FB_RUST_DOC_ONLY=1` it links
+//! nothing.
 
 include!("../../capi_dir.rs");
+include!("../../kernel_lib.rs");
 
 fn main() {
-    if doc_only() {
-        return;
-    }
-    let dir = capi_dir();
-    println!("cargo:rustc-link-search=native={}", dir.display());
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+    link_kernel_lib("recipes");
 }

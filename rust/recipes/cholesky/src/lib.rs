@@ -59,7 +59,7 @@
 //! | nothing: the C++ tree compiles its kernels into the binary | [`fb_recipes_sys::check_library`] first, at planning |
 //!
 //! [`split_at_mut`]: fb_core_wwr::device_slice::split_at_mut
-//! [`trsm`]: fb_recipes_sys::trsm
+//! [`trsm`]: fb_recipes_launch::trsm
 //! [`syrk`]: fb_core_wwr::blas::syrk
 //! [`memset::zero`]: fb_core_wwr::memset::zero
 
@@ -76,7 +76,8 @@ use fb_core_thread_pool::DeviceStream;
 use fb_core_wwr::blas::syrk;
 use fb_core_wwr::device_slice::split_at_mut;
 use fb_core_wwr::memset;
-use fb_recipes_sys::{FB_CHOLESKY_TILE, cholesky_diagonal, trsm};
+use fb_recipes_launch::{cholesky_diagonal, trsm};
+use fb_recipes_sys::FB_CHOLESKY_TILE;
 use wwr_sys::{wwr_blas_diag_type, wwr_blas_fill_mode, wwr_blas_operation, wwr_blas_side_mode};
 
 /// The order of the diagonal tiles, and so the width of the panels: the

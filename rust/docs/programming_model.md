@@ -928,7 +928,8 @@ list is in two tiers:
 
 - **Core:** `fb-core-wwr`, `fb-core-arena`, `fb-core-log`,
   `fb-core-thread-pool`, `fb-core-device`.
-- **Bindings:** `fb-integrals-sys`, `fb-localization-sys`, `fb-recipes-sys`.
+- **Bindings:** `fb-integrals-sys`, `fb-localization-sys`, `fb-recipes-sys`,
+  `fb-recipes-launch`.
 
 The core crates hold the wrappers: `fb-core-wwr` over the `wwr-sys`
 bindings (and the `statvfs` of `/dev/shm` a collectives' system error
@@ -947,7 +948,11 @@ library's `extern "C"` functions, check its version at load, and wrap its
 launches safely beside the bindings (`fb-integrals-sys` its records tasks
 too, since the class launchers trust records only those tasks write, and
 `fb-localization-sys` its Pipek-Mezey tasks, whose launches trust an
-orbital schedule and atom offsets only those tasks stage). There
+orbital schedule and atom offsets only those tasks stage); the recipes'
+safe calls are `fb-recipes-launch`'s, a crate apart from `fb-recipes-sys`'s
+bindings because they take `fb-core-wwr`'s types, which the v0.0.4 layer's
+`fb-core-device`, calling those bindings itself, must not reach
+([`gpu_layer.md`](gpu_layer.md), "The v0.0.4 runtime"). There
 was a third tier, the method crates, whose `unsafe` was a direct call into
 their kernels' launchers, the BLAS or the solver; each such call has moved
 into a safe wrapper in the core and binding crates, and a method crate that
@@ -975,7 +980,8 @@ query), `fb_core_wwr::memset::zero` zeroes one on a stream, and
 "Layering"), forbids `unsafe`
 itself, as the arena's `memcpy_*` do for the copies. A kernel library's
 launch is wrapped the same way in its binding crate, beside the generated
-bindings: `fb_recipes_sys::inverse_sqrt`, `merge_sort` and
+bindings (the recipes' in `fb-recipes-launch`, over `fb-recipes-sys`'s):
+`fb_recipes_launch::inverse_sqrt`, `merge_sort` and
 `merge_sort_keys` take `DeviceSlice`s and map the launch status through
 `fb_kernel_abi::launch_status`, and `fb-integrals-sys`'s `overlap_class`,
 `kinetic_class` and `potential_en_class` take the output as a

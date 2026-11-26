@@ -5,13 +5,13 @@ use super::*;
 
 /// Device memory from `wwr_malloc`, freed on drop: a test's buffer, since
 /// allocating is the budget's and this crate has none.
-struct DeviceBuf<T> {
+pub(crate) struct DeviceBuf<T> {
     ptr: *mut T,
     len: usize,
 }
 
 impl<T> DeviceBuf<T> {
-    fn new(len: usize) -> DeviceBuf<T> {
+    pub(crate) fn new(len: usize) -> DeviceBuf<T> {
         let _current = ScopedDevice::new(0);
         let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
         // SAFETY: writes one pointer through a valid local.
@@ -53,13 +53,13 @@ unsafe impl<T> DeviceSliceMut<T> for DeviceBuf<T> {
 
 /// Pinned host memory from `wwr_host_alloc`, so a copy of it is truly
 /// asynchronous, freed on drop.
-struct Pinned<T> {
+pub(crate) struct Pinned<T> {
     ptr: *mut T,
     len: usize,
 }
 
 impl<T: Copy> Pinned<T> {
-    fn from(values: &[T]) -> Pinned<T> {
+    pub(crate) fn from(values: &[T]) -> Pinned<T> {
         let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
         let bytes = values.len().max(1) * size_of::<T>();
         // SAFETY: writes one pointer through a valid local.
@@ -75,7 +75,7 @@ impl<T: Copy> Pinned<T> {
     }
 
     /// The elements, read once the copies into them have run.
-    fn read(&self) -> Vec<T> {
+    pub(crate) fn read(&self) -> Vec<T> {
         // SAFETY: `len` initialized elements; the test synced first.
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }.to_vec()
     }
@@ -271,7 +271,7 @@ fn the_cuts_land_where_they_say() {
 
 /// Quiet the logger when run as [`each_cut_past_the_end_panics_at_its_caller`]'s
 /// child, so the panic hook writes its line to stderr.
-fn as_child() {
+pub(crate) fn as_child() {
     if std::env::var_os("FB_CONTRACT_CHILD").is_some() {
         fb_core_log::set_level(fb_core_log::LogLevel::Off);
     }

@@ -245,7 +245,7 @@ when the order is not a multiple of 128, so no fixed handle workspace
 covers it and a call past it allocates outside the arena's count; the
 solvers' `potrs` and `getrs` are that trsm underneath. So
 `fb_core_wwr::blas` binds no `trsm`, and a triangular solve is
-`fb_recipes_sys::trsm`, the C++ `src/recipes/trsm`: blocked, each
+`fb_recipes_launch::trsm`, the C++ `src/recipes/trsm`: blocked, each
 diagonal block by a shared-memory kernel of `libfb_recipes_kernels.so`
 and the update between blocks a gemm, with one right-hand side the
 library's `trsv`, which takes no workspace on either backend. It is a
@@ -603,7 +603,7 @@ correctness rests on is a contract.
   count positive. Where such a contract bounds an integer argument or a
   slice's length and the wrapper's body holds the `unsafe` call, a
   `// RELEASE:` comment directly above it names what holds the bound in a
-  release build: `fb_recipes_sys::diis_solve`'s body clamps `m`, `ld` and
+  release build: `fb_recipes_launch::diis_solve`'s body clamps `m`, `ld` and
   `newest` to `FB_DIIS_SOLVE_MAX_DIM`, and its launcher refuses each out of
   range as `FB_LAUNCH_INVALID_ARGUMENT`.
 - **The stream's device is current**, a `debug_requires` too.
@@ -613,8 +613,13 @@ is one the C++ caller today makes by reading the header.
 
 The wrapper lives in the `-sys` crate itself, beside the generated
 bindings: that crate is already allowed `unsafe`, and none is published, so
-the usual split of a `-sys` crate from its safe one buys nothing.
-`fb_recipes_sys::inverse_sqrt`, `merge_sort` and `merge_sort_keys` are the
+the usual split of a `-sys` crate from its safe one buys nothing, with one
+exception. The recipes' safe calls are `fb-recipes-launch`'s, beside
+`fb-recipes-sys`'s bindings and over them, because they take
+`fb-core-wwr`'s slices and stream, and the v0.0.4 layer's `fb-core-device`
+calls the bindings itself and must reach no type of `fb-core-wwr` ("The
+v0.0.4 runtime"); `fb-recipes-sys` keeps the `links` key, so a change to
+the kernels still selects both. `fb_recipes_launch::inverse_sqrt`, `merge_sort` and `merge_sort_keys` are the
 first, on the shape of `fb_core_wwr::blas::gemm`: `DeviceSlice`s in, the
 launch status out through `fb_kernel_abi::launch_status`.
 `fb_integrals_sys::overlap_class`, `kinetic_class` and `potential_en_class`
@@ -625,14 +630,17 @@ since a type is unforgeable only inside the crate that defines it.
 
 The v0.0.4 layer, designed in the prototype's page under
 `experimental/rust/v0.0.4/`, is landing beside the layer above, which it will
-replace. Its runtime is `fb-core-device`, written over `wwr-sys` and the
-device-free crates (`fb-core-error-handling`, `fb-core-log`) and nothing
-else of `rust/`: no type of `fb-core-wwr`, the arena or the thread pool.
-It holds the current device (`ScopedDevice`), `device_count` and `memory`
-(a device's free and total bytes, read for the budget's default cap before
-anything runs), `Stream`, `Event`, the copies and fills a stream enqueues,
-and device slices. The GPU's guard, with its BLAS and solver calls, joins
-it next.
+replace. Its runtime is `fb-core-device`, written over `wwr-sys`, the
+recipes kernels' raw `extern` declarations (`fb-recipes-sys`'s generated
+bindings and its tile constants; the safe calls over them are
+`fb-recipes-launch`'s), `fb-kernel-abi`'s
+launch status and the device-free crates (`fb-core-error-handling`,
+`fb-core-log`), and nothing else of `rust/`: no type of `fb-core-wwr`, the
+arena or the thread pool. It holds the current device (`ScopedDevice`),
+`device_count` and `memory` (a device's free and total bytes, read for the
+budget's default cap before anything runs), `Stream`, `Event`, the copies
+and fills a stream enqueues, device slices, and each GPU's
+`GpuResources`.
 
 - **Each call makes its stream's device current.** A `Stream` and an
   `Event` keep their device, and every method holds a `ScopedDevice` on it
@@ -666,6 +674,32 @@ it next.
   `run`, and a host's wait on an event before it rewrites pinned bytes
   (`Event::sync`); each call into the runtime's sync carries an `allow` of
   `disallowed_methods` naming that.
+- **One handle set per GPU, under its lock.** `GpuResources` is a GPU's
+  stream, a BLAS and a dense-solver handle made on that stream, and the
+  handle workspace; `GpuResources::new` returns it inside a `Mutex`, so
+  every call is a method reached through the guard, `&mut` for the length
+  of the hold. `SetStream` is called once, when the handles are made, and
+  the workspace, `HANDLE_WORKSPACE_BYTES` (128 MiB) of the budget's, is
+  bound once and kept until the handles are destroyed, since the library
+  keeps its pointer; no handle manages memory of its own. Nothing the guard
+  lends outlives it, a `compile_fail` doctest on the type.
+- **A call takes slices and checks them before it enqueues.** The BLAS
+  calls (`gemm`, `gemm_strided_batched`, `gemv`, `geam`, `dgmm`, `syrk`)
+  hold each operand to its extent, the private `check_*` helpers' asserts,
+  one per operand; a solver call repeats its size query at the same
+  arguments and panics at the caller's line (`#[track_caller]`) on a
+  shorter work slice, before anything is enqueued, since the vendor does
+  not check `lwork` and writes past a short one. A work buffer is never
+  null: a query of 0 is answered 1 (`syevd_lwork`), since on HIP a null
+  `work` puts hipSOLVER's handle in library-managed mode.
+- **The recipes take the guard.** `GpuResources::trsm` is the tree's
+  blocked triangular solve, as `fb_recipes_launch::trsm` is above, and
+  `GpuResources::cholesky` the blocked Cholesky in place of a vendor
+  `potrf` (rocSOLVER's raced across processes, #410); their diagonal
+  kernels and their gemms and syrks land on the one stream the guard has,
+  so a recipe cannot be handed another (a `compile_fail` doctest hands
+  `trsm` a stream). No vendor `trsm`, `potrs` or `getrs` is bound, as
+  "Layering" has it.
 
 ## Build
 
@@ -725,7 +759,8 @@ alone. The generated units find
 FelizJueves' runtime header with `FJ_WAVEFRONT` set to `WWR_WARP_SIZE`.
 
 One Rust `-sys` crate per library, `fb-recipes-sys`, `fb-integrals-sys`
-and `fb-localization-sys`,
+and `fb-localization-sys` (each declaring the library's `links` key, and
+`fb-recipes-launch` linking it through `fb-recipes-sys`),
 which is the workspace graph the test selection runs on. Their `build.rs`
 include `rust/kernel_lib.rs` after `capi_dir.rs`: `link_kernel_lib(module)`
 finds the library in the same `<build>` the C ABI library came from, links

@@ -104,7 +104,8 @@ use fb_core_wwr::blas::{geam, gemv};
 use fb_core_wwr::copy;
 use fb_core_wwr::device_slice::split_at_mut;
 use fb_core_wwr::memset;
-use fb_recipes_sys::{FB_DIIS_SOLVE_MAX_DIM, diis_solve};
+use fb_recipes_launch::diis_solve;
+use fb_recipes_sys::FB_DIIS_SOLVE_MAX_DIM;
 use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N, WWR_BLAS_OP_T};
 
 /// The largest history kept: the C++ `kDiisMaxHistoryLimit`. The solve

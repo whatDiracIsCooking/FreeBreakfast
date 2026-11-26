@@ -15,6 +15,7 @@ fb-core-planner.workspace = true
 fb-core-thread-pool = { workspace = true, features = ["device"] }
 fb-recipes-blas.workspace = true
 fb-recipes-diagonalize.workspace = true
+fb-recipes-launch.workspace = true
 fb-recipes-sys.workspace = true
 
 [dev-dependencies]
