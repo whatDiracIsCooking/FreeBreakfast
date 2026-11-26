@@ -819,7 +819,8 @@ that refuses an arena that does not fit.
 **Fan-out is nodes, not a pool inside a task.** Writing three files when the
 RHF step finishes is three CPU nodes with no edge between them, each reading
 an edge from the step; the orchestrator sees three ready nodes and runs them
-at once. A task that opened a pool of its own to do the same would hide the
+at once. A task that opened a pool of its own to do the same (the host
+integrals below are the one exception, and say why) would hide the
 parallelism from the planner and would log from threads that carry no task
 record ([`diagnostics.md`](diagnostics.md), "The task context"). One thread
 runs one node, and the orchestrator sets the record on that thread before the
@@ -855,6 +856,29 @@ a job forces every edge buffer behind an `Arc` and defeats the scoped borrow.
 The workers live behind one type in one module, so that if a profile ever
 asked for stealing on the CPU side a crate could slot in behind the same type.
 
+**The host integrals run on rayon, and nothing else does.** The one-electron
+matrices S, T and V and the density-fitting metric (P|Q) are built on the
+host, not on a card (`../experimental/rust/v0.0.4/README.md`, "Streams", whose
+last bullet is the two thread pools): each is a loop over shell pairs, one
+rayon task per center writing a disjoint run of rows of a packed triangle,
+with nothing in it for the planner to place. They run on rayon's threads,
+called from inside one step, a second pool beside the orchestrator's workers
+with a thread count of its own. Stealing there is no placement the plan
+cares about, for the reason a GPU task's forks are none ("Forks inside a
+task"): the tasks start and finish inside one node, and each crate's
+`the_thread_count_does_not_change_a_bit` holds the triangle bitwise the same
+on one thread as on eight. The crates do not log, so no line comes from a
+thread without a task record. The crates that may name rayon are those
+four, under `rust/integrals/`: `fb-integrals-s-overlap-host`,
+`fb-integrals-t-kinetic-host`, `fb-integrals-v-potential-en-host` and
+`fb-integrals-df-metric`. A crate above them reaches rayon only through
+them, never by an edge of its own, and no member depends on any other pool
+crate. Each needs the FMA target feature, which the workspace's
+`.cargo/config.toml` sets for every member, so a dependent built from
+`rust/` gets it. The rayon pool's threads are outside the plan's worker
+count until the step that calls these crates sets its size from the config
+and admits it beside the CPU workers' budget; that step is not built.
+
 **What is tested.** Every node runs exactly once, in a topological order, on
 no more threads than the plan said. The last is a tier-3 test
 ([`testing.md`](testing.md), "Tiers: where a check lives") that reads the
@@ -889,8 +913,9 @@ disallowed-methods = [
 ]
 ```
 
-The manifest does the rest: rayon and tokio are not dependencies, and a pool
-crate arriving later is a `Cargo.toml` diff a review sees.
+The manifest does the rest: rayon is a dependency of the four host
+integral crates alone ("CPU workers"), tokio and every other pool crate of
+none, and a pool crate arriving later is a `Cargo.toml` diff a review sees.
 
 **`unsafe`.** The rebuild's `unsafe` is the FFI into `wwr-sys` and the
 kernel libraries, and the code that wraps it. `unsafe_code` is rustc's own

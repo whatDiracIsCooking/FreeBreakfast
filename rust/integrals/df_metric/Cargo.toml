@@ -1,0 +1,23 @@
+[package]
+name = "fb-integrals-df-metric"
+description = "integrals/df_metric: the density-fitting Coulomb metric (P|Q) on the host, on rayon's threads"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Device-free: the fitting set and its spherical layout, and rayon. None
+# links wwr.
+[dependencies]
+contracts.workspace = true
+fb-basis.workspace = true
+fb-core-primitives.workspace = true
+libm.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+fb-io-basis.workspace = true
+fb-io-npy.workspace = true
+fb-io-xyz.workspace = true

@@ -304,7 +304,10 @@ fn link_classes(root: &Path) -> BTreeMap<String, Links> {
             .resolve_with_fn(|_, link| !link.dev_only() || link.from().package_id() == id)
             .to_package_set()
             .packages(DependencyDirection::Forward)
-            .any(|p| p.links().is_some())
+            // Path packages alone, as devtools/test.py's link_free_crates
+            // reads them: a registry crate's `links` key names no native
+            // library of this tree's (rayon-core's guards against two rayons).
+            .any(|p| p.links().is_some() && p.source().is_path())
     };
     graph
         .workspace()
