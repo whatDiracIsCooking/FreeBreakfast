@@ -116,6 +116,16 @@ stays in its module's crate.
   `[eri]` the metric and the ERI; `[scf]` the SCF; `[resources]` the GPUs,
   the executor's width and the caps. A step whose table is absent is not in
   the DAG, and a step that reads one the config leaves out is refused.
+- **`[molecule]` sets the charge and the multiplicity, and setup counts
+  the occupations.** `charge` (default 0) and `multiplicity` (default 1)
+  give `Dims`' `n_alpha` and `n_beta`, `n_alpha - n_beta = multiplicity -
+  1`, beside `n_occ`, the doubly occupied, `n_beta`. A multiplicity the
+  electron count cannot have is refused `InvalidConfig`, and an open shell
+  `Unsupported`, naming the key, until the ROHF step: the steps run a
+  closed shell, a closed-shell ion among them. A refusal of the config
+  names the key, the file and the line ([`documentation.md`](documentation.md),
+  "Configuration: the reference is emitted from the type"). No
+  `mem_budget` reads the occupations, so an ion's budget is the neutral's.
 - **Setup is the unbudgeted host phase, and it counts.**
   `MainBus::setup` reads the geometry and both bases, fills `Dims` by a
   walk over the shells that builds no array (`for_each_pair`), makes each

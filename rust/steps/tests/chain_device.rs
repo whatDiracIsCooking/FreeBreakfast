@@ -137,6 +137,26 @@ fn waters_energy_matches_the_recorded_one() {
     against_the_record(WATER);
 }
 
+/// Water's dication, a closed shell by `[molecule] charge = 2` alone,
+/// eight electrons in four orbitals, against PySCF's DF-RHF over the same
+/// documents (`scf_reference.py`'s molecule built again at `charge = 2`,
+/// whose neutral is [`WATER`]'s to 1e-13), at the energy bar.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn the_water_dications_energy_matches_pyscfs() {
+    const PYSCF: f64 = -74.596_854_781_569_2;
+    let mut config = chain("h2o.xyz");
+    config.molecule.charge = 2;
+    let run = converged(config);
+    assert_eq!(run.plan.bus().shared().dims.n_occ, 4);
+    let (e, iterations) = energy(&run);
+    println!(
+        "water's dication: E = {e:.12} in {iterations} iterations, |E - PySCF| = {:.1e}",
+        (e - PYSCF).abs()
+    );
+    assert!((e - PYSCF).abs() < ENERGY_BAR, "{e} against {PYSCF}");
+}
+
 /// Benzene and ethylene, whose DIIS subspace goes singular and restarts.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
