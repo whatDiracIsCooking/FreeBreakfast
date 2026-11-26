@@ -251,7 +251,7 @@ check in `test/io/sad_host.cpp` fails until you do. The commands are in
 | Tests | `test/core/` (the `src/core` tests) and `test/gtest/` (the rest), each a host/GPU binary pair, and `test/atom/` (the `src/atom` tests), `test/basis/` (the host-only `src/basis` tests), `test/io/` (the host-only `src/io` tests), `test/sad/` (the `src/sad` tests, a GPU-free module) and `test/pipeline/` (the `src/pipeline` tests that need no device), each a host binary, `test/recipes/` (the `src/recipes` tests), a host/GPU binary pair, `test/compile/` (TUs of `static_assert`s alone, built even under `FREE_BREAKFAST_COMPILE_TIME_ONLY`; no ctest entry), and `test/examples/` (`examples/` configs through the `free-breakfast` binary), run by ctest | `test/pytest/`, run by pytest |
 | Driver | `devtools/test.py push` / `pr` / `nightly` | `devtools/test.py push` / `pr` / `nightly`, `pytest` |
 | Lint | `cmake-lint`, `clang-format --check` (commit hook + CI); `clang-tidy` via `--tidy` | `ruff check`, `ruff format --check` (commit hook + CI) |
-| Gated by | `cmake-lint` + format check at commit, `test.py push`'s C++ half at push; on the server **format + cmake-lint only, no build or test** | `test.py push`'s Python half + CI |
+| Gated by | `cmake-lint` + format check at commit; **no gate builds or tests it** (frozen; `test.py push --cpp` / `pr --cpp` by hand, the nightly runs it); on the server **format + cmake-lint only** | `test.py push`'s Python half + CI |
 
 **A change under `src/` is verified by the C++ tier and by nothing else.** A
 green pytest run on it means the Python that would have exercised the *old*
@@ -265,12 +265,17 @@ module hierarchy to satisfy it.
 ### What is gated, and what is not
 
 There are two gates, both `devtools/test.py` (`docs/testing.md` "Gates").
+**`src/` is frozen** — no longer developed, the work is `rust/` — so
+**neither gate builds or tests the C++ tree unless asked**: `--cpp` adds
+the C++ half to either (on `pr`, so do `--only cpp` and the build-only
+options `--fresh`, `--clean`, `--no-test`, `--tidy`, `--record`), a diff
+touching C++ gets a line saying it went untested, and the nightly still
+runs every C++ case.
 `git push` runs `test.py push`, by pre-commit's pre-push stage: the fast pytest
-tier when the push touches a `.py`, the C++ smoke (an incremental build, the
-host binaries, each GPU binary as one process running `pr`'s representatives,
-or its whole fast set with `--all` or when the lister cannot list) when it
-touches C++ or a build file outside `experimental/` and `test/experimental/`
-(the smoke's preset never configures them, so it would check none of it).
+tier when the push touches a `.py`, and with `--cpp` the C++ smoke (an
+incremental build, the host binaries, each GPU binary as one process running
+`pr`'s representatives, or its whole fast set with `--all` or when the lister
+cannot list).
 Any path under `rust/` (the Rust rebuild, `rust/README.md`) fires the
 **cargo half** and neither of the others, even its `.cu`, CMake and `.py`:
 tiers 1 to 3, `cargo test --no-default-features` over the workspace members
@@ -286,10 +291,10 @@ device case is `#[ignore = "tier 4: needs a GPU"]`: it runs only when wwr
 sees a device, and the gate prints every case that did not run, with its
 reason (`rust/docs/testing.md` "Selecting GPU tiers in cargo").
 `test.py pr` is the gate
-before a PR: configure, build, then each C++ family's representative and
-nothing else (`devtools/test_families.py`'s set; `--all` runs the whole fast
-set), split into ctest and the GPU batches, the cargo half when the branch
-touches `rust/`, then the fast pytest tier. The
+before a PR: the cargo half when the branch touches `rust/`, then the fast
+pytest tier; with `--cpp` first configure, build, then each C++ family's
+representative and nothing else (`devtools/test_families.py`'s set; `--all`
+runs the whole fast set), split into ctest and the GPU batches. The
 nightly runs every case the gates leave out (`docs/testing.md` "Test selection").
 CI runs lint (cargo fmt and clippy included, `devtools/test.py cargo-lint`,
 which a commit touching `rust/` also runs) + the fast pytest tier per PR.

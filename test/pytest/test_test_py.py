@@ -71,6 +71,7 @@ def test_pr_defaults() -> None:
     args, rest = gates.parse(["pr"])
     assert args.preset is None and args.jobs is None and args.only is None
     assert not (args.fresh or args.clean or args.no_test or args.tidy or args.all)
+    assert not args.cpp and gates.parse(["pr", "--cpp"])[0].cpp
     assert rest == []
 
 
@@ -78,6 +79,7 @@ def test_push_flags() -> None:
     args, _ = gates.parse(["push", "--dry-run", "-j", "8", "--preset", "default"])
     assert args.dry_run and args.jobs == "8" and args.preset == "default"
     assert not args.all and gates.parse(["push", "--all"])[0].all
+    assert not args.cpp and gates.parse(["push", "--cpp"])[0].cpp
 
 
 def test_push_refuses_passthrough() -> None:
@@ -350,8 +352,16 @@ def test_dry_run_dispatch(
     args, _ = gates.parse(["push", "--dry-run"])
     assert gates.cmd_push(args, {}) == 0
     out = capsys.readouterr().out
-    assert "2 changed file(s) -> C++ half: yes, Python half: yes, cargo half: no" in out
+    # src/ is frozen: a C++ change fires nothing, and says so.
+    assert "2 changed file(s) -> C++ half: no, Python half: yes, cargo half: no" in out
+    assert "push: the diff touches the C++ tree" in out
     assert "push:   src/a.cppm" in out and "push:   tool.py" in out
+    for flag in ("--cpp", "--all"):
+        args, _ = gates.parse(["push", "--dry-run", flag])
+        assert gates.cmd_push(args, {}) == 0
+        out = capsys.readouterr().out
+        assert "C++ half: yes, Python half: yes, cargo half: no" in out
+        assert "touches the C++ tree" not in out
 
 
 def test_dry_run_names_tier4_crates(
@@ -380,6 +390,38 @@ def test_push_by_hand_without_a_base_exits_2(
     err = capsys.readouterr().err
     assert "push: cannot diff origin/main...HEAD" in err
     assert "Traceback" not in err
+
+
+@pytest.mark.parametrize(
+    ("flags", "builds"),
+    [([], False), (["--cpp"], True), (["--no-test"], True), (["--only", "cpp"], True)],
+)
+def test_pr_runs_the_cpp_half_only_when_asked(
+    flags: list[str],
+    builds: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # src/ is frozen: a C++ diff alone no longer builds the tree.
+    monkeypatch.setattr(gates, "changed_files", lambda _env: ["src/a.cppm", "x.py"])
+    monkeypatch.setattr(gates, "tree_rev", lambda: ("abc", ""))
+    monkeypatch.setattr(gates, "tree_rev_header", lambda tag, log: None)
+    monkeypatch.setattr(gates, "build_dir_of", lambda preset: tmp_path)
+    monkeypatch.setattr(gates, "lib", lambda *a, **k: subprocess.CompletedProcess(a, 0))
+    built: list[str] = []
+    monkeypatch.setattr(
+        gates, "cpp_build", lambda preset, *a, **k: built.append(preset) or 1
+    )
+    monkeypatch.setattr(gates, "python_half", lambda *a, **k: 0)
+    args, rest = gates.parse(["pr", "--preset", "default", *flags])
+    cfg = {"SLOW_TIER_REPORTS": str(tmp_path / "r"), "BUILD_JOBS": "4"}
+    cfg |= {"CMAKE_PRESET": "default", "CTEST_PRESET": "default"}
+    rc = gates.cmd_pr(args, cfg, rest)
+    out = capsys.readouterr().out
+    assert built == (["default"] if builds else [])
+    assert rc == (1 if builds else 0)
+    assert ("touches the C++ tree" in out) == (not builds)
 
 
 # --- the cargo half ------------------------------------------------------------

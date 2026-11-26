@@ -226,8 +226,10 @@ git -C <wt> fetch origin main && git -C <wt> rebase origin/main
 git -C <wt> push --force-with-lease
 ```
 
-**The push smoke is the check.** A C++ PR's push runs `devtools/test.py push`,
-whose C++ half (about ten minutes on the 3080, more on the gfx1200)
+**The push smoke is the check.** `src/` is frozen, so a C++ PR is rare and
+its push needs `--cpp` by hand (`git push` alone no longer builds the tree):
+run `devtools/test.py push --cpp` in the worktree before pushing. Its C++
+half (about ten minutes on the 3080, more on the gfx1200)
 rebuilds the whole tree on the rebased branch and runs the GPU batch, so a
 second full `test.py pr` after a rebase repeats it — on the gfx1200 that
 wasted about twenty minutes a PR. Never rerun the full tier solely because of
@@ -341,8 +343,9 @@ Rules:
 - CI runs only lint + the fast pytest tier; nothing on the server builds C++.
   Your reported run is the only evidence the PR's C++ works. Never claim a
   check passed that you did not see.
-- C++ changes: run the PR gate on your assigned card, from the worktree:
-    devtools/test.py pr --preset <preset> -j <J>
+- C++ changes (src/ is frozen; the gates skip C++ without --cpp): run the
+  PR gate on your assigned card, from the worktree:
+    devtools/test.py pr --cpp --preset <preset> -j <J>
   (each C++ family's representative, then the fast pytest set; its last
   line is "test.py pr PASS  rev=… preset=…"). Quote its "representatives
   only: N of M ctest entries selected" line, and any "skipped
@@ -394,8 +397,9 @@ Rules:
   FelizJueves tools/emit/*_kernels.py scripts) rather than hand-merging their
   text.
 - Rebase onto origin/main right before you push, and do NOT rerun the full
-  tier after that rebase: the push's devtools/test.py push rebuilds the
-  tree and runs the GPU batch. Rerun only the suites a new main commit changes underneath you
+  tier after that rebase: for a C++ change, run devtools/test.py push --cpp
+  (the hook's own push no longer builds C++), which rebuilds the tree and
+  runs the GPU batch. Rerun only the suites a new main commit changes underneath you
   (C++ your code builds against or your tests exercise), with
   `devtools/test.py pr --all --only cpp --preset <preset> -j <J> -- -R '<suites>'`.
 - When you were given a card, push with its preset:
