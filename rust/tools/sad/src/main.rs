@@ -33,17 +33,19 @@
 //! removed, and the process exits with its kind's pinned code
 //! ([`ErrorKind::exit_code`]).
 //!
-//! The SCFs run as CPU nodes of one `fb_core_thread_pool::TaskGraph`, one per
-//! element, on as many workers as the process may use
-//! ([`default_n_cpu`]`(0)`, which follows the CPU affinity: `taskset`
-//! bounds it).
+//! The SCFs run on scoped threads of the process's own, as many as it may
+//! use (`std::thread::available_parallelism`, which follows the CPU
+//! affinity: `taskset` bounds it) and no more than there are elements, each
+//! thread taking the next element not yet started. Each SCF is serial and
+//! independent of the others, so neither the thread count nor the order
+//! changes a bit of a stamp.
 //!
 //! | C++ (`tools/sad/main.cpp`) | Here |
 //! |---|---|
 //! | `main`, `run` | `main`, `run`; the error printed as `error: <message>`, the exit code [`ErrorKind::exit_code`]'s |
-//! | `Job` | `Job`, its density and time in a `OnceLock` its node sets |
+//! | `Job` | `Job`, its density and time in a `OnceLock` its thread sets |
 //! | `jobs_for(spec)` | `jobs_for(spec)`, which returns the set's canonical name beside its jobs |
-//! | `compute(jobs)`, a taskflow task per element | `compute(jobs)`, a CPU node per element of a `TaskGraph` run on `HostOnly` |
+//! | `compute(jobs)`, a taskflow task per element | `compute(jobs)`, the next element to each free scoped thread |
 //! | `every_set(basis_dir)`, each file's stem | `every_set(basis_dir)`, each document's BSE `name` field: a stem is not always a name `resolve_basis` folds to (`6-31gstar.json` is `6-31G*`) |
 
 #![forbid(unsafe_code)]
@@ -51,12 +53,12 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use fb_atom::{Atom, Element};
 use fb_basis::{BasisSet, Shell};
 use fb_core_error_handling::{Error, ErrorKind, Result, Status};
-use fb_core_thread_pool::{self as thread_pool, HostOnly, Placement, TaskGraph, default_n_cpu};
 use fb_core_types::Double3;
 use fb_io_basis::resolve_basis;
 use fb_io_npy::write_npy;
@@ -107,21 +109,29 @@ fn jobs_for(spec: &str) -> Result<(String, Vec<Job>)> {
     Ok((stamp.name().to_string(), jobs))
 }
 
-/// Run every job's SCF, a CPU node each: the elements are independent, and
-/// the heaviest of them take minutes. Each node keeps its SCF's result in
-/// its job and returns `Ok`, so one failure stops nothing else.
-fn compute(jobs: &[Job]) -> Status {
-    let mut plan: TaskGraph<'_, ()> = TaskGraph::new();
-    for job in jobs {
-        let name = format!("atomic scf {} Z={}", job.basis, job.atom[0].element.z());
-        plan.add(name, Placement::Cpu, &[], move |_| {
-            let start = Instant::now();
-            let density = sad_density(&job.shells, &job.atom, None);
-            let _ = job.density.set((density, start.elapsed().as_secs_f64()));
-            Ok(())
-        });
-    }
-    thread_pool::run(&mut plan, &mut HostOnly::new(0), default_n_cpu(0)).result
+/// Run every job's SCF on the process's threads: the elements are
+/// independent, and the heaviest of them take minutes. Each SCF keeps its
+/// result in its job, so one failure stops nothing else.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the stamp generator's own threads, joined before it returns: a host-only tool with no orchestrator (docs/programming_model.md, \"CPU workers\")"
+)]
+fn compute(jobs: &[Job]) {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(jobs.len());
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                while let Some(job) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let start = Instant::now();
+                    let density = sad_density(&job.shells, &job.atom, None);
+                    let _ = job.density.set((density, start.elapsed().as_secs_f64()));
+                }
+            });
+        }
+    });
 }
 
 /// The BSE `name` of every `<data>/basis/*.json` document, in file-name
@@ -190,10 +200,10 @@ fn run(args: &[String]) -> Status {
             jobs.extend(more);
         }
     }
-    compute(&jobs)?;
+    compute(&jobs);
     let results: Vec<&(Result<Vec<f64>>, f64)> = jobs
         .iter()
-        .map(|job| job.density.get().expect("every node ran"))
+        .map(|job| job.density.get().expect("every job ran"))
         .collect();
 
     // Every failure but a too-large atom is checked before anything is

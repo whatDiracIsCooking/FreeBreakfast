@@ -1224,7 +1224,6 @@ dependencies = [
  "fb-basis",
  "fb-core-error-handling",
  "fb-core-log",
- "fb-core-thread-pool",
  "fb-core-types",
  "fb-io-basis",
  "fb-io-npy",
