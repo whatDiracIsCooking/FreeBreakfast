@@ -47,7 +47,7 @@ use fb_doc_check::{
 /// an entry that matches nothing fails, so the list only shrinks.
 const ERROR_LOGS: &[(&str, usize, &str)] = &[
     (
-        "pipeline/config/src/main.rs",
+        "steps/src/main.rs",
         1,
         "the binary's `main`, the one boundary (docs/diagnostics.md, \"The one boundary\")",
     ),
@@ -907,7 +907,7 @@ fn the_error_scan_sees_each_form() {
 fn error_logs_are_held_to_their_counts() {
     let files = vec![
         (
-            "pipeline/config/src/main.rs".to_owned(),
+            "steps/src/main.rs".to_owned(),
             "log::log_at(LogLevel::Error, o, a);".to_owned(),
         ),
         (

@@ -1,13 +1,12 @@
 # The SAD initial-guess density D of water in cc-pVDZ, from the compiled-in
-# atomic stamps. Writes d.npy and timing.json.
-calculation = "guess"
-output = "guess"       # relative to the working directory; default "fbf_output"
+# atomic stamps. Writes d.npy, budget.txt and timing.json.
+calculation = "guess"  # the guess step alone
 
 [molecule]
 xyz = "water.xyz"      # Angstrom, relative to this file
 
-[basis_set]
-basis = "cc-pvdz"      # a compiled-in name, or a BSE JSON path relative to this file
+[basis]
+name = "cc-pvdz"       # a compiled-in name, or a BSE JSON path
 
 [guess]
-type = "sad"           # the default; or from = "d.npy", D read back in its place
+type = "sad"           # the default; or from = "d.npy", a run's D read back

@@ -1,0 +1,9 @@
+# The AO overlap S of water in cc-pVDZ. Writes overlap.npy and timing.json.
+calculation = "overlap"
+output = "overlap"     # relative to the working directory; default "fbf_output"
+
+[molecule]
+xyz = "water.xyz"      # Angstrom, relative to this file
+
+[basis_set]
+basis = "cc-pvdz"      # a compiled-in name, or a BSE JSON path relative to this file

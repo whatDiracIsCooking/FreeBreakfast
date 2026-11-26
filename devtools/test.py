@@ -1248,8 +1248,8 @@ CARGO_RECORD_FLAG = "--message-format=json-render-diagnostics"
 # its -sys crate (rust/<module>/sys/, which declares `links`), and so to
 # every crate that depends on it; no kernel library links another, which
 # fb-doc-check's workspace graph test holds; rust/docs/ is read
-# by fb-doc-check alone, rust/examples/ by fb-pipeline-config (whose tests
-# run them through the binary), and devtools/rust-bindings.py by
+# by fb-doc-check alone, rust/examples/ by fb-steps (whose tests run them
+# through the binary), and devtools/rust-bindings.py by
 # fb-device-check. Any other file outside every crate affects the whole
 # workspace.
 KERNELS_PATH = re.compile(r"^rust/[^/]+/kernels/")
@@ -1301,7 +1301,7 @@ def affected_crates(files: list[str] | None, meta: dict) -> set[str]:
         elif DOC_PATHS.match(f):
             f = "rust/doc_check/"
         elif EXAMPLES_PATH.match(f):
-            f = "rust/pipeline/config/"
+            f = "rust/steps/"
         owner = max((d for d in dirs if f.startswith(d)), key=len, default=None)
         if owner is None:
             return every

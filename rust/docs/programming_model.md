@@ -117,6 +117,16 @@ stays in its module's crate.
   localization of the SCF's occupied orbitals; `[resources]` the GPUs,
   the executor's width and the caps. A step whose table is absent is not in
   the DAG, and a step that reads one the config leaves out is refused.
+- **`calculation` picks the steps and the products.** `"overlap"` is the
+  overlap alone, `"guess"` the guess alone, `"rhf"` the chain to the SCF,
+  `"localization"` that and the localization; the optional tables it reads
+  are filled at their defaults as the config is parsed, so the rule above
+  still places each step. A table it does not read is refused at the
+  table's line, and `"rhf"` or `"localization"` with no `[eri]` at
+  `calculation`'s, each naming the file (`InvalidConfig`). The
+  `free-breakfast` binary is `fb-steps`' own: a config through `run`, its
+  products written by `Run::write`, its `main` the one boundary
+  ([`diagnostics.md`](diagnostics.md), "The one boundary").
 - **`[guess]` chooses the guess's density, the SAD density when absent.**
   `from` loads a float64 `.npy` (a run's `d.npy`) into the guess's staging
   in place of the SAD stamps, so its budget is the SAD guess's. Setup

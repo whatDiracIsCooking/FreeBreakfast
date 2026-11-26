@@ -3,11 +3,11 @@
 //! to gpu0. A host step: it calls no
 //! library, takes no lock, and runs beside the GPU work.
 
-use fb_core_budget::{Budget, DeviceBuf, Kind, Lease};
+use fb_core_budget::{Budget, DeviceBuf, HeapSlab, Kind, Lease};
 use fb_core_error_handling::{Result, Status};
 use fb_core_flow::{Held, Lane, Placement, Slot, Step, View};
 
-use crate::bus::{MainBus, Shared};
+use crate::bus::{Calculation, MainBus, Shared};
 use crate::steps::{GPU0, staging, unpack_lower_in_place, upload};
 
 /// The step.
@@ -17,6 +17,7 @@ pub struct OverlapStep;
 /// S on gpu0.
 pub struct OverlapOutput {
     s: DeviceBuf<f64>,
+    s_host: Option<HeapSlab<f64>>,
 }
 
 impl OverlapOutput {
@@ -24,6 +25,13 @@ impl OverlapOutput {
     #[must_use]
     pub fn s(&self) -> &DeviceBuf<f64> {
         &self.s
+    }
+
+    /// S on the host, `n_ao × n_ao`, for `calculation = "overlap"`,
+    /// which writes it as `overlap.npy`; `None` for any other.
+    #[must_use]
+    pub fn s_host(&self) -> Option<&[f64]> {
+        self.s_host.as_deref()
     }
 }
 
@@ -45,6 +53,8 @@ impl Step<MainBus> for OverlapStep {
         budget.scratch(GPU0, Kind::Pinned, staging(n * n).0.bytes());
         Ok(OverlapOutput {
             s: budget.device(GPU0, n * n),
+            s_host: (shared.config.calculation == Some(Calculation::Overlap))
+                .then(|| budget.heap(n * n)),
         })
     }
 
@@ -63,6 +73,9 @@ impl Step<MainBus> for OverlapStep {
             .host_pool()
             .install(|| fb_integrals_s_overlap_host::overlap_into(&shared.basis, triangle));
         unpack_lower_in_place(n, &mut staged);
+        if let Some(host) = out.s_host.as_mut() {
+            host.copy_from_slice(&staged[..n * n]);
+        }
         upload(lane, std::slice::from_mut(&mut out.s), staged)
     }
 }

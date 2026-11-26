@@ -1,9 +1,18 @@
-//! Run a config through the steps: setup, budget mode, execute mode.
+//! `free-breakfast <config.toml>`: read the config, run it through the
+//! steps ([`fb_steps::run`]: setup, budget mode, execute mode), and write
+//! the run's record and products ([`fb_steps::Run::write`]). `calculation`
+//! picks the steps and the products ([`fb_steps::Calculation`]). `main` is
+//! the one place an error is logged, and the process exits with its kind's
+//! code (`docs/diagnostics.md`, "The one boundary").
 //!
 //! ```sh
-//! cargo run -p fb-steps --release --example run -- steps/examples/gly10.toml
-//! cargo run -p fb-steps --example run -- steps/examples/gly10.toml --budget-only
+//! cargo run -p fb-steps --release --bin free-breakfast -- examples/rhf.toml
+//! cargo run -p fb-steps --release --bin free-breakfast -- steps/examples/gly10.toml --budget-only
 //! ```
+//!
+//! `--output DIR` (default `fbf_output`, relative to the working
+//! directory) is where the run's record, `budget.txt` (the table printed
+//! here) and `timing.json`, and, unless `--budget-only`, its products go.
 //!
 //! `--budget-only` stops after budget mode with no device touched: the
 //! dimensions setup counted and the table of what the plan would allocate.
@@ -15,19 +24,16 @@
 //! `--mem-per-gpu-mib N` `[eri] mem_per_gpu`, converted to bytes.
 //! `--stage-sync` sets `[scf] stage_sync`: a sync of gpu0's stream where an
 //! SCF iteration would end a step, were it three.
-//!
-//! `--output DIR` (default `fbf_output`, the old binary's) is where
-//! [`fb_steps::Run::write`] puts the run's record, `budget.txt` (the table
-//! printed here) and `timing.json`, and, unless `--budget-only`, its
-//! products: `scf.json`, `c.npy` and `d.npy` with `[scf]`, and
-//! `localization.json` and `c_local.npy` with `[localization]`.
+
+#![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use fb_core_budget::Backing;
-use fb_core_error_handling::Result;
+use fb_core_error_handling::{Error, Status};
 use fb_core_flow::Bus;
+use fb_core_log::{self as log, LogLevel};
 use fb_steps::{Config, EriStep, LocalizationStep, ScfStep, run};
 
 /// The command line.
@@ -67,7 +73,13 @@ fn args() -> Option<Args> {
     (!out.path.is_empty()).then_some(out)
 }
 
-fn go(args: &Args) -> Result<()> {
+/// The usage line, an `InvalidConfig` refusal.
+const USAGE: &str = "usage: free-breakfast <config.toml> [--output DIR] [--budget-only] \
+                     [--devices 0,1] [--threads N] [--mem-per-gpu-mib N] [--stage-sync]";
+
+/// The run of the command line's config, its record and products written.
+fn go() -> Status {
+    let args = args().ok_or_else(|| Error::config(USAGE))?;
     let mut config = Config::read(Path::new(&args.path))?;
     if let Some(devices) = &args.devices {
         config.resources.devices.clone_from(devices);
@@ -90,10 +102,7 @@ fn go(args: &Args) -> Result<()> {
     let (has_eri, has_scf) = (config.eri.is_some(), config.scf.is_some());
     let has_localization = config.localization.is_some();
     let run = run(config, backing)?;
-    let output = args
-        .output
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("fbf_output"));
+    let output = args.output.unwrap_or_else(|| PathBuf::from("fbf_output"));
     run.write(&output)?;
     println!("wrote {}", output.display());
     let shared = run.plan.bus().shared();
@@ -174,18 +183,22 @@ fn go(args: &Args) -> Result<()> {
 }
 
 fn main() -> ExitCode {
-    let Some(args) = args() else {
-        eprintln!(
-            "usage: run <config.toml> [--budget-only] [--devices 0,1] [--threads N] \
-             [--mem-per-gpu-mib N] [--stage-sync] [--output DIR]"
-        );
-        return ExitCode::from(2);
-    };
-    match go(&args) {
+    // The logger and its panic hook: a panic is a critical line before the
+    // release abort.
+    log::init();
+    let status = go();
+    if let Err(error) = &status {
+        log::log_at(LogLevel::Error, error.origin, format_args!("{error}"));
+    }
+    log::flush();
+    println!(
+        "completed: {} errors, {} warnings",
+        log::error_count(),
+        log::warning_count()
+    );
+    match status {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("{e}");
-            ExitCode::FAILURE
-        }
+        // The codes are 1 to 8.
+        Err(error) => ExitCode::from(error.kind.exit_code() as u8),
     }
 }

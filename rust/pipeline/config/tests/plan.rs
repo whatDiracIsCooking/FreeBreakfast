@@ -50,9 +50,10 @@ const EXAMPLES: [&str; 9] = [
     "conventional_dense.toml",
 ];
 
-/// `rust/examples/`.
+/// The old binary's example configs, kept as this crate's fixtures when
+/// the binary moved onto the steps (`tests/data/examples/`).
 fn examples() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/examples")
 }
 
 /// `rust/examples/<file>`'s plan text, checked against the golden

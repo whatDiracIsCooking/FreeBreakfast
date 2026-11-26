@@ -1,21 +1,20 @@
 # The closed-shell DF-RHF energy of water in cc-pVDZ over cc-pVDZ-JKFIT,
-# from the SAD guess. Writes scf.json, c.npy, d.npy and timing.json.
-calculation = "rhf"
-output = "rhf"         # relative to the working directory; default "fbf_output"
+# from the SAD guess. Writes scf.json, c.npy, d.npy, budget.txt and
+# timing.json.
+calculation = "rhf"    # the chain to the SCF; ROHF at a multiplicity above 1
 
 [molecule]
 xyz = "water.xyz"      # Angstrom, relative to this file
 
-[basis_set]
-basis = "cc-pvdz"      # a compiled-in name, or a BSE JSON path relative to this file
+[basis]
+name = "cc-pvdz"       # a compiled-in name, or a BSE JSON path
 
 [guess]
 type = "sad"           # the default; or from = "d.npy", a run's D read back
 
-[eri]                  # required: no default
-mode = "density_fitting"      # or "conventional" (conventional.toml)
-aux_basis = "cc-pvdz-jkfit"   # a compiled-in fitting set
-schwarz_threshold = 1e-12    # the default: a shell pair whose every sqrt((mn|mn)) is below it is dropped; 0 keeps all
+[eri]                  # required by "rhf": aux_basis has no default
+aux_basis = "cc-pvdz-jkfit"   # a compiled-in fitting set, or a BSE JSON path
+schwarz_threshold = 1e-12     # the default: a shell pair whose bound is under it is dropped; 0 keeps all
 
 [scf]                  # every key optional; these are the defaults
 max_iterations = 100          # Fock builds before MaxIterationsExceeded
