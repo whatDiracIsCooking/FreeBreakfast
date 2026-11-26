@@ -36,6 +36,72 @@ orchestrator's first job is, on one GPU: not running nodes in parallel, but
 finding an order whose peak fits the budget. Admission and scheduling are one
 problem, not two. Parallelism is whatever room the chosen order leaves.
 
+## Steps on rustflow
+
+Two layers are in the tree, as in [`memory.md`](memory.md). **The v0.0.4
+layer** (`fb_core_flow`, over `fb_core_budget` and `fb_core_device`) is
+this section, ported from the prototype's design
+(`../experimental/rust/v0.0.4/README.md`, "Steps and the MainBus", "GPUs,
+streams and locks", "The step DAG on rustflow"). **The old layer**, tasks,
+edges and the orchestrator in `fb_core_planner` and `fb_core_thread_pool`,
+is every section from "Three owners" on, until its crates are deleted;
+"CPU workers" and "Capabilities are enforced by lints" say what holds for
+both.
+
+**A step is one config table, one slot, `mem_budget` and `run`.** A
+`Step` is a unit struct named by value. Its `Output` is what outlives its
+`run`, behind a lock used plainly: the owner writes, a reader reads. Its
+`mem_budget` allocates the `Output` through a `Budget`, declares its
+scratch and the locks its `run` takes, and reads only what setup filled
+([`memory.md`](memory.md), "The budget"). Its `run` is handed the
+`Output`, a `View`, the guards the wrapper took (`Held`), its streams
+(`Lane`) and its scratch (`Lease`), and no `Budget` and no bus.
+
+**The declaration is the edge.** A step names the steps it reads as a
+tuple, `Step::Reads`. The builder makes the DAG's edges from those tuples
+and nothing else, and `View::read` compiles only for a step in the
+reader's tuple, so a read with no edge behind it does not build. A step
+the config does not ask for is not in the DAG, and `Dag::build` refuses a
+step that reads one, naming both, before anything is budgeted; so is a
+step added twice, and a cycle.
+
+**One graph, two modes.** `Plan::budget` runs every step's `mem_budget`
+over the DAG's edges on rustflow's `Executor`, then one final node,
+`Ledger::finish` ([`memory.md`](memory.md), "The final node").
+`Plan::execute` runs every `run` over the same edges, allocates nothing
+budgeted, and may be called again: a replay writes into the same buffers
+and the same scratch regions. A step's inner work is plain code inside its
+`run`: rustflow schedules the outer graph and nothing inside a step.
+
+**The wrapper.** Every `run` is entered and left by one function a step
+cannot skip:
+
+1. Make the step's device current: gpu0's for a GPU step, and each thread
+   of a fan-out makes its own GPU's current.
+2. Take the locks its `mem_budget` declared, in rank order (`LockId`'s
+   derived order: every manager, then the GPUs by index), and bind a
+   GPU's handle workspace the first time its lock is taken.
+3. In the ledger's NaN mode, fill the lease: its host regions, and its
+   device regions on the step's first stream on each GPU, synced.
+4. Call `run` with the held guards.
+5. Synchronize every stream the step has and each held GPU's stream,
+   failed or not.
+6. Release the locks.
+
+So a finished node is finished device work, and the edges order
+everything between steps with no event between them. **Nothing takes a
+lock inside `run`:** a step reaches a GPU's handles only through the
+guards in its `Held`, and `Locks` gives no path to a `Mutex`; its one
+locking method, `query`, takes a `Budget`, which only `mem_budget` holds.
+A step that declares a GPU's lock it does not run on is refused in budget
+mode.
+
+**A failed step fails its successors and nothing else.** The wrapper
+keeps a failed flag per node; a node with a failed predecessor is skipped
+and flagged in turn, and the plan returns the first failure in its one
+topological order, the others on its context
+([`diagnostics.md`](diagnostics.md), "One worker fails").
+
 ## Three owners
 
 The things one has to decide about a feature belong to three owners. A task
@@ -873,11 +939,27 @@ four, under `rust/integrals/`: `fb-integrals-s-overlap-host`,
 `fb-integrals-t-kinetic-host`, `fb-integrals-v-potential-en-host` and
 `fb-integrals-df-metric`. A crate above them reaches rayon only through
 them, never by an edge of its own, and no member depends on any other pool
-crate. Each needs the FMA target feature, which the workspace's
+crate but `fb-core-flow` on rustflow (below). Each needs the FMA target feature, which the workspace's
 `.cargo/config.toml` sets for every member, so a dependent built from
 `rust/` gets it. The rayon pool's threads are outside the plan's worker
 count until the step that calls these crates sets its size from the config
 and admits it beside the CPU workers' budget; that step is not built.
+
+**The v0.0.4 layer's executor, and its fan-out.** The step DAG runs on
+rustflow's `Executor` ("Steps on rustflow"), not on the orchestrator's
+workers: one per process, its thread count fixed at init from the config,
+a work-stealing scheduler whose stealing moves which thread runs a step,
+never where it runs, since a step's GPUs are fixed before budget mode.
+rustflow brings `crossbeam-deque`, the second exception to "no pool
+crate": `fb-core-flow` is the one member that names rustflow, and it
+re-exports `Executor`, so a crate above it reaches the executor only
+through it. A sync blocks its worker, so the width covers the GPU steps
+that can wait at once plus the CPU work, a handful of threads. An all-GPU
+step's inner work across its GPUs is `fb_core_flow::fan_out`: one scoped
+thread per GPU for the length of the fan-out, each making its device
+current, joined before it returns, run inline for one GPU. It is the one
+place the layer spawns, and the host integrals' rayon pool, called from a
+step, is the other pool beside the executor.
 
 **What is tested.** Every node runs exactly once, in a topological order, on
 no more threads than the plan said. The last is a tier-3 test
@@ -893,7 +975,7 @@ set to one at initialization, and this test is what notices when that slips.
 ### Capabilities are enforced by lints
 
 Three things a task may not do are each held by named code: allocating is
-the arena's ("Memory: layouts and arenas"), spawning is the worker module's,
+the arena's ("Memory: layouts and arenas"), spawning is the worker modules',
 and `unsafe` is a listed few crates'. Each is a lint, in the manifest's
 `[lints]` table that [`documentation.md`](documentation.md) ("Code:
 rustdoc") already uses for `missing_docs` or at a crate's root, so a violation is a build failure in every invocation, the
@@ -901,21 +983,26 @@ gates and an editor alike, and not a convention a review has to remember.
 
 **Spawning.** `std::thread` cannot be removed from the standard library, but
 clippy's `disallowed_methods` makes calling it a compile error everywhere but
-the one module with the `allow`:
+the modules with the `allow`:
 
 ```toml
 # clippy.toml
 disallowed-methods = [
-  { path = "std::thread::spawn", reason = "workers belong to the orchestrator" },
-  { path = "std::thread::scope", reason = "workers belong to the orchestrator" },
-  { path = "std::thread::Builder::spawn", reason = "workers belong to the orchestrator" },
-  { path = "std::thread::Builder::spawn_scoped", reason = "workers belong to the orchestrator" },
+  { path = "std::thread::spawn", reason = "workers belong to the orchestrator, or to an all-GPU step's fan-out" },
+  { path = "std::thread::scope", reason = "workers belong to the orchestrator, or to an all-GPU step's fan-out" },
+  { path = "std::thread::Builder::spawn", reason = "workers belong to the orchestrator, or to an all-GPU step's fan-out" },
+  { path = "std::thread::Builder::spawn_scoped", reason = "workers belong to the orchestrator, or to an all-GPU step's fan-out" },
 ]
 ```
 
-The manifest does the rest: rayon is a dependency of the four host
-integral crates alone ("CPU workers"), tokio and every other pool crate of
-none, and a pool crate arriving later is a `Cargo.toml` diff a review sees.
+The allows are two modules: `core::thread_pool`'s `run`, which opens the
+old layer's workers, and `core::flow`'s `fan_out`, an all-GPU step's one
+scoped thread per GPU ("CPU workers"). rustflow's executor spawns its own
+workers, out of clippy's sight, which is why the manifest holds it. The
+manifest does the rest: rayon is a dependency of the four host integral
+crates alone, rustflow of `fb-core-flow` alone ("CPU workers"), tokio and
+every other pool crate of none, and a pool crate arriving later is a
+`Cargo.toml` diff a review sees.
 
 **`unsafe`.** The rebuild's `unsafe` is the FFI into `wwr-sys` and the
 kernel libraries, and the code that wraps it. `unsafe_code` is rustc's own

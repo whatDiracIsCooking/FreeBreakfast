@@ -128,7 +128,8 @@ twice; a step holds one lease at a time.
 region on every run, and what is in it on entry is undefined. With the
 ledger's `nan_fill`, the wrapper fills each lease's host regions with
 `0xFF` before `run` (`Lease::fill_host`), a NaN to every `f64` read before
-it is written, and its device regions on the step's stream.
+it is written, and its device regions on the step's stream
+(`Lease::fill_device`).
 
 ## The final node
 

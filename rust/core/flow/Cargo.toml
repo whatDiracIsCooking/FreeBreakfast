@@ -1,0 +1,25 @@
+[package]
+name = "fb-core-flow"
+description = "core::flow: the v0.0.4 layer's steps, their slots and declared Views, and the one step DAG built twice on rustflow, budget mode and execute mode, inside the step wrapper"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+contracts.workspace = true
+# The ledger each mode runs against, the lease a run is lent, the lock rank.
+fb-core-budget.workspace = true
+# The wrapper's current device, a step's streams, each GPU's guarded
+# resources.
+fb-core-device.workspace = true
+fb-core-error-handling.workspace = true
+# The value checks of the always-on contracts (lt!).
+fb-core-log.workspace = true
+# A skipped step's debug line.
+log.workspace = true
+# The executor both modes run on: the one member that names it
+# (docs/programming_model.md, "CPU workers").
+rustflow.workspace = true

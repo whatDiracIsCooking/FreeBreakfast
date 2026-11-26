@@ -92,7 +92,7 @@ pub struct Ledger {
     caps: Caps,
     backing: Backing,
     /// Each gpu's physical device.
-    physical: Vec<i32>,
+    pub(crate) physical: Vec<i32>,
     nan_fill: bool,
     device: Vec<AtomicU64>,
     pinned: Vec<AtomicU64>,

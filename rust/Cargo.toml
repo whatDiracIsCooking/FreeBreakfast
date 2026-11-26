@@ -60,6 +60,7 @@ members = [
     "core/device",
     "core/budget",
     "core/pack",
+    "core/flow",
     "integrals/df_metric",
     "integrals/s_overlap_host",
     "integrals/t_kinetic_host",
@@ -128,6 +129,7 @@ fb-integrals-eri-density-fitting-transform = { path = "integrals/eri/density_fit
 fb-core-device = { path = "core/device" }
 fb-core-budget = { path = "core/budget" }
 fb-core-pack = { path = "core/pack" }
+fb-core-flow = { path = "core/flow" }
 fb-integrals-df-metric = { path = "integrals/df_metric" }
 fb-integrals-s-overlap-host = { path = "integrals/s_overlap_host" }
 fb-integrals-t-kinetic-host = { path = "integrals/t_kinetic_host" }
@@ -149,8 +151,8 @@ rayon = "1.12"
 # The executor the redesign moves to (experimental/rust/v0.0.4/v0.0.4.html, "The step DAG
 # on rustflow"). Unpublished, so a git dependency pinned by its full commit,
 # here alone; a prototype under experimental/rust/, a workspace of its own,
-# names the same rev (docs/testing.md, "What runs when"). No member depends
-# on it yet, so Cargo.lock has no entry for it until one does.
+# names the same rev (docs/testing.md, "What runs when"). fb-core-flow is
+# the one member that names it (docs/programming_model.md, "CPU workers").
 rustflow = { git = "https://github.com/whatDiracIsCooking/rustflow", rev = "f184bcabac5ab01dec0def8c3f369d1bbdb3bbaf" }
 log = { version = "0.4.35", features = ["std"] }
 proptest = "1"
