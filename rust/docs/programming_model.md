@@ -685,7 +685,7 @@ binding crate, beside the generated bindings: `fb-integrals-sys`'s
 `mmd_records`, `three_center_spherical_class` and `packed_gather` take
 `fb-core-device`'s slices, assert every length, check every index their
 kernel follows on the host and upload it themselves, and map the launch
-status through `fb_kernel_abi::launch_status`; the recipes' launches are
+status through `fb_core_device::launch_status`; the recipes' launches are
 `GpuResources`' methods, on the same terms. The handle workspace, which
 the library keeps beyond any borrow, is handed over by value instead: the
 final node allocates it and `GpuResources::bind_workspace` owns it until

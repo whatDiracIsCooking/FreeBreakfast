@@ -54,6 +54,7 @@ use std::panic::Location;
 
 use fb_core_error_handling::{Error, Result, Status, check_or_abort};
 use fb_core_log::{self as log, LogLevel};
+use fb_kernel_abi::LaunchStatus;
 use wwr_sys::wwr_status;
 
 pub use gpu::{CHOLESKY_TILE, GpuResources, HANDLE_WORKSPACE_BYTES};
@@ -77,6 +78,37 @@ fn runtime_status(code: wwr_status) -> Status {
         wwr_status::WWR_STATUS_SUCCESS => Ok(()),
         _ => Err(Error::gpu(format!("{code:?}"))),
     }
+}
+
+/// A kernel library's launch status as a [`Status`] naming `what`, the
+/// wrapper and whatever the caller adds: the one bridge from
+/// [`fb_kernel_abi::launch_status`]'s positive range to the runtime's
+/// statuses, which every safe launch calls (`docs/gpu_layer.md`,
+/// "Statuses"). A launch error is named as every other runtime call's is,
+/// at the caller, and out of memory names the kernel stack beside it.
+///
+/// # Errors
+/// Every status but success, as [`fb_kernel_abi::launch_status`] maps it.
+#[track_caller]
+pub fn launch_status(what: &str, status: LaunchStatus) -> Status {
+    use wwr_status::{
+        WWR_STATUS_INVALID_DEVICE, WWR_STATUS_INVALID_VALUE, WWR_STATUS_MEMORY_ALLOCATION,
+        WWR_STATUS_NO_DEVICE, WWR_STATUS_NOT_READY, WWR_STATUS_NOT_SUPPORTED, WWR_STATUS_UNKNOWN,
+    };
+    const ERRORS: [wwr_status; 7] = [
+        WWR_STATUS_INVALID_VALUE,
+        WWR_STATUS_INVALID_DEVICE,
+        WWR_STATUS_NO_DEVICE,
+        WWR_STATUS_NOT_READY,
+        WWR_STATUS_MEMORY_ALLOCATION,
+        WWR_STATUS_NOT_SUPPORTED,
+        WWR_STATUS_UNKNOWN,
+    ];
+    let out_of_memory = WWR_STATUS_MEMORY_ALLOCATION as i32;
+    fb_kernel_abi::launch_status(what, status, out_of_memory, |code, at| {
+        let known = ERRORS.into_iter().find(|s| *s as i32 == code)?;
+        Some(runtime_status(known).map_err(|e| Error { origin: at, ..e }))
+    })
 }
 
 /// Log a failed step of a destroy at error, at `location`, and carry on:

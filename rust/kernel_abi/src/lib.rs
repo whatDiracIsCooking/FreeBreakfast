@@ -17,7 +17,8 @@
 //!   `check_library()` reads the two exports and calls it.
 //! - [`launch_status`], a launch wrapper's [`LaunchStatus`] as a [`Status`]
 //!   (`docs/gpu_layer.md`, "Statuses"), which every safe layer over a `-sys`
-//!   crate calls on each wrapper's return.
+//!   crate calls on each wrapper's return, through `fb_core_device`'s
+//!   bridge.
 //!
 //! Both functions read the header's values by the generated names, never by
 //! number. A launch status's positive range is the C ABI's `wwr_status`,
@@ -162,6 +163,13 @@ pub fn check(
     ))
 }
 
+/// What a launch that ran out of memory adds to its error: the cause the
+/// budget cannot see and what to change (`docs/memory.md`, "Caps and
+/// margins").
+const KERNEL_STACK_HINT: &str = "out of memory at a kernel launch, most likely the kernel stack, \
+     which the budget does not count: lower the device cap or `[eri] mem_per_gpu`, or on HIP \
+     set GPU_MAX_HW_QUEUES (docs/memory.md, \"Caps and margins\")";
+
 /// A launch wrapper's [`LaunchStatus`] as a [`Status`], naming `what`, the
 /// wrapper and whatever the caller adds (`fb_overlap_class (1, 2)`):
 ///
@@ -171,11 +179,16 @@ pub fn check(
 /// | [`FB_LAUNCH_UNSUPPORTED`] | `Unsupported`, "`what`: no kernel" |
 /// | [`FB_LAUNCH_INVALID_ARGUMENT`] | `InvalidConfig`, "`what`: refused its arguments" |
 /// | positive, a `wwr_status` | `runtime(code, at)`, with `what` as its context |
+/// | `out_of_memory` | the same, its message followed by ": out of memory at a kernel launch, most likely the kernel stack, which the budget does not count: lower the device cap or `` `[eri] mem_per_gpu` ``, or on HIP set GPU_MAX_HW_QUEUES (docs/memory.md, "Caps and margins")" |
 /// | anything else, or a positive code `runtime` does not know (`None`) | `GpuRuntime`, "`what`: unknown launch status `code`" |
 ///
 /// `runtime` is the caller's bridge from the `wwr_status` of that code
 /// (`fb_core_device`'s), so a launch error carries the same name and
 /// description as every other wwr call's, at `at`, this function's caller.
+/// `out_of_memory` is the code of that enum's out-of-memory member, which
+/// only the caller can name. A launch allocates the kernel's stack and
+/// nothing else, and no budget counts it, so that one error says so and
+/// what to lower; the runtime's own name stays in front, to search by.
 ///
 /// # Errors
 ///
@@ -184,6 +197,7 @@ pub fn check(
 pub fn launch_status(
     what: &str,
     status: LaunchStatus,
+    out_of_memory: i32,
     runtime: impl FnOnce(i32, &'static Location<'static>) -> Option<Status>,
 ) -> Status {
     match status {
@@ -194,7 +208,12 @@ pub fn launch_status(
             if code > 0
                 && let Some(s) = runtime(code, Location::caller()) =>
         {
-            s.map_err(|e| e.with_context(what))
+            s.map_err(|mut e| {
+                if code == out_of_memory {
+                    e.message = format!("{}: {KERNEL_STACK_HINT}", e.message);
+                }
+                e.with_context(what)
+            })
         }
         LaunchStatus(code) => Err(Error::gpu(format!("{what}: unknown launch status {code}"))),
     }
@@ -279,10 +298,18 @@ mod tests {
         })
     }
 
+    /// `wwr_status`'s out-of-memory member, as the caller hands it over.
+    const OUT_OF_MEMORY: i32 = 5;
+
     fn kind(status: i32) -> Option<ErrorKind> {
-        launch_status("fb_overlap_class (1, 2)", LaunchStatus(status), runtime)
-            .err()
-            .map(|e| e.kind)
+        launch_status(
+            "fb_overlap_class (1, 2)",
+            LaunchStatus(status),
+            OUT_OF_MEMORY,
+            runtime,
+        )
+        .err()
+        .map(|e| e.kind)
     }
 
     #[test]
@@ -306,7 +333,7 @@ mod tests {
     fn the_message_names_the_wrapper_and_the_status() {
         let what = "fb_kinetic_class (3, 3)";
         let msg = |status| {
-            launch_status(what, LaunchStatus(status), runtime)
+            launch_status(what, LaunchStatus(status), OUT_OF_MEMORY, runtime)
                 .unwrap_err()
                 .message
         };
@@ -320,9 +347,35 @@ mod tests {
         );
         assert_eq!(msg(-3), "fb_kinetic_class (3, 3): unknown launch status -3");
         assert_eq!(msg(8), "fb_kinetic_class (3, 3): unknown launch status 8");
-        let e = launch_status(what, LaunchStatus(5), runtime).unwrap_err();
-        assert_eq!(e.message, "WWR_STATUS_5");
+        let e = launch_status(what, LaunchStatus(3), OUT_OF_MEMORY, runtime).unwrap_err();
+        assert_eq!(e.message, "WWR_STATUS_3");
         assert_eq!(e.context, [what]);
+    }
+
+    /// The whole line, as the binary prints it: the runtime's name first,
+    /// the kernel stack and what to lower, then the wrapper.
+    #[test]
+    fn out_of_memory_names_the_kernel_stack_and_the_remedy() {
+        let what = "fb_three_center_spherical_class (3, 3, 6)";
+        let e =
+            launch_status(what, LaunchStatus(OUT_OF_MEMORY), OUT_OF_MEMORY, runtime).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::GpuRuntime);
+        assert_eq!(
+            e.to_string(),
+            "WWR_STATUS_5: out of memory at a kernel launch, most likely the kernel stack, \
+             which the budget does not count: lower the device cap or `[eri] mem_per_gpu`, \
+             or on HIP set GPU_MAX_HW_QUEUES (docs/memory.md, \"Caps and margins\") \
+             [fb_three_center_spherical_class (3, 3, 6)]"
+        );
+    }
+
+    /// No other status carries the hint, a runtime error or a refusal.
+    #[test]
+    fn only_out_of_memory_names_the_kernel_stack() {
+        for status in (-3..=8).filter(|s| *s != 0 && *s != OUT_OF_MEMORY) {
+            let e = launch_status("w", LaunchStatus(status), OUT_OF_MEMORY, runtime).unwrap_err();
+            assert!(!e.to_string().contains("kernel stack"), "{status}: {e}");
+        }
     }
 
     #[test]
@@ -333,19 +386,21 @@ mod tests {
             -3,
             i32::MIN,
         ] {
-            let _ = launch_status("w", LaunchStatus(status), |_, _| unreachable!("{status}"));
+            let _ = launch_status("w", LaunchStatus(status), OUT_OF_MEMORY, |_, _| {
+                unreachable!("{status}")
+            });
         }
         assert_eq!(
-            launch_status("w", FB_LAUNCH_SUCCESS, |_, _| unreachable!()),
+            launch_status("w", FB_LAUNCH_SUCCESS, OUT_OF_MEMORY, |_, _| unreachable!()),
             Ok(())
         );
     }
 
     #[test]
     fn every_error_is_located_at_the_caller() {
-        for status in [-1, -2, -3, 3, 8] {
+        for status in [-1, -2, -3, 3, 5, 8] {
             let here = Location::caller();
-            let e = launch_status("w", LaunchStatus(status), runtime).unwrap_err();
+            let e = launch_status("w", LaunchStatus(status), OUT_OF_MEMORY, runtime).unwrap_err();
             assert_eq!(
                 (e.origin.file(), e.origin.line()),
                 (here.file(), here.line() + 1)

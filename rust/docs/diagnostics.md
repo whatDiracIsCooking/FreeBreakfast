@@ -197,7 +197,9 @@ too, not just its text:
   final node's refusal is the one `Allocation` value ("Allocation is a
   planning-time error", below); a create that fails aborts, and an
   out-of-memory code met after the final node is a runtime fault like any
-  other.
+  other. At a kernel launch its message also names the kernel stack, which
+  the budget does not count, and what to lower
+  ([`gpu_layer.md`](gpu_layer.md), "Statuses").
   An unsupported configuration the backend refuses is to become
   `Unsupported`; no wrapper maps one yet. The kinds are what the exit code and
   the boundary's message are read from, so a reader learns what went wrong

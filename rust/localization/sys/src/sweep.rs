@@ -19,14 +19,15 @@ use std::ops::DerefMut;
 
 use contracts::requires;
 use fb_core_device::{
-    DeviceSlice, DeviceSliceMut, HostSliceMut, Pending, ScopedDevice, Stream, part_mut,
+    DeviceSlice, DeviceSliceMut, HostSliceMut, Pending, ScopedDevice, Stream, launch_status,
+    part_mut,
 };
 use fb_core_error_handling::{Result, Status};
 use fb_core_log::{eq, fits_i32, le};
 
 use crate::{
     FB_PM_MAX_OCCUPIED, fb_pm_functional, fb_pm_identity, fb_pm_pair_angles, fb_pm_populations,
-    fb_pm_rotate_columns, fb_pm_rotate_populations, fill_round_robin, launched, padded,
+    fb_pm_rotate_columns, fb_pm_rotate_populations, fill_round_robin, padded,
 };
 
 /// The schedule's length for `n_occ` orbitals: `m - 1` rounds of `m`
@@ -172,7 +173,7 @@ where
             pops.as_mut_ptr(),
         )
     };
-    launched("fb_pm_populations", status)?;
+    launch_status("fb_pm_populations", status)?;
     Ok(uploaded)
 }
 
@@ -273,7 +274,7 @@ pub fn pm_sweep<D: DeviceSliceMut<i32>>(
                 partner,
             )
         };
-        launched("fb_pm_pair_angles", status)?;
+        launch_status("fb_pm_pair_angles", status)?;
         // SAFETY: the launch above wrote every orbital's partner, each
         // below n_occ, before this one on the stream; the two tensors are
         // distinct slices of n_atoms n_occ² doubles.
@@ -289,11 +290,11 @@ pub fn pm_sweep<D: DeviceSliceMut<i32>>(
                 q_out,
             )
         };
-        launched("fb_pm_rotate_populations", status)?;
+        launch_status("fb_pm_rotate_populations", status)?;
         // SAFETY: as above, over the two n_occ² slices of U.
         let status =
             unsafe { fb_pm_rotate_columns(stream.raw(), n_occ_i, u_in, cos, sin, partner, u_out) };
-        launched("fb_pm_rotate_columns", status)?;
+        launch_status("fb_pm_rotate_columns", status)?;
         std::mem::swap(&mut q_in, &mut q_out);
         std::mem::swap(&mut u_in, &mut u_out);
     }
@@ -345,7 +346,7 @@ pub fn pm_functional(
             out.as_mut_ptr(),
         )
     };
-    launched("fb_pm_functional", status)
+    launch_status("fb_pm_functional", status)
 }
 
 /// The `n × n` identity into `u`, column-major, on `stream`
@@ -363,7 +364,7 @@ pub fn pm_identity(stream: &Stream, n: usize, u: &mut impl DeviceSliceMut<f64>) 
     let _current = ScopedDevice::new(stream.physical());
     // SAFETY: u is n² doubles (the contracts); the launch only enqueues.
     let status = unsafe { fb_pm_identity(stream.raw(), n as i32, u.as_mut_ptr()) };
-    launched("fb_pm_identity", status)
+    launch_status("fb_pm_identity", status)
 }
 
 #[cfg(test)]

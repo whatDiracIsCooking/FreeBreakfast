@@ -411,6 +411,20 @@ same code the runtime returns for a bad launch. The negative range splits
 them, so that an unsupported momentum reaches Rust as `Unsupported` through
 the whole stack and is tested as such from Rust.
 
+**Out of memory at a launch names the kernel stack.** A launch allocates
+nothing but the kernel's stack, which no budget counts
+([`memory.md`](memory.md), "Caps and margins"), so when the positive range
+holds `wwr_status`'s out-of-memory member the error says so after the
+status's name, on either backend: the kernel stack is the likely cause, and
+the remedy is a lower device cap or `[eri] mem_per_gpu`, or
+`GPU_MAX_HW_QUEUES` on HIP. The text is `fb_kernel_abi::launch_status`'s,
+pinned by its tier-3 test, and no other status carries it.
+
+**One bridge names the positive range.** `fb_core_device::launch_status`
+hands `fb_kernel_abi::launch_status` the runtime's statuses and its
+out-of-memory code, and every safe launch calls it: `GpuResources`'
+recipes and the `-sys` crates' safe calls.
+
 **A kernel's own fault is not a launch status.** It surfaces at the next
 synchronization, which the step's wrapper owns, and it is sticky: the device
 accepts no more launches. [`diagnostics.md`](diagnostics.md) has how a sticky

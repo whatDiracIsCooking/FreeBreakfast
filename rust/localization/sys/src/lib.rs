@@ -40,7 +40,6 @@ pub use sweep::{
     pm_sweep,
 };
 
-use fb_core_error_handling::{Error, Status};
 use fb_kernel_abi::Backend;
 
 /// Checks that the `libfb_localization_kernels.so` this process loaded is
@@ -65,17 +64,6 @@ pub fn check_library() -> Result<(), String> {
         (version, backend),
         (FB_LOCALIZATION_ABI_VERSION, built_for),
     )
-}
-
-/// A launch status as a [`Status`] naming the wrapper: a launch error by
-/// its `wwr_status` code, at the caller.
-#[track_caller]
-fn launched(what: &str, status: fb_launch_status) -> Status {
-    fb_kernel_abi::launch_status(what, status, |code, at| {
-        let mut e = Error::gpu(format!("runtime error {code} at the launch"));
-        e.origin = at;
-        Some(Err(e))
-    })
 }
 
 /// The schedule's index count `m`: `n_occ`, padded to even with one dummy
