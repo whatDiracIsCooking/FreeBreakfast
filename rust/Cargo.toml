@@ -150,8 +150,8 @@ libm = "0.2.16"
 # The host integral crates' shell-pair loops, on rayon's own pool
 # (docs/programming_model.md, "CPU workers"); no other member names it.
 rayon = "1.12"
-# The executor the redesign moves to (experimental/rust/v0.0.4/v0.0.4.html, "The step DAG
-# on rustflow"). Unpublished, so a git dependency pinned by its full commit,
+# The executor of the v0.0.4 layer (docs/programming_model.md, "Steps on
+# rustflow"). Unpublished, so a git dependency pinned by its full commit,
 # here alone; a prototype under experimental/rust/, a workspace of its own,
 # names the same rev (docs/testing.md, "What runs when"). fb-core-flow is
 # the one member that names it (docs/programming_model.md, "CPU workers").

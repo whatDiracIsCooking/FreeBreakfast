@@ -3,9 +3,8 @@
 //! built twice on rustflow, once calling each step's `mem_budget` and once
 //! its `run` (`docs/programming_model.md`, "Steps on rustflow").
 //!
-//! Ported from the v0.0.4 prototype's `src/flow.rs` and `flow_tuples.rs`
-//! (`../experimental/rust/v0.0.4/README.md`, "Steps and the MainBus", "The
-//! step DAG on rustflow"), with the prototype's acquire and release, which
+//! Ported from the v0.0.4 prototype's `src/flow.rs` and `flow_tuples.rs`,
+//! with the prototype's acquire and release, which
 //! sat on its `MainBus`, moved here as the one step wrapper.
 //!
 //! - [`Step`]: one config table, one slot, `mem_budget` and `run`;

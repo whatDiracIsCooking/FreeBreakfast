@@ -1,7 +1,6 @@
 //! The steps against the old Rust path in the same process (tier 4,
 //! device 0): `rust/`'s planner-and-arena layer as merged, a
-//! dev-dependency of this binary alone (`../experimental/rust/v0.0.4/README.md`,
-//! "What it is held against").
+//! dev-dependency of this binary alone.
 //!
 //! - The DF-RHF energy of water, benzene and ethylene in cc-pVDZ over
 //!   cc-pVDZ-JKFIT, `fb_steps::run` against `fb_pipeline_scf::Run` with the

@@ -4,9 +4,8 @@ Two layers are in the tree, and this document describes both until the old
 one is deleted. **The v0.0.4 layer** (`fb_core_budget`, over `fb_core_pack`
 and `fb_core_device`) counts what each step allocates, as it allocates it,
 against a cap per kind, and packs the steps' scratch by the DAG: "The
-budget", "Step scratch" and "The final node" below, ported from the
-prototype's design (`../experimental/rust/v0.0.4/README.md`, "The memory
-budget", "Step scratch"). **The old layer** (`fb_core_arena` and
+budget", "Step scratch", "The final node" and "Batched only" below, the
+design the v0.0.4 prototype was built to try. **The old layer** (`fb_core_arena` and
 `fb_core_planner`) lays every buffer out as a row of a table and admits
 the table's block: every section from "The table" on, which stays as the
 old layer's until its crates are deleted
@@ -249,6 +248,51 @@ under any budget order.
 (`Budget::locks`), each a `LockId`: every manager first, then the gpus by
 index, `Ord` derived in that order. `Ledger::locks_of` hands a step's set
 back in that order, for the wrapper to take ascending.
+
+## Batched only
+
+Every step over an O(N³) tensor has a batched path and no other. The
+unbatched case is the batched one with a single batch on a single GPU.
+
+| What a step holds | Rule |
+|---|---|
+| Everything O(N²): the n_ao² matrices, the metric and its factor, the records | Resident whole on the GPUs it needs. It fits or the plan is refused: a dense eigensolve at n_ao cannot be batched |
+| The O(N³) tensors: (μν\|P), B, a derivative of B | Never resident whole. Built or contracted a batch at a time; B itself on the host heap |
+| The batch width | The widest whose bytes fit the step limit, and no wider than its staging buffer holds; none fits: refuse, naming the step's key, its value and its least bytes |
+| The step limit | Covers the batches and their rings, not the O(N²) residents, which the cap admits or refuses. A fixed constant by default; the config overrides it, which is also how a test forces many batches on a small molecule. For `eri`, `[eri] mem_per_gpu` |
+| What is charged | What is used, never the limit. Limits need not sum to the cap |
+
+- **Every GPU step is built batched and for every GPU, or not built.** A
+  feature is not added until it runs on a single node's GPUs, one GPU
+  being the case of one.
+- **Width stops mattering early.** In the prototype's single-GPU build
+  (`experimental/rust/df_batched`) the time is flat past about 20
+  batches, and a width of one costs 5.6× to 11.6×.
+- **No "what is left".** A width is a function of the step's own limit,
+  so `mem_budget` stays local and order-free.
+- **A width of one is logged at `warn`**; the user raises the limit.
+- **A size fixed only by an earlier step's run is allocated at the bound
+  `Dims` gives**: a screened pair count, the orbital count after dropping
+  linear dependencies. B's pair count is the count in the tree's own pair
+  layout (270,497 pair columns on gly10, where n_ao(n_ao+1)/2 gives
+  269,745). On a large sparse molecule that wastes host memory, and a
+  replay can never outgrow its buffers.
+- **A size a step chooses at run time is allocated at a bound set in
+  setup.** No such step is built; the rule is for the first. AVAS's
+  active space is bounded by its labels: at most twice the MINAO
+  functions they name, capped by `avas_max_ncas`, as
+  `src/pipeline/shape`'s `largest_active_space` does, and the CI is sized
+  at the largest determinant count at or under that bound. A run that
+  selects past the bound fails, as a `Result` naming the count it wanted;
+  it never truncates, which would change the chemistry unannounced. A
+  bound too large is refused in budget mode, before anything runs.
+
+What can still be refused: a plan whose O(N²) data does not fit its GPUs,
+whose B does not fit the host, whose step limit holds no batch, or whose
+`Output`s, each fitting alone, do not fit summed down a chain. The last
+is the sum's price; the remedy is a narrower batch in the step concerned,
+and past that `Output`s packed by the closure, built when a chain is
+first refused.
 
 ---
 

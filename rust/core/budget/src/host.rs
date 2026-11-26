@@ -1,6 +1,6 @@
 //! The host's available memory, read once in setup for the defaulted host
 //! cap. The layer's own reading: it names nothing of the arena's
-//! (`../experimental/rust/v0.0.4/README.md`, "Caps and margins").
+//! (`docs/memory.md`, "Caps and margins").
 //!
 //! Cgroup-aware: the smaller of the machine's `MemAvailable` and, for
 //! every cgroup v2 from the process's own up to the mount, the cgroup's
