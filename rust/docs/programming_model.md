@@ -1370,7 +1370,11 @@ step's inner work across its GPUs is `fb_core_flow::fan_out`: one scoped
 thread per GPU for the length of the fan-out, each making its device
 current, joined before it returns, run inline for one GPU. It is the one
 place the layer spawns, and the host integrals' rayon pool, called from a
-step, is the other pool beside the executor.
+step, is the other pool beside the executor. Outside the layer, the host-only
+stamp generator `tools/sad` runs each element's serial atomic SCF on scoped
+threads of its own in its `compute`, as many as the CPU affinity allows,
+joined before it returns: it has no executor, and no pool crate may serve
+it.
 
 **What is tested.** Every node runs exactly once, in a topological order, on
 no more threads than the plan said. The last is a tier-3 test
