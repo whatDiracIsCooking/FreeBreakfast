@@ -28,7 +28,7 @@ pub fn config(xyz: &str, basis: &str, aux: Option<&str>) -> Config {
 
 /// The steps the orthogonalizer is unordered with: all but the overlap,
 /// which it reads, and itself.
-const UNORDERED: [&str; 3] = ["core_hamiltonian", "guess", "metric"];
+const UNORDERED: [&str; 4] = ["core_hamiltonian", "guess", "metric", "eri"];
 
 /// On each of gpu0's slabs the orthogonalizer's region meets no region of
 /// a step unordered with it; returns how many such pairs were compared.

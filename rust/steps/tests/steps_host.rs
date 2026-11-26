@@ -13,7 +13,7 @@ use fb_core_budget::{Backing, Budget, Cap, Caps, Kind, Layout, Lease, Ledger, RE
 use fb_core_device::HANDLE_WORKSPACE_BYTES;
 use fb_core_error_handling::{ErrorKind, Result, Status};
 use fb_core_flow::{Bus, Dag, Executor, Held, Lane, Locks, Slot, Step, View};
-use fb_steps::{MainBus, plan};
+use fb_steps::{DEFAULT_MEM_PER_GPU, EriStep, MainBus, plan};
 
 const ALIGN: u64 = 256;
 
@@ -96,15 +96,25 @@ fn a_dry_budget_of_gly10_is_exact() {
         Some(aligned((n * n + n) * 8))
     );
     assert_eq!(region("metric", Kind::Pinned), Some(square(q)));
-    // Four n × n outputs and the metric's q × q, the one device scratch
-    // region, and the handle workspace.
-    assert_eq!(
-        ledger.device_total(0),
-        (4 * n * n * 8 + q * q * 8) as u64 + aligned(l.bytes()) + HANDLE_WORKSPACE_BYTES as u64
+    // Four n × n outputs, the metric's q × q and L's, the orthogonalizer's
+    // and the ERI's device scratch (unordered, so side by side), the
+    // handle workspace, and the ERI buffer: within its default limit and
+    // at least the least that holds a batch.
+    let eri_scratch = region("eri", Kind::Device).expect("the ERI's scratch");
+    let rest = (4 * n * n * 8 + 2 * q * q * 8) as u64
+        + aligned(l.bytes())
+        + eri_scratch
+        + HANDLE_WORKSPACE_BYTES as u64;
+    let buffer = ledger.device_total(0) - rest;
+    assert!(
+        EriStep::least_mem_per_gpu(&dims, 2) <= buffer && buffer <= DEFAULT_MEM_PER_GPU,
+        "the ERI buffer: {buffer} bytes"
     );
+    // B on the host heap, at the unscreened bound.
+    assert_eq!(ledger.heap_total(), (dims.n_col * q * 8) as u64);
     assert!(ledger.table().starts_with("memory budget: accepted"));
-    // Pinned: the three host steps unordered with it. Device: no other.
-    assert_eq!(common::orthogonalizer_scratch_is_its_own(ledger), 3);
+    // Pinned: the four steps unordered with it. Device: the ERI's.
+    assert_eq!(common::orthogonalizer_scratch_is_its_own(ledger), 5);
 }
 
 #[test]

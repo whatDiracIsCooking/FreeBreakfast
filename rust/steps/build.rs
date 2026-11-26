@@ -9,4 +9,5 @@ include!("../kernel_lib.rs");
 
 fn main() {
     link_kernel_lib("recipes");
+    link_kernel_lib("integrals");
 }

@@ -1,6 +1,6 @@
 # Ten glycines in cc-pVDZ over cc-pVDZ-JKFIT, on one GPU: the steps of
 # fb-steps (overlap, core_hamiltonian, guess, orthogonalizer, and metric
-# with [eri]). One table per step family: a step whose table is absent is
+# and eri with [eri]). One table per step family: a step whose table is absent is
 # not in the DAG.
 
 [molecule]
@@ -11,6 +11,8 @@ name = "cc-pvdz"
 
 [eri]
 aux_basis = "cc-pvdz-jkfit"
+# mem_per_gpu = 2147483648   # bytes, each GPU's ERI buffer; absent: 2 GiB
+# ring = 2                   # the build's and a J/K pass's ring depth, 2 or 1
 
 [resources]
 devices = [0]

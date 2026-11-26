@@ -17,7 +17,7 @@
 //! ```text
 //! overlap ──> orthogonalizer
 //! core_hamiltonian
-//! metric            (with [eri])
+//! metric ──> eri    (with [eri])
 //! guess
 //! ```
 //!
@@ -28,6 +28,7 @@
 //! | [`MetricStep`] | host, then every GPU | none | (P\|Q) on every GPU | the pinned staging, uploaded to every GPU under one token |
 //! | [`GuessStep`] | host, then gpu0 | none | the SAD density on gpu0 | the pinned staging |
 //! | [`OrthogonalizerStep`] | gpu0 | gpu0 | X = S^(-1/2) on gpu0 | the eigenvectors, a scaled copy, syevd's work and flag |
+//! | [`EriStep`] | every GPU, two ring streams each | the [`EriManager`]'s, every GPU's | the [`EriManager`]: L on every GPU, B on the host heap, each GPU's ERI buffer and staging | the shell and pair tables, the aux records, each class's records, the Cholesky tile and flag |
 //!
 //! The host steps build through the host integral crates inside
 //! [`Shared::host_pool`], the one pool beside the executor, started in setup
@@ -71,13 +72,14 @@ pub use bus::{
     for_each_pair,
 };
 pub use steps::core_hamiltonian::{CoreHamiltonianOutput, CoreHamiltonianStep};
+pub use steps::eri::{DEFAULT_MEM_PER_GPU, Density, EriManager, EriStep};
 pub use steps::guess::{GuessOutput, GuessStep};
 pub use steps::metric::{MetricOutput, MetricStep};
 pub use steps::orthogonalizer::{EIGENVALUE_FLOOR, OrthogonalizerOutput, OrthogonalizerStep};
 pub use steps::overlap::{OverlapOutput, OverlapStep};
 
 /// The DAG `bus`'s config asks for: the one-electron steps, the guess and
-/// the orthogonalizer with `[basis]`, the metric with `[eri]`.
+/// the orthogonalizer with `[basis]`, the metric and the ERI with `[eri]`.
 ///
 /// # Errors
 /// [`Dag::build`]'s refusals.
@@ -88,7 +90,7 @@ pub fn plan(bus: Arc<MainBus>) -> Result<Plan<MainBus>> {
         .add(GuessStep)
         .add(OrthogonalizerStep);
     if bus.shared().config.eri.is_some() {
-        dag.add(MetricStep);
+        dag.add(MetricStep).add(EriStep);
     }
     dag.build(bus)
 }

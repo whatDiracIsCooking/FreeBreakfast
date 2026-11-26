@@ -3,6 +3,7 @@
 //! module.
 
 pub mod core_hamiltonian;
+pub mod eri;
 pub mod guess;
 pub mod metric;
 pub mod orthogonalizer;
