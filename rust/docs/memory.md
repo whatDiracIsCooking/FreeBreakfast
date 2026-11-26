@@ -55,13 +55,14 @@ reused region is still valid to hold. Pinned memory is filled with `0xFF`
 when made, a host-backed plan's zeroed, so nothing the host reads is
 uninitialised.
 
-**The host end of a copy is the owner's promise.** `PinnedBuf`,
+**The host end of a copy is held by the copy's token.** `PinnedBuf`,
 `HeapSlab` and a lease's `HostPart` implement `fb_core_device::HostSlice`
 ([`gpu_layer.md`](gpu_layer.md), "The v0.0.4 runtime"), and are slices on
-the host too. That the host leaves the bytes alone until an enqueued copy
-has run is the layer's sync rule, not the type's: a step's copies are done
-at its step-end sync, and within a step the host waits on the copy's event
-before it touches the bytes again.
+the host too. A copy takes one by value and returns a token holding it
+until a sync of the stream has covered the copy, so the host cannot touch
+the bytes meanwhile. A token dropped unsynced leaks its host end: a
+`HostPart`'s bytes stay carved until the lease drops after the step-end
+sync, and an owned buffer is never freed.
 
 ### Caps and margins
 

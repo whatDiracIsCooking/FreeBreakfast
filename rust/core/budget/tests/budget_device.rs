@@ -19,7 +19,7 @@ fn a_real_plan_allocates_and_its_buffers_round_trip() {
     let budget = ledger.budget("step");
     budget.scratch(0, Kind::Pinned, layout.bytes());
     budget.scratch(0, Kind::Device, n * size_of::<f64>());
-    let mut out = budget.pinned::<f64>(0, n);
+    let out = budget.pinned::<f64>(0, n);
     let device = budget.device::<f64>(0, n);
     assert!(out.is_allocated() && device.is_allocated());
     assert!(out.iter().all(|x| x.is_nan()), "pinned memory is filled");
@@ -39,9 +39,9 @@ fn a_real_plan_allocates_and_its_buffers_round_trip() {
     }
     let mut scratch = lease.device(0, Layout::new().span::<f64>(n));
     let stream = Stream::new(0);
-    stream.upload(&mut scratch, &host).unwrap();
-    stream.download(&mut out, &scratch).unwrap();
-    stream.sync().unwrap();
+    let host = stream.upload(&mut scratch, host).unwrap();
+    let out = stream.download(out, &scratch).unwrap();
+    let (host, out) = (host.sync().unwrap(), out.sync().unwrap());
     assert_eq!(&out[..], &host[..]);
     drop(device);
 }

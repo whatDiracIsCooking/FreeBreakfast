@@ -328,8 +328,10 @@ unsafe impl<T> DeviceSliceMut<T> for ScratchBuf<'_, T> {
 }
 
 /// A tenant of a step's pinned scratch, for the length of its `run`: a
-/// host slice, and the host end of a copy under
-/// [`PinnedBuf`](crate::PinnedBuf)'s rule.
+/// host slice, and the host end of a copy, taken by value as a
+/// [`PinnedBuf`](crate::PinnedBuf) is. A copy's token dropped unsynced
+/// leaks it at no cost: its bytes stay carved, so no tenant meets them,
+/// until the lease drops after the step-end sync.
 pub struct HostPart<'a, T> {
     ptr: *mut T,
     len: usize,
@@ -357,9 +359,12 @@ impl<T: Plain> DerefMut for HostPart<'_, T> {
     }
 }
 
-// SAFETY: `len` elements of host memory, live while the lease is and this
-// tenant's alone. That the host leaves them alone until an enqueued copy
-// has run is the layer's sync rule (`PinnedBuf`'s doc).
+// SAFETY: `len` elements of host memory, live while the lease is and
+// reached only through this tenant (`Lease::carve` hands its bytes out
+// once). One never dropped leaves them carved, so reached by no one, until
+// the lease drops, which the step wrapper does only after its step-end
+// sync has finished the step's device work (`docs/memory.md`, "Step
+// scratch").
 unsafe impl<T: Plain> HostSlice<T> for HostPart<'_, T> {
     fn as_ptr(&self) -> *const T {
         self.ptr

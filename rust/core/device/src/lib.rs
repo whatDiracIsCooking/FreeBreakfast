@@ -7,13 +7,16 @@
 //!   the runtime sees and a device's free and total memory.
 //! - [`Stream`]: a stream on one device, whose methods enqueue the copies
 //!   (host to device, device to host, device to device) and the fills, and
-//!   whose [`Stream::sync`] counts and times itself ([`sync_meter`]).
+//!   whose [`Stream::sync`] counts and times itself ([`sync_meter`]). A
+//!   copy to or from the host returns a [`Pending`], which holds the host
+//!   end until a sync of the stream has covered the copy.
 //! - [`Event`]: a point on a stream that another stream, or the host,
 //!   waits for.
 //! - [`DeviceSlice`] and [`DeviceSliceMut`]: device memory with its length,
 //!   which every call here takes in place of a pointer, and [`Part`] and
 //!   [`PartMut`], runs of one ([`part`], [`part_mut`], [`split_at_mut`]).
-//!   [`HostSlice`] and [`HostSliceMut`] are the host end of a copy.
+//!   [`HostSlice`] and [`HostSliceMut`] are the host end of a copy, handed
+//!   to it by value.
 //! - [`GpuResources`]: one GPU's stream with a BLAS and a dense-solver
 //!   handle made on it and the handle workspace, made inside a `Mutex` and
 //!   reached only through its guard; its checked BLAS and solver calls, and
@@ -53,7 +56,7 @@ pub use slice::{
     DeviceSlice, DeviceSliceMut, HostSlice, HostSliceMut, Part, PartMut, part, part_mut,
     split_at_mut,
 };
-pub use stream::{Event, Stream, sync_meter};
+pub use stream::{Event, Pending, Stream, sync_meter};
 
 /// A runtime call's status as a [`Status`], located at the caller: a
 /// `GpuRuntime` error naming the status. Out of memory is no exception: an

@@ -1,12 +1,13 @@
 //! A stream on one device, its copies and fills, and an event.
 
 use std::ffi::c_void;
+use std::mem::ManuallyDrop;
 use std::panic::Location;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use contracts::requires;
-use fb_core_error_handling::{Status, check_or_abort};
+use fb_core_error_handling::{Result, Status, check_or_abort};
 use fb_core_log::le;
 use wwr_sys::{wwr_event, wwr_memcpy_kind, wwr_stream};
 
@@ -39,6 +40,89 @@ pub fn sync_meter() -> (u64, Duration) {
 pub struct Stream {
     raw: wwr_stream,
     physical: i32,
+    /// The syncs begun on the stream, each taking the count before it as
+    /// its ticket; a copy's [`Pending`] takes the count after its enqueue.
+    pub(crate) tickets: AtomicU64,
+    /// One past the largest ticket of a sync that succeeded: a copy whose
+    /// ticket is below it has run.
+    synced: AtomicU64,
+}
+
+/// A copy in flight on a stream, holding its host end until a sync of the
+/// stream has covered the copy: what [`Stream::upload`] and
+/// [`Stream::download`] return. The host end is moved in, so nothing can
+/// read or write it while the copy may still run:
+///
+/// ```compile_fail,E0382
+/// use fb_core_device::{DeviceSliceMut, HostSliceMut, Stream};
+///
+/// fn rewrite(
+///     stream: &Stream,
+///     dst: &mut impl DeviceSliceMut<f64>,
+///     mut staged: impl HostSliceMut<f64>,
+/// ) {
+///     let copy = stream.upload(dst, staged).unwrap();
+///     let _ = staged.as_mut_ptr(); // the host end is the token's
+///     let _ = copy.sync();
+/// }
+/// ```
+///
+/// [`Pending::sync`] hands it back. Several copies on one stream share one
+/// sync: a token whose copy an earlier [`Stream::sync`] or
+/// [`Pending::sync`] of the stream already covered returns its host end
+/// without blocking again, so a step's downloads followed by one sync cost
+/// that one sync:
+///
+/// ```no_run
+/// use fb_core_device::{DeviceSlice, HostSliceMut, Stream};
+/// use fb_core_error_handling::Result;
+///
+/// fn both<H: HostSliceMut<f64>>(
+///     stream: &Stream,
+///     (a, b): (H, H),
+///     (d_a, d_b): (&impl DeviceSlice<f64>, &impl DeviceSlice<f64>),
+/// ) -> Result<(H, H)> {
+///     let a = stream.download(a, d_a)?;
+///     let b = stream.download(b, d_b)?;
+///     let b = b.sync()?; // the one sync
+///     Ok((a.sync()?, b)) // covered by it
+/// }
+/// ```
+///
+/// A ring rewrites a buffer's host end once the copy that read it has run:
+/// each buffer goes through a stream of its own, so the token's sync waits
+/// for that buffer's last copy and no other's.
+///
+/// Dropped unsynced, a token leaks its host end, never freeing or handing
+/// back memory a copy may still use. A lease's tenant costs nothing that
+/// way (its bytes are the step's until the step-end sync); an owned buffer
+/// stays allocated, so sync it to have it back.
+#[must_use = "dropped unsynced, the token leaks its host end; `sync` hands it back"]
+pub struct Pending<'s, H> {
+    stream: &'s Stream,
+    ticket: u64,
+    host: ManuallyDrop<H>,
+}
+
+impl<H> Pending<'_, H> {
+    /// The host end, once its copy has run: no wait when a sync of the
+    /// stream already covered the copy, else a [`Stream::sync`].
+    ///
+    /// # Errors
+    /// A fault of the enqueued work, surfaced by the sync; the host end is
+    /// then leaked, since the copy may not have run.
+    #[track_caller]
+    pub fn sync(self) -> Result<H> {
+        let Pending {
+            stream,
+            ticket,
+            host,
+        } = self;
+        if stream.synced.load(Ordering::SeqCst) <= ticket {
+            stream.sync()?;
+        }
+        Ok(ManuallyDrop::into_inner(host))
+    }
 }
 
 // SAFETY: the raw stream is a runtime object, not tied to the thread that
@@ -85,7 +169,12 @@ impl Stream {
         // current.
         let status = unsafe { wwr_sys::wwr_stream_create_with_flags(&mut raw, NON_BLOCKING) };
         check_or_abort(runtime_status(status));
-        Stream { raw, physical }
+        Stream {
+            raw,
+            physical,
+            tickets: AtomicU64::new(0),
+            synced: AtomicU64::new(0),
+        }
     }
 
     /// The handle, for a launch wrapper's `extern "C"` call.
@@ -99,13 +188,19 @@ impl Stream {
     }
 
     /// Block until everything enqueued has run, counted and timed in
-    /// [`sync_meter`].
+    /// [`sync_meter`]. Every [`Pending`] of a copy enqueued before it
+    /// returns its host end after it without blocking again.
     ///
     /// # Errors
     /// A fault of the enqueued work, surfaced here.
     #[track_caller]
     pub fn sync(&self) -> Status {
         let _current = ScopedDevice::new(self.physical);
+        // Taken before the runtime's sync: a token whose ticket was read
+        // before this, `ticket` or less, was enqueued before the sync began
+        // (one total order of the two atomics' sequentially consistent
+        // operations).
+        let ticket = self.tickets.fetch_add(1, Ordering::SeqCst);
         let start = Instant::now();
         #[allow(
             clippy::disallowed_methods,
@@ -116,7 +211,9 @@ impl Stream {
         SYNCS.fetch_add(1, Ordering::Relaxed);
         let nanos = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
         SYNC_NANOS.fetch_add(nanos, Ordering::Relaxed);
-        runtime_status(status)
+        runtime_status(status)?;
+        self.synced.fetch_max(ticket + 1, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Make everything enqueued after this wait for `event`'s recorded
@@ -161,23 +258,26 @@ impl Stream {
         })
     }
 
-    /// Enqueue the copy of `src` into the head of device `dst`, its first
-    /// `src.len()` elements; the rest of `dst` is left as it is.
+    /// Enqueue the copy of the head of `src`, its first `dst.len()`
+    /// elements, into device `dst`. The token holds `src` until a sync of
+    /// the stream has covered the copy.
     ///
     /// # Errors
-    /// The enqueue's failure.
-    #[requires(le!(src.len(), dst.len()), "the device end holds the host end")]
+    /// The enqueue's failure; nothing was enqueued, and `src` is dropped.
+    #[requires(le!(dst.len(), src.len()), "the host end holds the device end")]
     #[track_caller]
-    pub fn upload<T: Copy>(
+    pub fn upload<T: Copy, H: HostSlice<T>>(
         &self,
         dst: &mut impl DeviceSliceMut<T>,
-        src: &impl HostSlice<T>,
-    ) -> Status {
-        // No overflow: the host slice promises `len()` elements of memory.
-        let bytes = src.len() * size_of::<T>();
-        // SAFETY: `src` is `bytes` of host memory nothing writes, and `dst`
-        // holds at least as many of device memory with no other user, both
-        // until the work enqueued here finishes (the traits' promises).
+        src: H,
+    ) -> Result<Pending<'_, H>> {
+        // No overflow: the device slice promises `len()` elements of memory.
+        let bytes = dst.len() * size_of::<T>();
+        // SAFETY: `src` holds at least `bytes` of host memory that only the
+        // value reaches, and the token keeps the value, unread and unwritten,
+        // until a sync covers the copy, or leaks it (`HostSlice`'s promise);
+        // `dst` is `bytes` of device memory with no other user until the
+        // work enqueued here finishes (`DeviceSliceMut`'s).
         unsafe {
             self.copy(
                 dst.as_mut_ptr().cast(),
@@ -185,26 +285,31 @@ impl Stream {
                 bytes,
                 wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
             )
-        }
+        }?;
+        Ok(self.pending(src))
     }
 
-    /// Enqueue the copy of the head of device `src`, its first `dst.len()`
-    /// elements, into `dst`, which is read only after the copy has run.
+    /// Enqueue the copy of device `src` into the head of `dst`, its first
+    /// `src.len()` elements; the rest of `dst` is left as it is. The token
+    /// holds `dst` until a sync of the stream has covered the copy, and
+    /// hands it back to be read.
     ///
     /// # Errors
-    /// The enqueue's failure.
-    #[requires(le!(dst.len(), src.len()), "the device end holds the host end")]
+    /// The enqueue's failure; nothing was enqueued, and `dst` is dropped.
+    #[requires(le!(src.len(), dst.len()), "the host end holds the device end")]
     #[track_caller]
-    pub fn download<T: Copy>(
+    pub fn download<T: Copy, H: HostSliceMut<T>>(
         &self,
-        dst: &mut impl HostSliceMut<T>,
+        mut dst: H,
         src: &impl DeviceSlice<T>,
-    ) -> Status {
-        // No overflow: the host slice promises `len()` elements of memory.
-        let bytes = dst.len() * size_of::<T>();
-        // SAFETY: `dst` is `bytes` of host memory with no other user, and
-        // `src` at least as many of device memory nothing writes, both
-        // until the work enqueued here finishes (the traits' promises).
+    ) -> Result<Pending<'_, H>> {
+        // No overflow: the device slice promises `len()` elements of memory.
+        let bytes = src.len() * size_of::<T>();
+        // SAFETY: `dst` holds at least `bytes` of host memory that only the
+        // value reaches, and the token keeps the value, unread and unwritten,
+        // until a sync covers the copy, or leaks it (`HostSliceMut`'s
+        // promise); `src` is `bytes` of device memory nothing writes until
+        // the work enqueued here finishes (`DeviceSlice`'s).
         unsafe {
             self.copy(
                 dst.as_mut_ptr().cast(),
@@ -212,6 +317,18 @@ impl Stream {
                 bytes,
                 wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
             )
+        }?;
+        Ok(self.pending(dst))
+    }
+
+    /// The token of a copy just enqueued, holding its host end.
+    fn pending<H>(&self, host: H) -> Pending<'_, H> {
+        Pending {
+            stream: self,
+            // Read after the enqueue: a sync whose ticket is this or more
+            // began after the copy was enqueued.
+            ticket: self.tickets.load(Ordering::SeqCst),
+            host: ManuallyDrop::new(host),
         }
     }
 
@@ -243,8 +360,8 @@ impl Stream {
         }
     }
 
-    /// The one `wwr_memcpy_async` of the three copies above; nothing is
-    /// enqueued for no bytes.
+    /// The one `wwr_memcpy_async` of the three copies; nothing is enqueued
+    /// for no bytes.
     ///
     /// # Safety
     /// `src` and `dst` each hold `bytes` of memory of the side `kind` names,
@@ -314,7 +431,7 @@ impl Event {
         let _current = ScopedDevice::new(self.physical);
         #[allow(
             clippy::disallowed_methods,
-            reason = "the host's wait on a ring buffer's last event before it rewrites its pinned bytes (docs/gpu_layer.md, \"The v0.0.4 runtime\")"
+            reason = "the host's wait on one point of a stream, not all of it (docs/gpu_layer.md, \"The v0.0.4 runtime\")"
         )]
         // SAFETY: a live event.
         let status = unsafe { wwr_sys::wwr_event_synchronize(self.raw) };

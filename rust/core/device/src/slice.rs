@@ -42,18 +42,26 @@ pub unsafe trait DeviceSliceMut<T>: DeviceSlice<T> {
     fn as_mut_ptr(&mut self) -> *mut T;
 }
 
-/// Host memory a copy reads: `len()` elements of `T` from `as_ptr()`.
+/// Host memory a copy reads: `len()` elements of `T` from `as_ptr()`,
+/// handed to the copy by value.
 ///
-/// Not `[T]`: an asynchronous copy from pinned memory runs after the call
-/// returns, and a borrow that ends with the call says nothing about a copy
-/// that has not started. The memory's owner (the budget's pinned and heap
-/// buffers) makes the promise below, as a device slice's owner does.
+/// Not `[T]`, and never a reference: an asynchronous copy from pinned
+/// memory runs after the call returns, and a borrow that ends with the
+/// call, or with a token dropped early, says nothing about a copy that has
+/// not run. A copy takes its host end by value and keeps it in the
+/// [`Pending`](crate::Pending) it returns until a sync of its stream has
+/// covered the copy, so nothing reaches the bytes meanwhile. The memory's
+/// owner (the budget's pinned and heap buffers and a lease's pinned
+/// tenants) makes the promise below.
 ///
 /// # Safety
-/// An implementor promises that, for as long as `self` is borrowed and
-/// until the device work enqueued during that borrow has finished,
-/// `as_ptr()` is valid host memory for `len()` elements of `T` that nothing
-/// writes. Both methods return the same values on every call.
+/// An implementor promises that `as_ptr()` is valid host memory for
+/// `len()` elements of `T` for as long as the value lives, reached by no
+/// one but through the value; and that a value never dropped (a token
+/// dropped unsynced leaks it) leaves the memory valid and reached by no one
+/// until the device work enqueued while it lived has finished. A reference
+/// cannot promise it: the borrow ends when the reference is gone, leaked or
+/// not. Both methods return the same values on every call.
 pub unsafe trait HostSlice<T> {
     /// The first element.
     fn as_ptr(&self) -> *const T;
@@ -71,8 +79,7 @@ pub unsafe trait HostSlice<T> {
 /// address to write through.
 ///
 /// # Safety
-/// [`HostSlice`]'s promise, and: for that same span nothing else reads or
-/// writes the memory.
+/// [`HostSlice`]'s promise.
 pub unsafe trait HostSliceMut<T>: HostSlice<T> {
     /// The first element, to write through.
     fn as_mut_ptr(&mut self) -> *mut T;
