@@ -107,33 +107,23 @@ fn the_energies_match_the_recorded_ones() {
 
 #[test]
 #[ignore = "needs a GPU"]
-fn forced_batches_and_the_whole_share_cached_give_the_default_energy() {
+fn forced_batches_give_the_default_energy() {
     let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
     let xyz = water();
-    // The default: 2 GiB holds water's whole share, so nothing is
-    // uploaded after the first pass.
+    // The default: 2 GiB holds water's whole share as one aux batch.
     let run = fb_v04::run(config(&xyz, "", true, "")).unwrap();
     let default = run.plan.output(ScfStep).energy();
     {
         let eri = run.plan.output(EriStep);
-        assert_eq!(
-            eri.cached_rows(0),
-            eri.share(0).len(),
-            "the whole share is cached"
-        );
+        assert_eq!(eri.jk_width(), eri.share(0).len(), "one aux batch");
         assert_eq!(eri.passes(), run.plan.output(ScfStep).iterations());
-        assert_eq!(
-            eri.uploaded_last_pass(),
-            0,
-            "nothing uploaded after the first pass"
-        );
         assert_eq!(eri.batches(), run.plan.bus().shared().dims.classes.len());
     }
     assert!((default - WATER).abs() < ENERGY_BAR);
     drop(run);
 
-    // At about the ring: many pair batches, narrow aux batches, and
-    // a cache that does not hold the share, so every pass uploads.
+    // At the least limit: many pair batches and narrow aux batches, so
+    // every buffer of a pass's ring is reused many times.
     let least = least_mib(&xyz);
     let run = fb_v04::run(config(
         &xyz,
@@ -143,26 +133,34 @@ fn forced_batches_and_the_whole_share_cached_give_the_default_energy() {
     ))
     .unwrap();
     let forced = run.plan.output(ScfStep).energy();
-    let eri = run.plan.output(EriStep);
-    println!(
-        "forced: {} pair batches of {} columns, aux batches of {}, {} of {} rows cached, {} \
-         uploaded per pass; |E - default| = {:.1e}",
-        eri.batches(),
-        eri.width(),
-        eri.jk_width(),
-        eri.cached_rows(0),
-        eri.share(0).len(),
-        eri.uploaded_last_pass(),
-        (forced - default).abs()
-    );
-    assert!(eri.batches() > 6, "the build is batched");
-    assert!(
-        eri.jk_width() < eri.share(0).len(),
-        "the passes are batched"
-    );
-    assert!(eri.cached_rows(0) < eri.share(0).len());
-    assert!(eri.uploaded_last_pass() > 0);
+    {
+        let eri = run.plan.output(EriStep);
+        println!(
+            "forced: {} pair batches of {} columns, aux batches of {} of {} rows; |E - default| = \
+         {:.1e}",
+            eri.batches(),
+            eri.width(),
+            eri.jk_width(),
+            eri.share(0).len(),
+            (forced - default).abs()
+        );
+        assert!(eri.batches() > 6, "the build is batched");
+        assert!(
+            eri.jk_width() * 4 < eri.share(0).len(),
+            "the passes are batched, past the ring's depth"
+        );
+    }
     assert!((forced - default).abs() < ENERGY_BAR);
+    drop(run);
+
+    // The pass's ring at depth 1: one aux batch in flight.
+    let (one, _) = energy(
+        &xyz,
+        &format!("mem_per_gpu_mib = {least}\nring = 1"),
+        "nan_fill = true",
+    );
+    println!("ring 1: |E - default| = {:.1e}", (one - default).abs());
+    assert!((one - default).abs() < ENERGY_BAR);
 }
 
 #[test]
@@ -211,7 +209,7 @@ fn a_replay_gives_the_energy_again_and_allocates_nothing() {
     );
     assert!((scf.energy() - first).abs() < ENERGY_BAR);
     assert_eq!(run.plan.bus().ledger().allocations(), allocations);
-    // The cache was refilled: B was rebuilt.
+    // B was rebuilt, and the passes counted again.
     assert_eq!(run.plan.output(EriStep).passes(), scf.iterations());
 }
 
@@ -230,8 +228,8 @@ fn several_gpus_give_the_energy_of_one() {
     }
     let least = least_mib(&xyz);
     for devices in cases {
-        // Whole share cached, and forced batches with every pass
-        // uploading; both NaN-filled, on two workers and on eight.
+        // Each share one aux batch, and forced batches; both NaN-filled,
+        // on two workers and on eight.
         for (eri, threads) in [
             (String::new(), 8),
             (format!("mem_per_gpu_mib = {}", 1.5 * least), 2),

@@ -6,7 +6,7 @@
 //! B[Q][μν] = Σ_P L⁻¹[Q][P] (P|μν)
 //! ```
 //!
-//! on the host heap, and per GPU the ERI buffer with the cache's state.
+//! on the host heap, and per GPU the ERI buffer with its streams' state.
 //!
 //! **B is built over pairs.** A pair column of B depends on every P, so a
 //! batch of P cannot be fitted alone; a batch of pairs can. Each GPU takes
@@ -25,14 +25,22 @@
 //! bytes again.
 //!
 //! **B is contracted over aux functions.** [`EriManager::build_jk`] runs a
-//! J/K pass over aux batches: each GPU contracts its own fixed share, the
-//! cached rows first, and the fragments are reduced onto gpu0 through the
-//! host. The cache fills on the first pass, from the host copy.
+//! J/K pass over aux batches: each GPU contracts its own fixed share, and
+//! the fragments are reduced onto gpu0 through the host. Every pass
+//! uploads its whole share from the host copy, through a ring of its own:
+//! two aux batches in flight per GPU, each in a buffer with a pinned end,
+//! uploaded on the manager's upload stream and contracted on the GPU's.
+//! A batch's upload waits on the event the GPU's stream recorded after
+//! the contraction that last read its buffer, and its contraction waits
+//! on the event recorded after the upload; the host waits on a buffer's
+//! upload event before it writes the buffer's pinned bytes again. So a
+//! batch's host copy and its upload both overlap the batch before's
+//! contraction.
 //!
 //! **The ERI buffer** is one device buffer per GPU within `[eri]
-//! mem_per_gpu`. During `eri`'s run it holds the ring; afterwards the
-//! gather tables, a copy of D, the J and K fragments, one aux batch's
-//! work, and the cache.
+//! mem_per_gpu`. During `eri`'s run it holds the build's ring; afterwards
+//! the gather tables, a copy of D, the J and K fragments, one aux batch's
+//! work, and the pass's ring.
 
 use std::ops::Range;
 use std::sync::Mutex;
@@ -47,7 +55,8 @@ use crate::device::launch::{
     self, AUX_FIELDS, CELL_FIELDS, PairSource, RECORD_F64_FIELDS, RECORD_I32_FIELDS,
 };
 use crate::device::{
-    CHOLESKY_TILE, DeviceSlice, Event, GpuResources, OP_N, OP_T, Part, PartMut, part, part_mut,
+    CHOLESKY_TILE, DeviceSlice, Event, GpuResources, OP_N, OP_T, Part, PartMut, Stream, part,
+    part_mut,
 };
 use crate::flow::{Placement, Slot, Step, View};
 use crate::steps::metric::MetricStep;
@@ -60,10 +69,9 @@ pub const DEFAULT_MEM_PER_GPU: u64 = 2 << 30;
 
 /// The most one pinned staging buffer of a J/K pass holds: an aux batch of
 /// B's rows on its way up, which is never wider than this. Page-locking
-/// costs about 0.9 s per GiB, so staging does not grow with the limit. Not
-/// smaller: at 64 MiB gly10's rows went up 31 at a time for 97, and the SCF
-/// took 70.0 s for 63.6 s.
-pub const STAGING_BYTES: usize = 256 << 20;
+/// costs about 0.9 s per GiB, and the pass's ring page-locks one for each
+/// buffer of its depth, so staging does not grow with the limit.
+pub const STAGING_BYTES: usize = 128 << 20;
 
 /// The most one pinned staging buffer of the ring holds: a fitted pair
 /// batch on its way down. The build's time is flat in the batch width well
@@ -85,13 +93,13 @@ struct GpuState {
     buf: DeviceBuf<u8>,
     /// Its pinned staging.
     pinned: PinnedBuf<u8>,
-    /// The aux rows of this GPU's share the cache holds: the first ones.
-    cache_rows: usize,
-    /// Whether the cache holds them yet: filled on the first J/K pass.
-    cache_filled: bool,
-    /// The ring's events, three per ring buffer (kernels, fit, download),
+    /// The build's events, three per ring buffer (kernels, fit, download),
     /// and the one after the records: made on the first run.
     events: Vec<Event>,
+    /// A J/K pass's upload stream, the manager's own, and its events, two
+    /// per ring buffer (uploaded, contracted): made on the first run.
+    jk_stream: Option<Stream>,
+    jk_events: Vec<Event>,
 }
 
 /// The manager's state: what changes after `eri`, and only under the
@@ -99,7 +107,6 @@ struct GpuState {
 struct EriState {
     gpus: Vec<GpuState>,
     passes: usize,
-    uploaded: usize,
 }
 
 /// A density a J/K pass contracts.
@@ -193,24 +200,14 @@ impl EriManager {
             .expect("the manager's state is reached under the manager's lock alone")
     }
 
-    /// The aux rows of `gpu`'s share its cache holds.
-    pub fn cached_rows(&self, gpu: usize) -> usize {
-        self.state().gpus[gpu].cache_rows
-    }
-
     /// The J/K passes made since B was built.
     pub fn passes(&self) -> usize {
         self.state().passes
     }
 
-    /// The aux rows the last J/K pass uploaded, over every GPU.
-    pub fn uploaded_last_pass(&self) -> usize {
-        self.state().uploaded
-    }
-
-    /// J and K for each density, on gpu0. Every GPU contracts its own aux
-    /// batches, the cached ones first; the fragments are reduced onto gpu0
-    /// through the host. The caller owns its results: this writes the J
+    /// J and K for each density, on gpu0. Every GPU uploads and contracts
+    /// its own aux batches, two in flight; the fragments are reduced onto
+    /// gpu0 through the host. The caller owns its results: this writes the J
     /// and K it is passed, reads the densities it is passed, and keeps
     /// nothing of the caller's. It takes no lock: the GPU guards come in
     /// `held`, held by the wrapper, and so does the manager's.
@@ -245,11 +242,7 @@ impl EriManager {
         let state = &mut *state;
         let mut gpus = held.all_gpus();
         let n_gpus = gpus.len();
-        let layouts: Vec<JkLayout> = state
-            .gpus
-            .iter()
-            .map(|g| jk_layout(dims, self.jk_width, g.cache_rows))
-            .collect();
+        let layout = jk_layout(dims, self.jk_width, self.depth);
 
         // D, or its occupied factor, goes to the other GPUs through the
         // host, in gpu0's pinned staging; they only read it there.
@@ -259,7 +252,7 @@ impl EriManager {
             "build_jk: the density is n_ao², or its factor n_ao × n_occ"
         );
         let h_d: &[f64] = {
-            let staged = state.gpus[GPU0].pinned.tenant(&layouts[GPU0].h_d);
+            let staged = state.gpus[GPU0].pinned.tenant(&layout.h_d);
             // SAFETY: the tenant is gpu0's pinned staging, which outlives
             // the pass; it is written once below, before the fan-out, and
             // only read by the passes.
@@ -268,18 +261,17 @@ impl EriManager {
         if n_gpus > 1 {
             let gpu0 = &mut *gpus[GPU0];
             let _current = gpu0.current();
-            let h_d = state.gpus[GPU0].pinned.tenant(&layouts[GPU0].h_d);
+            let h_d = state.gpus[GPU0].pinned.tenant(&layout.h_d);
             gpu0.stream().download(&mut h_d[..d0.len()], &d0)?;
             gpu0.stream().sync()?;
         }
-        let (b, jk_width) = (&self.b[..], self.jk_width);
+        let (b, jk_width, l) = (&self.b[..], self.jk_width, &layout);
         let work: Vec<_> = gpus
             .iter_mut()
             .zip(state.gpus.iter_mut())
-            .zip(&layouts)
             .zip(&self.shares)
             .collect();
-        let uploaded = fan_out(work, |(((gpu, st), l), share)| {
+        fan_out(work, |((gpu, st), share)| {
             let source = if gpu.gpu() == GPU0 {
                 Source::Here(d0)
             } else {
@@ -305,18 +297,15 @@ impl EriManager {
         let _current = gpu0.current();
         let st0 = &state.gpus[GPU0];
         if n_gpus == 1 {
-            let (jj, kk) = (
-                st0.buf.tenant(&layouts[GPU0].j),
-                st0.buf.tenant(&layouts[GPU0].k),
-            );
+            let (jj, kk) = (st0.buf.tenant(&layout.j), st0.buf.tenant(&layout.k));
             gpu0.stream().copy_device(&mut j[0], &part(&jj, 0, n2))?;
             gpu0.stream().copy_device(&mut k[0], &part(&kk, 0, n2))?;
         } else {
             let (sum_j, sum_k) = (
-                st0.pinned.tenant(&layouts[GPU0].h_j),
-                st0.pinned.tenant(&layouts[GPU0].h_k),
+                st0.pinned.tenant(&layout.h_j),
+                st0.pinned.tenant(&layout.h_k),
             );
-            for (st, l) in state.gpus.iter().zip(&layouts).skip(1) {
+            for st in state.gpus.iter().skip(1) {
                 let (fj, fk): (&[f64], &[f64]) =
                     (st.pinned.tenant(&l.h_j), st.pinned.tenant(&l.h_k));
                 for (sum, x) in sum_j.iter_mut().zip(fj) {
@@ -332,7 +321,6 @@ impl EriManager {
             gpu0.stream().sync()?;
         }
         state.passes += 1;
-        state.uploaded = uploaded.iter().sum();
         Ok(())
     }
 }
@@ -347,8 +335,10 @@ enum Source<'a> {
 
 /// One GPU's J/K pass: its share of B's rows contracted with D, or with
 /// the `n_occ` occupied orbitals of `D = 2 C Cᵀ`, into its fragments of J
-/// and K, on the GPU's stream throughout, in the order it is enqueued.
-/// Returns the rows it uploaded.
+/// and K. The contractions go on the GPU's stream in the order they are
+/// enqueued, the uploads on the manager's upload stream, the two joined by
+/// the ring's events. Everything the pass enqueued on the upload stream
+/// has run when it returns.
 #[allow(clippy::too_many_arguments, reason = "a manager's inner task")]
 fn gpu_pass(
     dims: &Dims,
@@ -361,7 +351,7 @@ fn gpu_pass(
     d: Source<'_>,
     n_occ: Option<usize>,
     download: bool,
-) -> Result<usize> {
+) -> Status {
     let _current = gpu.current();
     let (n, n_col) = (dims.n_ao, dims.n_col);
     let n2 = n * n;
@@ -380,8 +370,6 @@ fn gpu_pass(
         st.buf.tenant(&l.bd),
         st.buf.tenant(&l.gamma),
     );
-    let (mut staging, mut cache) = (st.buf.tenant(&l.staging), st.buf.tenant(&l.cache));
-    let h_packed = st.pinned.tenant(&l.h_packed);
     let d = match d {
         Source::Here(d) => d,
         Source::Staged(h_d) => {
@@ -488,57 +476,55 @@ fn gpu_pass(
         )
     };
 
-    let cached = st.cache_rows.min(share.len());
-    let mut uploaded = 0;
-    // One aux batch, `rows` rows of B from row `first`, through the pinned
-    // staging, which holds a whole batch, with a blocking sync: the pinned
-    // bytes are the next batch's too.
-    let upload = |gpu: &mut GpuResources,
-                  into: &mut PartMut<'_, f64>,
-                  h_packed: &mut [f64],
-                  first: usize,
-                  rows: usize|
-     -> Status {
-        let len = n_col * rows;
-        h_packed[..len].copy_from_slice(&b[n_col * first..][..len]);
-        gpu.stream().upload(into, &h_packed[..len])?;
-        gpu.stream().sync()
-    };
-    // The first pass fills the cache a batch at a time, from the host copy:
-    // the build's pair batches are the wrong index order to fill it.
-    if !st.cache_filled {
-        for first in (0..cached).step_by(width) {
-            let rows = width.min(cached - first);
-            let mut into = part_mut(&mut cache, first * n_col, rows * n_col);
-            upload(gpu, &mut into, h_packed, share.start + first, rows)?;
-        }
-        uploaded += cached;
-        st.cache_filled = true;
-    }
-    for first in (0..cached).step_by(width) {
-        let rows = width.min(cached - first);
-        let packed = part(&cache, first * n_col, rows * n_col);
-        contract(gpu, &packed, rows)?;
-    }
-    // What is not cached is uploaded on every pass, one batch in flight.
-    for first in (share.start + cached..share.end).step_by(width) {
+    // The ring: batch `i` goes through buffer `i % depth`. The host copies
+    // its rows into the buffer's pinned end once the upload that last read
+    // them has run; the upload waits for the contraction that last read
+    // the buffer's device end; the contraction waits for the upload.
+    let up = st.jk_stream.as_ref().expect("made on eri's first run");
+    let depth = l.slots.len();
+    let mut in_flight = vec![false; depth];
+    for (turn, first) in share.clone().step_by(width).enumerate() {
+        let slot = turn % depth;
         let rows = width.min(share.end - first);
-        let mut into = part_mut(&mut staging, 0, rows * n_col);
-        upload(gpu, &mut into, h_packed, first, rows)?;
-        let packed = part(&staging, 0, rows * n_col);
-        contract(gpu, &packed, rows)?;
-        uploaded += rows;
+        let len = n_col * rows;
+        let (uploaded, contracted) = (&st.jk_events[2 * slot], &st.jk_events[2 * slot + 1]);
+        let h_packed = st.pinned.tenant(&l.slots[slot].h_packed);
+        let mut staging = st.buf.tenant(&l.slots[slot].staging);
+        if in_flight[slot] {
+            uploaded.sync()?;
+            up.wait(contracted)?;
+        }
+        h_packed[..len].copy_from_slice(&b[n_col * first..][..len]);
+        up.upload(&mut staging, &h_packed[..len])?;
+        uploaded.record(up)?;
+        gpu.stream().wait(uploaded)?;
+        contract(gpu, &part(&staging, 0, len), rows)?;
+        contracted.record(gpu.stream())?;
+        in_flight[slot] = true;
+    }
+    // Whoever fans out, joins: the pinned ends are the next pass's too.
+    for (slot, flying) in in_flight.into_iter().enumerate() {
+        if flying {
+            st.jk_events[2 * slot].sync()?;
+        }
     }
     if download {
         gpu.stream().download(st.pinned.tenant(&l.h_j), &jj)?;
         gpu.stream().download(st.pinned.tenant(&l.h_k), &kk)?;
         gpu.stream().sync()?;
     }
-    Ok(uploaded)
+    Ok(())
+}
+
+/// One buffer of a J/K pass's ring: an aux batch of B's rows, and its
+/// pinned end.
+struct JkSlot {
+    staging: Span<f64>,
+    h_packed: Span<f64>,
 }
 
 /// The ERI buffer during a J/K pass, and its pinned staging, at an aux
-/// batch width of `p` rows with `cached` rows in the cache.
+/// batch width of `p` rows and a ring of `depth` buffers.
 struct JkLayout {
     device_bytes: usize,
     pinned_bytes: usize,
@@ -551,18 +537,16 @@ struct JkLayout {
     squares: Span<f64>,
     bd: Span<f64>,
     gamma: Span<f64>,
-    staging: Span<f64>,
-    cache: Span<f64>,
+    slots: Vec<JkSlot>,
     h_rows: Span<i32>,
     h_cols: Span<i32>,
     h_weights: Span<f64>,
     h_d: Span<f64>,
     h_j: Span<f64>,
     h_k: Span<f64>,
-    h_packed: Span<f64>,
 }
 
-fn jk_layout(d: &Dims, p: usize, cached: usize) -> JkLayout {
+fn jk_layout(d: &Dims, p: usize, depth: usize) -> JkLayout {
     let (n2, n_col) = (d.n_ao * d.n_ao, d.n_col);
     let (mut dev, mut pin) = (Layout::new(), Layout::new());
     JkLayout {
@@ -575,15 +559,18 @@ fn jk_layout(d: &Dims, p: usize, cached: usize) -> JkLayout {
         squares: dev.span(p * n2),
         bd: dev.span(p * n2),
         gamma: dev.span(p),
-        staging: dev.span(p * n_col),
-        cache: dev.span(cached * n_col),
         h_rows: pin.span(n_col),
         h_cols: pin.span(n_col),
         h_weights: pin.span(n_col),
         h_d: pin.span(n2),
         h_j: pin.span(n2),
         h_k: pin.span(n2),
-        h_packed: pin.span(p * n_col),
+        slots: (0..depth)
+            .map(|_| JkSlot {
+                staging: dev.span(p * n_col),
+                h_packed: pin.span(p * n_col),
+            })
+            .collect(),
         device_bytes: dev.bytes(),
         pinned_bytes: pin.bytes(),
     }
@@ -694,11 +681,11 @@ fn scratch_layout(d: &Dims) -> ScratchLayout {
 }
 
 /// The least `[eri] mem_per_gpu` holds a batch at: the ring at a width of
-/// one pair, and one aux batch of one row with no cache. A byte under it,
+/// one pair, and a J/K pass's ring at aux batches of one row. A byte under it,
 /// the plan is refused naming `[eri]`.
 pub fn least_mem_per_gpu(d: &Dims, ring: usize) -> u64 {
     let least = d.classes.iter().map(|c| c.sph()).max().unwrap_or(1);
-    (ring_layout(d, least, ring).device_bytes).max(jk_layout(d, 1, 0).device_bytes) as u64
+    (ring_layout(d, least, ring).device_bytes).max(jk_layout(d, 1, ring).device_bytes) as u64
 }
 
 /// A pair batch: a run of one class's pairs, and where its columns lie in
@@ -825,7 +812,7 @@ impl Step<MainBus> for EriStep {
             .min(RING_STAGING_BYTES / (8 * q.max(1)))
             .max(least);
         let ring_at = |w: usize| ring_layout(d, w, depth).device_bytes as u64;
-        let jk_at = |p: usize| jk_layout(d, p, 0).device_bytes as u64;
+        let jk_at = |p: usize| jk_layout(d, p, depth).device_bytes as u64;
         let needs = least_mem_per_gpu(d, depth);
         if needs > limit {
             return Err(Error::allocation(format!(
@@ -848,16 +835,15 @@ impl Step<MainBus> for EriStep {
             lo
         };
         let width = widest(least, most, &|w| ring_at(w) <= limit);
-        // The aux batch width: the widest whose work takes at most half
-        // the buffer, so the cache has the rest; never past a share, nor
-        // past what one pinned staging buffer holds.
+        // The aux batch width: the widest whose pass fits the limit; never
+        // past a share, nor past what one pinned staging buffer holds.
         let shares: Vec<Range<usize>> = (0..n_gpus).map(|g| share(q, g, n_gpus)).collect();
         let longest = shares.iter().map(Range::len).max().unwrap_or(1).max(1);
         let most_p = longest
             .min(i32::MAX as usize / n2.max(1))
             .min(staged_rows(d))
             .max(1);
-        let jk_width = widest(1, most_p, &|p| jk_at(p) <= limit / 2);
+        let jk_width = widest(1, most_p, &|p| jk_at(p) <= limit);
         if width == least && most > least || jk_width == 1 && most_p > 1 {
             log::warn!(
                 "step 'eri': [eri] mem_per_gpu of {} gives a batch width of one",
@@ -869,25 +855,18 @@ impl Step<MainBus> for EriStep {
         let ring = ring_layout(d, width, depth);
         let mut l = Vec::new();
         let mut gpus = Vec::new();
-        for (gpu, share) in shares.iter().enumerate() {
+        let jk = jk_layout(d, jk_width, depth);
+        for gpu in 0..n_gpus {
             budget.scratch(gpu, Kind::Device, sl.device_bytes);
             budget.scratch(gpu, Kind::Pinned, sl.pinned_bytes);
             l.push(budget.device(gpu, q * q));
-            // The cache: as many of this GPU's rows as the rest of the
-            // buffer holds.
-            let room = (limit - jk_at(jk_width)) as usize / (8 * d.n_col.max(1));
-            let mut cache_rows = room.min(share.len());
-            while cache_rows > 0 && jk_layout(d, jk_width, cache_rows).device_bytes as u64 > limit {
-                cache_rows -= 1;
-            }
-            let jk = jk_layout(d, jk_width, cache_rows);
             // What is charged is what is used, never the limit.
             gpus.push(GpuState {
                 buf: budget.device(gpu, ring.device_bytes.max(jk.device_bytes)),
                 pinned: budget.pinned(gpu, ring.pinned_bytes.max(jk.pinned_bytes)),
-                cache_rows,
-                cache_filled: false,
                 events: Vec::new(),
+                jk_stream: None,
+                jk_events: Vec::new(),
             });
         }
         budget.locks(
@@ -906,11 +885,7 @@ impl Step<MainBus> for EriStep {
             l,
             // B's home: one slab on the host heap, at the unscreened bound.
             b: budget.heap(d.n_col * q),
-            state: Mutex::new(EriState {
-                gpus,
-                passes: 0,
-                uploaded: 0,
-            }),
+            state: Mutex::new(EriState { gpus, passes: 0 }),
         })
     }
 
@@ -933,7 +908,7 @@ impl Step<MainBus> for EriStep {
         let (width, depth) = (out.width, out.depth);
         // The owner reaches the state through `&mut`, with no lock.
         let state = out.state.get_mut().unwrap_or_else(|e| e.into_inner());
-        (state.passes, state.uploaded) = (0, 0);
+        state.passes = 0;
         let work: Vec<_> = held
             .all_gpus()
             .into_iter()
@@ -1101,6 +1076,10 @@ fn gpu_build<'a>(
         for _ in 0..3 * depth + 1 {
             st.events.push(Event::new(lane.physical())?);
         }
+        st.jk_stream = Some(Stream::new(lane.physical())?);
+        for _ in 0..2 * depth {
+            st.jk_events.push(Event::new(lane.physical())?);
+        }
     }
     let ready = &st.events[3 * depth];
     ready.record(s0)?;
@@ -1241,8 +1220,8 @@ fn gpu_build<'a>(
     }
 
     // The ring is done: the ERI buffer is now a J/K pass's. Its gather
-    // tables are written once here; the cache fills on the first pass.
-    let jk = jk_layout(d, 1, 0);
+    // tables are written once here.
+    let jk = jk_layout(d, 1, depth);
     let (h_rows, h_cols, h_weights) = (
         st.pinned.tenant(&jk.h_rows),
         st.pinned.tenant(&jk.h_cols),
@@ -1279,7 +1258,5 @@ fn gpu_build<'a>(
     s0.upload(&mut st.buf.tenant(&jk.rows), h_rows)?;
     s0.upload(&mut st.buf.tenant(&jk.cols), h_cols)?;
     s0.upload(&mut st.buf.tenant(&jk.weights), h_weights)?;
-    // A replay rebuilds B: what the cache held is the last geometry's.
-    st.cache_filled = false;
     Ok(())
 }
