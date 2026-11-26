@@ -860,6 +860,42 @@ impl GpuResources {
         launched("fb_diis_solve", status)
     }
 
+    /// The strict triangle opposite `fill` of the column-major n × n block
+    /// of `a` at `lda` overwritten with the transpose of `fill`'s, in place
+    /// on the GPU's stream: the recipes' `fb_mirror_triangle`, what fills
+    /// the other half of a [`Self::syrk`]'s result, whose `fill` passes
+    /// straight through. The `fill` triangle and the diagonal are not
+    /// written and no value of the other triangle is read, so it may hold
+    /// anything, NaN included; the result is exactly symmetric. An `n` of
+    /// 0 enqueues nothing.
+    ///
+    /// # Errors
+    /// The launch's failure; a fault inside the kernel surfaces at the next
+    /// sync.
+    ///
+    /// # Panics
+    /// If `a` is no n × n matrix at `lda` or its slice is shorter than
+    /// that, before anything is enqueued.
+    #[track_caller]
+    pub fn mirror_triangle(
+        &mut self,
+        fill: wwr_blas_fill_mode,
+        n: i32,
+        a: &mut impl DeviceSliceMut<f64>,
+        lda: i32,
+    ) -> Status {
+        check_matrix("mirror_triangle", "A", a.len(), n, n, lda);
+        let from_lower = fill == wwr_blas_fill_mode::WWR_BLAS_FILL_MODE_LOWER;
+        let _current = self.current();
+        let a = a.as_mut_ptr();
+        // SAFETY: the guard's stream is live; `a` holds the n × n block at
+        // lda, checked above, with no other user until the enqueued work
+        // finishes (DeviceSliceMut's promise).
+        let status =
+            unsafe { fb_recipes_sys::fb_mirror_triangle(self.stream.raw(), from_lower, n, a, lda) };
+        launched("fb_mirror_triangle", status)
+    }
+
     /// BLAS's triangular solve on the GPU's stream, the tree's own and never
     /// the library's (`docs/gpu_layer.md`, "Layering"): `B ← alpha
     /// op(A)⁻¹ B` (`side` `WWR_BLAS_SIDE_LEFT`) or `B ← alpha B op(A)⁻¹`
