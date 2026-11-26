@@ -8,12 +8,7 @@
 //! Those come in on the host, as one table, and are uploaded by the call
 //! itself after each is checked against what it indexes
 //! (`docs/gpu_layer.md`, "The safe wrapper"), so no device table a caller
-//! could fill reaches the launch. The old layer's [`add_record_tasks`]
-//! forms the same records from the same tables, checked by
-//! [`RecordTables::new`].
-//!
-//! [`add_record_tasks`]: crate::add_record_tasks
-//! [`RecordTables::new`]: crate::RecordTables::new
+//! could fill reaches the launch.
 
 use contracts::requires;
 use fb_core_device::{

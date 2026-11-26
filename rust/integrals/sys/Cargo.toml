@@ -1,6 +1,6 @@
 [package]
 name = "fb-integrals-sys"
-description = "integrals' launch wrappers: FFI bindings over libfb_integrals_kernels.so, the records, metric and three-center tasks and the safe launchers over them"
+description = "integrals' launch wrappers: FFI bindings over libfb_integrals_kernels.so, and the v0.0.4 safe calls over them"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -11,22 +11,14 @@ workspace = true
 
 [dependencies]
 contracts.workspace = true
-fb-core-arena.workspace = true
-# The v0.0.4 layer's stream and slices, which the fully spherical
-# three-center call takes (docs/gpu_layer.md, "The v0.0.4 runtime").
+# The v0.0.4 layer's stream and slices, which every safe call takes (docs/gpu_layer.md, "The v0.0.4 runtime").
 fb-core-device.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-log.workspace = true
-fb-core-planner.workspace = true
-fb-core-thread-pool = { workspace = true, features = ["device"] }
-fb-core-wwr.workspace = true
 fb-kernel-abi.workspace = true
-wwr-sys = { workspace = true, features = ["blas"] }
+wwr-sys.workspace = true
 
 [dev-dependencies]
-fb-basis.workspace = true
 # The v0.0.4 calls' tests: their device and pinned buffers.
 fb-core-budget.workspace = true
-fb-core-types.workspace = true
-fb-core-wwr = { workspace = true, features = ["test-support"] }
 fb-io-npy.workspace = true

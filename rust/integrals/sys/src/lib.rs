@@ -12,143 +12,67 @@
 //! | C++ (`src/integrals`) | Here |
 //! |---|---|
 //! | `PrimitivePairClassView`, `PrimitivePairSource`, `PrimitivePairRecords` | [`fb_primitive_pair_class_view`], [`fb_primitive_pair_source`], [`fb_primitive_pair_records`], `#[repr(C)]`, by pointer |
-//! | `mmd_order(stream, n_rec, src, key, key_alt, perm, perm_alt)`, each class sorted into descending ζ | nothing: the records stay in enumeration order, which no reader here needs changed ([`ClassRows`] has the order) |
-//! | `mmd_records(stream, n_rec, src, perm, out)`, `mmd_bound` | [`fb_mmd_records`]`(stream, n_rec, src, out)`, record r the host's record r; [`fb_mmd_bound`] |
-//! | `ordered_pair_bound` | [`fb_ordered_pair_bound`] |
-//! | `overlap_class` | [`fb_overlap_class`] |
-//! | `kinetic_class` | [`fb_kinetic_class`] |
+//! | `mmd_order(stream, n_rec, src, key, key_alt, perm, perm_alt)`, each class sorted into descending ζ | nothing: the records stay in enumeration order, which no reader here needs changed |
+//! | `mmd_records(stream, n_rec, src, perm, out)`, `mmd_bound` | [`fb_mmd_records`]`(stream, n_rec, src, out)`, record r the host's record r; [`fb_mmd_bound`]; the safe call is [`mmd_records`] |
+//! | `ordered_pair_bound` | [`fb_ordered_pair_bound`]; the safe call is [`record_bound`] |
+//! | `overlap_class`, `kinetic_class` | [`fb_overlap_class`], [`fb_kinetic_class`], with no safe call: the v0.0.4 layer forms S and T on the host |
 //! | `NucleiView` (`src/molecule`) | [`fb_nuclei_view`], `#[repr(C)]`, by pointer |
-//! | `potential_en_class(stream, cls, nuclei, n_ao, v)` | [`fb_potential_en_class`]`(stream, cls, nuclei, n_ao, v)`, the nuclei by pointer |
+//! | `potential_en_class(stream, cls, nuclei, n_ao, v)` | [`fb_potential_en_class`]`(stream, cls, nuclei, n_ao, v)`, the nuclei by pointer, with no safe call: the v0.0.4 layer forms V on the host |
 //! | `kPairBoundMaxMomentum`, `kRecordBoundMaxMomentum`, the overlap, kinetic and nuclear-attraction launchers' `kMaxL` | [`FB_PAIR_BOUND_MAX_MOMENTUM`], [`FB_RECORD_BOUND_MAX_MOMENTUM`], [`FB_OVERLAP_MAX_MOMENTUM`], [`FB_KINETIC_MAX_MOMENTUM`], [`FB_POTENTIAL_EN_MAX_MOMENTUM`] |
-//! | `metric_class` (`src/integrals/eri/density_fitting/metric`) | [`fb_metric_class`], the records and pairs as field segments, as there; the safe path is [`add_metric_tasks`] over an [`AuxTable`] |
-//! | `metric`'s host staging: one record per aux primitive, the pairs P <= Q per class, swapped to the lower momentum first | [`AuxTable::push_shell`] and the `metric tables` task of [`add_metric_tasks`] |
-//! | `three_center_class(stream, la, lb, lp, n_bra_rec, bra, …)`, `three_center_symmetrize` (`.../three_center`) | nothing: the square tensor is not built (#1721), and its kernels and launchers are not carried (#1725); the packed launcher below is the only (mn\|P) |
-//! | `three_center`'s host staging: `mmd`'s records copied back and regrouped by shell pair, the aux records, the cells, U and U_aux in one upload; the launches, the three spherical GEMMs and the average | nothing: (mn\|P) is built packed, a batch of kept shell pairs at a time ([`add_packed_three_center_tasks`]) |
-//! | nothing: the C++ (mn\|P) is square | [`fb_three_center_packed_class`], rust/'s own launcher over FelizJueves's packed spherical-aux `speri3<la, lb, lP>` units, each cell's block at its destination column, the aux index already spherical, and [`FB_THREE_CENTER_PACKED_CELL_FIELDS`]; the safe path is [`add_packed_three_center_tasks`] |
+//! | `metric_class` (`src/integrals/eri/density_fitting/metric`) | [`fb_metric_class`], the records and pairs as field segments, as there, with no safe call: the v0.0.4 layer forms the metric on the host |
+//! | `three_center_class(stream, la, lb, lp, n_bra_rec, bra, …)`, `three_center_symmetrize` (`.../three_center`) | nothing: the square tensor is not built (#1721), and its kernels and launchers are not carried (#1725) |
+//! | nothing: the C++ (mn\|P) is square | [`fb_three_center_packed_class`], rust/'s own launcher over FelizJueves's packed spherical-aux `speri3<la, lb, lP>` units, each cell's block at its destination column, the aux index already spherical, and [`FB_THREE_CENTER_PACKED_CELL_FIELDS`], with no safe call |
 //! | nothing: the C++ (mn\|P) is Cartesian in the bra | [`fb_three_center_spherical_class`], the same launcher over FelizJueves's fully spherical `ssperi3<la, lb, lP>` (#745), each cell's (μν\|Q) block spherical in all three indices; the safe call is [`three_center_spherical_class`] |
 //! | `kMetricMaxMomentum`, `kThreeCenterMaxMomentum`, `kThreeCenterAuxMaxMomentum` | [`FB_METRIC_MAX_MOMENTUM`], [`FB_THREE_CENTER_MAX_MOMENTUM`], [`FB_THREE_CENTER_AUX_MAX_MOMENTUM`] |
 //! | `kMetricRecordFields`, `kMetricPairFields`, `kThreeCenterAuxFields` | [`FB_METRIC_RECORD_FIELDS`], [`FB_METRIC_PAIR_FIELDS`], [`FB_THREE_CENTER_AUX_FIELDS`], for a safe layer to size its segments by; `kThreeCenterCellFields`, the square cell's, has nothing (#1725) |
 //! | `kThreeCenterBraFields`, the packed bra records' segment count | nothing: the bra records cross as a class view, a field per pointer |
 //! | `wwrErrorInvalidValue` for a refusal | [`FB_LAUNCH_INVALID_ARGUMENT`] (a count, a null pointer, a short workspace) or [`FB_LAUNCH_UNSUPPORTED`] (no kernel for the class) |
 //! | nothing: the C++ tree compiles its kernels into the binary | [`check_library`], the library's [`fb_integrals_abi_version`] and [`fb_integrals_backend`] against the bindings' |
-//! | nothing: the C++ tree has no conventional mode | [`fb_conventional_eri_class`], [`fb_conventional_exchange`], [`fb_conventional_pack`] and [`fb_conventional_unpack`], rust/'s own launchers over FelizJueves's `eri/full_eri` units (`eri<la, lb, lc, ld>`, `eri_kperm`), and [`FB_CONVENTIONAL_MAX_MOMENTUM`], [`FB_CONVENTIONAL_MAX_AO`], [`FB_CONVENTIONAL_PAIR_FIELDS`], [`FB_CONVENTIONAL_TASK_FIELDS`]; the safe path is [`add_conventional_tasks`], [`pack`] and [`unpack`] |
-//! | nothing: the C++ tree has no conventional mode | [`fb_dense_eri_class`], rust/'s own launcher over FelizJueves's dense `eri/full_eri` units (`eri_dj<la, lb, lc, ld>`, `eri_dk<la, lb, lc, ld>`), [`FB_DENSE_LAYOUT_J`], [`FB_DENSE_LAYOUT_K`]; and [`fb_dense_row_dot`], a row-major matrix by a vector in an order fixed by its width; the safe path is [`add_dense_tasks`] and [`dense_row_dot`] |
-//! | nothing: the C++ B is square and resident | [`fb_packed_pack`] and [`fb_packed_gather`], rust/'s own pack of a density into density fitting's packed shell-pair map and gather of packed columns back into the square; the safe path is [`add_packed_tables`] and [`PackedTables`] |
+//! | nothing: the C++ tree has no conventional mode | [`fb_conventional_eri_class`], [`fb_conventional_exchange`], [`fb_conventional_pack`] and [`fb_conventional_unpack`], rust/'s own launchers over FelizJueves's `eri/full_eri` units (`eri<la, lb, lc, ld>`, `eri_kperm`), and [`FB_CONVENTIONAL_MAX_MOMENTUM`], [`FB_CONVENTIONAL_MAX_AO`], [`FB_CONVENTIONAL_PAIR_FIELDS`], [`FB_CONVENTIONAL_TASK_FIELDS`], with no safe call |
+//! | nothing: the C++ tree has no conventional mode | [`fb_dense_eri_class`], rust/'s own launcher over FelizJueves's dense `eri/full_eri` units (`eri_dj<la, lb, lc, ld>`, `eri_dk<la, lb, lc, ld>`), [`FB_DENSE_LAYOUT_J`], [`FB_DENSE_LAYOUT_K`]; and [`fb_dense_row_dot`], a row-major matrix by a vector in an order fixed by its width, with no safe call |
+//! | nothing: the C++ B is square and resident | [`fb_packed_pack`] and [`fb_packed_gather`], rust/'s own pack of a density into density fitting's packed shell-pair map and gather of packed columns back into the square; the gather's safe call is [`packed_gather`], the pack has none |
 //! | the other one-electron families (the dipole, the mixed overlap, the derivatives), J, K, density fitting past the metric and (mn\|P), and the rest | not forked yet |
 //!
 //! **The safe layer.** What a caller uses (`docs/gpu_layer.md`, "The safe
 //! wrapper"), beside the generated bindings rather than in a crate of its
-//! own, since this crate is already where the library's `unsafe` lives:
+//! own, since this crate is already where the library's `unsafe` lives.
+//! Each call is the v0.0.4 layer's, over `fb-core-device`'s stream and
+//! slices, every length a contract, and every index a kernel follows
+//! handed in on the host, checked inside what it indexes and uploaded by
+//! the call itself before the launch, so no device table a caller could
+//! fill reaches a kernel:
 //!
-//! - [`RecordTables`], a basis's shell table ([`ShellTable`]) and class
-//!   pairs ([`ClassPairs`]) with every index the kernels follow checked
-//!   when it is made, and [`add_record_tasks`], the tasks that stage and
-//!   upload it and form every class's records from it, each class on a
-//!   lane of its own (`fb_mmd_records`, `fb_mmd_bound`,
-//!   `fb_ordered_pair_bound`), returning one [`ClassRows`] per class, its
-//!   records in enumeration order.
-//! - [`overlap_class`], [`kinetic_class`] and [`potential_en_class`], over
-//!   a [`ClassRows`] and an output
-//!   [`DeviceSliceMut`](fb_core_wwr::device_slice::DeviceSliceMut) whose
-//!   length is asserted in every build, the status a `Status` through
-//!   [`fb_kernel_abi::launch_status`].
-//!
-//! - [`AuxTable`], an auxiliary basis's shells and records as the
-//!   density-fitting kernels read them, checked shell by shell as it is
-//!   built, and [`add_metric_tasks`], the two tasks that stage it with
-//!   every aux shell pair and launch each class of the Cartesian metric
-//!   ([`fb_metric_class`]) into an output row. The pairs are formed here
-//!   from the table and held in the tasks' own rows, so no device table a
-//!   caller could fill reaches the launch.
-//!
-//! - [`add_packed_three_center_tasks`], the two tasks of the (mn\|Q) of a
-//!   batch of shell pairs, `m` and `n` Cartesian and `Q` spherical, packed: each pair's block in
-//!   columns of its own, side by side, the cells' destinations formed at
-//!   planning from the batch's columns, one [`fb_three_center_packed_class`]
-//!   per class into an output row.
-//!
-//! - [`add_conventional_tasks`], the three tasks of the packed ERI and its
-//!   exchange-ordered gather over a basis's [`ClassRows`] and the
-//!   [`RecordTables`] they were formed from: the pairs, the tasks and the
-//!   pair index staged on the CPU and uploaded, one
-//!   [`fb_conventional_eri_class`] per quartet class, both sides' fields
-//!   read in place ([`Fields::CONVENTIONAL`]), then
-//!   [`fb_conventional_exchange`], each into an output row; and [`pack`]
-//!   and [`unpack`], the density packed for the GEMVs and their results
-//!   unpacked, over [`DeviceSlice`](fb_core_wwr::device_slice::DeviceSlice)s
-//!   whose lengths are checked in every build.
-//!
-//! - [`add_dense_tasks`], the two tasks of a row block of the dense
-//!   J-layout and K-layout ERI matrices over the records between a basis
-//!   and itself ([`MixedClassRows`]) and the [`RecordTables`] they were
-//!   formed from: the launches' pairs and task tables staged on the CPU and
-//!   uploaded, then one [`fb_dense_eri_class`] per launch and layout, both
-//!   sides' fields read in place, into two output rows ([`DenseBlocks`]),
-//!   cut into sub-blocks the kernels' 32-bit index reaches; and
-//!   [`dense_row_dot`], a sub-block by a vector, each entry in an order
-//!   its width fixes, over slices whose lengths are checked in every build.
-//!
-//! - [`add_packed_tables`], the tasks that fill a packed shell-pair map's
-//!   per-column index tables into pinned rows, check every index inside the
-//!   matrix and upload them, returning a [`PackedTables`]; its
-//!   [`PackedTables::pack`] packs a density into the map's columns and its
-//!   [`PackedTables::gather`] gathers a packed batch into square matrices,
-//!   over slices whose lengths are checked in every build.
-//!
-//! - [`three_center_spherical_class`], the v0.0.4 layer's: one class of
-//!   the fully spherical packed (μν\|Q) through
-//!   [`fb_three_center_spherical_class`] (`ssperi3<la, lb, lP>`), over
-//!   `fb-core-device`'s stream and slices, every length a contract and
-//!   every cell, handed in on the host, checked inside the slices it
-//!   indexes and uploaded by the call itself before the launch.
-//! - [`mmd_records`] and [`packed_gather`], the v0.0.4 layer's records and
-//!   gather, on the same terms: one class's records through
-//!   [`fb_mmd_records`], its shell and pair tables handed in on the host,
-//!   checked and uploaded by the call; and a packed batch gathered into
-//!   square matrices through [`fb_packed_gather`], each column's row and
-//!   column handed in likewise. The old layer's [`add_record_tasks`] and
-//!   [`PackedTables::gather`] are their counterparts, bitwise.
+//! - [`mmd_records`], one class's primitive-pair records through
+//!   [`fb_mmd_records`], its shell and pair tables in one table.
 //! - [`record_bound`], each record's dressed Schwarz bound through
 //!   [`fb_ordered_pair_bound`] from the records [`mmd_records`] wrote,
 //!   which the eri step's screen sums per shell pair.
+//! - [`three_center_spherical_class`], one class of the fully spherical
+//!   packed (μν\|Q) through [`fb_three_center_spherical_class`]
+//!   (`ssperi3<la, lb, lP>`), every cell checked inside the slices it
+//!   indexes.
+//! - [`packed_gather`], a packed batch gathered into square matrices
+//!   through [`fb_packed_gather`], each column's row and column checked
+//!   inside the matrix.
 //!
-//! A class kernel writes at AO offsets held in device memory, so
-//! [`ClassRows`] is a type only [`add_record_tasks`] makes; its doc comment
-//! has why a launcher may trust it.
+//! The launchers with no safe call are the old layer's, whose task
+//! builders were deleted with it (#1874); each is tested raw, through its
+//! bindings, under `tests/`.
 
 #![allow(non_camel_case_types, reason = "the C header's names, kept as written")]
 
 #[rustfmt::skip]
 mod bindings;
-mod classes;
-mod conventional;
-mod dense;
-mod metric;
 mod mmd_records;
-mod packed;
 mod packed_gather;
-mod records;
-mod three_center_packed;
 mod three_center_spherical;
 
 pub use bindings::*;
-pub use classes::{kinetic_class, overlap_class, potential_en_class};
-pub use conventional::{add_conventional_tasks, pack, packed_pairs, unpack};
-pub use dense::{DenseBlocks, add_dense_tasks, dense_row_dot};
-pub use metric::{AuxTable, add_metric_tasks};
 pub use mmd_records::{RECORD_F64_FIELDS, RECORD_I32_FIELDS, mmd_records, record_bound};
-pub use packed::{PackedTables, add_packed_tables};
 pub use packed_gather::packed_gather;
-pub use records::{
-    ClassPairs, ClassRows, Fields, MixedClassRows, RecordTables, ShellTable,
-    add_mixed_record_tasks, add_record_tasks,
-};
-pub use three_center_packed::add_packed_three_center_tasks;
 pub use three_center_spherical::three_center_spherical_class;
 
-use fb_core_error_handling::Status;
-use fb_core_wwr::common::wwr_status_from_code;
-use fb_core_wwr::gpu_status_at;
+use fb_core_error_handling::{Error, Status};
 use fb_kernel_abi::Backend;
 
 /// Checks that the `libfb_integrals_kernels.so` this process loaded is the one
@@ -196,7 +120,7 @@ const _: () = {
 
 /// A launch status as a [`Status`] naming the wrapper and the class by its
 /// momenta, `fb_metric_class (2, 3)`, or the wrapper alone when `momenta`
-/// is empty: a launch error by its `wwr_status` name, at the safe call's
+/// is empty: a launch error by its `wwr_status` code, at the safe call's
 /// caller.
 #[track_caller]
 fn launched(what: &str, momenta: &[i32], status: fb_launch_status) -> Status {
@@ -207,6 +131,8 @@ fn launched(what: &str, momenta: &[i32], status: fb_launch_status) -> Status {
         format!("{what} ({})", momenta.join(", "))
     };
     fb_kernel_abi::launch_status(&what, status, |code, at| {
-        Some(gpu_status_at(wwr_status_from_code(code)?, at))
+        let mut e = Error::gpu(format!("runtime error {code} at the launch"));
+        e.origin = at;
+        Some(Err(e))
     })
 }

@@ -17,9 +17,13 @@
 //! the nuclear attraction's, `1e-12`, covers the kernel's Boys evaluation and
 //! the reference's `erf` (libm's), with two decades.
 
-use fb_core_wwr::handle::DeviceHandleStream;
-use fb_core_wwr::runtime::Stream;
-use fb_core_wwr::runtime::tests::DeviceBytes;
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
+
+use fb_core_budget::{Backing, Budget, Caps, DeviceBuf, Ledger, PinnedBuf, Plain};
+use fb_core_device::{DeviceSlice, DeviceSliceMut, Stream};
 use fb_integrals_sys::{
     FB_KINETIC_MAX_MOMENTUM, FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, FB_LAUNCH_UNSUPPORTED,
     FB_POTENTIAL_EN_MAX_MOMENTUM, fb_kinetic_class, fb_nuclei_view, fb_potential_en_class,
@@ -27,6 +31,38 @@ use fb_integrals_sys::{
 };
 use std::f64::consts::PI;
 use std::ptr::{null, null_mut};
+
+/// A real ledger on device 0, for the buffers.
+fn ledger() -> Ledger {
+    let caps = Caps::read(&[0], &[None], None, Backing::Real).unwrap();
+    Ledger::new(caps, Backing::Real, vec![0], false)
+}
+
+/// `data` in pinned memory, the host end of a copy.
+fn pinned<T: Plain>(budget: &Budget<'_>, data: &[T]) -> PinnedBuf<T> {
+    let mut p = budget.pinned::<T>(0, data.len());
+    p.copy_from_slice(data);
+    p
+}
+
+/// `data` uploaded into a device buffer.
+fn device<T: Plain>(budget: &Budget<'_>, stream: &Stream, data: &[T]) -> DeviceBuf<T> {
+    let mut d = budget.device::<T>(0, data.len());
+    drop(
+        stream
+            .upload(&mut d, pinned(budget, data))
+            .unwrap()
+            .sync()
+            .unwrap(),
+    );
+    d
+}
+
+/// A device buffer read back to the host.
+fn read<T: Plain>(budget: &Budget<'_>, stream: &Stream, d: &DeviceBuf<T>) -> Vec<T> {
+    let host = budget.pinned::<T>(0, d.len());
+    stream.download(host, d).unwrap().sync().unwrap().to_vec()
+}
 
 // libm's erf, which std links on every target this tree builds for: f64's
 // own is not stable yet.
@@ -103,14 +139,7 @@ fn record() -> Record {
 /// ket AO 1, and the kernels add into the lower triangle alone, so `M_10`
 /// is within `bar` of `expected`, relative, and `M_01` and the diagonal
 /// stay 0 (the caller mirrors the lower triangle onto the upper).
-fn check_lower(matrix: &DeviceBytes, stream: &Stream, expected: f64, bar: f64) {
-    let got: Vec<f64> = matrix
-        .read(stream)
-        .as_chunks::<8>()
-        .0
-        .iter()
-        .map(|c| f64::from_ne_bytes(*c))
-        .collect();
+fn check_lower(got: &[f64], expected: f64, bar: f64) {
     assert_eq!(got[0].to_bits(), 0, "M_00 was written");
     assert_eq!(got[3].to_bits(), 0, "M_11 was written");
     assert_eq!(got[1].to_bits(), 0, "M_01, above the diagonal, was written");
@@ -131,43 +160,45 @@ fn one_ss_record_is_the_closed_form_kinetic_energy() {
     let mu = r.alpha * r.beta / r.zeta;
     let expected = r.s * mu * (3.0 - 2.0 * r.mu_r2) * (-r.mu_r2).exp();
 
+    let ledger = ledger();
+    let budget = ledger.budget("test");
     let stream = Stream::new(0);
-    let d_zeta = DeviceBytes::upload(&[r.zeta], &stream);
+    let d_zeta = device(&budget, &stream, &[r.zeta]);
     let d_pa = [
-        DeviceBytes::upload(&[r.pa_x], &stream),
-        DeviceBytes::upload(&[0.0_f64], &stream),
-        DeviceBytes::upload(&[0.0_f64], &stream),
+        device(&budget, &stream, &[r.pa_x]),
+        device(&budget, &stream, &[0.0_f64]),
+        device(&budget, &stream, &[0.0_f64]),
     ];
     let d_pb = [
-        DeviceBytes::upload(&[r.pb_x], &stream),
-        DeviceBytes::upload(&[0.0_f64], &stream),
-        DeviceBytes::upload(&[0.0_f64], &stream),
+        device(&budget, &stream, &[r.pb_x]),
+        device(&budget, &stream, &[0.0_f64]),
+        device(&budget, &stream, &[0.0_f64]),
     ];
-    let d_s = DeviceBytes::upload(&[r.s], &stream);
-    let d_eb = DeviceBytes::upload(&[r.beta], &stream);
-    let d_off_a = DeviceBytes::upload(&[0_i32], &stream);
-    let d_off_b = DeviceBytes::upload(&[1_i32], &stream);
+    let d_s = device(&budget, &stream, &[r.s]);
+    let d_eb = device(&budget, &stream, &[r.beta]);
+    let d_off_a = device(&budget, &stream, &[0_i32]);
+    let d_off_b = device(&budget, &stream, &[1_i32]);
     let n_ao = 2;
-    let d_matrix = DeviceBytes::upload(&[0.0_f64; 4], &stream);
+    let mut d_matrix = device(&budget, &stream, &[0.0_f64; 4]);
     let view = fb_primitive_pair_class_view {
-        zeta: d_zeta.0.cast(),
-        pa_x: d_pa[0].0.cast(),
-        pa_y: d_pa[1].0.cast(),
-        pa_z: d_pa[2].0.cast(),
-        pb_x: d_pb[0].0.cast(),
-        pb_y: d_pb[1].0.cast(),
-        pb_z: d_pb[2].0.cast(),
-        s: d_s.0.cast(),
-        eb: d_eb.0.cast(),
-        off_a: d_off_a.0.cast(),
-        off_b: d_off_b.0.cast(),
+        zeta: d_zeta.as_ptr().cast(),
+        pa_x: d_pa[0].as_ptr().cast(),
+        pa_y: d_pa[1].as_ptr().cast(),
+        pa_z: d_pa[2].as_ptr().cast(),
+        pb_x: d_pb[0].as_ptr().cast(),
+        pb_y: d_pb[1].as_ptr().cast(),
+        pb_z: d_pb[2].as_ptr().cast(),
+        s: d_s.as_ptr().cast(),
+        eb: d_eb.as_ptr().cast(),
+        off_a: d_off_a.as_ptr().cast(),
+        off_b: d_off_b.as_ptr().cast(),
         ..empty_view(0, 0, 1)
     };
     // SAFETY: every array the kinetic energy reads is one record long on the
     // device, the matrix is n_ao x n_ao and zeroed, and none overlap.
-    let status = unsafe { fb_kinetic_class(stream.stream(), &view, n_ao, d_matrix.0.cast()) };
+    let status = unsafe { fb_kinetic_class(stream.raw(), &view, n_ao, d_matrix.as_mut_ptr()) };
     assert_eq!(status, FB_LAUNCH_SUCCESS);
-    check_lower(&d_matrix, &stream, expected, 1e-14);
+    check_lower(&read(&budget, &stream, &d_matrix), expected, 1e-14);
 }
 
 /// Needs a GPU. One (s|s) record and one nucleus, Z = 8 at (0.375, 0.5, 0),
@@ -184,58 +215,60 @@ fn one_ss_record_and_nucleus_is_the_closed_form_attraction() {
     let f0 = 0.5 * (PI / x).sqrt() * erf(x.sqrt());
     let expected = -z_c * r.s * (2.0 / PI.sqrt()) * r.zeta.sqrt() * f0 * (-r.mu_r2).exp();
 
+    let ledger = ledger();
+    let budget = ledger.budget("test");
     let stream = Stream::new(0);
-    let d_zeta = DeviceBytes::upload(&[r.zeta], &stream);
+    let d_zeta = device(&budget, &stream, &[r.zeta]);
     let d_p = [
-        DeviceBytes::upload(&[r.p_x], &stream),
-        DeviceBytes::upload(&[0.0_f64], &stream),
-        DeviceBytes::upload(&[0.0_f64], &stream),
+        device(&budget, &stream, &[r.p_x]),
+        device(&budget, &stream, &[0.0_f64]),
+        device(&budget, &stream, &[0.0_f64]),
     ];
     let d_pa = [
-        DeviceBytes::upload(&[r.pa_x], &stream),
-        DeviceBytes::upload(&[0.0_f64], &stream),
-        DeviceBytes::upload(&[0.0_f64], &stream),
+        device(&budget, &stream, &[r.pa_x]),
+        device(&budget, &stream, &[0.0_f64]),
+        device(&budget, &stream, &[0.0_f64]),
     ];
     let d_pb = [
-        DeviceBytes::upload(&[r.pb_x], &stream),
-        DeviceBytes::upload(&[0.0_f64], &stream),
-        DeviceBytes::upload(&[0.0_f64], &stream),
+        device(&budget, &stream, &[r.pb_x]),
+        device(&budget, &stream, &[0.0_f64]),
+        device(&budget, &stream, &[0.0_f64]),
     ];
-    let d_s = DeviceBytes::upload(&[r.s], &stream);
-    let d_off_a = DeviceBytes::upload(&[0_i32], &stream);
-    let d_off_b = DeviceBytes::upload(&[1_i32], &stream);
-    let d_z = DeviceBytes::upload(&[z_c], &stream);
-    let d_c = DeviceBytes::upload(&c, &stream);
+    let d_s = device(&budget, &stream, &[r.s]);
+    let d_off_a = device(&budget, &stream, &[0_i32]);
+    let d_off_b = device(&budget, &stream, &[1_i32]);
+    let d_z = device(&budget, &stream, &[z_c]);
+    let d_c = device(&budget, &stream, &c);
     let n_ao = 2;
-    let d_matrix = DeviceBytes::upload(&[0.0_f64; 4], &stream);
+    let mut d_matrix = device(&budget, &stream, &[0.0_f64; 4]);
     let view = fb_primitive_pair_class_view {
-        zeta: d_zeta.0.cast(),
-        p_x: d_p[0].0.cast(),
-        p_y: d_p[1].0.cast(),
-        p_z: d_p[2].0.cast(),
-        pa_x: d_pa[0].0.cast(),
-        pa_y: d_pa[1].0.cast(),
-        pa_z: d_pa[2].0.cast(),
-        pb_x: d_pb[0].0.cast(),
-        pb_y: d_pb[1].0.cast(),
-        pb_z: d_pb[2].0.cast(),
-        s: d_s.0.cast(),
-        off_a: d_off_a.0.cast(),
-        off_b: d_off_b.0.cast(),
+        zeta: d_zeta.as_ptr().cast(),
+        p_x: d_p[0].as_ptr().cast(),
+        p_y: d_p[1].as_ptr().cast(),
+        p_z: d_p[2].as_ptr().cast(),
+        pa_x: d_pa[0].as_ptr().cast(),
+        pa_y: d_pa[1].as_ptr().cast(),
+        pa_z: d_pa[2].as_ptr().cast(),
+        pb_x: d_pb[0].as_ptr().cast(),
+        pb_y: d_pb[1].as_ptr().cast(),
+        pb_z: d_pb[2].as_ptr().cast(),
+        s: d_s.as_ptr().cast(),
+        off_a: d_off_a.as_ptr().cast(),
+        off_b: d_off_b.as_ptr().cast(),
         ..empty_view(0, 0, 1)
     };
     let nuclei = fb_nuclei_view {
         n_nuc: 1,
-        z: d_z.0.cast(),
-        c: d_c.0.cast(),
+        z: d_z.as_ptr().cast(),
+        c: d_c.as_ptr().cast(),
     };
     // SAFETY: every array the attraction reads is one record (or one
     // nucleus) long on the device, the matrix is n_ao x n_ao and zeroed, and
     // none overlap.
     let status =
-        unsafe { fb_potential_en_class(stream.stream(), &view, &nuclei, n_ao, d_matrix.0.cast()) };
+        unsafe { fb_potential_en_class(stream.raw(), &view, &nuclei, n_ao, d_matrix.as_mut_ptr()) };
     assert_eq!(status, FB_LAUNCH_SUCCESS);
-    check_lower(&d_matrix, &stream, expected, 1e-12);
+    check_lower(&read(&budget, &stream, &d_matrix), expected, 1e-12);
 }
 
 /// The classes outside a table: a bra above the ket, one past the limit on

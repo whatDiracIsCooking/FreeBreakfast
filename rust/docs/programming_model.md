@@ -1132,10 +1132,7 @@ existed. GPU worker `w` is on the list's device `w`.
 **Work spreads where a builder names the workers.** Placement is the
 builder's: it names each task's worker, so a builder that spreads names
 workers `0..num_gpus`, one per device, and one that does not puts every
-task on worker 0, as every calculation of the binary does but one: the RHF
-over `[eri] storage = "dense"`, whose builder
-(`fb_integrals_eri_conventional::add_dense`) cuts the dense ERI's rows
-over the workers and gathers each build's J and K onto worker 0. The
+task on worker 0. The
 instance makes each worker's blocks on its device and the backend its
 lanes' streams, handles and fork streams there
 (`Plan::instantiate(&devices)`, `Instance::backend`), for the plan's
@@ -1219,7 +1216,7 @@ of `Dag::add_loop` and `Dag::add_counted`.
 A lane is the planner's: nodes are placed on it, the executor orders the
 edges between lanes, and it costs a stream, library handles and a
 workspace row. Some concurrency lives inside one node instead, where the
-DAG does not look: the one-electron builds can launch a kernel per
+DAG does not look: a build of many small kernels can launch one per
 primitive-pair class into one matrix, every class adding atomically, as
 the C++ `launch_each` does on a stream per class. A GPU task reaches it
 through its stream, `DeviceStream::fork_join(n, |i, fork| ...)`:
@@ -1253,22 +1250,12 @@ wait it enqueues is on an event already recorded. No node is placed on a
 fork and no edge names one, so the plan's text, its tables and its
 goldens are those of the same DAG without forks.
 
-**The one-electron builds fork only when asked.** On the gfx1200 the
-forks' events cost more than the classes' overlap wins at the sizes
-tested, so their forking is an option, off: a builder sets
-`ClassRows::fork` on the records it passes in, and with it unset the
-builds declare no fork and launch in order on their lane, the order they
-had before forks existed. The bench is in
-`fb_integrals_one_electron_core_hamiltonian`'s crate doc; the
-density-fitted three-center build, with larger classes, is the likelier
-payoff.
-
 **The scope is what makes a fork sound.** The forks start after the
 task's input waits and are joined before its body returns, so everything
 the executor records on the task's lane afterwards covers the forked
 work: its completion event, which every consumer on another lane waits
 on, and every handoff of its rows' bytes to a later owner. What a row's
-`DeviceSlice` promise and the class records' `ClassRows` argument rest
+`DeviceSlice` promise rests
 on, that a launch goes on the stream the executor ordered, holds in
 effect. The API allows no fork without its join: a fork stream is
 reached only as the closure's borrowed `&Stream`, as a scoped thread is
@@ -1466,8 +1453,7 @@ list is in two tiers:
 
 - **Core:** `fb-core-wwr`, `fb-core-arena`, `fb-core-log`,
   `fb-core-thread-pool`, `fb-core-device`, `fb-core-budget`.
-- **Bindings:** `fb-integrals-sys`, `fb-localization-sys`, `fb-recipes-sys`,
-  `fb-recipes-launch`.
+- **Bindings:** `fb-integrals-sys`, `fb-localization-sys`, `fb-recipes-sys`.
 
 The core crates hold the wrappers: `fb-core-wwr` over the `wwr-sys`
 bindings (and the `statvfs` of `/dev/shm` a collectives' system error
@@ -1483,14 +1469,11 @@ the libraries allow a handle on any thread one call at a time. Each impl
 states its argument and is asserted at compile time beside it. The CCL
 rank stays neither. The binding crates declare a kernel
 library's `extern "C"` functions, check its version at load, and wrap its
-launches safely beside the bindings (`fb-integrals-sys` its records tasks
-too, since the class launchers trust records only those tasks write, and
-`fb-localization-sys` its Pipek-Mezey tasks, whose launches trust an
-orbital schedule and atom offsets only those tasks stage); the recipes'
-safe calls are `fb-recipes-launch`'s, a crate apart from `fb-recipes-sys`'s
-bindings because they take `fb-core-wwr`'s types, which the v0.0.4 layer's
-`fb-core-device`, calling those bindings itself, must not reach
-([`gpu_layer.md`](gpu_layer.md), "The v0.0.4 runtime"). There
+launches safely beside the bindings, over `fb-core-device`'s stream and
+slices, each call uploading the indices its kernel trusts itself; the
+recipes' safe calls are `fb-core-device`'s, which calls
+`fb-recipes-sys`'s bindings itself ([`gpu_layer.md`](gpu_layer.md), "The
+v0.0.4 runtime"). There
 was a third tier, the method crates, whose `unsafe` was a direct call into
 their kernels' launchers, the BLAS or the solver; each such call has moved
 into a safe wrapper in the core and binding crates, and a method crate that
@@ -1512,28 +1495,21 @@ A library call reaches the crates above `core` through a safe wrapper, not
 `fb_core_wwr::solver::syevd` take their operands as `DeviceSlice`s (device
 memory with its length, which the arena's rows implement) and check each
 extent against them in every build (syevd's work against the solver's own
-query), `fb_core_wwr::memset::zero` zeroes one on a stream, and
-`fb-recipes-blas`, the C++ recipes' sandwich products over those calls
-(and no single call of its own: [`gpu_layer.md`](gpu_layer.md),
-"Layering"), forbids `unsafe`
-itself, as the arena's `memcpy_*` do for the copies. A kernel library's
-launch is wrapped the same way in its binding crate, beside the generated
-bindings (the recipes' in `fb-recipes-launch`, over `fb-recipes-sys`'s):
-`fb_recipes_launch::inverse_sqrt`, `merge_sort` and
-`merge_sort_keys` take `DeviceSlice`s and map the launch status through
-`fb_kernel_abi::launch_status`, and `fb-integrals-sys`'s `overlap_class`,
-`kinetic_class` and `potential_en_class` take the output as a
-`DeviceSliceMut` whose `n_cart²` they assert, and the records as a
-`ClassRows`, a type only its own records tasks make, since the AO offsets
-the kernels write at are device data no host check can read. That is the
+query), and `fb_core_wwr::memset::zero` zeroes one on a stream. A kernel
+library's launch is wrapped the same way in its binding crate, beside the
+generated bindings: `fb-integrals-sys`'s `mmd_records`,
+`three_center_spherical_class` and `packed_gather` take
+`fb-core-device`'s slices, assert every length, check every index their
+kernel follows on the host and upload it themselves, and map the launch
+status through `fb_kernel_abi::launch_status`; the recipes' launches are
+`fb_core_device::GpuResources`' methods, on the same terms. That is the
 shape for the rest. The BLAS
 workspace, which the library keeps beyond any borrow, is handed over by
 value instead: `BlasHandle::bind_workspace` owns an arena `HeldRow` until
 the handle is destroyed or rebound ([`gpu_layer.md`](gpu_layer.md),
 "Layering"). Every crate above the core and binding crates now has nothing
-left to call raw and forbids `unsafe`: `fb-steps`, the recipe
-crates, `fb-integrals-mmd` and the four `fb-integrals-one-electron-*`
-crates among them.
+left to call raw and forbids `unsafe`: `fb-steps` and the four host
+integral crates among them.
 
 ```toml
 [workspace.lints.clippy]            # every member: [lints] workspace = true

@@ -18,12 +18,8 @@ members = [
     "molecule",
     "basis",
     "kernel_abi",
-    "recipes/launch",
     "recipes/sys",
-    "recipes/blas",
     "integrals/sys",
-    "integrals/mmd",
-    "integrals/one_electron/overlap",
     "device_check",
     "io/xyz",
     "io/basis",
@@ -31,27 +27,9 @@ members = [
     "doc_check",
     "sad",
     "io/npy",
-    "recipes/matrix_ao",
     "io/sad",
-    "integrals/one_electron/kinetic",
-    "molecule/nuclei",
-    "integrals/one_electron/potential_en",
-    "integrals/one_electron/core_hamiltonian",
     "tools/sad",
-    "recipes/diagonalize",
-    "recipes/orthogonalize",
-    "recipes/symmetrize",
-    "recipes/cholesky",
-    "recipes/diis",
-    "integrals/eri/density_fitting/metric",
-    "integrals/eri/density_fitting/fit",
-    "integrals/eri/density_fitting/jk",
-    "integrals/eri/density_fitting/three_center",
-    "integrals/eri/conventional",
     "localization/sys",
-    "integrals/eri/density_fitting/pair_map",
-    "integrals/schwarz",
-    "integrals/eri/density_fitting/transform",
     "core/device",
     "core/budget",
     "core/pack",
@@ -86,37 +64,15 @@ fb-molecule = { path = "molecule" }
 fb-basis = { path = "basis" }
 fb-kernel-abi = { path = "kernel_abi" }
 fb-recipes-sys = { path = "recipes/sys" }
-fb-recipes-launch = { path = "recipes/launch" }
-fb-recipes-blas = { path = "recipes/blas" }
 fb-io-xyz = { path = "io/xyz" }
 fb-io-basis = { path = "io/basis" }
 fb-integrals-sys = { path = "integrals/sys" }
-fb-integrals-mmd = { path = "integrals/mmd" }
-fb-integrals-one-electron-overlap = { path = "integrals/one_electron/overlap" }
 fb-test-support = { path = "test_support" }
 fb-sad = { path = "sad" }
 fb-io-npy = { path = "io/npy" }
-fb-recipes-matrix-ao = { path = "recipes/matrix_ao" }
 fb-io-sad = { path = "io/sad" }
-fb-integrals-one-electron-kinetic = { path = "integrals/one_electron/kinetic" }
-fb-molecule-nuclei = { path = "molecule/nuclei" }
-fb-integrals-one-electron-potential-en = { path = "integrals/one_electron/potential_en" }
-fb-integrals-one-electron-core-hamiltonian = { path = "integrals/one_electron/core_hamiltonian" }
 fb-tools-sad = { path = "tools/sad" }
-fb-recipes-diagonalize = { path = "recipes/diagonalize" }
-fb-recipes-orthogonalize = { path = "recipes/orthogonalize" }
-fb-recipes-symmetrize = { path = "recipes/symmetrize" }
-fb-recipes-cholesky = { path = "recipes/cholesky" }
-fb-recipes-diis = { path = "recipes/diis" }
-fb-integrals-eri-density-fitting-metric = { path = "integrals/eri/density_fitting/metric" }
-fb-integrals-eri-density-fitting-fit = { path = "integrals/eri/density_fitting/fit" }
-fb-integrals-eri-density-fitting-jk = { path = "integrals/eri/density_fitting/jk" }
-fb-integrals-eri-density-fitting-three-center = { path = "integrals/eri/density_fitting/three_center" }
-fb-integrals-eri-conventional = { path = "integrals/eri/conventional" }
 fb-localization-sys = { path = "localization/sys" }
-fb-integrals-eri-density-fitting-pair-map = { path = "integrals/eri/density_fitting/pair_map" }
-fb-integrals-schwarz = { path = "integrals/schwarz" }
-fb-integrals-eri-density-fitting-transform = { path = "integrals/eri/density_fitting/transform" }
 fb-core-device = { path = "core/device" }
 fb-core-budget = { path = "core/budget" }
 fb-core-pack = { path = "core/pack" }

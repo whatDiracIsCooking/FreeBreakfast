@@ -9,11 +9,10 @@
 //! given; the workspace query is a plain host function, which needs no
 //! device.
 //!
-//! **The raw half alone.** The safe calls over these bindings, which take
-//! `fb-core-wwr`'s slices and stream, are `fb-recipes-launch`'s; the v0.0.4
-//! layer's `fb-core-device` calls the bindings here directly, over its own
-//! slices, and so reaches no type of `fb-core-wwr` (`docs/gpu_layer.md`,
-//! "The v0.0.4 runtime"). This crate is the one that declares the library's
+//! **The raw half alone.** The safe calls over these bindings are
+//! `fb-core-device`'s `GpuResources` methods, which call the bindings here
+//! directly, over its own slices (`docs/gpu_layer.md`, "The v0.0.4
+//! runtime"). This crate is the one that declares the library's
 //! `links` key, so a change under `rust/recipes/kernels/` selects it and
 //! every crate above it.
 //!

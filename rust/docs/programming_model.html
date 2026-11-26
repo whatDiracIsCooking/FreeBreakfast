@@ -1681,10 +1681,7 @@ existed. GPU worker <code>w</code> is on the list's device <code>w</code>.</p>
 <p><strong>Work spreads where a builder names the workers.</strong> Placement is the
 builder's: it names each task's worker, so a builder that spreads names
 workers <code>0..num_gpus</code>, one per device, and one that does not puts every
-task on worker 0, as every calculation of the binary does but one: the RHF
-over <code>[eri] storage = &quot;dense&quot;</code>, whose builder
-(<code>fb_integrals_eri_conventional::add_dense</code>) cuts the dense ERI's rows
-over the workers and gathers each build's J and K onto worker 0. The
+task on worker 0. The
 instance makes each worker's blocks on its device and the backend its
 lanes' streams, handles and fork streams there
 (<code>Plan::instantiate(&amp;devices)</code>, <code>Instance::backend</code>), for the plan's
@@ -1778,7 +1775,7 @@ of <code>Dag::add_loop</code> and <code>Dag::add_counted</code>.</p>
 <p>A lane is the planner's: nodes are placed on it, the executor orders the
 edges between lanes, and it costs a stream, library handles and a
 workspace row. Some concurrency lives inside one node instead, where the
-DAG does not look: the one-electron builds can launch a kernel per
+DAG does not look: a build of many small kernels can launch one per
 primitive-pair class into one matrix, every class adding atomically, as
 the C++ <code>launch_each</code> does on a stream per class. A GPU task reaches it
 through its stream, <code>DeviceStream::fork_join(n, |i, fork| ...)</code>:</p>
@@ -1811,21 +1808,12 @@ deadlocks, since the one thread enqueues all of a worker's work and every
 wait it enqueues is on an event already recorded. No node is placed on a
 fork and no edge names one, so the plan's text, its tables and its
 goldens are those of the same DAG without forks.</p>
-<p><strong>The one-electron builds fork only when asked.</strong> On the gfx1200 the
-forks' events cost more than the classes' overlap wins at the sizes
-tested, so their forking is an option, off: a builder sets
-<code>ClassRows::fork</code> on the records it passes in, and with it unset the
-builds declare no fork and launch in order on their lane, the order they
-had before forks existed. The bench is in
-<code>fb_integrals_one_electron_core_hamiltonian</code>'s crate doc; the
-density-fitted three-center build, with larger classes, is the likelier
-payoff.</p>
 <p><strong>The scope is what makes a fork sound.</strong> The forks start after the
 task's input waits and are joined before its body returns, so everything
 the executor records on the task's lane afterwards covers the forked
 work: its completion event, which every consumer on another lane waits
 on, and every handoff of its rows' bytes to a later owner. What a row's
-<code>DeviceSlice</code> promise and the class records' <code>ClassRows</code> argument rest
+<code>DeviceSlice</code> promise rests
 on, that a launch goes on the stream the executor ordered, holds in
 effect. The API allows no fork without its join: a fork stream is
 reached only as the closure's borrowed <code>&amp;Stream</code>, as a scoped thread is
@@ -2029,8 +2017,7 @@ list is in two tiers:</p>
 <ul>
 <li><strong>Core:</strong> <code>fb-core-wwr</code>, <code>fb-core-arena</code>, <code>fb-core-log</code>,
 <code>fb-core-thread-pool</code>, <code>fb-core-device</code>, <code>fb-core-budget</code>.</li>
-<li><strong>Bindings:</strong> <code>fb-integrals-sys</code>, <code>fb-localization-sys</code>, <code>fb-recipes-sys</code>,
-<code>fb-recipes-launch</code>.</li>
+<li><strong>Bindings:</strong> <code>fb-integrals-sys</code>, <code>fb-localization-sys</code>, <code>fb-recipes-sys</code>.</li>
 </ul>
 <p>The core crates hold the wrappers: <code>fb-core-wwr</code> over the <code>wwr-sys</code>
 bindings (and the <code>statvfs</code> of <code>/dev/shm</code> a collectives' system error
@@ -2046,14 +2033,11 @@ the libraries allow a handle on any thread one call at a time. Each impl
 states its argument and is asserted at compile time beside it. The CCL
 rank stays neither. The binding crates declare a kernel
 library's <code>extern &quot;C&quot;</code> functions, check its version at load, and wrap its
-launches safely beside the bindings (<code>fb-integrals-sys</code> its records tasks
-too, since the class launchers trust records only those tasks write, and
-<code>fb-localization-sys</code> its Pipek-Mezey tasks, whose launches trust an
-orbital schedule and atom offsets only those tasks stage); the recipes'
-safe calls are <code>fb-recipes-launch</code>'s, a crate apart from <code>fb-recipes-sys</code>'s
-bindings because they take <code>fb-core-wwr</code>'s types, which the v0.0.4 layer's
-<code>fb-core-device</code>, calling those bindings itself, must not reach
-(<a href="gpu_layer.md"><code>gpu_layer.md</code></a>, &quot;The v0.0.4 runtime&quot;). There
+launches safely beside the bindings, over <code>fb-core-device</code>'s stream and
+slices, each call uploading the indices its kernel trusts itself; the
+recipes' safe calls are <code>fb-core-device</code>'s, which calls
+<code>fb-recipes-sys</code>'s bindings itself (<a href="gpu_layer.md"><code>gpu_layer.md</code></a>, &quot;The
+v0.0.4 runtime&quot;). There
 was a third tier, the method crates, whose <code>unsafe</code> was a direct call into
 their kernels' launchers, the BLAS or the solver; each such call has moved
 into a safe wrapper in the core and binding crates, and a method crate that
@@ -2073,28 +2057,21 @@ comment justifies exactly one thing. Miri covers what a lint cannot
 <code>fb_core_wwr::solver::syevd</code> take their operands as <code>DeviceSlice</code>s (device
 memory with its length, which the arena's rows implement) and check each
 extent against them in every build (syevd's work against the solver's own
-query), <code>fb_core_wwr::memset::zero</code> zeroes one on a stream, and
-<code>fb-recipes-blas</code>, the C++ recipes' sandwich products over those calls
-(and no single call of its own: <a href="gpu_layer.md"><code>gpu_layer.md</code></a>,
-&quot;Layering&quot;), forbids <code>unsafe</code>
-itself, as the arena's <code>memcpy_*</code> do for the copies. A kernel library's
-launch is wrapped the same way in its binding crate, beside the generated
-bindings (the recipes' in <code>fb-recipes-launch</code>, over <code>fb-recipes-sys</code>'s):
-<code>fb_recipes_launch::inverse_sqrt</code>, <code>merge_sort</code> and
-<code>merge_sort_keys</code> take <code>DeviceSlice</code>s and map the launch status through
-<code>fb_kernel_abi::launch_status</code>, and <code>fb-integrals-sys</code>'s <code>overlap_class</code>,
-<code>kinetic_class</code> and <code>potential_en_class</code> take the output as a
-<code>DeviceSliceMut</code> whose <code>n_cart²</code> they assert, and the records as a
-<code>ClassRows</code>, a type only its own records tasks make, since the AO offsets
-the kernels write at are device data no host check can read. That is the
+query), and <code>fb_core_wwr::memset::zero</code> zeroes one on a stream. A kernel
+library's launch is wrapped the same way in its binding crate, beside the
+generated bindings: <code>fb-integrals-sys</code>'s <code>mmd_records</code>,
+<code>three_center_spherical_class</code> and <code>packed_gather</code> take
+<code>fb-core-device</code>'s slices, assert every length, check every index their
+kernel follows on the host and upload it themselves, and map the launch
+status through <code>fb_kernel_abi::launch_status</code>; the recipes' launches are
+<code>fb_core_device::GpuResources</code>' methods, on the same terms. That is the
 shape for the rest. The BLAS
 workspace, which the library keeps beyond any borrow, is handed over by
 value instead: <code>BlasHandle::bind_workspace</code> owns an arena <code>HeldRow</code> until
 the handle is destroyed or rebound (<a href="gpu_layer.md"><code>gpu_layer.md</code></a>,
 &quot;Layering&quot;). Every crate above the core and binding crates now has nothing
-left to call raw and forbids <code>unsafe</code>: <code>fb-steps</code>, the recipe
-crates, <code>fb-integrals-mmd</code> and the four <code>fb-integrals-one-electron-*</code>
-crates among them.</p>
+left to call raw and forbids <code>unsafe</code>: <code>fb-steps</code> and the four host
+integral crates among them.</p>
 <pre><code class="language-toml">[workspace.lints.clippy]            # every member: [lints] workspace = true
 disallowed_methods = &quot;deny&quot;
 undocumented_unsafe_blocks = &quot;deny&quot;

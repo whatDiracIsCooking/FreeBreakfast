@@ -6,9 +6,7 @@
 //! reads from device memory. They come in on the host and are uploaded by
 //! the call itself after every index is checked inside the matrix
 //! (`docs/gpu_layer.md`, "The safe wrapper"), so no device table a caller
-//! could fill reaches the launch. The old layer's
-//! [`PackedTables::gather`](crate::PackedTables::gather) is the same zero
-//! and the same launch over tables its own tasks staged.
+//! could fill reaches the launch.
 
 use contracts::requires;
 use fb_core_device::{
@@ -17,7 +15,6 @@ use fb_core_device::{
 use fb_core_error_handling::Result;
 use fb_core_log::{eq, fits_i32, le};
 
-use crate::packed::check_indices;
 use crate::{fb_packed_gather, launched};
 
 /// The kernel's name, which every refusal here names.
@@ -123,4 +120,20 @@ pub fn packed_gather<'s, H: HostSlice<i32>>(
     };
     launched(KERNEL, &[], status)?;
     Ok(uploaded)
+}
+
+/// Every `m` and `n` inside `[0, nao)`: what the kernel's stores rest on.
+/// `what` names the caller in the message.
+///
+/// # Panics
+/// At the first column outside, naming it and its `(m, n)`.
+#[track_caller]
+fn check_indices(what: &str, nao: usize, rows: &[i32], cols: &[i32]) {
+    let inside = |i: i32| usize::try_from(i).is_ok_and(|i| i < nao);
+    for (c, (&m, &n)) in rows.iter().zip(cols).enumerate() {
+        assert!(
+            inside(m) && inside(n),
+            "{what}: column {c} stands at ({m}, {n}), outside a {nao} × {nao} matrix"
+        );
+    }
 }

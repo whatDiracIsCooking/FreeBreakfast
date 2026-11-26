@@ -13,9 +13,13 @@
 //! within an ulp of the true value, and the one product by `s` on each side,
 //! half an ulp each: three ulp at worst, and the bar is four.
 
-use fb_core_wwr::handle::DeviceHandleStream;
-use fb_core_wwr::runtime::Stream;
-use fb_core_wwr::runtime::tests::DeviceBytes;
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
+
+use fb_core_budget::{Backing, Budget, Caps, DeviceBuf, Ledger, PinnedBuf, Plain};
+use fb_core_device::{DeviceSlice, DeviceSliceMut, Stream};
 use fb_integrals_sys::{
     FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, FB_LAUNCH_UNSUPPORTED, FB_OVERLAP_MAX_MOMENTUM,
     FB_PAIR_BOUND_MAX_MOMENTUM, FB_RECORD_BOUND_MAX_MOMENTUM, fb_mmd_bound, fb_mmd_records,
@@ -23,6 +27,38 @@ use fb_integrals_sys::{
     fb_primitive_pair_records, fb_primitive_pair_source,
 };
 use std::ptr::{null, null_mut};
+
+/// A real ledger on device 0, for the buffers.
+fn ledger() -> Ledger {
+    let caps = Caps::read(&[0], &[None], None, Backing::Real).unwrap();
+    Ledger::new(caps, Backing::Real, vec![0], false)
+}
+
+/// `data` in pinned memory, the host end of a copy.
+fn pinned<T: Plain>(budget: &Budget<'_>, data: &[T]) -> PinnedBuf<T> {
+    let mut p = budget.pinned::<T>(0, data.len());
+    p.copy_from_slice(data);
+    p
+}
+
+/// `data` uploaded into a device buffer.
+fn device<T: Plain>(budget: &Budget<'_>, stream: &Stream, data: &[T]) -> DeviceBuf<T> {
+    let mut d = budget.device::<T>(0, data.len());
+    drop(
+        stream
+            .upload(&mut d, pinned(budget, data))
+            .unwrap()
+            .sync()
+            .unwrap(),
+    );
+    d
+}
+
+/// A device buffer read back to the host.
+fn read<T: Plain>(budget: &Budget<'_>, stream: &Stream, d: &DeviceBuf<T>) -> Vec<T> {
+    let host = budget.pinned::<T>(0, d.len());
+    stream.download(host, d).unwrap().sync().unwrap().to_vec()
+}
 
 /// A view of no arrays: every pointer null, for the fields a test sets.
 fn empty_view(la: i32, lb: i32, n_rec: i32) -> fb_primitive_pair_class_view {
@@ -79,47 +115,43 @@ fn one_ss_record_is_the_closed_form_overlap() {
     let s = c_a * c_b * (std::f64::consts::PI / zeta).powf(1.5);
     let expected = c_a * c_b * (std::f64::consts::PI / zeta).powf(1.5) * (-mu_r2).exp();
 
+    let ledger = ledger();
+    let budget = ledger.budget("test");
     let stream = Stream::new(0);
-    let d_zeta = DeviceBytes::upload(&[zeta], &stream);
+    let d_zeta = device(&budget, &stream, &[zeta]);
     let d_pa = [
-        DeviceBytes::upload(&[pa_x], &stream),
-        DeviceBytes::upload(&[0.0_f64], &stream),
-        DeviceBytes::upload(&[0.0_f64], &stream),
+        device(&budget, &stream, &[pa_x]),
+        device(&budget, &stream, &[0.0_f64]),
+        device(&budget, &stream, &[0.0_f64]),
     ];
     let d_pb = [
-        DeviceBytes::upload(&[pb_x], &stream),
-        DeviceBytes::upload(&[0.0_f64], &stream),
-        DeviceBytes::upload(&[0.0_f64], &stream),
+        device(&budget, &stream, &[pb_x]),
+        device(&budget, &stream, &[0.0_f64]),
+        device(&budget, &stream, &[0.0_f64]),
     ];
-    let d_s = DeviceBytes::upload(&[s], &stream);
-    let d_off_a = DeviceBytes::upload(&[0_i32], &stream);
-    let d_off_b = DeviceBytes::upload(&[1_i32], &stream);
+    let d_s = device(&budget, &stream, &[s]);
+    let d_off_a = device(&budget, &stream, &[0_i32]);
+    let d_off_b = device(&budget, &stream, &[1_i32]);
     let n_ao = 2;
-    let d_matrix = DeviceBytes::upload(&[0.0_f64; 4], &stream);
+    let mut d_matrix = device(&budget, &stream, &[0.0_f64; 4]);
     let view = fb_primitive_pair_class_view {
-        zeta: d_zeta.0.cast(),
-        pa_x: d_pa[0].0.cast(),
-        pa_y: d_pa[1].0.cast(),
-        pa_z: d_pa[2].0.cast(),
-        pb_x: d_pb[0].0.cast(),
-        pb_y: d_pb[1].0.cast(),
-        pb_z: d_pb[2].0.cast(),
-        s: d_s.0.cast(),
-        off_a: d_off_a.0.cast(),
-        off_b: d_off_b.0.cast(),
+        zeta: d_zeta.as_ptr().cast(),
+        pa_x: d_pa[0].as_ptr().cast(),
+        pa_y: d_pa[1].as_ptr().cast(),
+        pa_z: d_pa[2].as_ptr().cast(),
+        pb_x: d_pb[0].as_ptr().cast(),
+        pb_y: d_pb[1].as_ptr().cast(),
+        pb_z: d_pb[2].as_ptr().cast(),
+        s: d_s.as_ptr().cast(),
+        off_a: d_off_a.as_ptr().cast(),
+        off_b: d_off_b.as_ptr().cast(),
         ..empty_view(0, 0, 1)
     };
     // SAFETY: every array the overlap reads is one record long on the
     // device, the matrix is n_ao x n_ao and zeroed, and none overlap.
-    let status = unsafe { fb_overlap_class(stream.stream(), &view, n_ao, d_matrix.0.cast()) };
+    let status = unsafe { fb_overlap_class(stream.raw(), &view, n_ao, d_matrix.as_mut_ptr()) };
     assert_eq!(status, FB_LAUNCH_SUCCESS);
-    let got: Vec<f64> = d_matrix
-        .read(&stream)
-        .as_chunks::<8>()
-        .0
-        .iter()
-        .map(|c| f64::from_ne_bytes(*c))
-        .collect();
+    let got: Vec<f64> = read(&budget, &stream, &d_matrix);
     assert_eq!(got[0].to_bits(), 0, "S_00 was written");
     assert_eq!(got[3].to_bits(), 0, "S_11 was written");
     assert_eq!(got[1].to_bits(), 0, "S_01, above the diagonal, was written");
