@@ -1,0 +1,31 @@
+{
+  "description": "The old Rust path's (planner and arena) DF-RHF energies, hartree, from the SAD guess with schwarz_threshold = 0 at its default tolerances, and its iteration counts; water's S, H and metric beside this file as old_path_h2o_*.npy",
+  "energies": [
+    {
+      "aux_basis": "cc-pvdz-jkfit",
+      "basis": "cc-pvdz",
+      "energy": -76.02675114054269,
+      "iterations": 11,
+      "xyz": "h2o.xyz"
+    },
+    {
+      "aux_basis": "cc-pvdz-jkfit",
+      "basis": "cc-pvdz",
+      "energy": -230.7217292709211,
+      "iterations": 11,
+      "xyz": "benzene.xyz"
+    },
+    {
+      "aux_basis": "cc-pvdz-jkfit",
+      "basis": "cc-pvdz",
+      "energy": -77.86754582433565,
+      "iterations": 57,
+      "xyz": "ethylene_meci856.xyz"
+    }
+  ],
+  "provenance": {
+    "card": "NVIDIA GeForce RTX 3080",
+    "rev": "cbc10e1e",
+    "writer": "rust/pipeline/scf/tests/steps_reference.rs"
+  }
+}

@@ -38,6 +38,8 @@ wwr-sys = { workspace = true, features = ["blas"] }
 [dev-dependencies]
 fb-atom.workspace = true
 fb-core-types.workspace = true
+# The metric of fb-steps' recorded references (`tests/steps_reference.rs`).
+fb-integrals-eri-density-fitting-metric.workspace = true
 fb-io-npy.workspace = true
 fb-io-xyz.workspace = true
 fb-test-support.workspace = true
