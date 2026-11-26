@@ -1,6 +1,6 @@
-//! The host overlap, by both routes, against PySCF's `int1e_ovlp`, on the
-//! GPU crate's own fixtures and references
-//! (`rust/integrals/one_electron/overlap/tests/data/`, whose
+//! The host overlap, by both routes, against PySCF's `int1e_ovlp`, on its
+//! fixtures and references
+//! (`rust/integrals/s_overlap_host/tests/data/`, whose
 //! `reference.py` pins the basis digits, the CODATA 2018 bohr and the
 //! unrenormalized contractions): water in STO-3G and cc-pVDZ, and CO in
 //! cc-pVTZ, f on both atoms and the bond off every axis. The packed lower
@@ -15,10 +15,10 @@ use fb_integrals_s_overlap_host::{overlap, overlap_via_cartesian};
 /// The bar, relative to `max |S_ref|`.
 const BAR: f64 = 1e-12;
 
-/// A file of the GPU crate's `data/`.
+/// A file of `tests/data/`.
 fn data(file: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../one_electron/overlap/tests/data")
+        .join("tests/data")
         .join(file)
 }
 

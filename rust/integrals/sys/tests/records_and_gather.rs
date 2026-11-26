@@ -3,9 +3,9 @@
 //! (tier 4): a slice one element short, and a table index outside what it
 //! indexes, each refused before anything is enqueued, naming the kernel.
 //! Every device buffer a call could write is filled first, and still holds
-//! the fill after the refusals. Each call's results against the old
-//! layer's are `fb-integrals-mmd`'s `tests/stream_records.rs` and
-//! `fb-integrals-eri-density-fitting-pair-map`'s `tests/device.rs`.
+//! the fill after the refusals. Each call's results are held by
+//! `fb-steps`' chain, through the eri step's B and the energy against
+//! PySCF's.
 //!
 //! The inputs are the smallest that reach every check: two shells, s of
 //! two primitives and p of one, and their one pair, `(0, 1)`, two records;

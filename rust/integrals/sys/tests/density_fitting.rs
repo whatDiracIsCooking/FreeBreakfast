@@ -16,9 +16,13 @@
 //! attraction does. Every class of the packed launcher is held to libcint
 //! by `packed_witness.rs`.
 
-use fb_core_wwr::handle::DeviceHandleStream;
-use fb_core_wwr::runtime::Stream;
-use fb_core_wwr::runtime::tests::DeviceBytes;
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
+
+use fb_core_budget::{Backing, Budget, Caps, DeviceBuf, Ledger, PinnedBuf, Plain};
+use fb_core_device::{DeviceSlice, DeviceSliceMut, Stream};
 use fb_integrals_sys::{
     FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, FB_LAUNCH_UNSUPPORTED, FB_METRIC_MAX_MOMENTUM,
     FB_METRIC_PAIR_FIELDS, FB_METRIC_RECORD_FIELDS, FB_THREE_CENTER_AUX_FIELDS,
@@ -28,6 +32,38 @@ use fb_integrals_sys::{
 };
 use std::f64::consts::PI;
 use std::ptr::{NonNull, null, null_mut};
+
+/// A real ledger on device 0, for the buffers.
+fn ledger() -> Ledger {
+    let caps = Caps::read(&[0], &[None], None, Backing::Real).unwrap();
+    Ledger::new(caps, Backing::Real, vec![0], false)
+}
+
+/// `data` in pinned memory, the host end of a copy.
+fn pinned<T: Plain>(budget: &Budget<'_>, data: &[T]) -> PinnedBuf<T> {
+    let mut p = budget.pinned::<T>(0, data.len());
+    p.copy_from_slice(data);
+    p
+}
+
+/// `data` uploaded into a device buffer.
+fn device<T: Plain>(budget: &Budget<'_>, stream: &Stream, data: &[T]) -> DeviceBuf<T> {
+    let mut d = budget.device::<T>(0, data.len());
+    drop(
+        stream
+            .upload(&mut d, pinned(budget, data))
+            .unwrap()
+            .sync()
+            .unwrap(),
+    );
+    d
+}
+
+/// A device buffer read back to the host.
+fn read<T: Plain>(budget: &Budget<'_>, stream: &Stream, d: &DeviceBuf<T>) -> Vec<T> {
+    let host = budget.pinned::<T>(0, d.len());
+    stream.download(host, d).unwrap().sync().unwrap().to_vec()
+}
 
 // libm's erf, which std links on every target this tree builds for: f64's
 // own is not stable yet.
@@ -69,16 +105,6 @@ fn bra_view(la: i32, lb: i32, n_rec: i32, f: [*const f64; 11]) -> fb_primitive_p
 /// The Boys function of order 0, through libm's `erf`.
 fn boys_f0(x: f64) -> f64 {
     0.5 * (PI / x).sqrt() * erf(x.sqrt())
-}
-
-/// A device array of doubles read back.
-fn read_f64(d: &DeviceBytes, stream: &Stream) -> Vec<f64> {
-    d.read(stream)
-        .as_chunks::<8>()
-        .0
-        .iter()
-        .map(|c| f64::from_ne_bytes(*c))
-        .collect()
 }
 
 /// Both mirror positions of a 2 x 2 block, flat indices 1 and 2, within
@@ -129,30 +155,32 @@ fn one_ss_aux_pair_is_the_closed_form_metric() {
     let pairs = [0_i32, 1, 1, 2, 0, 1];
     assert_eq!(pairs.len(), FB_METRIC_PAIR_FIELDS as usize);
 
+    let ledger = ledger();
+    let budget = ledger.budget("test");
     let stream = Stream::new(0);
-    let d_records = DeviceBytes::upload(&records, &stream);
-    let d_pairs = DeviceBytes::upload(&pairs, &stream);
+    let d_records = device(&budget, &stream, &records);
+    let d_pairs = device(&budget, &stream, &pairs);
     let n_aux = 2;
-    let d_metric = DeviceBytes::upload(&[0.0_f64; 4], &stream);
+    let mut d_metric = device(&budget, &stream, &[0.0_f64; 4]);
     // SAFETY: the records are FB_METRIC_RECORD_FIELDS segments of two
     // doubles, the pair FB_METRIC_PAIR_FIELDS segments of one int32 naming
     // records 0 and 1 and AOs within n_aux, the metric n_aux x n_aux; none
     // overlap.
     let status = unsafe {
         fb_metric_class(
-            stream.stream(),
+            stream.raw(),
             0,
             0,
             2,
-            d_records.0.cast(),
+            d_records.as_ptr().cast(),
             1,
-            d_pairs.0.cast(),
+            d_pairs.as_ptr().cast(),
             n_aux,
-            d_metric.0.cast(),
+            d_metric.as_mut_ptr(),
         )
     };
     assert_eq!(status, FB_LAUNCH_SUCCESS);
-    check_mirrors(&read_f64(&d_metric, &stream), expected, 1e-12);
+    check_mirrors(&read(&budget, &stream, &d_metric), expected, 1e-12);
 }
 
 /// Needs a GPU. One (ss|s) cell, A at the origin, B at (1.5, 0, 0) and the
@@ -198,38 +226,35 @@ fn one_ss_s_cell_is_the_closed_form_three_center() {
     let cells = [0_i32, 1, 0, 1, 0, 0];
     assert_eq!(cells.len(), FB_THREE_CENTER_PACKED_CELL_FIELDS as usize);
 
+    let ledger = ledger();
+    let budget = ledger.budget("test");
     let stream = Stream::new(0);
-    let d_bra = bra.map(|v| DeviceBytes::upload(&[v], &stream));
-    let view = bra_view(
-        0,
-        0,
-        1,
-        std::array::from_fn(|f| d_bra[f].0.cast_const().cast()),
-    );
-    let d_aux = DeviceBytes::upload(&aux, &stream);
-    let d_cells = DeviceBytes::upload(&cells, &stream);
+    let d_bra = bra.map(|v| device(&budget, &stream, &[v]));
+    let view = bra_view(0, 0, 1, std::array::from_fn(|f| d_bra[f].as_ptr()));
+    let d_aux = device(&budget, &stream, &aux);
+    let d_cells = device(&budget, &stream, &cells);
     let (n_col, n_aux) = (1, 1);
-    let d_eri3 = DeviceBytes::upload(&[0.0_f64], &stream);
+    let mut d_eri3 = device(&budget, &stream, &[0.0_f64]);
     // SAFETY: each bra field is one record on the device and the aux its
     // field count of one-element segments, the cell names record 0 of each
     // and its one-element block at destination 0, the tensor n_col x n_aux;
     // none overlap.
     let status = unsafe {
         fb_three_center_packed_class(
-            stream.stream(),
+            stream.raw(),
             &view,
             0,
             1,
-            d_aux.0.cast(),
+            d_aux.as_ptr().cast(),
             1,
-            d_cells.0.cast(),
+            d_cells.as_ptr().cast(),
             n_col,
             n_aux,
-            d_eri3.0.cast(),
+            d_eri3.as_mut_ptr(),
         )
     };
     assert_eq!(status, FB_LAUNCH_SUCCESS);
-    let got = read_f64(&d_eri3, &stream)[0];
+    let got = read(&budget, &stream, &d_eri3)[0];
     let rel = ((got - expected) / expected).abs();
     assert!(
         rel <= 1e-12,

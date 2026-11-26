@@ -1,9 +1,9 @@
 //! The host nuclear attraction, by both routes, against PySCF's
-//! `int1e_nuc`, on the device crate's own fixtures and references
-//! (`rust/integrals/one_electron/potential_en/tests/data/`, whose README
+//! `int1e_nuc`, on its fixtures and references
+//! (`rust/integrals/v_potential_en_host/tests/data/`, whose README
 //! says what they pin): water in STO-3G and cc-pVDZ, and CO in cc-pVTZ, f
 //! on both atoms and the bond off every axis. The packed lower triangle is
-//! compared with the reference's, at that crate's bar, `1e-12 max |V_ref|`.
+//! compared with the reference's, at the bar, `1e-12 max |V_ref|`.
 
 use std::path::PathBuf;
 
@@ -15,10 +15,10 @@ use fb_integrals_v_potential_en_host::{
 /// The bar, relative to `max |V_ref|`.
 const BAR: f64 = 1e-12;
 
-/// A file of the device crate's `tests/data/`.
+/// A file of `tests/data/`.
 fn data(file: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../one_electron/potential_en/tests/data")
+        .join("tests/data")
         .join(file)
 }
 

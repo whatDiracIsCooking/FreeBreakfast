@@ -1,6 +1,6 @@
 [package]
 name = "fb-localization-sys"
-description = "localization's launch wrappers: FFI bindings over libfb_localization_kernels.so, the Pipek-Mezey tasks that launch them, and the same launches on the v0.0.4 layer"
+description = "localization's launch wrappers: FFI bindings over libfb_localization_kernels.so and the Pipek-Mezey launches over them on the v0.0.4 layer"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -11,15 +11,10 @@ workspace = true
 
 [dependencies]
 contracts.workspace = true
-fb-core-arena.workspace = true
 # The v0.0.4 layer's stream and slices, which the step's launches take
 # (docs/gpu_layer.md, "The v0.0.4 runtime").
 fb-core-device.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-log.workspace = true
-fb-core-planner.workspace = true
-fb-core-thread-pool = { workspace = true, features = ["device"] }
-fb-core-wwr.workspace = true
 fb-kernel-abi.workspace = true
-# BLAS for the operation W = S C's gemm takes.
-wwr-sys = { workspace = true, features = ["blas"] }
+wwr-sys.workspace = true

@@ -1,10 +1,10 @@
-//! The host metric, by both routes, against PySCF's `int2c2e`, on the device metric crate's
-//! own fixtures and references
-//! (`rust/integrals/eri/density_fitting/metric/tests/data/`, whose README
+//! The host metric, by both routes, against PySCF's `int2c2e`, on its
+//! fixtures and references
+//! (`rust/integrals/df_metric/tests/data/`, whose README
 //! says what they pin): water in cc-pVDZ-JKFIT, aux through f, and iron
 //! beside water in def2-universal-JKFIT, aux through i with contracted
 //! shells. The packed lower triangle is compared with the reference's, at
-//! that crate's bar, `1e-12 max |M_ref|`.
+//! the bar, `1e-12 max |M_ref|`.
 
 use std::path::PathBuf;
 
@@ -14,10 +14,10 @@ use fb_integrals_df_metric::{metric, metric_via_cartesian};
 /// The bar, relative to `max |M_ref|`.
 const BAR: f64 = 1e-12;
 
-/// A file of the device metric crate's `tests/data/`.
+/// A file of `tests/data/`.
 fn data(file: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../eri/density_fitting/metric/tests/data")
+        .join("tests/data")
         .join(file)
 }
 

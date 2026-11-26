@@ -1,13 +1,13 @@
 //! The host kinetic energy, by both routes, against PySCF's `int1e_kin`, on
-//! the rebuild's GPU kinetic crate's own fixtures and references
-//! (`rust/integrals/one_electron/kinetic/tests/data/`, whose `reference.py`
+//! its fixtures and references
+//! (`rust/integrals/t_kinetic_host/tests/data/`, whose `reference.py`
 //! pins the basis digits, the CODATA 2018 bohr and the unrenormalized
 //! contractions): water in STO-3G and cc-pVDZ, and CO in cc-pVTZ, f on both
 //! atoms and the bond off every axis. The packed lower triangle is compared
-//! with the reference's, at that crate's bar, `1e-12 max |T_ref|`.
+//! with the reference's, at the bar, `1e-12 max |T_ref|`.
 //!
 //! `overlap_and_kinetic`'s S is held to PySCF's `int1e_ovlp` on the same
-//! molecules (`rust/integrals/one_electron/overlap/tests/data/`, the same XYZ files byte
+//! molecules (`rust/integrals/s_overlap_host/tests/data/`, the same XYZ files byte
 //! for byte), at the same bar, and its T to `kinetic`'s bits.
 
 use std::path::{Path, PathBuf};
@@ -18,10 +18,10 @@ use fb_integrals_t_kinetic_host::{kinetic, kinetic_via_cartesian, overlap_and_ki
 /// The bar, relative to `max |T_ref|`.
 const BAR: f64 = 1e-12;
 
-/// A file of the GPU crate's `tests/data/`.
+/// A file of `tests/data/`.
 fn data(file: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../one_electron/kinetic/tests/data")
+        .join("tests/data")
         .join(file)
 }
 
@@ -38,7 +38,7 @@ fn basis(xyz: &str, basis_name: &str) -> fb_basis::BasisSet {
 /// The overlap's PySCF reference `stem`.npy.
 fn overlap_reference(stem: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../one_electron/overlap/tests/data")
+        .join("../s_overlap_host/tests/data")
         .join(format!("{stem}.npy"))
 }
 

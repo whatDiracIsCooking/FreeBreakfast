@@ -24,8 +24,8 @@
 //! ([`fb_basis::solid_harmonic_block`], scaled by `sqrt((2l-1)!!)` as
 //! [`fb_basis::spherical_transform_matrix`] scales it). Coefficients are
 //! taken as given: place the set `primitive_normalized()`, as the DF steps
-//! do, and the result is the matrix
-//! `rust/integrals/eri/density_fitting/metric` builds on a card.
+//! do, and the result is the Cartesian metric of `fb_metric_class` (in
+//! `fb-integrals-sys`) carried to the solid harmonics.
 //!
 //! **The lower triangle alone.** `M` is symmetric, and [`metric`] returns
 //! it packed: `(P, Q)`, `Q <= P`, at [`lower_index`], `n (n + 1) / 2`

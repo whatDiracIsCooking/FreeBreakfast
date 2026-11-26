@@ -411,10 +411,6 @@ every case that calls it is named here, which `fb-doc-check`'s
 - `fb-io-sad`'s `baked_matches_computed_through_argon`, every element
   through argon in every compiled-in set against the atomic SCF;
   `baked_matches_computed_for_hco` is its fast representative.
-- `fb-integrals-eri-density-fitting-three-center`'s
-  `high_aux_matches_pyscf_through_ff_i`, all 70 three-center classes
-  through (ff|i) against PySCF; `water_matches_pyscf_and_is_exactly_symmetric`
-  is its family's representative.
 - `fb-core-planner`'s `tier5_every_split_is_bitwise_one_workers`, the
   partitioned product on one, two and four workers against one another,
   a clique made per run;
