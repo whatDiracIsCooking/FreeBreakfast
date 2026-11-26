@@ -58,10 +58,10 @@ use crate::steps::{GPU0, fan_out};
 /// for a measured value.
 pub const DEFAULT_MEM_PER_GPU: u64 = 2 << 30;
 
-/// The most one pinned staging buffer of a J/K pass holds: the rows of B on
-/// their way up. Page-locking costs about 0.9 s per GiB, so staging does
-/// not grow with the limit. Not smaller: at 64 MiB gly10's aux batch of 97
-/// rows went up in four buffers, each with its blocking sync, and the SCF
+/// The most one pinned staging buffer of a J/K pass holds: an aux batch of
+/// B's rows on its way up, which is never wider than this. Page-locking
+/// costs about 0.9 s per GiB, so staging does not grow with the limit. Not
+/// smaller: at 64 MiB gly10's rows went up 31 at a time for 97, and the SCF
 /// took 70.0 s for 63.6 s.
 pub const STAGING_BYTES: usize = 256 << 20;
 
@@ -490,31 +490,28 @@ fn gpu_pass(
 
     let cached = st.cache_rows.min(share.len());
     let mut uploaded = 0;
-    // `rows` rows of B from row `first`, through the pinned staging a
-    // buffer of it at a time, with a blocking sync per buffer: the pinned
-    // bytes are the next buffer's too.
-    let stage = h_packed.len() / n_col;
+    // One aux batch, `rows` rows of B from row `first`, through the pinned
+    // staging, which holds a whole batch, with a blocking sync: the pinned
+    // bytes are the next batch's too.
     let upload = |gpu: &mut GpuResources,
                   into: &mut PartMut<'_, f64>,
                   h_packed: &mut [f64],
                   first: usize,
                   rows: usize|
      -> Status {
-        for at in (0..rows).step_by(stage) {
-            let len = n_col * stage.min(rows - at);
-            let from = n_col * (first + at);
-            h_packed[..len].copy_from_slice(&b[from..from + len]);
-            let mut into = part_mut(into, at * n_col, len);
-            gpu.stream().upload(&mut into, &h_packed[..len])?;
-            gpu.stream().sync()?;
-        }
-        Ok(())
+        let len = n_col * rows;
+        h_packed[..len].copy_from_slice(&b[n_col * first..][..len]);
+        gpu.stream().upload(into, &h_packed[..len])?;
+        gpu.stream().sync()
     };
-    // The first pass fills the cache, from the host copy: the build's pair
-    // batches are the wrong index order to fill it.
+    // The first pass fills the cache a batch at a time, from the host copy:
+    // the build's pair batches are the wrong index order to fill it.
     if !st.cache_filled {
-        let mut into = part_mut(&mut cache, 0, cached * n_col);
-        upload(gpu, &mut into, h_packed, share.start, cached)?;
+        for first in (0..cached).step_by(width) {
+            let rows = width.min(cached - first);
+            let mut into = part_mut(&mut cache, first * n_col, rows * n_col);
+            upload(gpu, &mut into, h_packed, share.start + first, rows)?;
+        }
         uploaded += cached;
         st.cache_filled = true;
     }
@@ -586,7 +583,7 @@ fn jk_layout(d: &Dims, p: usize, cached: usize) -> JkLayout {
         h_d: pin.span(n2),
         h_j: pin.span(n2),
         h_k: pin.span(n2),
-        h_packed: pin.span(p.min(staged_rows(d)) * n_col),
+        h_packed: pin.span(p * n_col),
         device_bytes: dev.bytes(),
         pinned_bytes: pin.bytes(),
     }
@@ -852,10 +849,14 @@ impl Step<MainBus> for EriStep {
         };
         let width = widest(least, most, &|w| ring_at(w) <= limit);
         // The aux batch width: the widest whose work takes at most half
-        // the buffer, so the cache has the rest; never past a share.
+        // the buffer, so the cache has the rest; never past a share, nor
+        // past what one pinned staging buffer holds.
         let shares: Vec<Range<usize>> = (0..n_gpus).map(|g| share(q, g, n_gpus)).collect();
         let longest = shares.iter().map(Range::len).max().unwrap_or(1).max(1);
-        let most_p = longest.min(i32::MAX as usize / n2.max(1)).max(1);
+        let most_p = longest
+            .min(i32::MAX as usize / n2.max(1))
+            .min(staged_rows(d))
+            .max(1);
         let jk_width = widest(1, most_p, &|p| jk_at(p) <= limit / 2);
         if width == least && most > least || jk_width == 1 && most_p > 1 {
             log::warn!(
