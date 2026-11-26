@@ -1,7 +1,9 @@
 //! The MainBus and the steps' budget with no device (tier 3): setup's
 //! counts on gly10 in cc-pVDZ / cc-pVDZ-JKFIT against the prototype's,
 //! the dry budget's exact bytes from them, the orthogonalizer's scratch
-//! apart from every step unordered with it, the config's refusals, the
+//! apart from every step unordered with it, the config's refusals (an
+//! unknown key and an impossible or open-shell multiplicity naming the
+//! file and the line), a closed-shell ion's budget the neutral's, the
 //! allocation record failing a step that allocates on the plain heap in its
 //! `run`, and the four host steps passing it: each builds its triangle in
 //! its pinned staging, so no `run` allocates one of its own
@@ -140,6 +142,117 @@ fn a_run_of_no_gpu_or_no_host_thread_and_a_table_of_no_step_here_are_refused() {
     let text = "[molecule]\nxyz = \"h2o.xyz\"\n[basis]\nname = \"cc-pvdz\"\n[gradient]\n";
     let error = fb_steps::Config::parse(text, std::path::Path::new(".")).unwrap_err();
     assert_eq!(error.kind, ErrorKind::InvalidConfig, "{}", error.message);
+}
+
+/// `text` written to `name` in the target's scratch directory, `@data`
+/// replaced by `tests/data`, and read back as the file it is.
+fn read_config(
+    name: &str,
+    text: &str,
+) -> (
+    std::path::PathBuf,
+    fb_core_error_handling::Result<fb_steps::Config>,
+) {
+    let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::write(&path, text.replace("@data", &data.display().to_string())).unwrap();
+    let config = fb_steps::Config::read(&path);
+    (path, config)
+}
+
+/// The water cation's doublet counts five alpha and four beta electrons,
+/// and setup refuses it `Unsupported`, naming the key, the file and the
+/// line: the steps run a closed shell.
+#[test]
+fn the_water_cations_doublet_is_five_alpha_and_four_beta_and_refused_open() {
+    let text = "[molecule]\nxyz = \"@data/h2o.xyz\"\ncharge = 1\nmultiplicity = 2\n\
+                [basis]\nname = \"cc-pvdz\"\n";
+    let (path, config) = read_config("h2o_cation.toml", text);
+    let config = config.unwrap();
+    let spin = &config.molecule;
+    let molecule = fb_io_xyz::read_xyz(&spin.xyz, spin.charge, spin.multiplicity).unwrap();
+    assert_eq!(spin.occupations(molecule.electron_count()).unwrap(), (5, 4));
+    let Err(error) = MainBus::setup(config, Backing::Dry) else {
+        panic!("an open shell");
+    };
+    assert_eq!(error.kind, ErrorKind::Unsupported, "{}", error.message);
+    let at = format!("{}:4: [molecule] multiplicity = 2", path.display());
+    assert!(error.message.starts_with(&at), "{}", error.message);
+}
+
+/// A multiplicity the electron count cannot have, and an unknown key, are
+/// each refused `InvalidConfig` naming the file and the line.
+#[test]
+fn an_impossible_multiplicity_and_an_unknown_key_name_the_file_and_line() {
+    for (name, text, line) in [
+        (
+            "h2o_triplet_cation.toml",
+            "[molecule]\nxyz = \"@data/h2o.xyz\"\ncharge = 1\nmultiplicity = 3\n\
+             [basis]\nname = \"cc-pvdz\"\n",
+            4,
+        ),
+        (
+            "h2o_cation_singlet.toml",
+            "[basis]\nname = \"cc-pvdz\"\n[molecule]\nxyz = \"@data/h2o.xyz\"\ncharge = 1\n",
+            5,
+        ),
+        (
+            "h2o_neutral_doublet.toml",
+            "[basis]\nname = \"cc-pvdz\"\n\n[molecule]\nxyz = \"@data/h2o.xyz\"\n\
+             multiplicity = 2\n",
+            6,
+        ),
+    ] {
+        let (path, config) = read_config(name, text);
+        let Err(error) = MainBus::setup(config.unwrap(), Backing::Dry) else {
+            panic!("{name}: an impossible multiplicity");
+        };
+        assert_eq!(error.kind, ErrorKind::InvalidConfig, "{}", error.message);
+        let at = format!("{}:{line}: [molecule] multiplicity = ", path.display());
+        assert!(error.message.starts_with(&at), "{name}: {}", error.message);
+        assert!(
+            error.message.contains("is impossible for"),
+            "{}",
+            error.message
+        );
+    }
+    let text = "[molecule]\nxyz = \"@data/h2o.xyz\"\nspin = 2\n[basis]\nname = \"cc-pvdz\"\n";
+    let (path, config) = read_config("h2o_spin.toml", text);
+    let error = config.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidConfig);
+    let at = format!("{}:3: unknown field `spin`", path.display());
+    assert!(error.message.starts_with(&at), "{}", error.message);
+}
+
+/// A closed-shell ion, water's dication, is budgeted exactly as the
+/// neutral: its dimensions differ in the occupations alone, and no step's
+/// budget reads them, so the table is the same text.
+#[test]
+fn a_closed_shell_ions_dry_budget_is_the_neutrals() {
+    let budget = |charge: i32| {
+        let text = format!(
+            "[molecule]\nxyz = \"h2o.xyz\"\ncharge = {charge}\n[basis]\nname = \"cc-pvdz\"\n\
+             [eri]\naux_basis = \"cc-pvdz-jkfit\"\n[scf]\n"
+        );
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+        let config = fb_steps::Config::parse(&text, &dir).unwrap();
+        let plan = plan(MainBus::setup(config, Backing::Dry).unwrap()).unwrap();
+        plan.budget(&Executor::new(2)).unwrap();
+        let dims = plan.bus().shared().dims.clone();
+        (dims, plan.bus().ledger().table())
+    };
+    let (neutral, neutral_table) = budget(0);
+    let (ion, ion_table) = budget(2);
+    assert_eq!((neutral.n_occ, neutral.n_alpha, neutral.n_beta), (5, 5, 5));
+    assert_eq!((ion.n_occ, ion.n_alpha, ion.n_beta), (4, 4, 4));
+    let occupied_as_the_neutral = fb_steps::Dims {
+        n_occ: 5,
+        n_alpha: 5,
+        n_beta: 5,
+        ..ion
+    };
+    assert_eq!(occupied_as_the_neutral, neutral);
+    assert_eq!(ion_table, neutral_table);
 }
 
 /// A bus of one step that allocates `BYTES` on the plain heap in its `run`.

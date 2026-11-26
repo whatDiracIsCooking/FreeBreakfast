@@ -57,12 +57,84 @@ pub struct Config {
     pub resources: ResourcesTable,
 }
 
-/// `[molecule]`.
+/// `[molecule]`: the geometry, its net charge and its spin multiplicity.
+///
+/// ```
+/// use std::path::Path;
+/// use fb_steps::Config;
+///
+/// let text = "[molecule]\nxyz = \"h2o.xyz\"\ncharge = 1\nmultiplicity = 2\n\
+///             [basis]\nname = \"cc-pvdz\"\n";
+/// let molecule = Config::parse(text, Path::new(".")).unwrap().molecule;
+/// assert_eq!(molecule.occupations(9).unwrap(), (5, 4));
+/// let error = molecule.occupations(10).unwrap_err();
+/// assert!(error.message.starts_with("config:4: [molecule] multiplicity = 2"));
+/// ```
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MoleculeTable {
     /// The XYZ file, relative to the config's directory.
     pub xyz: PathBuf,
+    /// The net charge, in units of the elementary charge, positive for a
+    /// cation: the electron count is `Σ Z - charge`. Default 0.
+    #[serde(default)]
+    pub charge: i32,
+    /// The spin multiplicity `2S + 1`: at least 1, at most the electron
+    /// count plus one, and of the count's parity plus one, or the run is
+    /// refused (`InvalidConfig`, [`MoleculeTable::occupations`]). Above 1,
+    /// an open shell, it is refused `Unsupported` in setup: the steps run
+    /// a closed shell. Default 1.
+    #[serde(default = "default_multiplicity")]
+    pub multiplicity: i32,
+    /// Where the spin was set, `<file>:<line>`: `multiplicity`'s line,
+    /// else `charge`'s, else the table's.
+    #[serde(skip)]
+    at: String,
+}
+
+/// `[molecule] multiplicity`'s default: a singlet.
+fn default_multiplicity() -> i32 {
+    1
+}
+
+impl MoleculeTable {
+    /// The occupations `(n_alpha, n_beta)` of `electrons` electrons at
+    /// this multiplicity: `n_alpha - n_beta = multiplicity - 1`, a closed
+    /// shell's both half the count.
+    ///
+    /// # Errors
+    /// `InvalidConfig`, `<file>:<line>: [molecule] multiplicity = ...`
+    /// naming the count and the charge: a count that is not positive, a
+    /// multiplicity below 1 or past the count plus one, or one of the
+    /// count's parity.
+    pub fn occupations(&self, electrons: i32) -> Result<(usize, usize)> {
+        let open = self.multiplicity - 1;
+        if electrons <= 0 || open < 0 || electrons < open || (electrons - open) % 2 != 0 {
+            return Err(Error::config(format!(
+                "{}: [molecule] multiplicity = {} is impossible for {electrons} electrons \
+                 (charge {})",
+                self.at, self.multiplicity, self.charge
+            )));
+        }
+        // Both non-negative, so the casts are exact.
+        Ok((
+            ((electrons + open) / 2).unsigned_abs() as usize,
+            ((electrons - open) / 2).unsigned_abs() as usize,
+        ))
+    }
+}
+
+/// The lines of `[molecule]`'s spin keys, read again with their spans.
+#[derive(Deserialize)]
+struct SpinSpans {
+    molecule: toml::Spanned<MoleculeSpans>,
+}
+
+/// `[molecule]`'s spin keys, spanned; every other key ignored.
+#[derive(Deserialize)]
+struct MoleculeSpans {
+    charge: Option<toml::Spanned<i32>>,
+    multiplicity: Option<toml::Spanned<i32>>,
 }
 
 /// `[basis]`.
@@ -208,26 +280,56 @@ impl Default for ResourcesTable {
 
 impl Config {
     /// Parse `text`, resolving a relative `[molecule] xyz` against `dir`.
+    /// A refusal, and a later one of `[molecule]`'s spin, names the line
+    /// as `config:<line>`.
     ///
     /// # Errors
-    /// `InvalidConfig`, with the parser's message.
+    /// `InvalidConfig`, `config:<line>: ...` with the parser's message: a
+    /// key or table the config does not have, a required one missing, a
+    /// value of the wrong type.
     pub fn parse(text: &str, dir: &Path) -> Result<Config> {
-        let mut config: Config =
-            toml::from_str(text).map_err(|e| Error::config(format!("config: {e}")))?;
+        Config::parse_in(text, dir, "config")
+    }
+
+    /// Read and parse the config file at `path`; a refusal names the file
+    /// and the line, `<file>:<line>: ...`.
+    ///
+    /// # Errors
+    /// `Io` if it cannot be read; [`Config::parse`]'s, naming the file.
+    pub fn read(path: &Path) -> Result<Config> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| Error::io(format!("cannot read '{}': {e}", path.display())))?;
+        Config::parse_in(
+            &text,
+            path.parent().unwrap_or(Path::new(".")),
+            &path.display().to_string(),
+        )
+    }
+
+    /// [`Config::parse`], its refusals and `[molecule]`'s spin located in
+    /// `file`.
+    fn parse_in(text: &str, dir: &Path, file: &str) -> Result<Config> {
+        let line = |offset: usize| text[..offset].matches('\n').count() + 1;
+        let mut config: Config = toml::from_str(text).map_err(|e| {
+            let at = e
+                .span()
+                .map_or(file.to_owned(), |s| format!("{file}:{}", line(s.start)));
+            Error::config(format!("{at}: {}", e.message().trim_end()))
+        })?;
+        // The text parsed as a `Config`, so it parses again.
+        let spans: SpinSpans = toml::from_str(text).map_err(|e| Error::config(e.to_string()))?;
+        let table = &spans.molecule;
+        let set = table.get_ref();
+        let offset = set
+            .multiplicity
+            .as_ref()
+            .or(set.charge.as_ref())
+            .map_or(table.span().start, |k| k.span().start);
+        config.molecule.at = format!("{file}:{}", line(offset));
         if config.molecule.xyz.is_relative() {
             config.molecule.xyz = dir.join(&config.molecule.xyz);
         }
         Ok(config)
-    }
-
-    /// Read and parse the config file at `path`.
-    ///
-    /// # Errors
-    /// `Io` if it cannot be read; [`Config::parse`]'s.
-    pub fn read(path: &Path) -> Result<Config> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| Error::io(format!("cannot read '{}': {e}", path.display())))?;
-        Config::parse(&text, path.parent().unwrap_or(Path::new(".")))
     }
 }
 
@@ -263,8 +365,12 @@ fn n_sph_of(l: i32) -> usize {
 pub struct Dims {
     /// Spherical AOs.
     pub n_ao: usize,
-    /// Doubly occupied orbitals.
+    /// Doubly occupied orbitals, `n_beta`.
     pub n_occ: usize,
+    /// Occupied alpha orbitals, `n_occ` plus the singly occupied ones.
+    pub n_alpha: usize,
+    /// Occupied beta orbitals.
+    pub n_beta: usize,
     /// Orbital shells.
     pub n_shell: usize,
     /// Orbital primitives.
@@ -287,10 +393,15 @@ pub struct Dims {
 }
 
 impl Dims {
-    /// Count the dimensions of `basis`, `aux` and a closed shell of
-    /// `electrons` electrons, building no array.
+    /// Count the dimensions of `basis`, `aux` and the occupations
+    /// `(n_alpha, n_beta)` ([`MoleculeTable::occupations`]), building no
+    /// array.
     #[must_use]
-    pub fn count(basis: &BasisSet, aux: Option<&BasisSet>, electrons: usize) -> Dims {
+    pub fn count(
+        basis: &BasisSet,
+        aux: Option<&BasisSet>,
+        (n_alpha, n_beta): (usize, usize),
+    ) -> Dims {
         let classes = count_classes(basis);
         let mut aux_shells_of_l = Vec::new();
         for shell in aux.iter().flat_map(|a| a.shells()) {
@@ -309,7 +420,9 @@ impl Dims {
         let n_shell = basis.nshells() as usize;
         Dims {
             n_ao: basis.nao_sphe() as usize,
-            n_occ: electrons / 2,
+            n_occ: n_beta,
+            n_alpha,
+            n_beta,
             n_shell,
             n_prim: prims(basis),
             n_shell_pair: n_shell * (n_shell + 1) / 2,
@@ -450,18 +563,24 @@ impl MainBus {
     /// solver work buffer counted as zero.
     ///
     /// # Errors
-    /// The readers' refusals; an odd electron count (`Unsupported`); a
-    /// config with no GPU, no thread or no host thread, or a device the
-    /// runtime does not see (`InvalidConfig`); the host integrals' threads
-    /// not starting (`Io`); the recipes library's mismatch; a cap's reading.
+    /// The readers' refusals; [`MoleculeTable::occupations`]'s; an open
+    /// shell, `[molecule] multiplicity` above 1 (`Unsupported`, naming the
+    /// key, until the ROHF step); a config with no GPU, no thread or no
+    /// host thread, or a device the runtime does not see
+    /// (`InvalidConfig`); the host integrals' threads not starting (`Io`);
+    /// the recipes library's mismatch; a cap's reading.
     pub fn setup(config: Config, backing: Backing) -> Result<Arc<MainBus>> {
         fb_core_device::single_thread_host_blas();
-        let molecule = fb_io_xyz::read_xyz(&config.molecule.xyz, 0, 1)?;
-        let electrons = molecule.electron_count().unsigned_abs() as usize;
-        if !electrons.is_multiple_of(2) {
-            return Err(Error::unsupported(
-                "the steps run a closed-shell neutral molecule only",
-            ));
+        let spin = &config.molecule;
+        let molecule = fb_io_xyz::read_xyz(&spin.xyz, spin.charge, spin.multiplicity)?;
+        let occupations = spin.occupations(molecule.electron_count())?;
+        // The closed shell's one refusal: removed with the ROHF step.
+        if occupations.0 != occupations.1 {
+            return Err(Error::unsupported(format!(
+                "{}: [molecule] multiplicity = {} is an open shell, and the steps run a closed \
+                 shell only",
+                spin.at, spin.multiplicity
+            )));
         }
         let basis = fb_io_basis::resolve_basis(&config.basis.name)?
             .primitive_normalized()
@@ -474,7 +593,7 @@ impl MainBus {
             ),
             None => None,
         };
-        let dims = Dims::count(&basis, aux.as_ref(), electrons);
+        let dims = Dims::count(&basis, aux.as_ref(), occupations);
         let e_nuc = fb_molecule::nuclear_repulsion_energy(&molecule);
 
         let res = &config.resources;
