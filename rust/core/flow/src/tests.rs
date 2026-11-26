@@ -12,7 +12,7 @@ use fb_core_budget::{
 };
 use fb_core_error_handling::{Error, ErrorKind, Result, Status};
 
-use crate::{Bus, Dag, Executor, Held, Lane, Locks, Plan, Slot, Step, View, locked};
+use crate::{Bus, Dag, Executor, Held, Lane, Locks, Placement, Plan, Slot, Step, View, locked};
 
 const MIB: u64 = 1 << 20;
 const N: usize = 5;
@@ -28,6 +28,8 @@ struct Spec {
     manager: Vec<usize>,
     /// The steps that declare gpu0's lock.
     gpu0: Vec<usize>,
+    /// The steps placed on gpu0; the rest are host steps.
+    on_gpu0: Vec<usize>,
 }
 
 struct Out {
@@ -146,6 +148,13 @@ macro_rules! fake {
             type Reads = $reads;
             fn slot(bus: &TestBus) -> &Slot<Out> {
                 &bus.slots[$index]
+            }
+            fn placement(bus: &TestBus) -> Placement {
+                if bus.spec.on_gpu0.contains(&$index) {
+                    Placement::Gpu0
+                } else {
+                    Placement::Host
+                }
             }
             fn mem_budget(bus: &TestBus, budget: &Budget<'_>) -> Result<Out> {
                 budget_of($index, bus, budget)
@@ -408,6 +417,32 @@ fn a_lock_of_a_gpu_the_step_does_not_run_on_is_refused() {
     assert_eq!(
         error.message,
         "step 'a' declares the lock of gpu 0, which it does not run on"
+    );
+}
+
+#[test]
+fn a_device_free_plan_budgets_a_gpu_locked_step_and_refuses_to_run_it() {
+    // a runs on gpu0 and declares its lock; no device is behind the plan.
+    let spec = Spec {
+        gpu0: vec![0],
+        on_gpu0: vec![0],
+        ..Spec::default()
+    };
+    let executor = Executor::new(2);
+    let dry = plan(bus_with(spec.clone(), Backing::Dry, false));
+    dry.budget(&executor).unwrap();
+    assert_eq!(dry.bus().ledger.locks_of("a"), [LockId::Gpu(0)]);
+    // On the heap it budgets too, and its run is refused, not indexed past.
+    let host = plan(bus_with(spec, Backing::Host, false));
+    host.budget(&executor).unwrap();
+    let error = host.execute(&executor).expect_err("no device behind gpu 0");
+    assert_eq!(error.kind, ErrorKind::InvalidConfig);
+    assert!(
+        error
+            .message
+            .contains("takes the lock of gpu 0, which has no device in this run"),
+        "{}",
+        error.message
     );
 }
 

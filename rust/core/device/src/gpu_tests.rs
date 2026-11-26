@@ -402,3 +402,31 @@ fn cholesky_matches_a_host_factor() {
     let upper_nan = (0..n).all(|j| (0..j).all(|i| got[i + j * n].is_nan()));
     assert!(upper_nan, "the strict upper triangle was written");
 }
+
+/// `inverse_sqrt` against the host's `1.0 / x.sqrt()`, bit for bit: the
+/// kernel's is a correctly rounded root and division too, contraction off
+/// on HIP (`fb_recipes_launch`'s `maps_each_element_as_the_host_does` has
+/// the argument), and the floor's elements, at and below it, 0.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn inverse_sqrt_matches_the_host() {
+    const FLOOR: f64 = 1e-10;
+    let gpu = gpu0();
+    let mut held = gpu.lock().unwrap();
+    let mut state = 7;
+    let mut values: Vec<f64> = (0..1000)
+        .map(|_| 10f64.powf(6.0 * uniform(&mut state)))
+        .collect();
+    values.extend([FLOOR, 0.5 * FLOOR, 0.0, -1.0]);
+    let mut data = device(held.stream(), &values);
+    held.inverse_sqrt(&mut data, FLOOR).unwrap();
+    let got = host(held.stream(), &data, values.len());
+    for (&x, &y) in values.iter().zip(&got) {
+        let want = if x <= FLOOR { 0.0 } else { 1.0 / x.sqrt() };
+        assert_eq!(
+            y.to_bits(),
+            want.to_bits(),
+            "1/sqrt({x}): {y} against {want}"
+        );
+    }
+}

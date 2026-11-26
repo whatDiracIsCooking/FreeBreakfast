@@ -689,7 +689,12 @@ and fills a stream enqueues, device slices, and each GPU's
   being one step's. In this layer a host sync is the step wrapper's, after
   `run`, a copy token's (`Pending::sync`), and a host's wait on one point
   of a stream (`Event::sync`); each call into the runtime's sync carries an
-  `allow` of `disallowed_methods` naming that.
+  `allow` of `disallowed_methods` naming that. Inside a step's `run` a
+  host sync is allowed at one site, a step reading a solver's flag after
+  its last enqueue (the orthogonalizer's syevd `info`, through its
+  download's token): it waits for no part of the step still to come, and
+  the wrapper's own sync follows at once. The call carries an `allow` of
+  `disallowed_methods` naming that site.
 - **One handle set per GPU, under its lock.** `GpuResources` is a GPU's
   stream, a BLAS and a dense-solver handle made on that stream, and the
   handle workspace; `GpuResources::new` returns it inside a `Mutex`, so
@@ -708,7 +713,9 @@ and fills a stream enqueues, device slices, and each GPU's
   not check `lwork` and writes past a short one. A work buffer is never
   null: a query of 0 is answered 1 (`syevd_lwork`), since on HIP a null
   `work` puts hipSOLVER's handle in library-managed mode.
-- **The recipes take the guard.** `GpuResources::trsm` is the tree's
+- **The recipes take the guard.** `GpuResources::inverse_sqrt` is the
+  recipes' kernel (each element `1 / sqrt(x)`, 0 at or below a floor) on
+  the guard's stream. `GpuResources::trsm` is the tree's
   blocked triangular solve, as `fb_recipes_launch::trsm` is above, and
   `GpuResources::cholesky` the blocked Cholesky in place of a vendor
   `potrf` (rocSOLVER's raced across processes, #410); their diagonal

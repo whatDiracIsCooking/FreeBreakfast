@@ -65,6 +65,7 @@ members = [
     "integrals/s_overlap_host",
     "integrals/t_kinetic_host",
     "integrals/v_potential_en_host",
+    "steps",
 ]
 
 [workspace.package]
@@ -134,6 +135,7 @@ fb-integrals-df-metric = { path = "integrals/df_metric" }
 fb-integrals-s-overlap-host = { path = "integrals/s_overlap_host" }
 fb-integrals-t-kinetic-host = { path = "integrals/t_kinetic_host" }
 fb-integrals-v-potential-en-host = { path = "integrals/v_potential_en_host" }
+fb-steps = { path = "steps" }
 
 contracts = "0.6.11"
 # core::log: the line's local time, and the OS thread id (std has none).
