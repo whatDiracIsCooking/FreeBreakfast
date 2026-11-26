@@ -25,6 +25,8 @@ wwr-sys = { workspace = true, features = ["blas"] }
 
 [dev-dependencies]
 fb-basis.workspace = true
+# The v0.0.4 calls' tests: their device and pinned buffers.
+fb-core-budget.workspace = true
 fb-core-types.workspace = true
 fb-core-wwr = { workspace = true, features = ["test-support"] }
 fb-io-npy.workspace = true

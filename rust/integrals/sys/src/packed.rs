@@ -161,22 +161,23 @@ where
     fn run(&self, rows: &Staged, host: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {
         let (m, n) = (host.take_mut(rows.rows), host.take_mut(rows.cols));
         (self.fill)(m, n, host.take_mut(rows.weights));
-        check_indices(self.nao, m, n);
+        check_indices("packed tables", self.nao, m, n);
         Ok(())
     }
 }
 
 /// Every `m` and `n` inside `[0, nao)`: what the kernels' stores and reads
-/// rest on.
+/// rest on. `what` names the caller in the message.
 ///
 /// # Panics
 /// At the first column outside, naming it and its `(m, n)`.
-fn check_indices(nao: usize, rows: &[i32], cols: &[i32]) {
+#[track_caller]
+pub(crate) fn check_indices(what: &str, nao: usize, rows: &[i32], cols: &[i32]) {
     let inside = |i: i32| usize::try_from(i).is_ok_and(|i| i < nao);
     for (c, (&m, &n)) in rows.iter().zip(cols).enumerate() {
         assert!(
             inside(m) && inside(n),
-            "packed tables: column {c} stands at ({m}, {n}), outside a {nao} × {nao} matrix"
+            "{what}: column {c} stands at ({m}, {n}), outside a {nao} × {nao} matrix"
         );
     }
 }
@@ -314,18 +315,18 @@ mod tests {
 
     #[test]
     fn indices_inside_the_matrix_pass() {
-        check_indices(3, &[0, 2, 1], &[2, 0, 1]);
+        check_indices("packed tables", 3, &[0, 2, 1], &[2, 0, 1]);
     }
 
     #[test]
     #[should_panic(expected = "column 1 stands at (3, 0), outside a 3 × 3 matrix")]
     fn a_row_past_the_matrix_panics() {
-        check_indices(3, &[0, 3], &[0, 0]);
+        check_indices("packed tables", 3, &[0, 3], &[0, 0]);
     }
 
     #[test]
     #[should_panic(expected = "column 0 stands at (0, -1), outside a 3 × 3 matrix")]
     fn a_negative_column_panics() {
-        check_indices(3, &[0], &[-1]);
+        check_indices("packed tables", 3, &[0], &[-1]);
     }
 }
