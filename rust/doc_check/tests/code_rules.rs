@@ -82,6 +82,11 @@ const ERROR_LOGS: &[(&str, usize, &str)] = &[
         "a block's `Drop`, whose device could not be made current, frees anyway (docs/diagnostics.md, \"`Drop` cannot fail\")",
     ),
     (
+        "core/device/src/lib.rs",
+        1,
+        "`log_destroy`, what a stream's or an event's `Drop` does with a failed destroy (docs/diagnostics.md, \"`Drop` cannot fail\")",
+    ),
+    (
         "core/error_handling/src/lib.rs",
         1,
         "`check_or_abort`, the abort tier, where detection and the process boundary are one call (docs/diagnostics.md, \"Levels\")",

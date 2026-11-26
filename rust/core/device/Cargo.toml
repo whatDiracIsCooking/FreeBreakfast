@@ -1,0 +1,19 @@
+[package]
+name = "fb-core-device"
+description = "core::device: the v0.0.4 layer's runtime over wwr-sys: the current device, streams, events, copies, device slices"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+contracts.workspace = true
+fb-core-error-handling.workspace = true
+# The value checks of the always-on contracts (le!), the panic hook that
+# prints their operands, and log_at for a failed destroy.
+fb-core-log.workspace = true
+# The runtime surface alone: the BLAS and solver handles are the guard's
+# (#1808), which adds those features when it lands.
+wwr-sys.workspace = true

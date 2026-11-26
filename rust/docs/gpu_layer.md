@@ -621,6 +621,52 @@ launch status out through `fb_kernel_abi::launch_status`.
 follow, over a `ClassRows`; the records tasks that make one live there too,
 since a type is unforgeable only inside the crate that defines it.
 
+## The v0.0.4 runtime
+
+The v0.0.4 layer, designed in the prototype's page under
+`experimental/rust/v0.0.4/`, is landing beside the layer above, which it will
+replace. Its runtime is `fb-core-device`, written over `wwr-sys` and the
+device-free crates (`fb-core-error-handling`, `fb-core-log`) and nothing
+else of `rust/`: no type of `fb-core-wwr`, the arena or the thread pool.
+It holds the current device (`ScopedDevice`), `device_count` and `memory`
+(a device's free and total bytes, read for the budget's default cap before
+anything runs), `Stream`, `Event`, the copies and fills a stream enqueues,
+and device slices. The GPU's guard, with its BLAS and solver calls, joins
+it next.
+
+- **Each call makes its stream's device current.** A `Stream` and an
+  `Event` keep their device, and every method holds a `ScopedDevice` on it
+  for the call, so the layer above's "the caller made it so" is no
+  precondition here: a step's thread, or a GPU's thread of a fan-out, may
+  have any device current.
+- **A create aborts; an enqueue, a sync or a query is a value.** Making a
+  stream, an event or a device current aborts at the caller's line, as
+  every create does ([`diagnostics.md`](diagnostics.md), "Allocation is a
+  planning-time error"); the rest return the runtime's
+  status as a `Status`, a `GpuRuntime` error naming it, out of memory
+  included, since an `Allocation` error is a value only at admission.
+- **The slices are the layer above's, again.** `DeviceSlice` and
+  `DeviceSliceMut` carry the same promise; `part`, `part_mut` and
+  `split_at_mut` cut runs (`Part`, `PartMut`) from them, each cut an
+  always-on contract at the caller's line, as "The safe wrapper" has it.
+  The copies' lengths are always-on contracts too: `upload` and
+  `copy_device` write the head of a longer destination, `download` reads
+  the head of a longer source.
+- **The host end of a copy is a `HostSlice`, not `[T]`.** A copy from or
+  into pinned memory runs after the call returns, and a borrow that ends
+  with the call says nothing about a copy that has not started, the
+  argument the arena's `memcpy_*` make for naming a pinned row. So the
+  host end carries the promise a device slice does, made once by the
+  memory's owner (the budget's pinned and heap buffers) in an
+  `unsafe impl`: valid, and not touched by the host, until the work
+  enqueued during the borrow has finished.
+- **`Stream::sync` counts and times itself.** `sync_meter` reads the syncs
+  made so far and the time blocked in them, a difference over a span
+  being one step's. In this layer a host sync is the step wrapper's, after
+  `run`, and a host's wait on an event before it rewrites pinned bytes
+  (`Event::sync`); each call into the runtime's sync carries an `allow` of
+  `disallowed_methods` naming that.
+
 ## Build
 
 **`rust/` builds its own native libraries.** `rust/CMakeLists.txt` is a
