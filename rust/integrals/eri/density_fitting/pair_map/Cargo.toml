@@ -13,6 +13,13 @@ contracts.workspace = true
 fb-integrals-sys.workspace = true
 
 [dev-dependencies]
+# Water, and the v0.0.4 layer's gather held to the old layer's: its
+# buffers and its stream.
+fb-atom.workspace = true
+fb-core-budget.workspace = true
+fb-core-device.workspace = true
+fb-io-basis.workspace = true
+fb-molecule.workspace = true
 fb-basis.workspace = true
 fb-core-arena.workspace = true
 fb-core-error-handling.workspace = true

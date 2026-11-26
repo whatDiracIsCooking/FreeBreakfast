@@ -101,6 +101,13 @@
 //!   `fb-core-device`'s stream and slices, every length a contract and
 //!   every cell, handed in on the host, checked inside the slices it
 //!   indexes and uploaded by the call itself before the launch.
+//! - [`mmd_records`] and [`packed_gather`], the v0.0.4 layer's records and
+//!   gather, on the same terms: one class's records through
+//!   [`fb_mmd_records`], its shell and pair tables handed in on the host,
+//!   checked and uploaded by the call; and a packed batch gathered into
+//!   square matrices through [`fb_packed_gather`], each column's row and
+//!   column handed in likewise. The old layer's [`add_record_tasks`] and
+//!   [`PackedTables::gather`] are their counterparts, bitwise.
 //!
 //! A class kernel writes at AO offsets held in device memory, so
 //! [`ClassRows`] is a type only [`add_record_tasks`] makes; its doc comment
@@ -114,7 +121,9 @@ mod classes;
 mod conventional;
 mod dense;
 mod metric;
+mod mmd_records;
 mod packed;
+mod packed_gather;
 mod records;
 mod three_center_packed;
 mod three_center_spherical;
@@ -124,7 +133,9 @@ pub use classes::{kinetic_class, overlap_class, potential_en_class};
 pub use conventional::{add_conventional_tasks, pack, packed_pairs, unpack};
 pub use dense::{DenseBlocks, add_dense_tasks, dense_row_dot};
 pub use metric::{AuxTable, add_metric_tasks};
+pub use mmd_records::{RECORD_F64_FIELDS, RECORD_I32_FIELDS, mmd_records};
 pub use packed::{PackedTables, add_packed_tables};
+pub use packed_gather::packed_gather;
 pub use records::{
     ClassPairs, ClassRows, Fields, MixedClassRows, RecordTables, ShellTable,
     add_mixed_record_tasks, add_record_tasks,

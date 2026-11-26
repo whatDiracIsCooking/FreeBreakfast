@@ -732,6 +732,14 @@ and fills a stream enqueues, device slices, and each GPU's
   uploaded by the call before it launches, as "The safe wrapper" asks of
   indices the safe layer forms; the upload's token comes back, so nothing
   rewrites a checked cell before the copy has run.
+  `fb_integrals_sys::mmd_records` (one class's primitive-pair records)
+  and `fb_integrals_sys::packed_gather` (a packed batch into square
+  matrices) follow on the same terms: the records' shell and pair tables
+  (each shell's primitive range, each pair's shells and record range) and
+  the gather's per-column row and column come in on the host by value,
+  are checked against what they index and are uploaded by the call, and
+  each equals its old-layer counterpart (`add_record_tasks`,
+  `PackedTables::gather`) bitwise, the same kernel on the same inputs.
 
 ## Build
 

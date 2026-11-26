@@ -15,18 +15,28 @@
 //! - **unpack J**: one packed vector gathered (`b = 1`) into the square.
 //! - **unpack(pack)**: a symmetric matrix supported on the kept pairs,
 //!   packed on the host and unpacked on the card, is itself.
+//!
+//! Beside them, the v0.0.4 layer's `fb_integrals_sys::packed_gather`, the
+//! tables handed in on the host, gathers the same batch and unpacks the
+//! same J, each held bitwise to the old layer's result: the same kernel on
+//! the same inputs. That runs over the basis above and over water in
+//! cc-pVDZ, unscreened.
 
 use std::sync::{Arc, Mutex};
 
+use fb_atom::{Atom, Element};
 use fb_basis::{BasisSet, Shell};
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId};
+use fb_core_budget::{Backing, Caps, Ledger};
+use fb_core_device::Stream;
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_core_types::Double3;
 use fb_integrals_eri_density_fitting_pair_map::{KeptPair, Packing, PairMap};
 use fb_integrals_mmd::record_tables;
-use fb_integrals_sys::{PackedTables, add_packed_tables};
+use fb_integrals_sys::{PackedTables, add_packed_tables, packed_gather};
+use fb_molecule::Molecule;
 
 /// The batch's aux functions.
 const B: usize = 3;
@@ -307,6 +317,90 @@ fn check(packing: &Packing) {
 
     // Unpack of the pack of a matrix on the kept pairs: the matrix.
     bits("unpack(pack)", &got[3], &s);
+
+    // The v0.0.4 layer's gather of the same batch and the same J: the old
+    // layer's results, bitwise.
+    let (gathered, j) = (
+        gather_v004(packing, B, &batch),
+        gather_v004(packing, 1, &jp),
+    );
+    bits("v0.0.4 gather", &gathered, &got[1]);
+    bits("v0.0.4 unpack J", &j, &got[2]);
+}
+
+/// `packed`, `b` functions of `packing`'s columns, gathered on device 0 by
+/// the v0.0.4 layer's [`packed_gather`], the tables written on the host.
+fn gather_v004(packing: &Packing, b: usize, packed: &[f64]) -> Vec<f64> {
+    let (nao, n_columns) = (packing.nao(), packing.n_columns());
+    let caps = Caps::read(&[0], &[None], None, Backing::Real).unwrap();
+    let ledger = Ledger::new(caps, Backing::Real, vec![0], false);
+    let budget = ledger.budget("test");
+    let stream = Stream::new(0);
+    let mut tables = budget.pinned::<i32>(0, 2 * n_columns);
+    let mut w = budget.pinned::<f64>(0, n_columns);
+    {
+        let (rows, cols) = tables.split_at_mut(n_columns);
+        packing.write_tables(rows, cols, &mut w);
+    }
+    let mut weights = budget.device::<f64>(0, n_columns);
+    drop(stream.upload(&mut weights, w).unwrap().sync().unwrap());
+    let mut staged = budget.pinned::<f64>(0, packed.len());
+    staged.copy_from_slice(packed);
+    let mut d_packed = budget.device::<f64>(0, packed.len());
+    drop(
+        stream
+            .upload(&mut d_packed, staged)
+            .unwrap()
+            .sync()
+            .unwrap(),
+    );
+    let mut tables_dev = budget.device::<i32>(0, 2 * n_columns);
+    let mut slab = budget.device::<f64>(0, b * nao * nao);
+    stream.fill(&mut slab, 0xFF).unwrap();
+    let tables = packed_gather(
+        &stream,
+        (nao, n_columns, b),
+        tables,
+        &mut tables_dev,
+        &weights,
+        &d_packed,
+        &mut slab,
+    )
+    .unwrap();
+    let out = stream
+        .download(budget.pinned::<f64>(0, b * nao * nao), &slab)
+        .unwrap();
+    drop(tables.sync().unwrap());
+    out.sync().unwrap().to_vec()
+}
+
+/// Water in cc-pVDZ, every shell pair kept.
+fn water_map() -> PairMap {
+    let at = |x, y, z| Double3 { x, y, z };
+    let molecule = Molecule::new(
+        vec![
+            Atom {
+                position: at(0.0, 0.0, 0.0),
+                element: Element::O,
+            },
+            Atom {
+                position: at(1.43, 0.21, -1.07),
+                element: Element::H,
+            },
+            Atom {
+                position: at(-1.38, 0.35, -1.12),
+                element: Element::H,
+            },
+        ],
+        0,
+        1,
+    );
+    let basis = fb_io_basis::resolve_basis("cc-pvdz")
+        .unwrap()
+        .primitive_normalized()
+        .place(&molecule)
+        .unwrap();
+    PairMap::new(&record_tables(&basis), None, 0.0)
 }
 
 /// Needs a GPU. The Cartesian packing: the three-centre kernels' output.
@@ -321,4 +415,11 @@ fn the_cartesian_packing_agrees_with_the_host_bitwise() {
 #[ignore = "tier 4: needs a GPU"]
 fn the_spherical_packing_agrees_with_the_host_bitwise() {
     check(screened_map().sphe());
+}
+
+/// Needs a GPU. Water's spherical packing, unscreened: B's on water.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn waters_spherical_packing_agrees_with_the_host_bitwise() {
+    check(water_map().sphe());
 }

@@ -16,6 +16,10 @@ fb-core-planner.workspace = true
 fb-integrals-sys.workspace = true
 
 [dev-dependencies]
+# The v0.0.4 layer's records call, held to the old layer's: its buffers
+# and its stream.
+fb-core-budget.workspace = true
+fb-core-device.workspace = true
 fb-core-arena.workspace = true
 fb-core-thread-pool = { workspace = true, features = ["device"] }
 fb-atom.workspace = true
