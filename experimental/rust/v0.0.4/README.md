@@ -90,11 +90,10 @@ Each word below means one thing on this page.
 | **pair batch** | A run of pair columns, the unit the build of B works in |
 | **aux batch** | A run of aux functions P, the unit a J/K pass works in |
 | **J/K pass** | One sweep over all of B building J and K for a set of densities |
-| **`EriManager`** | `eri`'s `Output`: B, the metric's factor, and per GPU the ERI buffer, its streams and the cache's state. Reached by its readers under its lock |
-| **ERI buffer** | One device buffer per GPU of `[eri] mem_per_gpu` bytes, owned by the `EriManager`: the build's ring, then the J and K fragments, the J/K batch buffer and the cache |
-| **ring** | The buffers of the batches in flight: two, one filling while the other is used |
-| **cache** | The aux batches of B a GPU keeps in its ERI buffer across J/K passes |
-| **staging buffer** | One pinned buffer that B passes through between a GPU and the host: a fitted pair batch on its way down, of at most 64 MiB, or rows of B on their way up, of at most 256 MiB |
+| **`EriManager`** | `eri`'s `Output`: B, the metric's factor, and per GPU the ERI buffer, its streams and their events. Reached by its readers under its lock |
+| **ERI buffer** | One device buffer per GPU within `[eri] mem_per_gpu`, owned by the `EriManager`: the build's ring of pair batches, then the J and K fragments, one aux batch's work and a J/K pass's ring of aux batches |
+| **ring** | The buffers of the batches in flight: two, one filling while the other is used. The build has one, of pair batches; a J/K pass has one, of aux batches |
+| **staging buffer** | One pinned buffer that B passes through between a GPU and the host: a fitted pair batch on its way down, of at most 64 MiB, or an aux batch of B's rows on its way up, of at most 128 MiB. One per ring buffer |
 | **records** | Per-primitive input data a kernel reads: centre, exponent, weighted coefficient |
 | **work list** | Indices, one entry per unit of kernel work. `cells` is one of them, by name |
 
@@ -169,20 +168,20 @@ FIGURE-01 (fig)
 ## The EriManager
 
 The density-fitted ERI is a shared product with state of its own: streams, a
-ring of buffers on every GPU, a cache. That state lives in one object,
+ring of buffers on every GPU. That state lives in one object,
 `eri`'s `Output`, and its users call its methods.
 
 ```rust
 pub struct EriManager {
     l: PerGpu<DeviceBuf<f64>>,   // the metric's Cholesky factor, every GPU
     b: HeapSlab<f64>,            // B, n_pair (unscreened bound) × n_aux
-    state: Mutex<EriState>,      // per GPU: the ERI buffer, its streams,
-                                 // events and the cache's contents
+    state: Mutex<EriState>,      // per GPU: the ERI buffer, its streams
+                                 // and their events
 }
 
 impl EriManager {
-    /// J and K for each density, on gpu0. Every GPU contracts its own aux
-    /// batches; the fragments are reduced onto gpu0.
+    /// J and K for each density, on gpu0. Every GPU uploads and contracts
+    /// its own aux batches; the fragments are reduced onto gpu0.
     pub fn build_jk(&self, held: &mut Held<'_>, d: &[Density<'_>],
                     j: &mut [DeviceSliceMut<'_, f64>],
                     k: &mut [DeviceSliceMut<'_, f64>]);
@@ -220,17 +219,14 @@ A sketch, not a signature to hold anyone to. What is fixed:
 - **It never takes a lock.** The GPU guards it uses are passed in, held by the
   wrapper; it has no path to a `Mutex`.
 
-**The ERI buffer.** One device buffer per GPU of `[eri] mem_per_gpu` bytes,
-`eri`'s step limit. `eri`'s build and every later J/K pass run in it, one
+**The ERI buffer.** One device buffer per GPU within `[eri] mem_per_gpu`,
+`eri`'s step limit, charged at what it uses. `eri`'s build and every later J/K pass run in it, one
 after the other, since the DAG orders `eri` before every reader:
 
 1. **During `eri`'s run** it holds the build's ring: two pair batches in
    flight per GPU, each with its records and work lists.
 2. **Afterwards** it holds, per GPU, the J and K fragments, one aux batch's
-   buffer for the J/K pass, and the cache: as many of that GPU's aux batches
-   as the rest of the buffer holds. A pass uploads each uncached batch into
-   the one buffer and syncs before the next; a ring of two there is *Open*
-   until the per-batch sync is measured.
+   work, and the J/K pass's ring: two aux batches of B's rows in flight.
 
 **(μν|P) is spherical from the kernel.** FelizJueves's `ssperi3<la, lb, lP>`
 (#745) writes all three indices as real solid harmonics, each pair's block at
@@ -252,35 +248,45 @@ scatter is a transpose, done in 64 × 64 tiles: element by element it strides B
 by a whole row per write. A J/K pass then runs over aux batches: each GPU
 contracts its own, and the fragments are summed onto gpu0 through the host.
 
+**A J/K pass uploads its whole share, through a ring of two.** B has one
+copy, on the host; no GPU keeps rows of it between passes. A GPU's aux range
+is fixed: the aux functions are split across the GPUs once, in budget mode.
+Each aux batch goes through one of two ring buffers, each with a pinned end:
+
+1. The host copies the batch's rows of B into the buffer's pinned end, once
+   the upload that last read those bytes has run.
+2. The upload goes on the manager's own upload stream, after the event the
+   GPU's stream recorded behind the contraction that last read the buffer.
+3. The contraction goes on the GPU's stream, after the event the upload
+   stream recorded behind the upload.
+
+So a batch's host copy and its upload both run while the batch before is
+contracted, and the GPU never waits for the host. The pass joins its upload
+stream before it returns: the wrapper does not know the manager's stream.
+With the ring a pass takes the contraction's time, so nothing is gained by
+keeping rows of B on a GPU ([what it showed](#what-it-showed)).
+
 **Pinned staging does not grow with the limit.** A fitted pair batch comes
 down through a staging buffer of at most 64 MiB, and an aux batch of B's rows
-goes up through one of at most 256 MiB. Neither batch is ever wider than its
+goes up through one of at most 128 MiB. Neither batch is ever wider than its
 staging buffer holds, whatever `mem_per_gpu` is: a batch is one copy. Page-
-locking costs about 0.9 s per GiB here, and the ring page-locks a buffer for
+locking costs about 0.9 s per GiB here, and each ring page-locks a buffer for
 each of its depth: the build's time is flat in the width well below 64 MiB
-([batched only](#batched-only)). The upload's bound is the larger because it
-bounds the aux batch, and the SCF's time is not flat in that width at 64 MiB
-([what it showed](#what-it-showed)).
-
-**The cache.** A GPU's aux range is fixed: the aux functions are split across
-the GPUs once, in budget mode, so GPU g always contracts the same batches.
-The cache fills on the first J/K pass, from the host copy (the build's pair
-batches are the wrong index order to fill it). Every later pass uploads only
-what is not cached. When a GPU's whole share fits, it uploads nothing after
-the first pass, and its aux batch is its whole share. A second copy of B is
-ruled out by size; the cache is a part of the one host copy, held on the GPUs.
+([batched only](#batched-only)).
 
 **What `mem_per_gpu` does, from config alone:**
 
 | Set to | Gives |
 |---|---|
 | Below the ring at a width of one | A refusal naming `[eri]`, its limit and the least it needs |
-| About the ring | Batched build and passes, no cache: the tests' many-batch case on water |
-| Enough for the GPU's share of B | One aux batch per GPU, nothing uploaded after the first pass |
+| About the ring | Narrow pair batches and narrow aux batches: the tests' many-batch case on water |
+| More | Wider batches, up to what a staging buffer holds; past that, nothing |
 | Default | 2 GiB: a fixed constant, not a fraction of the cap, so `--budget-only` is exact. A placeholder; *Open*: the measured value |
 
 The buffer is held for the whole calculation, so what it takes is not
-available to later steps. The budget table shows it as its own row.
+available to later steps. The budget table shows it as its own row. With the
+batches bounded by their staging it stops growing with the limit: 881 MiB a
+GPU at gly10, whatever the limit above that.
 
 **Derivatives of B are scratch.** Gradients and Hessians build the derivative
 of B a batch at a time and contract it at once, inside the step that needs it.
@@ -552,7 +558,7 @@ case is the batched one with a single batch on a single GPU.
 | Everything O(N²): the n_ao² matrices, the metric and its factor, the records | Resident whole on the GPUs it needs. It fits or the plan is refused: a dense eigensolve at n_ao cannot be batched |
 | The O(N³) tensors: (μν\|P), B, a derivative of B | Never resident whole. Built or contracted a batch at a time; B itself on the host heap |
 | The batch width | The widest whose bytes fit the step limit, and no wider than its staging buffer holds; none fits: refuse, naming the step, its limit and its least bytes |
-| The step limit | Covers the batch, the ring and the cache, not the O(N²) residents, which the cap admits or refuses. A fixed constant by default; the config overrides it, which is also how a test forces many batches on a small molecule |
+| The step limit | Covers the batches and their rings, not the O(N²) residents, which the cap admits or refuses. A fixed constant by default; the config overrides it, which is also how a test forces many batches on a small molecule |
 | What is charged | What is used, never the limit. Limits need not sum to the cap |
 
 - **Every GPU step is built batched and for every GPU, or not built.** A
@@ -927,7 +933,7 @@ changes the shape.
 Built: [what it showed](#what-it-showed). Item 3 of the order of work: the
 DF-RHF chain as steps on `num_gpus` GPUs, batched. The first prototype to run the GPU's stream under
 its lock, a step with streams of its own and library calls, the `EriManager`
-with its cache, and the lock order; and the first written from scratch over
+with a ring and a stream of its own, and the lock order; and the first written from scratch over
 the C ABI.
 
 ### Built from scratch over the C ABI
@@ -982,9 +988,9 @@ guess ──────────────────────┘
 - **The SCF's loop is a plain loop inside `run`.** One iteration is `build_jk`
   over the carried density, F, the energy, the residual, the DIIS step and the
   Roothaan step.
-- **`build_jk` runs over aux batches**, each GPU contracting its own, the cached
-  ones first, reduced onto gpu0 through the host, with a blocking sync per
-  aux batch uploaded. The cache fills on the first J/K pass.
+- **`build_jk` runs over aux batches**, each GPU uploading and contracting
+  its own through its ring of two, reduced onto gpu0 through the host. The
+  host blocks only on a ring buffer's upload event, never on a contraction.
 - **K is built from the occupied orbitals.** Every Roothaan step leaves the C
   of its D, so every pass is given C's occupied columns but the first of a
   fresh run, whose D is the guess and has no factor. A replay's first pass has
@@ -1002,8 +1008,8 @@ old Rust path" is `rust/` as merged, a dev-dependency of the tests only.
 | What | Against | Bar |
 |---|---|---|
 | The energy of water, benzene and ethylene, cc-pVDZ over cc-pVDZ-JKFIT | The old Rust path in the same process; PySCF's DF-RHF as v0.0.2's README records it | 1e-9 Eh |
-| The same at forced batches: `mem_per_gpu` at about the ring, so no cache | The default run | 1e-9 Eh |
-| The same with the whole share cached | The default run | 1e-9 Eh |
+| The same at forced batches: `mem_per_gpu` at its least, so every ring buffer is reused many times | The default run | 1e-9 Eh |
+| The same with the J/K pass's ring at depth 1 | The default run | 1e-9 Eh |
 | The same on two GPUs, NaN-filled | One GPU | 1e-9 Eh |
 | B from the ring of two | The same build at ring depth 1; and v0.0.3's B, from `speri3` with a Cartesian bra and one batch in flight, a check across kernels | 1e-10 of the largest element |
 | S, H and the metric from the host steps | The old Rust path's, on the GPU | 1e-12 of the largest element |
@@ -1011,7 +1017,7 @@ old Rust path" is `rust/` as merged, a dev-dependency of the tests only.
 
 **Real multi-GPU.** Two GPUs suffice: they show the right device current in
 each inner task, the lock order across GPUs, the reduction onto gpu0, a ring
-and a cache per GPU. v0.0.4 is not done until it has run on a two-GPU machine.
+per GPU. v0.0.4 is not done until it has run on a two-GPU machine.
 Where a four-GPU machine is at hand, run `num_gpus` = 2, 3 and 4 there too,
 which catches code that is right only for two.
 
@@ -1049,74 +1055,78 @@ Rust path.
 
 | What | Result |
 |---|---|
-| Water, one GPU | −76.026751140543 in 11 iterations, 4.5e-13 from the recorded energy |
-| Benzene, one GPU | −230.721729270921 in 11 iterations, 3.7e-13 |
-| Ethylene (#865's geometry), one GPU | −77.867545824336 in 54 iterations, 3.8e-13 |
-| Water at forced batches: `mem_per_gpu` at its least, 94.59 KiB, NaN-filled | 18 pair batches, aux batches of 2, 20 of 116 rows cached and 96 uploaded per pass; 1.4e-14 from the default run |
-| Water at the default 2 GiB | The whole share cached; nothing uploaded after the first pass |
+| Water, one GPU | −76.026751140543 in 11 iterations, 4.8e-13 from the recorded energy |
+| Benzene, one GPU | −230.721729270921 in 11 iterations, 2.6e-13 |
+| Ethylene (#865's geometry), one GPU | −77.867545824336 in 54 iterations, 4.0e-13 |
+| Water at forced batches: `mem_per_gpu` at its least, 94.59 KiB, NaN-filled | 18 pair batches, aux batches of 5 of the 116 rows, so each buffer of the pass's ring is reused 12 times a pass; 1.4e-14 from the default run |
+| The same with both rings at depth 1 | 5.7e-14 from the default run |
+| Water at the default 2 GiB | One aux batch: the whole share |
 | B from the ring of two against the ring of one, water, forced batches | The same bits |
-| A replay of water | 7.1e-14 from the first run, in 2 iterations from the carried D; the allocation count unchanged |
+| A replay of water | 2.8e-14 from the first run, in 2 iterations from the carried D; the allocation count unchanged |
 | `mem_per_gpu` one byte under the least | Refused, naming `[eri] mem_per_gpu`, its value and the 96,864 B it needs |
 | Lock order, water, eight workers | Every step's locks taken in rank order and released together after the sync; gpu0's three holders never overlap; the orthogonalizer's and `eri`'s scratch disjoint on gpu0 |
 | A `syevd` with a work buffer under its size query | Panics at the caller's line before the solver is called |
-| Benzene on two logical GPUs, and on 2, 3 and 4 real ones, NaN-filled, whole share cached and forced batches, on 8 workers and on 2 | Each within 1.7e-13 of one GPU |
+| Benzene on two logical GPUs, and on 2, 3 and 4 real ones, NaN-filled, each share one aux batch and forced batches, on 8 workers and on 2 | Each within 1.7e-13 of one GPU |
 
-One-off times on water, release build: setup 0.76 s (the GPU's handles), budget
-mode 8 ms, execute mode 249 ms, of which `eri` 101 ms and the SCF's 11
-iterations 40 ms.
+One-off times on water, release build: setup 0.79 s (the GPU's handles), budget
+mode 8 ms, execute mode 262 ms, of which `eri` 102 ms and the SCF's 11
+iterations 39 ms.
 
 **The glycine chains on 1, 2 and 4 GPUs.** 4× RTX A6000, release build, one
-run each, 19 iterations every time. PySCF is its DF-RHF over the same two
-sets. The ERI buffer is `[eri] mem_per_gpu`: at 2 GiB a
-GPU's cache holds part of its share of gly10's B, at 16 GiB all of it.
+run each, 19 iterations every time, at the default `mem_per_gpu` of 2 GiB.
+PySCF is its DF-RHF over the same two sets. The ERI buffer is what the plan
+charges a GPU for it; the aux batches are 231 rows at gly5 and 62 at gly10,
+what a 128 MiB staging buffer holds.
 
 | Molecule | ERI buffer | GPUs | E, hartree | \|E − PySCF\| | Budget mode | `eri` | `scf` |
 |---|---|---|---|---|---|---|---|
-| gly5: 379 AOs, 1861 aux | 2 GiB | 1 | −1110.135779508224 | 4.2e-11 | 1.4 s | 1.2 s | 6.8 s |
-| | 2 GiB | 2 | −1110.135779508225 | 4.1e-11 | 2.1 s | 0.7 s | 3.4 s |
-| | 2 GiB | 4 | −1110.135779508225 | 4.1e-11 | 3.6 s | 0.6 s | 1.9 s |
-| gly10: 734 AOs, 3606 aux | 2 GiB | 1 | −2144.284111689079 | 5.3e-11 | 5.7 s | 10.2 s | 63.2 s |
-| | 2 GiB | 2 | −2144.284111689078 | 5.4e-11 | 5.9 s | 5.2 s | 31.8 s |
-| | 2 GiB | 4 | −2144.284111689077 | 5.5e-11 | 6.6 s | 2.8 s | 16.1 s |
-| | 16 GiB | 1 | −2144.284111689076 | 5.6e-11 | 5.8 s | 10.0 s | 59.1 s |
-| | 16 GiB | 2 | −2144.284111689075 | 5.7e-11 | 7.4 s | 5.3 s | 30.1 s |
-| | 16 GiB | 4 | −2144.284111689075 | 5.7e-11 | 9.8 s | 2.9 s | 15.6 s |
+| gly5: 379 AOs, 1861 aux | 792 MiB | 1 | −1110.135779508227 | 3.9e-11 | 1.0 s | 1.1 s | 5.1 s |
+| | | 2 | −1110.135779508228 | 3.8e-11 | 1.3 s | 0.7 s | 3.0 s |
+| | | 4 | −1110.135779508227 | 3.9e-11 | 1.8 s | 0.5 s | 1.9 s |
+| gly10: 734 AOs, 3606 aux | 881 MiB | 1 | −2144.284111689077 | 5.5e-11 | 5.7 s | 10.2 s | 58.3 s |
+| | | 2 | −2144.284111689077 | 5.5e-11 | 6.0 s | 5.3 s | 29.9 s |
+| | | 4 | −2144.284111689077 | 5.5e-11 | 6.5 s | 2.8 s | 15.6 s |
 
-- **The energy does not depend on the GPU count or the buffer**: 4e-12 across
-  gly10's six runs, 5.7e-11 from PySCF, against the bar of 1e-9.
+- **The energy does not depend on the GPU count**: the same to 1e-12 across
+  each molecule's three runs, 5.5e-11 from PySCF at gly10, against the bar
+  of 1e-9.
 - **K from the occupied orbitals is what the SCF's time was.** gly10 has 155
   occupied orbitals of 734. From D, one GPU took 233.6 s for the 19 passes;
-  from C it takes 63.2 s, of which the guess's pass, still from D, is about
+  from C it takes 58.3 s, of which the guess's pass, still from D, is about
   12 s.
-- **The SCF still scales with the GPUs**: 2.0× on two and 3.9× on four at
-  gly10, as it did from D. The cheaper contraction did not expose the uploads
-  or the per-buffer sync. At gly5, 2.0× and 3.5×.
-- **The cache still buys little**: holding the whole share takes gly10's SCF
-  from 63.2 s to 59.1 s on one GPU.
+- **The SCF scales with the GPUs**: 1.9× on two and 3.7× on four at gly10.
+  At gly5, 1.7× and 2.6×.
+- **The pass's ring hides the copies.** A pass uploads its GPU's whole share
+  of B: at gly10, 7.27 GiB, about 0.45 s of host copy and 0.27 s of upload
+  beside 2.5 s of contraction (timed apart, with a sync after each). Both
+  run under the batch before's contraction, so the pass takes the
+  contraction's time and no GPU needs to keep rows of B. The copies grow as
+  n_aux × n_ao² and the contraction as that times n_occ, so they hide
+  better as the molecule grows.
+- **Where it does not hide: one batch.** A share that fits one aux batch
+  has no batch before it to hide under. Benzene's iteration is 13.4 ms, of
+  which about 2.7 ms is the copy of its 28 MiB of B up.
 - **The build of B was the host's scatter, and now scales**: 1.9× on two and
   3.7× on four at gly10. Element by element the scatter was 14.2 s of the
   17.3 s build on one GPU, with the GPU idle behind it; in tiles it is 2.7 s,
   and the build waits on the device, whose time is the fit.
-- **Budget mode is B's pages.** At gly10, 5.7 s on one GPU and 6.6 s on
+- **Budget mode is B's pages.** At gly10, 5.7 s on one GPU and 6.5 s on
   four. Touching B's 7.27 GiB takes 5.3 s with huge pages (7.6 s without):
   the kernel grants every huge page asked and zeroes them at about
   1.4 GiB/s, a cost the first writer of B pays wherever it falls. The rest
-  is page-locking each GPU's 263 MiB of staging, about 0.3 s a GPU.
-- **The ring's staging is bounded at 64 MiB, the upload's at 256 MiB.** With
-  both at 256 MiB a GPU page-locked 1.03 GiB, and budget mode on four GPUs
-  was 9.8 s; the build's time did not move with the bound. With both at
-  64 MiB, gly10's rows went up 31 at a time for 97, a blocking sync each,
-  and the SCF on one GPU took 70.0 s. The gly5 rows, and the 16 GiB rows on
-  2 and 4 GPUs, are from before both bounds.
+  is page-locking each GPU's 272 MiB of staging, about 0.3 s a GPU.
+- **Staging is bounded: 64 MiB a buffer of the build's ring, 128 MiB a
+  buffer of the pass's.** A GPU page-locks two of each, and the larger pair
+  is what its pinned buffer holds. The build's time does not move with its
+  bound.
 - **Page-locking does not overlap.** With each GPU's staging page-locked on
   a thread of its own while another touched B, the locks finished one after
   another and the touch slowed beside them: 6.8 s on four GPUs against the
   6.5 s of taking them in turn. They are taken in turn.
 - **An aux batch is one upload.** Its width is capped at what the staging
-  buffer holds, so no batch is split across buffers. At 16 GiB gly10's
-  batch is 124 rows where the limit alone would give 794, and the SCF takes
-  59.1 s; at a width of 794 it took 59.4 s. The ERI buffer then uses
-  8.63 GiB of the 16.
+  buffer holds, so no batch is split across buffers, and the ERI buffer
+  stops growing with the limit: at gly10 the batch is 62 rows and the
+  buffer 881 MiB, at 2 GiB and at any limit above.
 
 **The budget against the planner's block.** One GPU, the same runs through
 the old Rust path (`rust/`'s `free-breakfast`, `schwarz_threshold = 0`, its
@@ -1126,23 +1136,23 @@ mode alone, the solver work buffers added from the default run).
 
 | Molecule | Old path: device block | pinned block | heap block | v0.0.4 at 2 GiB: device | pinned | heap | v0.0.4 at the least limit: device | pinned |
 |---|---|---|---|---|---|---|---|---|
-| Water | 33.35 MiB | 322.00 KiB | 292.02 KiB | 130.73 MiB | 429.25 KiB | 301.00 KiB | 129.21 MiB | 213.34 KiB |
-| Ethylene | 37.44 MiB | 1.19 MiB | 2.16 MiB | 143.09 MiB | 2.69 MiB | 2.19 MiB | 130.74 MiB | 663.62 KiB |
-| Benzene | 62.26 MiB | 6.90 MiB | 28.39 MiB | 307.19 MiB | 31.46 MiB | 28.59 MiB | 140.00 MiB | 3.31 MiB |
-| gly5 | 906.52 MiB | 263.87 MiB | 1.00 GiB | 2.24 GiB | 293.24 MiB | 1.01 GiB | 250.66 MiB | 36.84 MiB |
-| gly10 | 3.01 GiB | 989.67 MiB | 7.27 GiB | 2.54 GiB | 374.96 MiB | 7.28 GiB | 583.00 MiB | 138.27 MiB |
+| Water | 33.35 MiB | 322.00 KiB | 292.02 KiB | 130.73 MiB | 721.06 KiB | 301.00 KiB | 129.21 MiB | 213.34 KiB |
+| Ethylene | 37.44 MiB | 1.19 MiB | 2.16 MiB | 143.09 MiB | 4.85 MiB | 2.19 MiB | 130.74 MiB | 663.62 KiB |
+| Benzene | 62.26 MiB | 6.90 MiB | 28.39 MiB | 307.19 MiB | 59.86 MiB | 28.59 MiB | 140.05 MiB | 3.36 MiB |
+| gly5 | 906.52 MiB | 263.87 MiB | 1.00 GiB | 1009.41 MiB | 293.24 MiB | 1.01 GiB | 251.22 MiB | 37.37 MiB |
+| gly10 | 3.01 GiB | 989.67 MiB | 7.27 GiB | 1.31 GiB | 383.90 MiB | 7.28 GiB | 585.07 MiB | 140.30 MiB |
 
 - **The heap is the same**: B, packed, on the host in both.
 - **The device total is the batch widths, not the sum.** v0.0.4's is the BLAS
-  workspace (128 MiB against the old path's 32 MiB) and the ERI buffer, which
-  at 2 GiB caches the whole B of all but gly10. The old block is its
-  planner's adaptive widths.
+  workspace (128 MiB against the old path's 32 MiB) and the ERI buffer, whose
+  batches the staging bounds: 792 MiB at gly5, 881 MiB at gly10. The old
+  block is its planner's adaptive widths.
 - **What the sum can cost is what lies outside those two**: the other
   `Output`s and the packed scratch, 89 MiB at gly5 and 329 MiB at gly10. A
   fold over lifetimes could recover part of that and no more.
 - **At the least limit the sum is under the fold's block** on the glycine
   chains, 3.6× and 5.3×. Less each path's workspace it is on the small ones
-  too: 1.21 MiB against 1.35 MiB on water, 12.00 MiB against 30.26 MiB on
+  too: 1.21 MiB against 1.35 MiB on water, 12.05 MiB against 30.26 MiB on
   benzene.
 
 **The step-end sync on the SCF iteration.** The loop is one step, so the
@@ -1153,24 +1163,25 @@ run listed.
 
 | Run | Iterations | As built | With the three syncs |
 |---|---|---|---|
-| Water | 11 | 3.83, 3.61, 3.51 ms | 3.60, 4.51, 3.68 ms |
-| Ethylene | 54 | 2.68, 2.71, 2.68 ms | 2.78, 2.75, 2.77 ms |
-| Benzene | 11 | 11.33, 10.59, 10.74 ms | 10.88, 10.73, 10.72 ms |
-| gly5 | 19 | 355.9, 356.0, 357.9 ms | 356.0, 358.1, 357.9 ms |
-| gly10 | 19 | 3.361, 3.339 s | 3.339, 3.339 s |
-| gly10, four GPUs | 19 | 847.7, 849.7 ms | 849.2, 848.6 ms |
-| gly10, ERI buffer 16 GiB | 19 | 3.129 s | 3.132 s |
+| Water | 11 | 3.47, 3.53, 3.51 ms | 3.61, 3.60, 3.58 ms |
+| Ethylene | 54 | 2.98, 2.86, 2.87 ms | 3.10, 2.94, 2.98 ms |
+| Benzene | 11 | 13.74, 13.44, 13.41 ms | 13.68, 13.55, 13.53 ms |
+| gly5 | 19 | 268.4, 269.6, 270.0 ms | 268.3, 270.1, 270.2 ms |
+| gly10 | 19 | 3.066, 3.075 s | 3.070, 3.076 s |
+| gly10, four GPUs | 19 | 825.3, 822.2 ms | 824.2, 824.8 ms |
 
-- **The sync costs nothing that shows above ethylene's size**, and there
-  0.08 ms of 2.7 ms: about 27 µs for each of the three, what a sync of an idle
-  stream costs (the wrapper's own, after each step of the chain, took 40 to
-  110 µs with the lock release).
-- **The iteration already waits for the GPU once**, whatever the wrapper does:
-  the decision reads E and the residual on the host, and the eigensolver's
-  call returns only when the stream has drained. At gly10 with the whole B
-  cached, the 50 syncs of the loop as built blocked for 0.43 s of its 59.5 s;
-  the wait was inside `syevd`. With the three syncs it moves to the one after
-  the J/K build, 58.4 s, and the loop takes the same time.
+- **The sync costs nothing that shows above benzene's size**, and at water
+  and ethylene about 0.1 ms of 3 ms: some 30 µs for each of the three, what
+  a sync of an idle stream costs (the wrapper's own, after each step of the
+  chain, took 40 to 110 µs with the lock release).
+- **The iteration already waits for the GPU**, whatever the wrapper does:
+  the pass's ring keeps the host at most two aux batches ahead of the
+  device, the decision reads E and the residual on the host, and the
+  eigensolver's call returns only when the stream has drained. At gly10 the
+  20 stream syncs of the loop as built blocked for 0.13 s of its 58.3 s.
+  With the three syncs, 1.44 s is spent in them, 0.07 s an iteration, and
+  the loop takes the same time: the wait moved, from `syevd`'s call to the
+  sync after the J/K build.
 - **So the host is never far ahead of the device in this loop**, and a sync at
   a step's end takes nothing from it. A loop whose host work could overlap the
   device's is where it would cost; none of the DF-RHF chain's is.
@@ -1181,11 +1192,14 @@ run listed.
   in rank order; the state inside the `EriManager` sits behind a `Mutex` of its
   own that is only ever `try_lock`ed under it. `build_jk` takes the `Held`
   guards and has no path to a GPU's `Mutex`.
-- **The ring's streams are `eri`'s own** (two per GPU, declared by the step),
-  not the manager's. A J/K pass runs wholly on each GPU's stream, in the order
-  it is enqueued.
-- **The ERI buffer is charged at what the two layouts use**, the ring's or the
-  J/K pass's with its cache, whichever is larger; `mem_per_gpu` only bounds it.
+- **The build's ring streams are `eri`'s own** (two per GPU, declared by the
+  step), not the manager's. A J/K pass's upload stream is the manager's, one
+  per GPU, made on `eri`'s first run beside the events; the wrapper does not
+  know it, so the pass joins it.
+- **`[eri] ring` sets both rings' depth**, 2 or 1: the build's and a J/K
+  pass's.
+- **The ERI buffer is charged at what the two layouts use**, the build's ring or
+  the J/K pass's, whichever is larger; `mem_per_gpu` only bounds it.
 - **Two changes to v0.0.3's flow layer**: `run` receives the guards, and a
   step declares how many streams of its own it has per GPU.
 - **`--budget-only` reports each solver call's work buffer as zero**, as the
@@ -1227,7 +1241,7 @@ cargo run --release --example run -- examples/h2o.toml --stage-sync   # the SCF 
 - Any change under `rust/`.
 - HIP. CUDA only.
 - A step with further handles of its own; two fits in flight on one GPU.
-- A ring in `build_jk`; more than one density.
+- More than one density in `build_jk`.
 - The enforcement lints: the clippy bans, the allocation record, the
   unbudgeted-heap row.
 - Screening, measuring the default step limit (2 GiB stands in), packing
@@ -1245,7 +1259,7 @@ cargo run --release --example run -- examples/h2o.toml --stage-sync   # the SCF 
 4. **Measure**: the budget's total against the planner's block for the same
    runs, and what the step-end sync costs on the SCF iteration. Measured in
    v0.0.4: the total is set by the batch widths, with at most 329 MiB at
-   gly10 for a fold to recover; the sync costs about 27 µs each.
+   gly10 for a fold to recover; the sync costs about 30 µs each.
 5. **The enforcement checks and HIP.** Batching and every GPU are not on this
    list: each step has them from its first form.
 
