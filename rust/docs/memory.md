@@ -117,6 +117,34 @@ sync, and an owned buffer is never freed.
   budget leaves out: the device context, the handles' own memory, loaded
   modules, the kernels' stack and small host allocations such as the
   geometry and the basis. An explicit cap leaves those to the user.
+- **A kernel's scratch is per queue and per card, kept, and bounded by
+  launch order.** The runtime sizes a launch's scratch (its stack) at the
+  kernel's bytes per lane times every lane the card can keep resident,
+  not at the dispatch, and keeps it. On ROCm each hardware queue, so each
+  ring stream, holds its own, and a launch needing more than the queue
+  holds takes a new allocation without giving the old one back; past
+  ROCm's single-allocation ceiling, 140 MiB, a launch is sized to its
+  dispatch instead, and the next launch under the ceiling takes a new
+  allocation again. CUDA holds one per context, sized for the largest
+  kernel run. So the eri step launches its largest class first on each
+  ring stream (`scratch_rank`, by `(la + lb, la)` and then the aux
+  momentum, both descending; B is bitwise the same in either order). On
+  the gfx1200 (32,768 resident lanes; `ssperi3`'s scratch per lane from 0
+  to 13,072 bytes, `<3, 3, 6>`), one run each:
+  - Water's chain in cc-pVDZ / cc-pVDZ-JKFIT took 492.6 MiB past its
+    budget in its first execute in the classes' order; largest first it
+    takes 141.2 MiB. Each stream takes one allocation, its largest
+    class's, so the bound is the ring depth times `ssperi3<2, 2, 3>`'s
+    125 MiB, with the code objects and the libraries' first calls
+    (`steps/tests/chain_vram.rs`): 266 MiB, under the 512 MiB floor of
+    `device_margin`, which is left as it is.
+  - All 70 classes on one stream: 3.7 GiB in the classes' order, 950 MiB
+    largest first. A batch's launches past the ceiling come first, so
+    the largest of those is taken once, and each class's first launch
+    under the ceiling can take one allocation of at most 140 MiB.
+
+  Neither figure is in the budget: the card's resident lanes and a
+  kernel's scratch per lane are not read at planning.
 
 ## Step scratch
 

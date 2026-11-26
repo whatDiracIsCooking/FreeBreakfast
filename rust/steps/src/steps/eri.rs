@@ -73,7 +73,7 @@ use fb_integrals_sys::{
     RECORD_I32_FIELDS, mmd_records, packed_gather, three_center_spherical_class,
 };
 
-use crate::bus::{Dims, MainBus, Shared, for_each_pair};
+use crate::bus::{ClassDim, Dims, MainBus, Shared, for_each_pair};
 use crate::steps::GPU0;
 use crate::steps::metric::MetricStep;
 
@@ -575,6 +575,14 @@ fn batches(d: &Dims, w: usize) -> Vec<Batch> {
     out
 }
 
+/// A class's place in the build's launch order, largest scratch first:
+/// `(la + lb, la)`. At every aux momentum, `ssperi3`'s scratch per lane
+/// does not fall as the rank rises, nor, within a class, as the momentum
+/// does (`tests::the_scratch_rank_orders_ssperis_scratch`).
+fn scratch_rank(class: &ClassDim) -> (i32, i32) {
+    (class.la + class.lb, class.la)
+}
+
 /// That `batches` partition the pair columns: each opens where the one
 /// before it ends, and the last ends at `n_col`. What lets the GPUs write
 /// B at once, each its own columns.
@@ -1043,7 +1051,15 @@ fn gpu_build(
         scatter(rows, batch.first_col - first_col, cols, &fitted[..q * cols]);
         Ok(fitted)
     };
-    for (turn, batch) in mine.iter().enumerate() {
+    // Largest scratch first: the batches by their class's (la + lb, la),
+    // descending, and each batch's momenta from the highest, so the first
+    // launch on each ring stream is the largest it makes, and a smaller one
+    // after it fits the scratch that launch took (`docs/memory.md`, "Caps
+    // and margins"). Each batch's columns are its own, so the order moves
+    // no element of B.
+    let mut order: Vec<&Batch> = mine.iter().collect();
+    order.sort_by_key(|b| std::cmp::Reverse(scratch_rank(&d.classes[b.class])));
+    for (turn, batch) in order.into_iter().enumerate() {
         let s = turn % depth;
         let stream = &streams[s];
         if let Some(flight) = in_flight[s].take() {
@@ -1060,7 +1076,7 @@ fn gpu_build(
         // one momentum, each destination relative to the batch, written
         // into an exact-length tenant of that momentum's pinned region.
         let mut uploads = Vec::new();
-        for (lp, shells_l) in aux_of_l.iter().enumerate() {
+        for (lp, shells_l) in aux_of_l.iter().enumerate().rev() {
             if shells_l.is_empty() {
                 continue;
             }
@@ -1467,6 +1483,54 @@ pub(crate) mod tests {
             message.contains("eri: pair batch 1 opens at column"),
             "{message}"
         );
+    }
+
+    /// `ssperi3<la, lb, lp>`'s scratch per lane, bytes: each class's
+    /// `.private_segment_fixed_size` in the gfx1200 code objects
+    /// (`llvm-readelf --notes`), row `(la, lb)` in the launcher's order
+    /// (`la <= lb`), column `lp`.
+    const SCRATCH: [((i32, i32), [u32; 7]); 10] = [
+        ((0, 0), [0, 0, 0, 0, 0, 0, 0]),
+        ((0, 1), [0, 0, 0, 0, 24, 188, 1232]),
+        ((0, 2), [0, 0, 56, 244, 1040, 1840, 2432]),
+        ((0, 3), [0, 164, 836, 1260, 2464, 3040, 3376]),
+        ((1, 1), [0, 0, 288, 552, 1440, 2160, 2800]),
+        ((1, 2), [304, 816, 1632, 2192, 3360, 4032, 4304]),
+        ((1, 3), [1296, 2048, 3504, 3744, 4000, 4880, 5792]),
+        ((2, 2), [1680, 2128, 3536, 4000, 4528, 5392, 6416]),
+        ((2, 3), [2672, 3616, 5440, 5920, 6720, 8048, 9232]),
+        ((3, 3), [4176, 5952, 7232, 8704, 10032, 11504, 13072]),
+    ];
+
+    /// The build's launch order is largest scratch first: within a class
+    /// the scratch rises with the aux momentum, and at every momentum a
+    /// class of higher [`scratch_rank`] has at least the scratch of one
+    /// below it, so each ring stream's first launch is its largest.
+    #[test]
+    fn the_scratch_rank_orders_ssperis_scratch() {
+        let rank = |(la, lb): (i32, i32)| {
+            scratch_rank(&ClassDim {
+                la,
+                lb,
+                n_pair: 1,
+                n_rec: 1,
+            })
+        };
+        for (class, row) in SCRATCH {
+            assert!(row.is_sorted(), "{class:?}: {row:?}");
+        }
+        for (a, row_a) in SCRATCH {
+            for (b, row_b) in SCRATCH {
+                if rank(a) < rank(b) {
+                    for lp in 0..7 {
+                        assert!(
+                            row_a[lp] <= row_b[lp],
+                            "{a:?} ranks below {b:?} with more scratch at lp {lp}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// The panic message of `f`.
