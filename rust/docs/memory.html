@@ -91,14 +91,198 @@ svg .fh{fill:currentColor}
 </head>
 <body>
 <div class="wrap">
-<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#the-table">The table</a></li><li class="l2"><a href="#lifetimes">Lifetimes</a></li><li class="l2"><a href="#admission">Admission</a></li><li class="l2"><a href="#adaptive-widths-one-planner-routine">Adaptive widths: one planner routine</a></li><li class="l2"><a href="#sizes-the-dimensions-do-not-fix">Sizes the dimensions do not fix</a></li><li class="l2"><a href="#nested-plans">Nested plans</a></li><li class="l2"><a href="#the-three-kinds">The three kinds</a></li><li class="l3"><a href="#the-rust-shape">The Rust shape</a></li><li class="l2"><a href="#what-is-checked">What is checked</a></li><li class="l2"><a href="#open-questions">Open questions</a></li></ol><div class="sib"><div class="kicker">See also</div><ol><li><a href="programming_model.html">programming model</a></li></ol></div></nav>
+<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#the-budget">The budget</a></li><li class="l3"><a href="#caps-and-margins">Caps and margins</a></li><li class="l2"><a href="#step-scratch">Step scratch</a></li><li class="l2"><a href="#the-final-node">The final node</a></li><li class="l2"><a href="#the-table">The table</a></li><li class="l2"><a href="#lifetimes">Lifetimes</a></li><li class="l2"><a href="#admission">Admission</a></li><li class="l2"><a href="#adaptive-widths-one-planner-routine">Adaptive widths: one planner routine</a></li><li class="l2"><a href="#sizes-the-dimensions-do-not-fix">Sizes the dimensions do not fix</a></li><li class="l2"><a href="#nested-plans">Nested plans</a></li><li class="l2"><a href="#the-three-kinds">The three kinds</a></li><li class="l3"><a href="#the-rust-shape">The Rust shape</a></li><li class="l2"><a href="#what-is-checked">What is checked</a></li><li class="l2"><a href="#open-questions">Open questions</a></li></ol><div class="sib"><div class="kicker">See also</div><ol><li><a href="programming_model.html">programming model</a></li></ol></div></nav>
 <main>
 <h1><span class="pre">Rust rebuild</span>Memory</h1>
+<p>Two layers are in the tree, and this document describes both until the old
+one is deleted. <strong>The v0.0.4 layer</strong> (<code>fb_core_budget</code>, over <code>fb_core_pack</code>
+and <code>fb_core_device</code>) counts what each step allocates, as it allocates it,
+against a cap per kind, and packs the steps' scratch by the DAG: &quot;The
+budget&quot;, &quot;Step scratch&quot; and &quot;The final node&quot; below, ported from the
+prototype's design (<code>../experimental/rust/v0.0.4/README.md</code>, &quot;The memory
+budget&quot;, &quot;Step scratch&quot;). <strong>The old layer</strong> (<code>fb_core_arena</code> and
+<code>fb_core_planner</code>) lays every buffer out as a row of a table and admits
+the table's block: every section from &quot;The table&quot; on, which stays as the
+old layer's until its crates are deleted
+(<a href="programming_model.html"><code>programming_model.md</code></a>, &quot;Memory: layouts and
+arenas&quot;).</p>
+<h2 id="the-budget">The budget</h2>
+<p>A step's <code>mem_budget</code> allocates what its <code>Output</code> owns through a <code>Budget</code>,
+the handle the ledger gives it, and <code>run</code> is given none, so a run
+allocates nothing. Each call, in order:</p>
+<ol>
+<li>Adds the bytes to the kind's atomic counter and to the step's row of
+the table.</li>
+<li>Checks the counter against the cap. Past it, sets the ledger's <code>over</code>
+flag. It does not panic.</li>
+<li>Allocates, unless the flag is set. Under the flag, or on a dry budget,
+the buffer is empty: length 0, nothing promised.</li>
+</ol>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Counter</th>
+<th>What <code>Budget</code> hands back</th>
+<th>Rule</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Device</td>
+<td>A sum, per gpu</td>
+<td><code>DeviceBuf&lt;T&gt;</code>, a fixed-size device buffer</td>
+<td>An <code>Output</code>'s: read by other steps, or carried over a replay</td>
+</tr>
+<tr>
+<td>Pinned</td>
+<td>A sum, per gpu</td>
+<td><code>PinnedBuf&lt;T&gt;</code>, page-locked, filled with <code>0xFF</code> when made</td>
+<td>As device</td>
+</tr>
+<tr>
+<td>Heap</td>
+<td>A sum, one for the host</td>
+<td><code>HeapSlab&lt;T&gt;</code>, a <code>Box&lt;[T]&gt;</code></td>
+<td>Cannot grow; pages touched in <code>mem_budget</code></td>
+</tr>
+<tr>
+<td>Scratch</td>
+<td>Packed, per gpu and kind</td>
+<td>A <code>Lease</code> on the step's region for its <code>run</code></td>
+<td>&quot;Step scratch&quot;</td>
+</tr>
+<tr>
+<td>Handle workspace</td>
+<td><code>fb_core_device::HANDLE_WORKSPACE_BYTES</code>, 128 MiB per gpu</td>
+<td>A <code>DeviceBuf&lt;u8&gt;</code> the gpu's <code>GpuResources</code> takes (<code>Ledger::take_workspace</code>) and binds its handle to once</td>
+<td>Allocated by the final node</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>The total is a sum and so order-independent.</strong> The steps budget in
+parallel, in whatever order the executor runs them; the counters are
+atomic, and the refusal is deferred to the final node, so accept or refuse
+is the same every run and the report is the whole table, not whichever
+step crossed the cap first.</p>
+<p><strong>The heap is a boxed slice, touched where it is made.</strong> <code>Box&lt;[T]&gt;</code> has no
+<code>push</code>, <code>reserve</code> or <code>extend</code>, so &quot;no growing&quot; is the type's, and only a
+<code>Budget</code> makes a <code>HeapSlab</code>. Huge pages are asked for first (<code>madvise</code>,
+advice only), then every page is touched: zeroed memory is handed out
+lazily, and an untouched slab would &quot;succeed&quot; and fail at first touch
+mid-run. The host cap is checked at the call, before the slab exists, so a
+slab past it is counted, sets the flag and is never touched.</p>
+<p><strong>Host-visible bytes are plain data.</strong> A pinned buffer, a heap slab and
+every tenant of a lease are read as a <code>Plain</code> type, sealed to the
+primitives every bit pattern of which is a value, so a NaN-filled or
+reused region is still valid to hold. Pinned memory is filled with <code>0xFF</code>
+when made, a host-backed plan's zeroed, so nothing the host reads is
+uninitialised.</p>
+<p><strong>The host end of a copy is the owner's promise.</strong> <code>PinnedBuf</code>,
+<code>HeapSlab</code> and a lease's <code>HostPart</code> implement <code>fb_core_device::HostSlice</code>
+(<a href="gpu_layer.md"><code>gpu_layer.md</code></a>, &quot;The v0.0.4 runtime&quot;), and are slices on
+the host too. That the host leaves the bytes alone until an enqueued copy
+has run is the layer's sync rule, not the type's: a step's copies are done
+at its step-end sync, and within a step the host waits on the copy's event
+before it touches the bytes again.</p>
+<h3 id="caps-and-margins">Caps and margins</h3>
+<ul>
+<li><strong>A defaulted device cap</strong> is the gpu's free memory, read once after its
+handles exist, less the larger of 512 MiB and 5% of its total
+(<code>device_margin</code>); gpus sharing one device split both evenly.</li>
+<li><strong>A defaulted host cap</strong> is the host's available memory, read once in
+setup, less the larger of 1 GiB and 5% (<code>host_margin</code>). The reading is
+the layer's own, <code>host_available</code>, and names nothing of the arena's:
+<code>MemAvailable</code>, lowered by every cgroup v2 from the process's own to the
+mount whose <code>memory.max</code> less <code>memory.current</code> is smaller. Heap and
+pinned bytes are one counter against it.</li>
+<li><strong>Every cap is clamped to the reading.</strong> An explicit cap is used as
+written, the user owning the margin, unless it is past the machine; then
+it is the reading itself, no margin taken. The table prints each cap as
+written beside the value used (<code>Cap::resolve</code>, <code>Caps::read</code>). Without the
+clamp an impossible cap ends in an abort at whichever allocation fails
+first, or in the OOM killer.</li>
+<li><strong>The margins are judgment, not measurement.</strong> They cover what the
+budget leaves out: the device context, the handles' own memory, loaded
+modules, the kernels' stack and small host allocations such as the
+geometry and the basis. An explicit cap leaves those to the user.</li>
+</ul>
+<h2 id="step-scratch">Step scratch</h2>
+<p>Memory a step needs during its <code>run</code> and nothing reads afterwards: a
+library call's work buffer, a solver's subspace, build intermediates, the
+records and work lists. A step declares it in <code>mem_budget</code>,
+<code>budget.scratch(gpu, kind, bytes)</code>, which records a row and charges and
+allocates nothing; the final node packs it, and <code>run</code> is lent the region.</p>
+<p><strong>Two steps share scratch bytes only if the DAG orders them</strong>, one
+reaching the other (<code>fb_core_pack</code>). A finished node is finished device
+work, so a path is a happens-before on the device as on the host, under
+any schedule; steps the DAG leaves unordered never share, whatever lock
+serializes them. The packer is first fit, largest first and then by step
+name, each region at the lowest offset clear of every unordered region
+already placed, so the offsets are the same every run. Its quality is not
+its safety: any placement that keeps unordered regions apart is safe, and
+a poorer one costs bytes. Beside the peak it reports the plain sum and the
+lower bound, the heaviest set of regions no two of which the DAG orders,
+so a DAG that packs badly shows itself.</p>
+<p><strong>The step-end sync carries memory safety.</strong> Pinned scratch needs it
+whole: the host writes pinned bytes inside <code>run</code>, and the device reads
+them through copies done by the time the wrapper's sync returns. Any
+change to the sync is a change to this rule.</p>
+<p><strong>One layout per step.</strong> A step's region holds several tenants. A
+<code>Layout</code> places them, each <code>Span</code> at the next 64-byte boundary;
+<code>mem_budget</code> declares <code>Layout::bytes</code> and <code>run</code> builds the same layout
+and carves its spans from the <code>Lease</code>, <code>device</code> for a <code>ScratchBuf</code> and
+<code>pinned</code> for a <code>HostPart</code>. A span past what was declared is refused at
+the carve, always on.</p>
+<p><strong>A lease cannot escape, and its tenants never meet.</strong> A lease borrows
+the ledger for one <code>run</code>, and what it carves borrows the lease, so no
+tenant can be stored in an <code>Output</code>. A span is neither <code>Copy</code> nor
+<code>Clone</code>, each carve is recorded, and one that meets a tenant already
+carved panics, so two layouts over one region cannot hand out one byte
+twice; a step holds one lease at a time.</p>
+<p><strong>Addresses hold over a replay; contents do not.</strong> A step gets the same
+region on every run, and what is in it on entry is undefined. With the
+ledger's <code>nan_fill</code>, the wrapper fills each lease's host regions with
+<code>0xFF</code> before <code>run</code> (<code>Lease::fill_host</code>), a NaN to every <code>f64</code> read before
+it is written, and its device regions on the step's stream.</p>
+<h2 id="the-final-node">The final node</h2>
+<p><code>Ledger::finish</code> is the budget DAG's last node, over the steps and what
+each reads:</p>
+<ol>
+<li>Takes the DAG's transitive closure and packs each gpu and kind's
+scratch rows into one slab, rows in step-name order. Every region is
+checked inside its slab, always on, whatever the packer did.</li>
+<li>Adds each packed peak to its counter, and the handle workspace to each
+gpu's device counter, and checks each against its cap again; holds heap
+and pinned, the packed pinned scratch included, against the host.</li>
+<li>Seals the ledger: a <code>Budget</code> call after it panics, naming the step.</li>
+<li>Refuses or accepts. Over any cap, it returns an <code>Allocation</code> error
+whose message is the whole table and allocates nothing more: the one
+place in the layer that error is a value
+(<a href="diagnostics.md"><code>diagnostics.md</code></a>, &quot;Allocation is a planning-time
+error&quot;). Otherwise it allocates the slabs and each gpu's workspace,
+aborting as every create does if the machine refuses bytes the budget
+accepted, and logs the table at <code>info</code>.</li>
+</ol>
+<p><strong>The table</strong> is one row per step and column (device and pinned per gpu,
+the heap) for what the <code>Output</code>s hold, their sum, each slab's packed peak
+beside its plain sum and lower bound, the handle workspace, the totals,
+each device cap used beside as written, the host's total against its cap
+used and as written, each slab's regions with their offsets, and the locks
+each step declared. Rows are in step-name order, so the text is the same
+under any budget order.</p>
+<p><strong>A lock's rank is its type's.</strong> A step declares the locks its <code>run</code> takes
+(<code>Budget::locks</code>), each a <code>LockId</code>: every manager first, then the gpus by
+index, <code>Ord</code> derived in that order. <code>Ledger::locks_of</code> hands a step's set
+back in that order, for the wrapper to take ascending.</p>
+<hr />
+<p><em>The sections from here to the end describe the old layer, the arena and
+the planner, and go when they do.</em></p>
 <p>The programming model fixes the principles: a task's layout is its
 footprint, the arena is a table and a block, the block is the plan's peak,
 and a run allocates nothing (<a href="programming_model.html"><code>programming_model.md</code></a>,
 &quot;Memory: layouts and arenas&quot;, &quot;The arena is a table and a block&quot;, &quot;Blocks,
-plans and the process&quot;, &quot;Memory kinds&quot;). This document is the level below,
+plans and the process&quot;, &quot;Memory kinds&quot;). What follows is the level below,
 the one a planner is written from: what a row of the table is and who owns
 it, how a lifetime is represented and when two rows may share bytes, the
 admission arithmetic, how an adaptive width is chosen, how the three kinds

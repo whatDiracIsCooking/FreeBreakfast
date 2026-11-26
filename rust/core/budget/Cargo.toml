@@ -1,0 +1,21 @@
+[package]
+name = "fb-core-budget"
+description = "core::budget: the v0.0.4 layer's memory budget: the ledger, the caps, the buffers, step scratch and the final node"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+contracts.workspace = true
+fb-core-device.workspace = true
+fb-core-error-handling.workspace = true
+# The value checks of the always-on contracts (le!, lt!).
+fb-core-log.workspace = true
+# Scratch packed by the DAG's closure, at the final node.
+fb-core-pack.workspace = true
+log.workspace = true
+# The raw allocations: wwr_malloc, wwr_host_alloc and their frees.
+wwr-sys.workspace = true

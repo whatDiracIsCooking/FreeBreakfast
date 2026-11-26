@@ -263,6 +263,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fb-core-budget"
+version = "0.1.0"
+dependencies = [
+ "contracts",
+ "fb-core-device",
+ "fb-core-error-handling",
+ "fb-core-log",
+ "fb-core-pack",
+ "log",
+ "wwr-sys",
+]
+
+[[package]]
 name = "fb-core-constants"
 version = "0.1.0"
 

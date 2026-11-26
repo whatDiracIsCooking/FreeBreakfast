@@ -1,10 +1,178 @@
 # Rust rebuild: memory
 
+Two layers are in the tree, and this document describes both until the old
+one is deleted. **The v0.0.4 layer** (`fb_core_budget`, over `fb_core_pack`
+and `fb_core_device`) counts what each step allocates, as it allocates it,
+against a cap per kind, and packs the steps' scratch by the DAG: "The
+budget", "Step scratch" and "The final node" below, ported from the
+prototype's design (`../experimental/rust/v0.0.4/README.md`, "The memory
+budget", "Step scratch"). **The old layer** (`fb_core_arena` and
+`fb_core_planner`) lays every buffer out as a row of a table and admits
+the table's block: every section from "The table" on, which stays as the
+old layer's until its crates are deleted
+([`programming_model.md`](programming_model.md), "Memory: layouts and
+arenas").
+
+## The budget
+
+A step's `mem_budget` allocates what its `Output` owns through a `Budget`,
+the handle the ledger gives it, and `run` is given none, so a run
+allocates nothing. Each call, in order:
+
+1. Adds the bytes to the kind's atomic counter and to the step's row of
+   the table.
+2. Checks the counter against the cap. Past it, sets the ledger's `over`
+   flag. It does not panic.
+3. Allocates, unless the flag is set. Under the flag, or on a dry budget,
+   the buffer is empty: length 0, nothing promised.
+
+| Kind | Counter | What `Budget` hands back | Rule |
+|---|---|---|---|
+| Device | A sum, per gpu | `DeviceBuf<T>`, a fixed-size device buffer | An `Output`'s: read by other steps, or carried over a replay |
+| Pinned | A sum, per gpu | `PinnedBuf<T>`, page-locked, filled with `0xFF` when made | As device |
+| Heap | A sum, one for the host | `HeapSlab<T>`, a `Box<[T]>` | Cannot grow; pages touched in `mem_budget` |
+| Scratch | Packed, per gpu and kind | A `Lease` on the step's region for its `run` | "Step scratch" |
+| Handle workspace | `fb_core_device::HANDLE_WORKSPACE_BYTES`, 128 MiB per gpu | A `DeviceBuf<u8>` the gpu's `GpuResources` takes (`Ledger::take_workspace`) and binds its handle to once | Allocated by the final node |
+
+**The total is a sum and so order-independent.** The steps budget in
+parallel, in whatever order the executor runs them; the counters are
+atomic, and the refusal is deferred to the final node, so accept or refuse
+is the same every run and the report is the whole table, not whichever
+step crossed the cap first.
+
+**The heap is a boxed slice, touched where it is made.** `Box<[T]>` has no
+`push`, `reserve` or `extend`, so "no growing" is the type's, and only a
+`Budget` makes a `HeapSlab`. Huge pages are asked for first (`madvise`,
+advice only), then every page is touched: zeroed memory is handed out
+lazily, and an untouched slab would "succeed" and fail at first touch
+mid-run. The host cap is checked at the call, before the slab exists, so a
+slab past it is counted, sets the flag and is never touched.
+
+**Host-visible bytes are plain data.** A pinned buffer, a heap slab and
+every tenant of a lease are read as a `Plain` type, sealed to the
+primitives every bit pattern of which is a value, so a NaN-filled or
+reused region is still valid to hold. Pinned memory is filled with `0xFF`
+when made, a host-backed plan's zeroed, so nothing the host reads is
+uninitialised.
+
+**The host end of a copy is the owner's promise.** `PinnedBuf`,
+`HeapSlab` and a lease's `HostPart` implement `fb_core_device::HostSlice`
+([`gpu_layer.md`](gpu_layer.md), "The v0.0.4 runtime"), and are slices on
+the host too. That the host leaves the bytes alone until an enqueued copy
+has run is the layer's sync rule, not the type's: a step's copies are done
+at its step-end sync, and within a step the host waits on the copy's event
+before it touches the bytes again.
+
+### Caps and margins
+
+- **A defaulted device cap** is the gpu's free memory, read once after its
+  handles exist, less the larger of 512 MiB and 5% of its total
+  (`device_margin`); gpus sharing one device split both evenly.
+- **A defaulted host cap** is the host's available memory, read once in
+  setup, less the larger of 1 GiB and 5% (`host_margin`). The reading is
+  the layer's own, `host_available`, and names nothing of the arena's:
+  `MemAvailable`, lowered by every cgroup v2 from the process's own to the
+  mount whose `memory.max` less `memory.current` is smaller. Heap and
+  pinned bytes are one counter against it.
+- **Every cap is clamped to the reading.** An explicit cap is used as
+  written, the user owning the margin, unless it is past the machine; then
+  it is the reading itself, no margin taken. The table prints each cap as
+  written beside the value used (`Cap::resolve`, `Caps::read`). Without the
+  clamp an impossible cap ends in an abort at whichever allocation fails
+  first, or in the OOM killer.
+- **The margins are judgment, not measurement.** They cover what the
+  budget leaves out: the device context, the handles' own memory, loaded
+  modules, the kernels' stack and small host allocations such as the
+  geometry and the basis. An explicit cap leaves those to the user.
+
+## Step scratch
+
+Memory a step needs during its `run` and nothing reads afterwards: a
+library call's work buffer, a solver's subspace, build intermediates, the
+records and work lists. A step declares it in `mem_budget`,
+`budget.scratch(gpu, kind, bytes)`, which records a row and charges and
+allocates nothing; the final node packs it, and `run` is lent the region.
+
+**Two steps share scratch bytes only if the DAG orders them**, one
+reaching the other (`fb_core_pack`). A finished node is finished device
+work, so a path is a happens-before on the device as on the host, under
+any schedule; steps the DAG leaves unordered never share, whatever lock
+serializes them. The packer is first fit, largest first and then by step
+name, each region at the lowest offset clear of every unordered region
+already placed, so the offsets are the same every run. Its quality is not
+its safety: any placement that keeps unordered regions apart is safe, and
+a poorer one costs bytes. Beside the peak it reports the plain sum and the
+lower bound, the heaviest set of regions no two of which the DAG orders,
+so a DAG that packs badly shows itself.
+
+**The step-end sync carries memory safety.** Pinned scratch needs it
+whole: the host writes pinned bytes inside `run`, and the device reads
+them through copies done by the time the wrapper's sync returns. Any
+change to the sync is a change to this rule.
+
+**One layout per step.** A step's region holds several tenants. A
+`Layout` places them, each `Span` at the next 64-byte boundary;
+`mem_budget` declares `Layout::bytes` and `run` builds the same layout
+and carves its spans from the `Lease`, `device` for a `ScratchBuf` and
+`pinned` for a `HostPart`. A span past what was declared is refused at
+the carve, always on.
+
+**A lease cannot escape, and its tenants never meet.** A lease borrows
+the ledger for one `run`, and what it carves borrows the lease, so no
+tenant can be stored in an `Output`. A span is neither `Copy` nor
+`Clone`, each carve is recorded, and one that meets a tenant already
+carved panics, so two layouts over one region cannot hand out one byte
+twice; a step holds one lease at a time.
+
+**Addresses hold over a replay; contents do not.** A step gets the same
+region on every run, and what is in it on entry is undefined. With the
+ledger's `nan_fill`, the wrapper fills each lease's host regions with
+`0xFF` before `run` (`Lease::fill_host`), a NaN to every `f64` read before
+it is written, and its device regions on the step's stream.
+
+## The final node
+
+`Ledger::finish` is the budget DAG's last node, over the steps and what
+each reads:
+
+1. Takes the DAG's transitive closure and packs each gpu and kind's
+   scratch rows into one slab, rows in step-name order. Every region is
+   checked inside its slab, always on, whatever the packer did.
+2. Adds each packed peak to its counter, and the handle workspace to each
+   gpu's device counter, and checks each against its cap again; holds heap
+   and pinned, the packed pinned scratch included, against the host.
+3. Seals the ledger: a `Budget` call after it panics, naming the step.
+4. Refuses or accepts. Over any cap, it returns an `Allocation` error
+   whose message is the whole table and allocates nothing more: the one
+   place in the layer that error is a value
+   ([`diagnostics.md`](diagnostics.md), "Allocation is a planning-time
+   error"). Otherwise it allocates the slabs and each gpu's workspace,
+   aborting as every create does if the machine refuses bytes the budget
+   accepted, and logs the table at `info`.
+
+**The table** is one row per step and column (device and pinned per gpu,
+the heap) for what the `Output`s hold, their sum, each slab's packed peak
+beside its plain sum and lower bound, the handle workspace, the totals,
+each device cap used beside as written, the host's total against its cap
+used and as written, each slab's regions with their offsets, and the locks
+each step declared. Rows are in step-name order, so the text is the same
+under any budget order.
+
+**A lock's rank is its type's.** A step declares the locks its `run` takes
+(`Budget::locks`), each a `LockId`: every manager first, then the gpus by
+index, `Ord` derived in that order. `Ledger::locks_of` hands a step's set
+back in that order, for the wrapper to take ascending.
+
+---
+
+*The sections from here to the end describe the old layer, the arena and
+the planner, and go when they do.*
+
 The programming model fixes the principles: a task's layout is its
 footprint, the arena is a table and a block, the block is the plan's peak,
 and a run allocates nothing ([`programming_model.md`](programming_model.md),
 "Memory: layouts and arenas", "The arena is a table and a block", "Blocks,
-plans and the process", "Memory kinds"). This document is the level below,
+plans and the process", "Memory kinds"). What follows is the level below,
 the one a planner is written from: what a row of the table is and who owns
 it, how a lifetime is represented and when two rows may share bytes, the
 admission arithmetic, how an adaptive width is chosen, how the three kinds
@@ -246,25 +414,6 @@ narrows to the room ("Adaptive widths: one planner routine"). The
 question is worth reopening only when a transform in place would lower
 the metric's peak; the row to build then is `Layout::write` with its
 loop contract relaxed to "no later user", not a new kind.
-
-## Step scratch
-
-The v0.0.4 layer's scratch, memory a step needs during its `run` and
-nothing reads afterwards, is declared per step and packed by the DAG's
-transitive closure (`../experimental/rust/v0.0.4/README.md`, "Step scratch";
-`fb_core_pack`, the packer, ahead of the ledger that calls it).
-
-**Two steps share scratch bytes only if the DAG orders them**, one
-reaching the other. A finished node is finished device work, so a path is
-a happens-before on the device as on the host, under any schedule; steps
-the DAG leaves unordered never share, whatever lock serializes them. The
-packer is first fit, largest first and then by step name, each region at
-the lowest offset clear of every unordered region already placed, so the
-offsets are the same every run. Its quality is not its safety: any
-placement that keeps unordered regions apart is safe, and a poorer one
-costs bytes. Beside the peak it reports the plain sum and the lower bound,
-the heaviest set of regions no two of which the DAG orders, so a DAG that
-packs badly shows itself.
 
 ## Admission
 
