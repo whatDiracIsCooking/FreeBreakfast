@@ -91,6 +91,16 @@ const PASS_STAGING_BYTES: usize = 128 << 20;
 /// batch on its way down.
 const BUILD_STAGING_BYTES: usize = 64 << 20;
 
+/// Whether a J/K pass from C makes `K += 2 M Mᵀ` a syrk into K's lower
+/// triangle, mirrored once the pass is done, or a gemm: whichever measured
+/// faster on each backend, read from the backend the kernel libraries were
+/// built for (`rust/kernel_lib.rs`). gly10 cc-pVDZ, release, one run each
+/// on one card in one session (#1858): on the RTX 3080 the syrk takes the
+/// SCF loop from 3.180 s to 2.775 s an iteration (−13%, at half the
+/// flops); on the gfx1200 rocBLAS's dsyrk takes it from 4.634 s to 5.342 s
+/// (+15%), so HIP keeps the gemm.
+const K_BY_SYRK: bool = matches!(env!("FB_KERNELS_BACKEND").as_bytes(), b"CUDA");
+
 /// The fields of one aux record and of one cell, as the kernel reads them.
 const AUX_FIELDS: usize = FB_THREE_CENTER_AUX_FIELDS as usize;
 const CELL_FIELDS: usize = FB_THREE_CENTER_PACKED_CELL_FIELDS as usize;
@@ -1322,9 +1332,8 @@ fn gpu_pass(
         if let Some(n_occ) = n_occ {
             // With D = 2 C Cᵀ: every B_Q C in one batched gemm, the blocks
             // side by side as one n × (n_occ rows) matrix M; gamma_Q =
-            // B_Q · D = 2 (B_Q C) · C, J += Σ_Q gamma_Q B_Q, K += 2 M Mᵀ,
-            // a rank-k update: syrk's lower triangle at half a gemm's
-            // flops, mirrored once the pass is done.
+            // B_Q · D = 2 (B_Q C) · C, J += Σ_Q gamma_Q B_Q, K += 2 M Mᵀ:
+            // a syrk on CUDA, a gemm on HIP ([`K_BY_SYRK`]).
             let (oi, no) = (n_occ as i32, (n * n_occ) as i32);
             gpu.gemm_strided_batched(
                 op_n,
@@ -1347,7 +1356,25 @@ fn gpu_pass(
             )?;
             gpu.gemv(op_t, no, r, 2.0, &bd, no, &dm, 0.0, &mut gamma)?;
             gpu.gemv(op_n, n2i, r, 1.0, &sq, n2i, &gamma, 1.0, &mut jj)?;
-            gpu.syrk(lower, op_n, ni, oi * r, 2.0, &bd, ni, 1.0, &mut kk, ni)?;
+            if K_BY_SYRK {
+                gpu.syrk(lower, op_n, ni, oi * r, 2.0, &bd, ni, 1.0, &mut kk, ni)?;
+            } else {
+                gpu.gemm(
+                    op_n,
+                    op_t,
+                    ni,
+                    ni,
+                    oi * r,
+                    2.0,
+                    &bd,
+                    ni,
+                    &bd,
+                    ni,
+                    1.0,
+                    &mut kk,
+                    ni,
+                )?;
+            }
         } else {
             // gamma_Q = B_Q · D, J += Σ_Q gamma_Q B_Q; K += Σ_Q (B_Q D)
             // B_Qᵀ, every B_Q D in one batched gemm, then the blocks side by
@@ -1399,7 +1426,7 @@ fn gpu_pass(
         drop((ring_wait!(tables)?, ring_wait!(packed)?));
     }
     drop((homes, slots));
-    if n_occ.is_some() {
+    if K_BY_SYRK && n_occ.is_some() {
         // K from C holds its lower triangle alone: the upper from it, on
         // the GPU's stream after the last syrk, so the fragment is read in
         // full.
