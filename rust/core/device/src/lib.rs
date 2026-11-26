@@ -4,7 +4,8 @@
 //!
 //! - [`ScopedDevice`]: a device made current on this thread, the one
 //!   before restored on drop; [`device_count`] and [`memory`], the devices
-//!   the runtime sees and a device's free and total memory.
+//!   the runtime sees and a device's free and total memory;
+//!   [`single_thread_host_blas`], a linked host OpenBLAS kept to one thread.
 //! - [`Stream`]: a stream on one device, whose methods enqueue the copies
 //!   (host to device, device to host, device to device) and the fills, and
 //!   whose [`Stream::sync`] counts and times itself ([`sync_meter`]). A
@@ -47,6 +48,7 @@ mod stream;
 #[cfg(test)]
 mod tests;
 
+use std::ffi::{CStr, c_int, c_void};
 use std::marker::PhantomData;
 use std::panic::Location;
 
@@ -115,6 +117,47 @@ pub fn memory(physical: i32) -> Result<(u64, u64)> {
     let status = unsafe { wwr_sys::wwr_mem_get_info(&mut free, &mut total) };
     runtime_status(status)?;
     Ok((free as u64, total as u64))
+}
+
+/// Set a host OpenBLAS the process links to one thread, and join the pool
+/// it started at load; nothing when none is linked. Called once per
+/// process, by the run's setup, before it starts a thread of its own
+/// (`docs/programming_model.md`, "CPU workers").
+///
+/// A HIP build links ROCm's `librocm-openblas` through hipSOLVER, whose
+/// load-time constructor starts one thread per core before `main` unless
+/// `OPENBLAS_NUM_THREADS` says otherwise; no call of this tree runs on it.
+/// `openblas_set_num_threads(1)` keeps any later call on its caller's
+/// thread, but leaves the pool's threads parked, so the pool is shut down
+/// too, with `blas_thread_shutdown_`, the call OpenBLAS's own fork
+/// handler makes. Both are looked up by name in the loaded objects, so a
+/// build that links no OpenBLAS (CUDA's) has nothing to find.
+pub fn single_thread_host_blas() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if let Some(set) = loaded_symbol(c"openblas_set_num_threads") {
+            // SAFETY: OpenBLAS's `void openblas_set_num_threads(int)`, a
+            // pointer the loader resolved to that exported function.
+            let set = unsafe { std::mem::transmute::<*mut c_void, extern "C" fn(c_int)>(set) };
+            set(1);
+        }
+        if let Some(shutdown) = loaded_symbol(c"blas_thread_shutdown_") {
+            // SAFETY: OpenBLAS's `int blas_thread_shutdown_(void)`, as above.
+            let shutdown =
+                unsafe { std::mem::transmute::<*mut c_void, extern "C" fn() -> c_int>(shutdown) };
+            // Nothing runs on the pool: no call of this tree is OpenBLAS's,
+            // and the run has started no thread yet. It always returns 0.
+            shutdown();
+        }
+    });
+}
+
+/// The address of `name` in the objects loaded into the process, by the
+/// loader's default search order; `None` when none defines it.
+fn loaded_symbol(name: &CStr) -> Option<*mut c_void> {
+    // SAFETY: `RTLD_DEFAULT` and a NUL-terminated name; `dlsym` only reads.
+    let ptr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) };
+    (!ptr.is_null()).then_some(ptr)
 }
 
 /// A device made current on this thread, and the one before it restored

@@ -1,16 +1,15 @@
 //! The steps use exactly the threads their config says (tier 3,
 //! `docs/programming_model.md`, "CPU workers"): water in cc-pVDZ /
 //! cc-pVDZ-JKFIT, its four host steps executed once on a host-backed plan,
-//! leave the executor's `threads` and the host integrals' `host_threads`
-//! beside what was there before setup, and no more, so no host integral ran
-//! on rayon's global pool; and once the plan and the executor drop, what
-//! was there before is all that is left.
+//! leave the main thread, the executor's `threads` and the host integrals'
+//! `host_threads`, and no more, so no host integral ran on rayon's global
+//! pool; and once the plan and the executor drop, the main thread alone.
 //!
-//! What was there before is the main thread, and any pool a linked C
-//! library opened at load: a HIP build links ROCm's host OpenBLAS (through
-//! rocSOLVER), which starts one thread per core before `main` unless
-//! `OPENBLAS_NUM_THREADS` says otherwise. That pool is not the plan's, so
-//! the count here is the plan's own, against that baseline.
+//! No pool a linked C library opened is left either. A HIP build links
+//! ROCm's host OpenBLAS (through hipSOLVER), which starts one thread per
+//! core before `main`; setup sets it to one thread and joins that pool
+//! (`fb_core_device::single_thread_host_blas`), so the count here is
+//! against the main thread alone, and a pool that slips back fails it.
 //!
 //! The count is the `Threads:` line of `/proc/self/status`. `harness =
 //! false`: libtest runs cases on threads of its own, which would be counted.
@@ -71,21 +70,18 @@ fn main() {
     let executor = Executor::new(THREADS);
     plan.budget(&executor).unwrap();
     plan.execute(&executor).unwrap();
-    let want = before + THREADS + HOST_THREADS;
+    let want = 1 + THREADS + HOST_THREADS;
     assert_eq!(
         settled_threads(want),
         want,
-        "after the run: {before} before, the executor's {THREADS} and the host pool's {HOST_THREADS}"
+        "after the run ({before} before setup): the main thread, the executor's {THREADS} and \
+         the host pool's {HOST_THREADS}"
     );
 
     drop(plan);
     drop(executor);
-    assert_eq!(
-        settled_threads(before),
-        before,
-        "only the {before} from before setup after the plan"
-    );
+    assert_eq!(settled_threads(1), 1, "only the main thread after the plan");
     println!(
-        "steps_threads: {before} + {THREADS} + {HOST_THREADS} threads in the run, {before} before and after it"
+        "steps_threads: 1 + {THREADS} + {HOST_THREADS} threads in the run, 1 after it, {before} before setup"
     );
 }
