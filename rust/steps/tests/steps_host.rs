@@ -1,7 +1,7 @@
 //! The MainBus and the steps' budget with no device (tier 3): setup's
 //! counts on gly10 in cc-pVDZ / cc-pVDZ-JKFIT against the v0.0.4 page's,
 //! the dry budget's exact bytes from them, the orthogonalizer's scratch
-//! apart from every step unordered with it, the config's refusals, and the
+//! apart from every step unordered with it, the config's refusals, the
 //! allocation record failing a step that allocates on the plain heap in its
 //! `run`.
 
@@ -62,9 +62,14 @@ fn a_dry_budget_of_gly10_is_exact() {
         Some(aligned(l.bytes()))
     );
     assert_eq!(region("orthogonalizer", Kind::Pinned), Some(ALIGN));
-    for step in ["overlap", "core_hamiltonian", "guess"] {
+    for step in ["overlap", "guess"] {
         assert_eq!(region(step, Kind::Pinned), Some(square(n)), "{step}");
     }
+    // T's packed triangle and V's side by side, n past H's square.
+    assert_eq!(
+        region("core_hamiltonian", Kind::Pinned),
+        Some(aligned((n * n + n) * 8))
+    );
     assert_eq!(region("metric", Kind::Pinned), Some(square(q)));
     // Four n × n outputs and the metric's q × q, the one device scratch
     // region, and the handle workspace.
@@ -78,11 +83,17 @@ fn a_dry_budget_of_gly10_is_exact() {
 }
 
 #[test]
-fn a_run_of_no_gpu_and_a_table_of_no_step_here_are_refused() {
+fn a_run_of_no_gpu_or_no_host_thread_and_a_table_of_no_step_here_are_refused() {
     let mut config = common::config("h2o.xyz", "cc-pvdz", None);
     config.resources.devices.clear();
     let Err(error) = MainBus::setup(config, Backing::Dry) else {
         panic!("a run of no GPU");
+    };
+    assert_eq!(error.kind, ErrorKind::InvalidConfig);
+    let mut config = common::config("h2o.xyz", "cc-pvdz", None);
+    config.resources.host_threads = Some(0);
+    let Err(error) = MainBus::setup(config, Backing::Dry) else {
+        panic!("a host pool of no thread");
     };
     assert_eq!(error.kind, ErrorKind::InvalidConfig);
     let text = "[molecule]\nxyz = \"h2o.xyz\"\n[basis]\nname = \"cc-pvdz\"\n[scf]\n";

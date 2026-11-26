@@ -10,6 +10,7 @@ workspace = true
 
 # Device-free: the basis and its spherical layout, and rayon. None links wwr.
 [dependencies]
+contracts.workspace = true
 fb-basis.workspace = true
 fb-core-primitives.workspace = true
 rayon.workspace = true

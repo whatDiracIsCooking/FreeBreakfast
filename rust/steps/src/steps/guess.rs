@@ -1,6 +1,6 @@
 //! The initial guess: the superposition of atomic densities, read from the
 //! compiled-in stamps (or computed, for a basis that carries none) on the
-//! host, and uploaded to gpu0. A host step: no library, no lock.
+//! host into the step's pinned staging, and uploaded to gpu0. A host step: no library, no lock.
 
 use fb_core_budget::{Budget, DeviceBuf, Kind, Lease};
 use fb_core_error_handling::{Result, Status};
@@ -28,12 +28,12 @@ impl GuessOutput {
     }
 }
 
-/// The SAD density of the run's molecule, on the host. A stamp is taken
-/// only for a basis resolved by name.
-fn sad_density(shared: &Shared) -> Result<Vec<f64>> {
+/// The SAD density of the run's molecule, on the host, into `density`. A
+/// stamp is taken only for a basis resolved by name.
+fn sad_density(shared: &Shared, density: &mut [f64]) -> Status {
     let baked: Option<SadStampLookup> =
         (!shared.basis.name().is_empty()).then_some(builtin_sad_density);
-    fb_sad::sad_density(&shared.basis, shared.molecule.atoms(), baked)
+    fb_sad::sad_density_into(&shared.basis, shared.molecule.atoms(), baked, density)
 }
 
 impl Step<MainBus> for GuessStep {
@@ -51,7 +51,7 @@ impl Step<MainBus> for GuessStep {
 
     fn mem_budget(shared: &Shared, budget: &Budget<'_>) -> Result<GuessOutput> {
         let n = shared.dims.n_ao;
-        budget.scratch(GPU0, Kind::Pinned, staging(n).0.bytes());
+        budget.scratch(GPU0, Kind::Pinned, staging(n * n).0.bytes());
         Ok(GuessOutput {
             d: budget.device(GPU0, n * n),
         })
@@ -65,9 +65,8 @@ impl Step<MainBus> for GuessStep {
         scratch: &Lease<'_>,
     ) -> Status {
         let n = view.shared().dims.n_ao;
-        let density = sad_density(view.shared())?;
-        let mut staged = scratch.pinned(GPU0, staging(n).1);
-        staged.copy_from_slice(&density);
+        let mut staged = scratch.pinned(GPU0, staging(n * n).1);
+        sad_density(view.shared(), &mut staged)?;
         upload(lane, GPU0, &mut out.d, staged)
     }
 }

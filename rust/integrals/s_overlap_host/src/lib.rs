@@ -21,7 +21,8 @@
 //! it packed: `(μ, ν)`, `ν <= μ`, at [`lower_index`], `n (n + 1) / 2`
 //! values. Only the shell pairs `A >= B` are computed, one rayon task per
 //! center, whose rows are one contiguous slice of the triangle
-//! (`RAYON_NUM_THREADS` sets the thread count).
+//! (the pool it is called in sets the thread count: a step's
+//! `fb_integrals_df_metric::HostPool`, or rayon's global one by `RAYON_NUM_THREADS`).
 //!
 //! **Directly spherical.** [`overlap`] never forms a Cartesian integral. A
 //! column of a shell's harmonic block is a harmonic polynomial `H` of
@@ -73,6 +74,7 @@ compile_error!(
 
 use std::f64::consts::PI;
 
+use contracts::debug_requires;
 use fb_basis::{BasisSet, Shell, cartesian_powers, solid_harmonic_block};
 use fb_core_primitives::{double_factorial_odd, lower_index};
 use rayon::prelude::*;
@@ -369,22 +371,37 @@ fn block(
 /// coefficients are used as `basis` holds them; place it
 /// `primitive_normalized()`.
 ///
-/// One rayon task per center. Its functions' rows are one contiguous slice
-/// of the packed triangle, so the tasks write disjoint `&mut` slices and
-/// share only what they read.
+/// A fresh triangle: [`overlap_into`] into a `Vec` of its own, for a caller
+/// with no buffer to hand, a test or a reference.
 #[must_use]
 pub fn overlap(basis: &BasisSet) -> Vec<f64> {
+    let mut s = vec![0.0; lower_index(basis.nao_sphe() as usize, 0)];
+    overlap_into(basis, &mut s);
+    s
+}
+
+/// [`overlap`] written into the caller's `s`, every value of it, so a step
+/// builds the triangle in its staging and allocates nothing of its size.
+///
+/// One rayon task per center. Its functions' rows are one contiguous slice
+/// of the packed triangle, so the tasks write disjoint `&mut` slices and
+/// share only what they read; each zeroes its rows first.
+#[debug_requires(
+    s.len() == lower_index(basis.nao_sphe() as usize, 0),
+    "s is the n (n + 1) / 2 lower triangle"
+)]
+pub fn overlap_into(basis: &BasisSet, s: &mut [f64]) {
     let n = basis.nao_sphe() as usize;
     let views = views(basis);
     let data: Vec<ShellData> = (0..basis.shells().len())
         .map(|index| ShellData::new(basis, index))
         .collect();
     let centers = centers(&data, n);
-    let mut s = vec![0.0; lower_index(n, 0)];
-    let rows = split_rows(&mut s, centers.iter().map(|c| c.rows.clone()));
+    let rows = split_rows(s, centers.iter().map(|c| c.rows.clone()));
 
     let l_max = views.len() - 1;
     rows.into_par_iter().enumerate().for_each(|(ca, rows)| {
+        rows.fill(0.0);
         let mut scratch = Scratch::new(l_max);
         let center_a = &centers[ca];
         let start = lower_index(center_a.rows.start, 0);
@@ -419,7 +436,6 @@ pub fn overlap(basis: &BasisSet) -> Vec<f64> {
             }
         }
     });
-    s
 }
 
 /// How many of `basis`'s shell pairs `A >= B` [`overlap`] leaves zero as

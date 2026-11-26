@@ -38,3 +38,8 @@ fb-integrals-df-metric.workspace = true
 # The config file.
 serde.workspace = true
 toml.workspace = true
+
+# Counts the process's threads, so no libtest harness threads beside it.
+[[test]]
+name = "steps_threads"
+harness = false

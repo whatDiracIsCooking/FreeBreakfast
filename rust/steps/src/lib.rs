@@ -29,10 +29,13 @@
 //! | [`GuessStep`] | host, then gpu0 | none | the SAD density on gpu0 | the pinned staging |
 //! | [`OrthogonalizerStep`] | gpu0 | gpu0 | X = S^(-1/2) on gpu0 | the eigenvectors, a scaled copy, syevd's work and flag |
 //!
-//! The host steps build on rayon's threads through the host integral
-//! crates, the one pool beside the executor; its size is rayon's default,
-//! outside the plan's thread count (`docs/programming_model.md`, "CPU
-//! workers").
+//! The host steps build through the host integral crates inside
+//! [`Shared::host_pool`], the one pool beside the executor, started in setup
+//! with `[resources] host_threads` threads (by default the host's
+//! parallelism less the executor's `threads`, floored at one) and joined
+//! when the bus drops; each writes its triangle into the step's pinned
+//! staging, so no `run` allocates one of its own (`docs/programming_model.md`,
+//! "CPU workers"; `docs/memory.md`, "The budget").
 //!
 //! A plan with no device behind it is budgeted exactly, every length a
 //! count, syevd's work buffer as zero:

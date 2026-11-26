@@ -55,7 +55,8 @@
 //! returns it packed: `(μ, ν)`, `ν <= μ`, at [`lower_index`], `n (n + 1) / 2`
 //! values. Only the shell pairs `A >= B` are computed, one rayon task per
 //! pair of centers, each into a buffer of its own that one pass then copies
-//! into the triangle (`RAYON_NUM_THREADS` sets the thread count).
+//! into the triangle (the pool it is called in sets the thread count: a
+//! step's `HostPool`, or rayon's global one by `RAYON_NUM_THREADS`).
 //!
 //! **Negligible pairs.** The product of two Gaussians carries
 //! `exp(-mu |A - B|²)`, and the Coulomb integral of what is left is at most
@@ -91,6 +92,7 @@ compile_error!(
 
 use std::f64::consts::PI;
 
+use contracts::debug_requires;
 use fb_basis::{BasisSet, Shell, cartesian_powers, solid_harmonic_block};
 use fb_core_primitives::{double_factorial_odd, lower_index};
 use fb_integrals_df_metric::{BOYS_MAX_ORDER, boys};
@@ -698,16 +700,35 @@ fn center_pair(
 /// coefficients are used as `basis` holds them; place it
 /// `primitive_normalized()`.
 ///
-/// One rayon task per pair of centers, since the shells sharing a
-/// primitive pair are those of the two centers. Each writes its blocks to
-/// a buffer of its own; one pass then copies them into the triangle.
+/// A fresh triangle: [`potential_en_into`] into a `Vec` of its own, for a
+/// caller with no buffer to hand, a test or a reference.
 ///
 /// # Panics
 ///
 /// If the basis reaches past `l = 10`, where the Boys tables stop.
 #[must_use]
 pub fn potential_en(basis: &BasisSet, charges: &[PointCharge]) -> Vec<f64> {
-    let n = basis.nao_sphe() as usize;
+    let mut v = vec![0.0; lower_index(basis.nao_sphe() as usize, 0)];
+    potential_en_into(basis, charges, &mut v);
+    v
+}
+
+/// [`potential_en`] written into the caller's `v`, every value of it, so a
+/// step builds the triangle in its staging and allocates nothing of its
+/// size.
+///
+/// One rayon task per pair of centers, since the shells sharing a
+/// primitive pair are those of the two centers. Each writes its blocks to
+/// a buffer of its own; one pass then zeroes `v` and copies them in.
+///
+/// # Panics
+///
+/// If the basis reaches past `l = 10`, where the Boys tables stop.
+#[debug_requires(
+    v.len() == lower_index(basis.nao_sphe() as usize, 0),
+    "v is the n (n + 1) / 2 lower triangle"
+)]
+pub fn potential_en_into(basis: &BasisSet, charges: &[PointCharge], v: &mut [f64]) {
     let views = views(basis);
     let mut data: Vec<ShellData> = (0..basis.shells().len())
         .map(|index| ShellData::new(basis, index))
@@ -730,7 +751,7 @@ pub fn potential_en(basis: &BasisSet, charges: &[PointCharge]) -> Vec<f64> {
         )
         .collect();
 
-    let mut v = vec![0.0; lower_index(n, 0)];
+    v.fill(0.0);
     for (&(ca, cb), blocks) in center_pairs.iter().zip(&blocks) {
         let mut from = 0;
         for (sa, sb) in shell_pairs(&centers, ca, cb) {
@@ -746,7 +767,6 @@ pub fn potential_en(basis: &BasisSet, charges: &[PointCharge]) -> Vec<f64> {
             from += a.nsph() * nsb;
         }
     }
-    v
 }
 
 /// How many of `basis`'s shell pairs `A >= B` [`potential_en`] leaves zero

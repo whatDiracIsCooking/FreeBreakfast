@@ -16,6 +16,7 @@ use fb_basis::BasisSet;
 use fb_core_budget::{Backing, Budget, Caps, Ledger};
 use fb_core_error_handling::{Error, Result};
 use fb_core_flow::{Bus, Locks, Slot};
+use fb_integrals_df_metric::HostPool;
 use fb_molecule::Molecule;
 use serde::Deserialize;
 
@@ -86,6 +87,10 @@ pub struct ResourcesTable {
     pub devices: Vec<i32>,
     /// The executor's width.
     pub threads: usize,
+    /// The host integrals' pool, threads beside the executor's; absent, the
+    /// host's `available_parallelism` less `threads`, floored at one. 0 is
+    /// refused.
+    pub host_threads: Option<usize>,
     /// The device cap per GPU, MiB; absent, the GPU's free memory after
     /// its handles exist, less its margin.
     pub device_cap_mib: Option<u64>,
@@ -106,6 +111,7 @@ impl Default for ResourcesTable {
         ResourcesTable {
             devices: vec![0],
             threads: 4,
+            host_threads: None,
             device_cap_mib: None,
             host_cap_mib: None,
             nan_fill: false,
@@ -293,9 +299,19 @@ pub struct Shared {
     /// The nuclear repulsion energy, hartree.
     pub e_nuc: f64,
     locks: Locks,
+    host_pool: HostPool,
 }
 
 impl Shared {
+    /// The host integrals' pool, `[resources] host_threads` threads: a host
+    /// step calls a host integral crate inside its
+    /// [`install`](HostPool::install), never outside it, so rayon's global
+    /// pool is never built (`docs/programming_model.md`, "CPU workers").
+    #[must_use]
+    pub fn host_pool(&self) -> &HostPool {
+        &self.host_pool
+    }
+
     /// The GPUs of the run, whether or not a device is behind them.
     #[must_use]
     pub fn num_gpus(&self) -> usize {
@@ -329,8 +345,9 @@ pub struct MainBus {
 
 impl MainBus {
     /// Setup: parse the geometry and the bases on the host, count the
-    /// dimensions, make each GPU's `GpuResources`, and read and clamp the
-    /// caps (a GPU's after its handles exist). Not budgeted.
+    /// dimensions, start the host integrals' pool, make each GPU's
+    /// `GpuResources`, and read and clamp the caps (a GPU's after its
+    /// handles exist). Not budgeted.
     ///
     /// [`Backing::Real`] runs on the devices `[resources] devices` names.
     /// [`Backing::Host`] and [`Backing::Dry`] touch no device: a
@@ -340,9 +357,9 @@ impl MainBus {
     ///
     /// # Errors
     /// The readers' refusals; an odd electron count (`Unsupported`); a
-    /// config with no GPU or no thread, or a device the runtime does not
-    /// see (`InvalidConfig`); the recipes library's mismatch; a cap's
-    /// reading.
+    /// config with no GPU, no thread or no host thread, or a device the
+    /// runtime does not see (`InvalidConfig`); the host integrals' threads
+    /// not starting (`Io`); the recipes library's mismatch; a cap's reading.
     pub fn setup(config: Config, backing: Backing) -> Result<Arc<MainBus>> {
         let molecule = fb_io_xyz::read_xyz(&config.molecule.xyz, 0, 1)?;
         let electrons = molecule.electron_count().unsigned_abs() as usize;
@@ -366,11 +383,22 @@ impl MainBus {
         let e_nuc = fb_molecule::nuclear_repulsion_energy(&molecule);
 
         let res = &config.resources;
-        if res.devices.is_empty() || res.threads == 0 {
+        if res.devices.is_empty() || res.threads == 0 || res.host_threads == Some(0) {
             return Err(Error::config(
-                "[resources] devices names a GPU and threads is at least 1",
+                "[resources] devices names a GPU, and threads and host_threads are at least 1",
             ));
         }
+        let host_threads = res.host_threads.unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map_or(1, usize::from)
+                .saturating_sub(res.threads)
+                .max(1)
+        });
+        let host_pool = HostPool::new(host_threads).map_err(|e| {
+            Error::io(format!(
+                "cannot start the host integrals' {host_threads} threads: {e}"
+            ))
+        })?;
         let real = backing == Backing::Real;
         if real {
             fb_recipes_sys::check_library().map_err(Error::gpu)?;
@@ -404,6 +432,7 @@ impl MainBus {
                 dims,
                 e_nuc,
                 locks,
+                host_pool,
             },
             ledger,
             overlap: Slot::new(),

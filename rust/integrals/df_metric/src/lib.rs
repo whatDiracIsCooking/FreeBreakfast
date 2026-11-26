@@ -31,7 +31,8 @@
 //! it packed: `(P, Q)`, `Q <= P`, at [`lower_index`], `n (n + 1) / 2`
 //! values. Only the shell pairs `A >= B` are computed, one rayon task per
 //! center, whose rows are one contiguous slice of the triangle
-//! (`RAYON_NUM_THREADS` sets the thread count).
+//! (the pool it is called in sets the thread count: a step's
+//! [`HostPool`], or rayon's global one by `RAYON_NUM_THREADS`).
 //!
 //! **Directly spherical.** [`metric`] never forms a Cartesian integral. A
 //! column of that block is a harmonic polynomial `H` of degree `l`, and
@@ -83,6 +84,7 @@ compile_error!(
 );
 
 mod boys_series;
+mod pool;
 
 use contracts::debug_requires;
 
@@ -91,6 +93,8 @@ use std::f64::consts::PI;
 use fb_basis::{BasisSet, Shell, cartesian_powers, solid_harmonic_block};
 use fb_core_primitives::{double_factorial_odd, lower_index};
 use rayon::prelude::*;
+
+pub use pool::HostPool;
 
 /// The highest order [`boys`] reaches: two shells of `l = 10`.
 pub const BOYS_MAX_ORDER: usize = boys_series::MAX_ORDER;
@@ -682,23 +686,38 @@ fn views(aux: &BasisSet) -> Vec<ShellView> {
 /// The coefficients are used as `aux` holds them; place the set
 /// `primitive_normalized()`.
 ///
+/// A fresh triangle: [`metric_into`] into a `Vec` of its own, for a caller
+/// with no buffer to hand, a test or a reference.
+#[must_use]
+pub fn metric(aux: &BasisSet) -> Vec<f64> {
+    let mut m = vec![0.0; lower_index(aux.nao_sphe() as usize, 0)];
+    metric_into(aux, &mut m);
+    m
+}
+
+/// [`metric`] written into the caller's `m`, every value of it, so a step
+/// builds the triangle in its staging and allocates nothing of its size.
+///
 /// One rayon task per center. Its functions' rows are one contiguous
 /// slice of the packed triangle, so the tasks write disjoint `&mut`
 /// slices and share only what they read; each thread has its own scratch,
 /// which it keeps between calls.
-#[must_use]
-pub fn metric(aux: &BasisSet) -> Vec<f64> {
+#[debug_requires(
+    m.len() == lower_index(aux.nao_sphe() as usize, 0),
+    "m is the n (n + 1) / 2 lower triangle"
+)]
+pub fn metric_into(aux: &BasisSet, m: &mut [f64]) {
     let n = aux.nao_sphe() as usize;
     let views = views(aux);
     let data: Vec<ShellData> = (0..aux.shells().len())
         .map(|index| ShellData::new(aux, index))
         .collect();
     let centers = centers(&data, n);
-    let mut m = vec![0.0; lower_index(n, 0)];
-    let rows = split_rows(&mut m, centers.iter().map(|c| c.rows.clone()));
+    let rows = split_rows(m, centers.iter().map(|c| c.rows.clone()));
 
     let l_max = views.len() - 1;
     rows.into_par_iter().enumerate().for_each(|(ca, rows)| {
+        rows.fill(0.0);
         SCRATCH.with_borrow_mut(|slot| {
             // This thread's scratch, kept from task to task and call to
             // call; replaced only by one for a higher momentum.
@@ -782,7 +801,6 @@ pub fn metric(aux: &BasisSet) -> Vec<f64> {
             }
         });
     });
-    m
 }
 
 /// How many of `aux`'s shell pairs `A >= B` [`metric`] takes from the far

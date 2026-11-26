@@ -11,6 +11,7 @@ workspace = true
 # Device-free: the molecule, the basis and its spherical layout, the host DF
 # metric's Boys function, and rayon. None links wwr.
 [dependencies]
+contracts.workspace = true
 fb-basis.workspace = true
 fb-core-primitives.workspace = true
 fb-integrals-df-metric.workspace = true
