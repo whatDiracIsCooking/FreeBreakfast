@@ -728,7 +728,9 @@ and fills a stream enqueues, device slices, and each GPU's
   their download's token (`Pending::sync`), which waits for the turn it
   reads and for no part of a turn still to come, and enqueues nothing
   more before it has read them (`fb_steps::ScfStep`'s convergence read:
-  its energy, residual norm, DIIS flag and syevd flag). `[scf]
+  its energy, residual norm, DIIS flag and syevd flag; and, before its
+  first turn, the guess's eigenvalues and syevd flag, whose count above
+  the floor is the first J/K pass's width). `[scf]
   stage_sync`, a measurement off by default, syncs gpu0's stream at the
   three ends where an iteration would end a step were it three. Each
   such call carries an `allow` naming it; the SCF's read of its converged

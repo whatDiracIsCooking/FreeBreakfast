@@ -99,6 +99,37 @@ fn against_the_record((xyz, recorded, pyscf): (&str, f64, f64)) {
     );
 }
 
+/// The first J/K pass is given the guess's factor, not its D: on water,
+/// benzene and ethylene the factor's rank is below the AOs and at least
+/// the occupied orbitals (the SAD guess holds every electron in its
+/// atoms' occupied shells), and each converges in the iterations it took
+/// from D (11, 11 and 51, `main` at c35c6c9b), within one: the dropped
+/// eigenvalues are round-off, so the path is the same. The energies are
+/// [`against_the_record`]'s.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn the_first_pass_is_the_guesss_factor() {
+    for ((xyz, ..), from_d) in [(WATER, 11), (BENZENE, 11), (ETHYLENE, 51)] {
+        let run = converged(chain(xyz));
+        let dims = &run.plan.bus().shared().dims;
+        let (n, n_occ) = (dims.n_ao, dims.n_occ);
+        let scf = run.plan.output(ScfStep);
+        let (rank, iterations) = (scf.guess_rank(), scf.iterations());
+        println!(
+            "{xyz}: the guess's factor of rank {rank} of {n} AOs, {n_occ} occupied; \
+             {iterations} iterations, {from_d} from D"
+        );
+        assert!(
+            n_occ <= rank && rank < n,
+            "{xyz}: rank {rank}, {n_occ} occupied of {n}"
+        );
+        assert!(
+            iterations.abs_diff(from_d) <= 1,
+            "{xyz}: {iterations} iterations against {from_d} from D"
+        );
+    }
+}
+
 /// Water's energy, the chain's representative: every step, one GPU.
 #[test]
 #[ignore = "tier 4: needs a GPU"]

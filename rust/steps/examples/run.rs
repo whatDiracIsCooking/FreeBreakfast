@@ -127,10 +127,13 @@ fn go(args: &Args) -> Result<()> {
     if has_scf {
         let scf = run.plan.output(ScfStep);
         println!(
-            "scf: E = {:.12} Eh in {} iterations, |e| = {:.3e}",
+            "scf: E = {:.12} Eh in {} iterations, |e| = {:.3e}; the guess's factor of rank {} \
+             of {} AOs",
             scf.energy(),
             scf.iterations(),
-            scf.residual()
+            scf.residual(),
+            scf.guess_rank(),
+            run.plan.bus().shared().dims.n_ao
         );
         let meter = scf.meter();
         let builds = u32::try_from(scf.iterations().max(1)).unwrap_or(u32::MAX);
