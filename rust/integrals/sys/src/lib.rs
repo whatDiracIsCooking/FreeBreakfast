@@ -25,6 +25,7 @@
 //! | `three_center_class(stream, la, lb, lp, n_bra_rec, bra, …)`, `three_center_symmetrize` (`.../three_center`) | nothing: the square tensor is not built (#1721), and its kernels and launchers are not carried (#1725); the packed launcher below is the only (mn\|P) |
 //! | `three_center`'s host staging: `mmd`'s records copied back and regrouped by shell pair, the aux records, the cells, U and U_aux in one upload; the launches, the three spherical GEMMs and the average | nothing: (mn\|P) is built packed, a batch of kept shell pairs at a time ([`add_packed_three_center_tasks`]) |
 //! | nothing: the C++ (mn\|P) is square | [`fb_three_center_packed_class`], rust/'s own launcher over FelizJueves's packed spherical-aux `speri3<la, lb, lP>` units, each cell's block at its destination column, the aux index already spherical, and [`FB_THREE_CENTER_PACKED_CELL_FIELDS`]; the safe path is [`add_packed_three_center_tasks`] |
+//! | nothing: the C++ (mn\|P) is Cartesian in the bra | [`fb_three_center_spherical_class`], the same launcher over FelizJueves's fully spherical `ssperi3<la, lb, lP>` (#745), each cell's (μν\|Q) block spherical in all three indices; the safe call is [`three_center_spherical_class`] |
 //! | `kMetricMaxMomentum`, `kThreeCenterMaxMomentum`, `kThreeCenterAuxMaxMomentum` | [`FB_METRIC_MAX_MOMENTUM`], [`FB_THREE_CENTER_MAX_MOMENTUM`], [`FB_THREE_CENTER_AUX_MAX_MOMENTUM`] |
 //! | `kMetricRecordFields`, `kMetricPairFields`, `kThreeCenterAuxFields` | [`FB_METRIC_RECORD_FIELDS`], [`FB_METRIC_PAIR_FIELDS`], [`FB_THREE_CENTER_AUX_FIELDS`], for a safe layer to size its segments by; `kThreeCenterCellFields`, the square cell's, has nothing (#1725) |
 //! | `kThreeCenterBraFields`, the packed bra records' segment count | nothing: the bra records cross as a class view, a field per pointer |
@@ -94,6 +95,13 @@
 //!   [`PackedTables::gather`] gathers a packed batch into square matrices,
 //!   over slices whose lengths are checked in every build.
 //!
+//! - [`three_center_spherical_class`], the v0.0.4 layer's: one class of
+//!   the fully spherical packed (μν\|Q) through
+//!   [`fb_three_center_spherical_class`] (`ssperi3<la, lb, lP>`), over
+//!   `fb-core-device`'s stream and slices, every length a contract and
+//!   every cell, handed in on the host, checked inside the slices it
+//!   indexes and uploaded by the call itself before the launch.
+//!
 //! A class kernel writes at AO offsets held in device memory, so
 //! [`ClassRows`] is a type only [`add_record_tasks`] makes; its doc comment
 //! has why a launcher may trust it.
@@ -109,6 +117,7 @@ mod metric;
 mod packed;
 mod records;
 mod three_center_packed;
+mod three_center_spherical;
 
 pub use bindings::*;
 pub use classes::{kinetic_class, overlap_class, potential_en_class};
@@ -121,6 +130,7 @@ pub use records::{
     add_mixed_record_tasks, add_record_tasks,
 };
 pub use three_center_packed::add_packed_three_center_tasks;
+pub use three_center_spherical::three_center_spherical_class;
 
 use fb_core_error_handling::Status;
 use fb_core_wwr::common::wwr_status_from_code;

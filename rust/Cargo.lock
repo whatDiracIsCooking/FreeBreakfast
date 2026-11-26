@@ -709,6 +709,7 @@ dependencies = [
  "contracts",
  "fb-basis",
  "fb-core-arena",
+ "fb-core-device",
  "fb-core-error-handling",
  "fb-core-log",
  "fb-core-planner",

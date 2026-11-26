@@ -126,7 +126,7 @@ reaches (`FB_RECIPES_ABI_VERSION` is 7, bumped as the inverse square root,
 the symmetrization, the Cholesky diagonal tile and the DIIS solve joined the
 merge sort, then as the inverse square root took its floor's factor from the
 device, then as the triangular solve's diagonal block joined;
-`FB_INTEGRALS_ABI_VERSION` is 11, bumped as the kinetic and
+`FB_INTEGRALS_ABI_VERSION` is 12, bumped as the kinetic and
 nuclear-attraction wrappers with `fb_nuclei_view`, then density fitting's
 metric and three-center launchers, joined the overlap, then as the records'
 order left (`fb_mmd_order` and its query removed, `fb_mmd_records` taking
@@ -138,7 +138,8 @@ packed three-center launcher, then as the square three-center launchers,
 their cell field count and the symmetrization left, then as the packed
 three-center launcher's aux index became spherical, its declaration the
 same but its `n_aux` and `dst` another basis's counts, which an older
-library would overrun;
+library would overrun, then as the fully spherical
+`fb_three_center_spherical_class` joined;
 `FB_LOCALIZATION_ABI_VERSION` is 1, the Pipek-Mezey launchers; `fb-doc-check`'s
 `doc_lists.rs` holds these numbers to the headers). The bump is held:
 `devtools/rust-bindings.py` records in each module's bindings, beside the
@@ -700,6 +701,14 @@ and fills a stream enqueues, device slices, and each GPU's
   so a recipe cannot be handed another (a `compile_fail` doctest hands
   `trsm` a stream). No vendor `trsm`, `potrs` or `getrs` is bound, as
   "Layering" has it.
+- **A kernel launch on this layer is its library's `-sys` crate's.**
+  `fb_integrals_sys::three_center_spherical_class` is the first: one class
+  of the fully spherical (μν|P) (`ssperi3<la, lb, lP>`) over a `Stream`
+  and device slices, each length an always-on contract naming the kernel.
+  The cells, the only indices the kernel follows, are handed in on the host
+  (a `HostSlice`), each checked inside the slices it indexes, and uploaded
+  by the call before it launches, as "The safe wrapper" asks of indices
+  the safe layer forms.
 
 ## Build
 
@@ -732,12 +741,14 @@ triangular solve's diagonal block:
 `fb_trsm_diagonal_f64`) and `libfb_integrals_kernels.so` (the
 primitive-pair records, the overlap, the kinetic energy, the nuclear
 attraction, density fitting's metric and packed three-center integrals,
+the bra Cartesian or spherical,
 and the conventional ERI's packed tensor, its exchange
 gather and the packing around its GEMVs, and the dense conventional ERI's
 row blocks and their products, and density fitting's pack and gather over
 the packed shell-pair map: `fb_mmd_*`,
 `fb_ordered_pair_bound`, `fb_overlap_class`, `fb_kinetic_class`,
 `fb_potential_en_class`, `fb_metric_class`, `fb_three_center_packed_class`,
+`fb_three_center_spherical_class`,
 `fb_conventional_eri_class`,
 `fb_conventional_exchange`, `fb_conventional_pack`,
 `fb_conventional_unpack`, `fb_dense_eri_class`, `fb_dense_row_dot`,
@@ -803,7 +814,8 @@ C++ twin to agree with: its generator writes `rust/` alone, by default,
 and its own test emits it again under another root and compares byte for
 byte. The conventional ERI's units, `tools/emit/conventional_kernels.py`'s,
 packed and dense, are the first, and the packed three-center integrals',
-`tools/emit/packed_three_center_kernels.py`'s, the second.
+`tools/emit/packed_three_center_kernels.py`'s (`speri3`, and FelizJueves
+#745's fully spherical `ssperi3`), the second.
 
 **FelizJueves can emit part of the wrappers.** Its header already names the
 block a unit was sized for and emits the dispatch table, and for a
