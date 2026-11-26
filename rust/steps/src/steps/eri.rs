@@ -628,11 +628,11 @@ fn batches(d: &Dims, w: usize) -> Vec<Batch> {
     out
 }
 
-/// A class's place in the build's launch order, largest scratch first:
-/// `(la + lb, la)`. At every aux momentum, `ssperi3`'s scratch per lane
+/// A class's place in the build's launch order, largest kernel stack
+/// first: `(la + lb, la)`. At every aux momentum, `ssperi3`'s stack per lane
 /// does not fall as the rank rises, nor, within a class, as the momentum
-/// does (`tests::the_scratch_rank_orders_ssperis_scratch`).
-fn scratch_rank(class: &ClassDim) -> (i32, i32) {
+/// does (`tests::the_stack_rank_orders_ssperis_stack`).
+fn stack_rank(class: &ClassDim) -> (i32, i32) {
     (class.la + class.lb, class.la)
 }
 
@@ -1154,14 +1154,14 @@ fn gpu_build(
         scatter(rows, batch.first_col - first_col, cols, &fitted[..q * cols]);
         Ok(fitted)
     };
-    // Largest scratch first: the batches by their class's (la + lb, la),
-    // descending, and each batch's momenta from the highest, so the first
-    // launch on each ring stream is the largest it makes, and a smaller one
-    // after it fits the scratch that launch took (`docs/memory.md`, "Caps
-    // and margins"). Each batch's columns are its own, so the order moves
-    // no element of B.
+    // Largest kernel stack first: the batches by their class's
+    // (la + lb, la), descending, and each batch's momenta from the highest,
+    // so the first launch on each ring stream is the largest it makes, and
+    // a smaller one after it on the same queue fits the stack that launch
+    // took (`docs/memory.md`, "Caps and margins"). Each batch's columns are
+    // its own, so the order moves no element of B.
     let mut order: Vec<&Batch> = mine.iter().collect();
-    order.sort_by_key(|b| std::cmp::Reverse(scratch_rank(&d.classes[b.class])));
+    order.sort_by_key(|b| std::cmp::Reverse(stack_rank(&d.classes[b.class])));
     for (turn, batch) in order.into_iter().enumerate() {
         let s = turn % depth;
         let stream = &streams[s];
@@ -1637,11 +1637,11 @@ pub(crate) mod tests {
         );
     }
 
-    /// `ssperi3<la, lb, lp>`'s scratch per lane, bytes: each class's
+    /// `ssperi3<la, lb, lp>`'s kernel stack per lane, bytes: each class's
     /// `.private_segment_fixed_size` in the gfx1200 code objects
     /// (`llvm-readelf --notes`), row `(la, lb)` in the launcher's order
     /// (`la <= lb`), column `lp`.
-    const SCRATCH: [((i32, i32), [u32; 7]); 10] = [
+    const STACK: [((i32, i32), [u32; 7]); 10] = [
         ((0, 0), [0, 0, 0, 0, 0, 0, 0]),
         ((0, 1), [0, 0, 0, 0, 24, 188, 1232]),
         ((0, 2), [0, 0, 56, 244, 1040, 1840, 2432]),
@@ -1654,30 +1654,30 @@ pub(crate) mod tests {
         ((3, 3), [4176, 5952, 7232, 8704, 10032, 11504, 13072]),
     ];
 
-    /// The build's launch order is largest scratch first: within a class
-    /// the scratch rises with the aux momentum, and at every momentum a
-    /// class of higher [`scratch_rank`] has at least the scratch of one
+    /// The build's launch order is largest kernel stack first: within a
+    /// class the stack rises with the aux momentum, and at every momentum
+    /// a class of higher [`stack_rank`] has at least the stack of one
     /// below it, so each ring stream's first launch is its largest.
     #[test]
-    fn the_scratch_rank_orders_ssperis_scratch() {
+    fn the_stack_rank_orders_ssperis_stack() {
         let rank = |(la, lb): (i32, i32)| {
-            scratch_rank(&ClassDim {
+            stack_rank(&ClassDim {
                 la,
                 lb,
                 n_pair: 1,
                 n_rec: 1,
             })
         };
-        for (class, row) in SCRATCH {
+        for (class, row) in STACK {
             assert!(row.is_sorted(), "{class:?}: {row:?}");
         }
-        for (a, row_a) in SCRATCH {
-            for (b, row_b) in SCRATCH {
+        for (a, row_a) in STACK {
+            for (b, row_b) in STACK {
                 if rank(a) < rank(b) {
                     for lp in 0..7 {
                         assert!(
                             row_a[lp] <= row_b[lp],
-                            "{a:?} ranks below {b:?} with more scratch at lp {lp}"
+                            "{a:?} ranks below {b:?} with more stack at lp {lp}"
                         );
                     }
                 }

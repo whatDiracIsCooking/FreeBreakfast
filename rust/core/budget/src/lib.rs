@@ -133,11 +133,13 @@ impl Cap {
     }
 }
 
-/// The device margin of a defaulted cap: the larger of 512 MiB and 5% of
-/// the gpu's total memory.
+/// The device margin of a defaulted cap: the larger of 2 GiB and 5% of
+/// the gpu's total memory. It covers what the budget does not count, the
+/// kernels' stack the largest of it (`docs/memory.md`, "Caps and
+/// margins").
 #[must_use]
 pub fn device_margin(total: u64) -> u64 {
-    (512 << 20).max(total / 20)
+    (2 << 30).max(total / 20)
 }
 
 /// The host margin of a defaulted cap: the larger of 1 GiB and 5% of the
