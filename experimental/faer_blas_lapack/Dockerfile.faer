@@ -1,0 +1,11 @@
+# eigh-bench over faer. Same base and rustc as Dockerfile.lapack, which
+# differs only by OpenBLAS; build with this directory as the context
+# (run.sh does).
+FROM rust:1.99.1-slim-trixie
+WORKDIR /bench
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY src ./src
+RUN cargo build --release --locked --features faer \
+    && cp target/release/eigh-bench /usr/local/bin/ \
+    && rm -rf target
+ENTRYPOINT ["eigh-bench"]

@@ -1,0 +1,25 @@
+[package]
+name = "fb-faer-blas-lapack"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Symmetric eigendecomposition on the CPU: faer against OpenBLAS's LAPACK"
+
+[[bin]]
+name = "eigh-bench"
+path = "src/main.rs"
+
+# Exactly one backend per build: each has its own image (Dockerfile.faer,
+# Dockerfile.lapack), and main.rs refuses both or neither.
+[features]
+faer = ["dep:faer", "dep:dyn-stack"]
+lapack = []
+
+[dependencies]
+# faer's scratch type; the version faer itself depends on.
+dyn-stack = { version = "0.13.2", optional = true }
+faer = { version = "0.24.4", optional = true }
+rayon = "1.12"
+
+[profile.release]
+codegen-units = 1
