@@ -50,9 +50,8 @@ const LOG_ONLY: &[&str] = &["fb-core-log", "fb-core-error-handling"];
 /// The logging macros' paths, as [`reexports`] flattens them. A crate that
 /// re-exports any of them offers itself as a way to log, so a crate that
 /// only logs may come to depend on it, and it is held to [`LOG_ONLY`]'s
-/// rule. `fb-core-diagnostics` did this while depending on `fb-core-wwr`;
-/// the macros are now imported from where they are defined
-/// (`core/diagnostics/src/lib.rs`).
+/// rule. A crate of the old layer did this while depending on its handle
+/// crate; the macros are now imported from where they are defined.
 const LOG_MACROS: &[&str] = &[
     "log::*",
     "log::trace",
@@ -67,7 +66,7 @@ const LOG_MACROS: &[&str] = &[
 
 /// The handle types: the safe wrappers over wwr's handles, and the C ABI
 /// they wrap.
-const HANDLES: &[&str] = &["fb-core-wwr", "wwr-sys"];
+const HANDLES: &[&str] = &["fb-core-device", "wwr-sys"];
 
 /// The most reverse dependents a member outside [`GLOBAL`] may have, for a
 /// workspace of `members` members: two thirds of the others, rounded down.
@@ -76,9 +75,9 @@ const HANDLES: &[&str] = &["fb-core-wwr", "wwr-sys"];
 /// it. Two thirds is chosen from the distribution when the test landed (38
 /// members, so 37 others and a bar of 24): the two global crates sat at 30
 /// (`fb-core-log`) and 29 (`fb-core-error-handling`), 81% and 78%, and every
-/// other member at 20 or fewer (`fb-core-wwr` 20, `fb-core-types` 18,
-/// `fb-atom` 17, `fb-molecule` 16, `fb-test-support` and
-/// `fb-core-thread-pool` 15), 54% at most. Two thirds sits in that gap: the
+/// other member at 20 or fewer (the old layer's handle crate 20,
+/// `fb-core-types` 18, `fb-atom` 17, `fb-molecule` 16, `fb-test-support`
+/// and the old layer's thread pool 15), 54% at most. Two thirds sits in that gap: the
 /// highest ordinary crate has a sixth of the workspace in headroom, and a
 /// crate everything above the core leaves depends on (the C++ tree's
 /// `free_breakfast.core`, imported by 154 of 157 GPU test files) fails.
@@ -829,8 +828,8 @@ fn a_logger_reaching_the_handles_fails_with_the_chain() {
         &[
             ("fb-core-log", &["fb-mid"]),
             ("fb-core-error-handling", &["fb-core-log"]),
-            ("fb-mid", &["fb-core-wwr"]),
-            ("fb-core-wwr", &["wwr-sys"]),
+            ("fb-mid", &["fb-core-device"]),
+            ("fb-core-device", &["wwr-sys"]),
             ("wwr-sys", &[]),
         ],
         &["wwr-sys"],
@@ -839,15 +838,16 @@ fn a_logger_reaching_the_handles_fails_with_the_chain() {
     assert_eq!(failures.len(), 4, "{failures:?}");
     assert!(
         failures.contains(
-            &"fb-core-log: only logs, but depends on the handle crate fb-core-wwr: \
-          fb-core-log -> fb-mid -> fb-core-wwr"
+            &"fb-core-log: only logs, but depends on the handle crate fb-core-device: \
+          fb-core-log -> fb-mid -> fb-core-device"
                 .to_owned()
         )
     );
 }
 
-/// Catches the old `fb-core-diagnostics`: a crate that re-exports the
-/// logging macros while depending on `fb-core-wwr`. A crate that depends on
+/// Catches a logging facade over the handles, as the old layer had: a
+/// crate that re-exports the logging macros while depending on
+/// `fb-core-device`. A crate that depends on
 /// it without offering them, or whose re-export is commented out, passes,
 /// and so does one that offers them and reaches no handle crate.
 #[test]
@@ -859,7 +859,7 @@ fn a_logging_facade_reaching_the_handles_fails() {
     };
     let crates = [
         src(
-            "fb-core-diagnostics",
+            "fb-facade",
             "pub use ::log::{debug, error, info, trace, warn};\n\
              pub use fb_core_log::critical;\npub fn gpu_must() {}\n",
         ),
@@ -870,22 +870,19 @@ fn a_logging_facade_reaching_the_handles_fails() {
     let facades = logging_facades(&crates);
     assert_eq!(
         facades.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["fb-core-diagnostics", "fb-logs"]
+        ["fb-facade", "fb-logs"]
     );
-    assert_eq!(facades["fb-core-diagnostics"], "log::debug");
+    assert_eq!(facades["fb-facade"], "log::debug");
     let g = graph(
         &[
             ("fb-core-log", &["log"]),
             ("fb-core-error-handling", &["fb-core-log"]),
-            ("fb-core-wwr", &["fb-core-error-handling", "wwr-sys"]),
+            ("fb-core-device", &["fb-core-error-handling", "wwr-sys"]),
             ("wwr-sys", &[]),
             ("log", &[]),
-            (
-                "fb-core-diagnostics",
-                &["fb-core-log", "fb-core-wwr", "log"],
-            ),
-            ("fb-gpu", &["fb-core-wwr"]),
-            ("fb-quiet", &["fb-core-wwr"]),
+            ("fb-facade", &["fb-core-log", "fb-core-device", "log"]),
+            ("fb-gpu", &["fb-core-device"]),
+            ("fb-quiet", &["fb-core-device"]),
             ("fb-logs", &["fb-core-log"]),
         ],
         &["wwr-sys", "log"],
@@ -894,15 +891,15 @@ fn a_logging_facade_reaching_the_handles_fails() {
     assert_eq!(failures.len(), 2, "{failures:#?}");
     assert!(
         failures[0].starts_with(
-            "fb-core-diagnostics: offers the logging macros (`pub use log::debug`), so a \
+            "fb-facade: offers the logging macros (`pub use log::debug`), so a \
              crate that only logs may depend on it, but it depends on the handle crate \
-             fb-core-wwr: fb-core-diagnostics -> fb-core-wwr;"
+             fb-core-device: fb-facade -> fb-core-device;"
         ),
         "{}",
         failures[0]
     );
     assert!(
-        failures[1].contains("wwr-sys: fb-core-diagnostics -> fb-core-wwr -> wwr-sys"),
+        failures[1].contains("wwr-sys: fb-facade -> fb-core-device -> wwr-sys"),
         "{}",
         failures[1]
     );
@@ -1043,9 +1040,9 @@ struct Named {
 
 /// One direct dependency edge of a member.
 struct Dep {
-    /// The dependency's package name (`fb-core-wwr`).
+    /// The dependency's package name (`fb-core-device`).
     package: String,
-    /// The name the member's code calls it by (`fb_core_wwr`): the library
+    /// The name the member's code calls it by (`fb_core_device`): the library
     /// name with any rename applied.
     name: String,
     /// Declared under `[dependencies]`.

@@ -20,8 +20,8 @@ libc.workspace = true
 # The recipes' launch status as a Status.
 fb-kernel-abi.workspace = true
 # The trsm and Cholesky recipes' diagonal kernels, through the library's raw
-# extern declarations alone: no safe call of it, which takes fb-core-wwr's
-# types (docs/gpu_layer.md, "The v0.0.4 runtime").
+# extern declarations alone, wrapped here (docs/gpu_layer.md, "The v0.0.4
+# runtime").
 fb-recipes-sys.workspace = true
 # The runtime, and the guard's BLAS and dense-solver handles.
 wwr-sys = { workspace = true, features = ["blas", "solver"] }

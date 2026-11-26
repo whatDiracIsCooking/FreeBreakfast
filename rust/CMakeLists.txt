@@ -91,7 +91,7 @@ set(WWR_COMPILE_TIME_ONLY
 )
 # The collectives (NCCL on CUDA, RCCL on HIP), which move rows between the
 # run's GPUs (docs/programming_model.md, "Workers are a hierarchy"). Off by
-# default in wwr, so set here: every crate over fb-core-wwr links them.
+# default in wwr, so set here: every crate over wwr-sys links them.
 set(WWR_WITH_CCL
     ON
     CACHE BOOL "" FORCE

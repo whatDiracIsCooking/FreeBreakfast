@@ -32,10 +32,6 @@
 //!   message is under `#[cfg(debug_assertions)]`, and one whose text is only
 //!   an always-on `#[requires]`, `#[ensures]` or `#[invariant]` message is
 //!   not (`docs/testing.md`, "Contracts are part of the spec").
-//! - **A DAG builder is `add_*(dag, worker, …)`**: outside `core/` and test
-//!   code, a public function that takes a `&mut Dag` is named `add_*`,
-//!   takes `dag` first after any `self`, and `worker`, when it has one,
-//!   right after it (`docs/programming_model.md`, "A builder adds tasks").
 //!
 //! Each is a text scan, so each sees only the spelling it looks for; the
 //! register's row says what that misses. Tier 3: it reads files and
@@ -62,21 +58,9 @@ const DEBUG_CONTRACTS: [&str; 3] = ["debug_requires", "debug_ensures", "debug_in
 /// The contract attributes checked in every build.
 const ALWAYS_CONTRACTS: [&str; 3] = ["requires", "ensures", "invariant"];
 /// The types whose associated functions, called in a doc example
-/// (`Stream::new(…)`), mean it reaches a device: the handle, stream, event
-/// and arena types of `fb-core-wwr`, `fb-core-arena` and
-/// `fb-core-thread-pool`. A binding call (`…_sys::name(`) counts as well.
-const DEVICE_NAMES: [&str; 10] = [
-    "Block",
-    "Device",
-    "Stream",
-    "DeviceStream",
-    "Event",
-    "BlasHandle",
-    "SolverHandle",
-    "DeviceBytes",
-    "MemPool",
-    "ScopedDeviceIndex",
-];
+/// (`Stream::new(…)`), mean it reaches a device: `fb-core-device`'s stream,
+/// event and GPU. A binding call (`…_sys::name(`) counts as well.
+const DEVICE_NAMES: [&str; 3] = ["Stream", "Event", "GpuResources"];
 /// The rustdoc attributes a Rust code block's info string may carry,
 /// besides an error code; any other word makes the block not Rust.
 const RUST_FENCE_WORDS: [&str; 10] = [
@@ -410,13 +394,13 @@ fn a_doc_example_marker_is_judged_by_its_block() {
         "/// ```\n/// let x = 1;\n/// ```\n//! ```compile_fail,E0277\n//! x\n//! ```\n",
         "/// ```no_run\n/// let s = Stream::new();\n/// ```\n/// ```text\n/// ignore\n/// ```\n",
         "/// ```toml\n/// a = 1\n/// ```\nfn f() {}\n",
-        "/// ```\n/// fn f(_: Lane<'_, DeviceStream>, p: Placement) {}\n",
-        "/// f(lane, Placement::Stream(0));\n/// let b: Option<Block<Device>> = None;\n/// ```\n",
+        "/// ```\n/// fn f(_: &Stream, g: &mut GpuResources) {}\n",
+        "/// f(stream, gpu);\n/// let e: Option<Event> = None;\n/// ```\n",
     );
     assert_eq!(bad_examples("a.rs", clean), Vec::<String>::new());
     let bad = concat!(
         "/// ```ignore\n/// x\n/// ```\n/// ```compile_fail\n/// x\n/// ```\n",
-        "/// ```rust\n/// let b = Block::new(0, t);\n/// ```\n",
+        "/// ```rust\n/// let g = GpuResources::new(0, 0);\n/// ```\n",
         "/// ```\n/// unsafe { fb_recipes_sys::fb_inverse_sqrt(s, 0, p, 0.0) };\n/// ```\n",
     );
     let f = bad_examples("a.rs", bad);
@@ -430,7 +414,7 @@ fn a_doc_example_marker_is_judged_by_its_block() {
         "{f:#?}"
     );
     assert!(
-        f[2].starts_with("a.rs:7:") && f[2].contains("`Block`"),
+        f[2].starts_with("a.rs:7:") && f[2].contains("`GpuResources`"),
         "{f:#?}"
     );
     assert!(
@@ -1147,242 +1131,6 @@ fn a_contract_test_is_debug_by_its_own_cfg_or_its_modules() {
     let whole =
         "#![cfg(debug_assertions)]\n#[test]\n#[should_panic(expected = \"one row\")]\nfn a() {}\n";
     assert_eq!(undebugged("t.rs", whole, &messages), Vec::<String>::new());
-}
-
-// ------------------------------------------------------------ DAG builders
-
-/// The byte just past the bracket that closes the one opening at `open`,
-/// counting `open_b` and `close_b`, and not the `>` of a `->`.
-fn closing(b: &[u8], open: usize, open_b: u8, close_b: u8) -> usize {
-    let mut depth = 0i32;
-    for j in open..b.len() {
-        if b[j] == open_b {
-            depth += 1;
-        } else if b[j] == close_b && !(close_b == b'>' && j > 0 && b[j - 1] == b'-') {
-            depth -= 1;
-            if depth == 0 {
-                return j + 1;
-            }
-        }
-    }
-    b.len()
-}
-
-/// `params` split at its top-level commas, each trimmed, a trailing comma's
-/// empty one dropped.
-fn split_params(params: &str) -> Vec<&str> {
-    let b = params.as_bytes();
-    let mut out = Vec::new();
-    let (mut depth, mut start) = (0i32, 0);
-    for (j, &c) in b.iter().enumerate() {
-        match c {
-            b'(' | b'[' | b'<' => depth += 1,
-            b'>' if j > 0 && b[j - 1] == b'-' => {}
-            b')' | b']' | b'>' => depth -= 1,
-            b',' if depth == 0 => {
-                out.push(params[start..j].trim());
-                start = j + 1;
-            }
-            _ => {}
-        }
-    }
-    out.push(params[start..].trim());
-    out.retain(|p| !p.is_empty());
-    out
-}
-
-/// Whether a type is a `&mut Dag`: `&mut Dag<…>`, `&'a mut Dag<…>`, or a
-/// path to it (`&mut fb_core_planner::Dag<'_>`).
-fn is_dag_mut(ty: &str) -> bool {
-    let Some(t) = ty.trim().strip_prefix('&') else {
-        return false;
-    };
-    let t = t.trim_start();
-    let t = match t.strip_prefix('\'') {
-        Some(l) => l.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_'),
-        None => t,
-    };
-    let Some(t) = t.trim_start().strip_prefix("mut ") else {
-        return false;
-    };
-    let t: String = t.split_whitespace().collect();
-    t.split('<').next().unwrap_or("").rsplit("::").next() == Some("Dag")
-}
-
-/// The byte spans of every `#[cfg(test)]` module with a body in `code`.
-fn test_modules(code: &str) -> Vec<(usize, usize)> {
-    let b = code.as_bytes();
-    attributes(code)
-        .iter()
-        .filter(|a| {
-            !a.inner
-                && code[a.start..a.end].split_whitespace().collect::<String>() == "#[cfg(test)]"
-        })
-        .filter_map(|a| {
-            let rest = code[a.end..].trim_start();
-            let at = code.len() - rest.len();
-            if !rest
-                .strip_prefix("pub ")
-                .unwrap_or(rest)
-                .starts_with("mod ")
-            {
-                return None;
-            }
-            let open = (at..b.len()).find(|&j| b[j] == b'{' || b[j] == b';')?;
-            (b[open] == b'{').then(|| (at, closing(b, open, b'{', b'}')))
-        })
-        .collect()
-}
-
-/// Every public function of `source` that takes a `&mut Dag` and is not
-/// shaped as a DAG builder: named `add_*`, `dag` its first parameter after
-/// any `self`, and `worker`, when it has one, its second.
-fn bad_builders(path: &str, source: &str) -> Vec<String> {
-    let code = code_only(source);
-    let b = code.as_bytes();
-    let skip = test_modules(&code);
-    let ws = words(&code);
-    let mut failures = Vec::new();
-    for (k, (i, w)) in ws.iter().enumerate() {
-        if *w != "fn" || skip.iter().any(|(s, e)| (*s..*e).contains(i)) {
-            continue;
-        }
-        let Some((name_at, name)) = ws.get(k + 1).copied() else {
-            continue;
-        };
-        let head = code[..*i].rfind('\n').map_or(0, |p| p + 1);
-        if code[head..*i].split_whitespace().next() != Some("pub") {
-            continue;
-        }
-        let mut at = name_at + name.len();
-        while b.get(at).is_some_and(u8::is_ascii_whitespace) {
-            at += 1;
-        }
-        if b.get(at) == Some(&b'<') {
-            at = closing(b, at, b'<', b'>');
-        }
-        let Some(open) = (at..b.len()).find(|&j| b[j] == b'(') else {
-            continue;
-        };
-        let close = closing(b, open, b'(', b')');
-        let mut params = split_params(&code[open + 1..close - 1]);
-        if params
-            .first()
-            .is_some_and(|p| p.contains("self") && !p.contains(':'))
-        {
-            params.remove(0);
-        }
-        let named: Vec<(&str, &str)> = params
-            .iter()
-            .filter_map(|p| p.split_once(':'))
-            .map(|(n, t)| (n.trim().trim_start_matches("mut ").trim(), t.trim()))
-            .collect();
-        let Some(d) = named.iter().position(|(_, t)| is_dag_mut(t)) else {
-            continue;
-        };
-        let mut why = Vec::new();
-        if !name.starts_with("add_") {
-            why.push("is not named `add_*`".to_string());
-        }
-        if d != 0 || named[d].0 != "dag" {
-            why.push(format!(
-                "takes `{}: &mut Dag` as parameter {}, not `dag` first",
-                named[d].0,
-                d + 1
-            ));
-        }
-        if let Some(p) = named.iter().position(|(n, _)| *n == "worker")
-            && p != d + 1
-        {
-            why.push(format!(
-                "takes `worker` as parameter {}, not right after `dag`",
-                p + 1
-            ));
-        }
-        if !why.is_empty() {
-            failures.push(format!(
-                "{path}:{}: {name} {}; a public function that takes a `&mut Dag` is \
-                 `add_*(dag, worker, …)`",
-                line_of(&code, *i),
-                why.join(", ")
-            ));
-        }
-    }
-    failures
-}
-
-/// Whether a source is test code: a file under a `tests/` directory, or a
-/// `tests.rs`.
-fn test_source(path: &str) -> bool {
-    path.split('/').any(|s| s == "tests") || path.ends_with("/tests.rs")
-}
-
-#[test]
-fn every_dag_builder_is_an_add_function() {
-    let sources = workspace_sources();
-    let checked: Vec<&(String, String)> = sources
-        .iter()
-        .filter(|(p, _)| !p.starts_with("core/") && !test_source(p))
-        .collect();
-    // No floor on the builders found: every one outside `core/` was the
-    // old layer's task crates', deleted (#1874), so the scan holds the
-    // shape of any new one and the parsing is
-    // `a_dag_builder_is_judged_by_its_name_and_its_parameters`'.
-    let failures: Vec<String> = checked
-        .iter()
-        .flat_map(|(p, s)| bad_builders(p, s))
-        .collect();
-    assert!(
-        failures.is_empty(),
-        "{} DAG builder(s) not shaped add_*(dag, worker, …):\n{}",
-        failures.len(),
-        failures.join("\n")
-    );
-}
-
-#[test]
-fn a_dag_builder_is_judged_by_its_name_and_its_parameters() {
-    let ok = concat!(
-        "pub fn add_a(dag: &mut Dag<'_>, worker: usize, x: RowId<Device, f64>) -> RowId {}\n",
-        "pub fn add_b<'a, H: StagingKind, S: 'a>(\n    dag: &mut Dag<'a, H, S>,\n    \
-         worker: usize,\n) {}\n",
-        "pub fn add_c(dag: &mut fb_core_planner::Dag<'_>, rows: &[ClassRows]) {}\n",
-        "impl State {\n    pub fn add_push(\n        &self,\n        dag: &mut Dag<'_>,\n        \
-         r: RowId,\n    ) {}\n}\n",
-        "fn upload(&self, x: usize, dag: &mut Dag<'_>) {}\n",
-        "pub(crate) fn helper(x: usize, dag: &mut Dag<'_>) {}\n",
-        "pub fn not_a_builder(dag: &Dag<'_>, f: impl Fn(usize) -> usize) {}\n",
-        "#[cfg(test)]\nmod tests {\n    pub fn upload(x: u8, dag: &mut Dag<'_>) {}\n}\n",
-        "// pub fn commented(x: u8, dag: &mut Dag<'_>) {}\n",
-    );
-    assert_eq!(bad_builders("ok.rs", ok), Vec::<String>::new());
-    let bad = concat!(
-        "pub fn upload(dag: &mut Dag<'_>, worker: usize) {}\n",
-        "pub fn add_x(\n    worker: usize,\n    dag: &mut Dag<'_>,\n) {}\n",
-        "pub fn add_y(dag: &mut Dag<'_>, n: usize, worker: usize) {}\n",
-        "pub fn add_z<F: Fn(u8) -> u8>(d: &'a mut Dag<'a>, f: F) {}\n",
-    );
-    let f = bad_builders("bad.rs", bad);
-    assert_eq!(f.len(), 4, "{f:#?}");
-    assert!(
-        f[0].starts_with("bad.rs:1: upload is not named `add_*`;"),
-        "{f:#?}"
-    );
-    assert!(
-        f[1].starts_with(
-            "bad.rs:2: add_x takes `dag: &mut Dag` as parameter 2, not `dag` first, \
-             takes `worker` as parameter 1"
-        ),
-        "{f:#?}"
-    );
-    assert!(
-        f[2].starts_with("bad.rs:6: add_y takes `worker` as parameter 3"),
-        "{f:#?}"
-    );
-    assert!(
-        f[3].starts_with("bad.rs:7: add_z takes `d: &mut Dag` as parameter 1"),
-        "{f:#?}"
-    );
 }
 
 #[test]

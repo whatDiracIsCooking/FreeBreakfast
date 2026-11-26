@@ -6,11 +6,6 @@ resolver = "3"
 members = [
     "core/log",
     "core/error_handling",
-    "core/wwr",
-    "core/diagnostics",
-    "core/arena",
-    "core/thread_pool",
-    "core/planner",
     "core/types",
     "core/primitives",
     "core/constants",
@@ -49,13 +44,6 @@ publish = false
 [workspace.dependencies]
 fb-core-log = { path = "core/log" }
 fb-core-error-handling = { path = "core/error_handling" }
-fb-core-wwr = { path = "core/wwr" }
-fb-core-diagnostics = { path = "core/diagnostics" }
-# Without their `device` feature unless a dependent asks for it, so a
-# device-free build of the planner pulls in no wwr.
-fb-core-arena = { path = "core/arena", default-features = false }
-fb-core-thread-pool = { path = "core/thread_pool", default-features = false }
-fb-core-planner = { path = "core/planner" }
 fb-core-types = { path = "core/types" }
 fb-core-primitives = { path = "core/primitives" }
 fb-core-constants = { path = "core/constants" }
@@ -106,7 +94,7 @@ log = { version = "0.4.35", features = ["std"] }
 proptest = "1"
 # io/basis: the BSE JSON documents.
 serde_json = "1"
-# core::thread_pool: the timing record as timing.json.
+# steps: the config file's tables, deserialized.
 serde = { version = "1", features = ["derive"] }
 # steps: the binary's config file.
 toml = "1"

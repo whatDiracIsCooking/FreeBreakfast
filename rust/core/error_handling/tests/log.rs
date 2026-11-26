@@ -1,5 +1,4 @@
-//! `core::log`, `core::diagnostics` and the abort tier, through the real
-//! sinks. A binary of its own because the logger is process-global: one
+//! `core::log` and the abort tier, through the real sinks. A binary of its own because the logger is process-global: one
 //! level, one file sink, one counter. The in-process checks are one test, so
 //! nothing beside them moves the level.
 //!
@@ -11,11 +10,8 @@ use std::panic::Location;
 use std::process::Command;
 
 use ::log::{debug, error, info, trace, warn};
-use fb_core_diagnostics::gpu_must;
 use fb_core_error_handling::{Error, check_or_abort};
 use fb_core_log::{self as log, LogLevel, critical};
-use fb_core_wwr::gpu_log_error_at;
-use wwr_sys::wwr_status;
 
 /// The line `needle` is on in this file, 1-based.
 fn line_of(needle: &str) -> u32 {
@@ -28,7 +24,8 @@ fn line_of(needle: &str) -> u32 {
 
 #[test]
 fn levels_format_counter_and_file_sink() {
-    let dir = std::env::temp_dir().join(format!("fb-core-diagnostics-log-{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("fb-core-error-handling-log-{}", std::process::id()));
     let path = dir.join("nested/run.log");
     log::add_file_sink(&path).unwrap();
     log::add_file_sink(&path).unwrap(); // the same path: nothing
@@ -46,7 +43,9 @@ fn levels_format_counter_and_file_sink() {
     warn!("first warning"); // MARK warn
     critical!("critical through the macro"); // MARK critical
     log::add_file_sink(dir.join("other.log")).unwrap(); // MARK second sink
-    gpu_log_error_at(wwr_status::WWR_STATUS_INVALID_VALUE, Location::caller()); // MARK destroy
+    // A failed destroy's line, as `fb_core_device`'s `Drop`s write it.
+    let here = Location::caller(); // MARK destroy
+    log::log_at(LogLevel::Error, here, format_args!("destroy failed"));
 
     // A filtered warning reaches no sink, so it does not count.
     log::set_level(LogLevel::Error);
@@ -88,11 +87,7 @@ fn levels_format_counter_and_file_sink() {
             line_of("MARK second sink"),
             "file sink already set to",
         ),
-        (
-            "error",
-            line_of("MARK destroy"),
-            "WWR_STATUS_INVALID_VALUE (invalid argument)",
-        ),
+        ("error", line_of("MARK destroy"), "destroy failed"),
     ];
     for (line, (level, number, message)) in lines.iter().zip(expect) {
         let (stamp, rest) = line.split_at(25);
@@ -120,10 +115,6 @@ fn child() {
             log::init();
             info!("buffered before the abort");
             check_or_abort::<()>(Err(Error::numerical("singular matrix")));
-        }
-        Ok("gpu_must") => {
-            log::init();
-            gpu_must(wwr_status::WWR_STATUS_NO_DEVICE); // MARK gpu_must
         }
         _ => {}
     }
@@ -166,16 +157,4 @@ fn check_or_abort_logs_at_critical_and_aborts() {
     assert!(stdout.contains("buffered before the abort"), "{stdout}");
     assert!(stdout.contains("[critical] [log.rs:"), "{stdout}");
     assert!(stdout.contains("singular matrix"), "{stdout}");
-}
-
-#[test]
-fn gpu_must_aborts_at_the_caller() {
-    use std::os::unix::process::ExitStatusExt;
-    let (status, stdout) = run_child("gpu_must");
-    assert_eq!(status.signal(), Some(libc::SIGABRT), "{status:?}");
-    let want = format!(
-        "[critical] [log.rs:{}] WWR_STATUS_NO_DEVICE (no GPU device is available)",
-        line_of("MARK gpu_must")
-    );
-    assert!(stdout.contains(&want), "{stdout}\n  wanted {want}");
 }

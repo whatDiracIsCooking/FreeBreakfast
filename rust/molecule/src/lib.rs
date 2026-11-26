@@ -13,20 +13,17 @@
 //! | `Molecule(res, atoms, charge = 0, multiplicity = 1)` | [`Molecule::new`]`(atoms, charge, multiplicity)`, aborting on the same inputs |
 //! | `atoms`, `natoms`, `charge`, `multiplicity`, `total_nuclear_charge`, `electron_count` | the [`Molecule`] methods of those names |
 //! | `nuclear_repulsion_energy`, `nuclear_repulsion_gradient`, `nuclear_repulsion_hessian` | [`nuclear_repulsion_energy`], [`nuclear_repulsion_gradient`], [`nuclear_repulsion_hessian`] |
-//! | the nuclei on the device (`Molecule`'s `upload`, `view`, `device_stream`), `nuclei_view.h`'s `NucleiView` | not here: `fb_molecule_nuclei`'s upload task, below |
-//! | `molecule_footprint` | not here: the upload task's layout |
+//! | the nuclei on the device (`Molecule`'s `upload`, `view`, `device_stream`), `nuclei_view.h`'s `NucleiView` | nothing: the nuclei stay on the host, below |
+//! | `molecule_footprint` | nothing: there is no device copy to count |
 //! | the re-export of `free_breakfast.atom` and `free_breakfast.core.types` | nothing: a dependent names `fb_atom` and `fb_core_types` itself |
 //!
-//! **The nuclei on the device become an upload task.** The C++ `Molecule`
-//! uploads Z and the positions at construction, from buffers it allocates
-//! itself, so building one needs a GPU and the type is movable, not
-//! copyable. In the Rust model only the arena allocates, so a `Molecule` is
-//! host data alone, `Clone`, built on a device-less box. The nuclei reach the
-//! device by `fb_molecule_nuclei::add_nuclei`, a crate beside this one so
-//! that this one links nothing: two tasks whose layouts declare the two rows
-//! (`n` charges and `3 n` coordinates, as `f64`, in atom order) that
-//! `molecule_footprint` counts, pinned and then on the device, and whose
-//! readers take the device rows in place of a `NucleiView`.
+//! **The nuclei stay on the host.** The C++ `Molecule` uploads Z and the
+//! positions at construction, from buffers it allocates itself, so building
+//! one needs a GPU and the type is movable, not copyable. Here a `Molecule`
+//! is host data alone, `Clone`, built on a device-less box, and this crate
+//! links nothing. No step needs the nuclei on the device: the core
+//! Hamiltonian step reads them on the host
+//! (`fb_integrals_v_potential_en_host::point_charges`).
 //!
 //! **No default arguments.** Rust has none, so [`Molecule::new`] takes the
 //! charge and multiplicity every time; a neutral singlet is `(atoms, 0, 1)`.

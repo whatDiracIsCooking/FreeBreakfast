@@ -28,7 +28,7 @@ fn capi_dir() -> std::path::PathBuf {
         Some(dir) => std::path::PathBuf::from(dir),
         None => {
             // rust/ is the nearest ancestor holding this file: a crate sits
-            // two levels below it or three (integrals/one_electron/overlap).
+            // one level below it (steps) or two (core/device).
             let manifest = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
             let rust = manifest
                 .ancestors()

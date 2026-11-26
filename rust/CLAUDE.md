@@ -50,11 +50,11 @@ forbids it. Each block holds one operation under a `// SAFETY:` comment
 (clippy's `undocumented_unsafe_blocks`, `multiple_unsafe_ops_per_block`).
 
 **Use the safe wrappers, not `wwr-sys`:** copies through
-`fb_core_arena::memcpy_*` (between `split_at_mut` parts of one row,
-`fb_core_wwr::copy::d2d`), BLAS through `fb_core_wwr::blas`, a device
-zero through `fb_core_wwr::memset::zero`, a kernel launch through its
-binding crate's safe API (`fb_recipes_launch::inverse_sqrt`, …), and a test's
-device buffer through `fb_core_wwr::runtime::tests::DeviceBytes`.
+`fb_core_device::Stream`'s `upload`, `download` and `copy_device`, a device
+zero through `Stream::zero`, BLAS, the dense solver and the recipes'
+kernels through `fb_core_device::GpuResources` (`gemm`, `syevd`,
+`inverse_sqrt`, …), a kernel launch through its binding crate's safe API,
+and device memory through `fb_core_budget`'s buffers.
 
 **A new rule joins the register.** `docs/rules.md` lists every rule these
 docs state and what checks it; a rule added to a doc gets a row there with

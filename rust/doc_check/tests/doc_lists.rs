@@ -13,9 +13,10 @@
 //!   function that calls `fast_tests()`, and only a function named
 //!   `fast_tests` reads `FREE_BREAKFAST_FAST_TESTS`.
 //! - **What links the library**: `README.md`, "Build and test", sorts every
-//!   member into three lists, by whether its graph reaches a package that
-//!   declares `links` (`wwr-sys`, a kernel `-sys` crate) never, only
-//!   through default features, or always.
+//!   member into two lists, by whether its graph reaches a package that
+//!   declares `links` (`wwr-sys`, a kernel `-sys` crate) never or always; a
+//!   member that links only through its default features is in neither,
+//!   and fails.
 //!
 //! Tier 3: it reads text and runs `cargo metadata`, and links nothing.
 
@@ -280,7 +281,8 @@ fn a_slow_case_is_found_and_a_stray_read_fails() {
 enum Links {
     /// Never: it builds and its tests pass with the library missing.
     Never,
-    /// Only through its default features.
+    /// Only through its default features, which no member may do: the old
+    /// layer's `device` features were the last.
     ByDefault,
     /// With `--no-default-features` too.
     Always,
@@ -338,12 +340,11 @@ fn listed(section: &str, marker: &str, members: &BTreeMap<String, Links>) -> BTr
         .collect()
 }
 
-/// What the README's three lists fail against `members`: a member in no
+/// What the README's two lists fail against `members`: a member in no
 /// list or in two, or in the wrong one.
 fn check_link_lists(section: &str, members: &BTreeMap<String, Links>) -> Vec<String> {
     let lists = [
         (Links::Never, "do not link the library at all"),
-        (Links::ByDefault, "link it through their `device` feature"),
         (Links::Always, "always link"),
     ];
     let mut failures = Vec::new();
@@ -392,12 +393,19 @@ fn a_member_missing_or_misfiled_fails() {
     .map(|(n, c)| (n.to_owned(), c))
     .into_iter()
     .collect();
-    let good = "x. `fb-a` do not link the library at all. `fb-b` link it through their \
-                `device` feature. Only `fb-c` and `fb-d` always link.";
-    assert!(check_link_lists(good, &members).is_empty());
-    let bad = "x. `fb-a` and `fb-c` do not link the library at all. `fb-b` link it through \
-               their `device` feature. Only `fb-c` always link.";
-    let failures = check_link_lists(bad, &members);
+    let good = "x. `fb-a` do not link the library at all. Only `fb-c` and `fb-d` always link.";
+    let failures = check_link_lists(good, &members);
+    assert_eq!(failures.len(), 1, "{failures:#?}");
+    assert!(
+        failures[0].contains("`fb-b` (ByDefault) is in none"),
+        "{}",
+        failures[0]
+    );
+    let bad = "x. `fb-a` and `fb-c` do not link the library at all. Only `fb-c` always link.";
+    let failures: Vec<String> = check_link_lists(bad, &members)
+        .into_iter()
+        .filter(|f| !f.contains("`fb-b`"))
+        .collect();
     assert_eq!(failures.len(), 3, "{failures:#?}");
     assert!(
         failures[0].contains("`fb-c` is listed as Never"),

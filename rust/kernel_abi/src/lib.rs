@@ -173,9 +173,9 @@ pub fn check(
 /// | positive, a `wwr_status` | `runtime(code, at)`, with `what` as its context |
 /// | anything else, or a positive code `runtime` does not know (`None`) | `GpuRuntime`, "`what`: unknown launch status `code`" |
 ///
-/// `runtime` is `fb_core_wwr::gpu_status_at` over the `wwr_status` of that
-/// code, so a launch error carries the same name and description as every
-/// other wwr call's, at `at`, this function's caller.
+/// `runtime` is the caller's bridge from the `wwr_status` of that code
+/// (`fb_core_device`'s), so a launch error carries the same name and
+/// description as every other wwr call's, at `at`, this function's caller.
 ///
 /// # Errors
 ///

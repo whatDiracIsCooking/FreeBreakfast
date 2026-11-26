@@ -410,8 +410,7 @@ fn cholesky_matches_a_host_factor() {
 
 /// `inverse_sqrt` against the host's `1.0 / x.sqrt()`, bit for bit: the
 /// kernel's is a correctly rounded root and division too, contraction off
-/// on HIP (`fb_recipes_launch`'s `maps_each_element_as_the_host_does` has
-/// the argument), and the floor's elements, at and below it, 0.
+/// on HIP, and the floor's elements, at and below it, 0.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn inverse_sqrt_matches_the_host() {
