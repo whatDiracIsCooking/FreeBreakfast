@@ -90,7 +90,7 @@ fn a_ring_of_two_round_trips_bytes_through_tenants() {
     let streams = [Stream::new(0), Stream::new(0)];
     type Slot<'s> = (
         Pending<'s, PinnedTenant<f64>>,
-        Pending<'s, PinnedTenant<f64>>,
+        Pending<'s, PinnedTenant<f64>, false>,
         DeviceTenant<f64>,
     );
     let mut slots: [Option<Slot<'_>>; 2] = [None, None];
