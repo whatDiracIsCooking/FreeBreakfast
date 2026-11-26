@@ -10,7 +10,8 @@
 //! handle to query and is reported as zero.
 //!
 //! `--devices 0,1` overrides `[resources] devices`, and `--mem-per-gpu-mib
-//! N` the step limit of `[eri]`.
+//! N` the step limit of `[eri]`. `--stage-sync` sets `[scf] stage_sync`: a
+//! sync where the SCF iteration would end a step, were it three.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -29,6 +30,7 @@ struct Args {
     devices: Option<Vec<i32>>,
     mem_per_gpu_mib: Option<f64>,
     threads: Option<usize>,
+    stage_sync: bool,
 }
 
 fn args() -> Option<Args> {
@@ -38,11 +40,13 @@ fn args() -> Option<Args> {
         devices: None,
         mem_per_gpu_mib: None,
         threads: None,
+        stage_sync: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--budget-only" => out.budget_only = true,
+            "--stage-sync" => out.stage_sync = true,
             "--devices" => {
                 out.devices = Some(
                     it.next()?
@@ -73,6 +77,9 @@ fn run(args: &Args) -> Result<()> {
     }
     if let (Some(mib), Some(eri)) = (args.mem_per_gpu_mib, config.eri.as_mut()) {
         eri.mem_per_gpu_mib = Some(mib);
+    }
+    if let (true, Some(scf)) = (args.stage_sync, config.scf.as_mut()) {
+        scf.stage_sync = true;
     }
     if args.budget_only {
         let executor = Executor::new(config.resources.threads);
@@ -136,6 +143,18 @@ fn run(args: &Args) -> Result<()> {
             scf.iterations(),
             scf.residual()
         );
+        let meter = scf.meter();
+        let builds = scf.iterations().max(1);
+        println!(
+            "scf: the loop took {:.3?}, {:.3?} per iteration; {} stream syncs, {:.1} per \
+             iteration, {:.3?} blocked in them, {:.3?} per iteration",
+            meter.wall,
+            meter.wall / builds as u32,
+            meter.syncs,
+            meter.syncs as f64 / builds as f64,
+            meter.blocked,
+            meter.blocked / builds as u32
+        );
     }
     Ok(())
 }
@@ -144,7 +163,7 @@ fn main() -> ExitCode {
     let Some(args) = args() else {
         eprintln!(
             "usage: run <config.toml> [--budget-only] [--devices 0,1] [--mem-per-gpu-mib N] \
-             [--threads N]"
+             [--threads N] [--stage-sync]"
         );
         return ExitCode::from(2);
     };

@@ -19,6 +19,7 @@
 
 use std::ffi::c_void;
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use fb_core_error_handling::{Error, Result, Status};
 use fb_kernel_abi::LaunchStatus;
@@ -280,6 +281,20 @@ pub fn split_at_mut<T>(
     )
 }
 
+/// The stream syncs of the process so far, and the time blocked in them.
+static SYNCS: AtomicU64 = AtomicU64::new(0);
+static SYNC_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// How many times a stream was synchronized so far, by any thread, and the
+/// time the callers spent blocked there. A measurement, read as a
+/// difference over a span in which one step runs.
+pub fn sync_meter() -> (u64, std::time::Duration) {
+    (
+        SYNCS.load(Ordering::Relaxed),
+        std::time::Duration::from_nanos(SYNC_NANOS.load(Ordering::Relaxed)),
+    )
+}
+
 /// A stream on one device.
 pub struct Stream {
     raw: wwr_stream,
@@ -322,8 +337,12 @@ impl Stream {
     /// A fault of the enqueued work, surfaced here.
     pub fn sync(&self) -> Status {
         let _current = ScopedDevice::new(self.physical);
+        let start = std::time::Instant::now();
         // SAFETY: a live stream.
-        runtime_status(unsafe { wwr_sys::wwr_stream_synchronize(self.raw) })
+        let status = runtime_status(unsafe { wwr_sys::wwr_stream_synchronize(self.raw) });
+        SYNCS.fetch_add(1, Ordering::Relaxed);
+        SYNC_NANOS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        status
     }
 
     /// Make everything enqueued after this wait for `event`.
