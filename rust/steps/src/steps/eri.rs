@@ -1282,6 +1282,7 @@ fn gpu_pass(
     let (ni, n2i) = (n as i32, n2 as i32);
     let op_n = wwr_blas_operation::WWR_BLAS_OP_N;
     let op_t = wwr_blas_operation::WWR_BLAS_OP_T;
+    let lower = wwr_blas_fill_mode::WWR_BLAS_FILL_MODE_LOWER;
     let n_events = st.events.len();
     let pass_events = n_events - 2 - 2 * depth;
     for (turn, first) in share.clone().step_by(width.max(1)).enumerate() {
@@ -1321,7 +1322,9 @@ fn gpu_pass(
         if let Some(n_occ) = n_occ {
             // With D = 2 C Cᵀ: every B_Q C in one batched gemm, the blocks
             // side by side as one n × (n_occ rows) matrix M; gamma_Q =
-            // B_Q · D = 2 (B_Q C) · C, J += Σ_Q gamma_Q B_Q, K += 2 M Mᵀ.
+            // B_Q · D = 2 (B_Q C) · C, J += Σ_Q gamma_Q B_Q, K += 2 M Mᵀ,
+            // a rank-k update: syrk's lower triangle at half a gemm's
+            // flops, mirrored once the pass is done.
             let (oi, no) = (n_occ as i32, (n * n_occ) as i32);
             gpu.gemm_strided_batched(
                 op_n,
@@ -1344,21 +1347,7 @@ fn gpu_pass(
             )?;
             gpu.gemv(op_t, no, r, 2.0, &bd, no, &dm, 0.0, &mut gamma)?;
             gpu.gemv(op_n, n2i, r, 1.0, &sq, n2i, &gamma, 1.0, &mut jj)?;
-            gpu.gemm(
-                op_n,
-                op_t,
-                ni,
-                ni,
-                oi * r,
-                2.0,
-                &bd,
-                ni,
-                &bd,
-                ni,
-                1.0,
-                &mut kk,
-                ni,
-            )?;
+            gpu.syrk(lower, op_n, ni, oi * r, 2.0, &bd, ni, 1.0, &mut kk, ni)?;
         } else {
             // gamma_Q = B_Q · D, J += Σ_Q gamma_Q B_Q; K += Σ_Q (B_Q D)
             // B_Qᵀ, every B_Q D in one batched gemm, then the blocks side by
@@ -1410,6 +1399,12 @@ fn gpu_pass(
         drop((ring_wait!(tables)?, ring_wait!(packed)?));
     }
     drop((homes, slots));
+    if n_occ.is_some() {
+        // K from C holds its lower triangle alone: the upper from it, on
+        // the GPU's stream after the last syrk, so the fragment is read in
+        // full.
+        gpu.mirror_triangle(lower, ni, &mut kk, ni)?;
+    }
     // The fragments are read on the manager's first stream: it waits for
     // the contractions.
     let done = &st.events[n_events - 1];
@@ -1679,7 +1674,8 @@ pub(crate) mod tests {
             .collect()
     }
 
-    /// `got` against `want` at 1e-12 of `want`'s largest element.
+    /// `got` against `want` at 1e-12 of `want`'s largest element, every
+    /// element of `got` finite.
     fn within(what: &str, got: &[f64], want: &[f64]) {
         let largest = want.iter().fold(0.0f64, |m, v| m.max(v.abs()));
         let worst = got
@@ -1688,6 +1684,8 @@ pub(crate) mod tests {
             .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
         println!("{what}: max difference {worst:e}, max element {largest:e}");
         assert!(largest > 1e-3, "{what}: empty");
+        // f64::max passes a NaN over, so the fold alone would not see one.
+        assert!(got.iter().all(|v| v.is_finite()), "{what}: not finite");
         assert!(
             worst <= 1e-12 * largest,
             "{what}: {worst:e} > 1e-12 × {largest:e}"

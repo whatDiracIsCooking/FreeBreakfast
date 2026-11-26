@@ -471,3 +471,50 @@ fn diis_solve_weighs_residuals_by_their_inverse_norms() {
     );
     assert_eq!((c, singular), (vec![0.0, 1.0], vec![1]));
 }
+
+/// `syrk` into the lower triangle of a C whose strict upper triangle is
+/// NaN, then `mirror_triangle` from the lower: C is exactly symmetric, no
+/// NaN survives, and it matches the host's `2 A Aᵀ` within a k-term dot's
+/// rounding, `k u` relative to `|A|² ≈ k` (Higham, Thm. 3.5), so 1e-12 of
+/// the largest element holds with a wide margin at k = 64.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn a_syrk_mirrored_is_the_symmetric_product() {
+    let (n, k) = (37usize, 64usize);
+    let gpu = gpu0();
+    let mut held = gpu.lock().unwrap();
+    let mut state = 11;
+    let a: Vec<f64> = (0..n * k).map(|_| uniform(&mut state)).collect();
+    let c0: Vec<f64> = (0..n * n)
+        .map(|ix| if ix % n < ix / n { f64::NAN } else { 0.0 })
+        .collect();
+    let a_dev = device(held.stream(), &a);
+    let mut c = device(held.stream(), &c0);
+    let (ni, ki) = (n as i32, k as i32);
+    held.syrk(LOWER, N, ni, ki, 2.0, &a_dev, ni, 1.0, &mut c, ni)
+        .unwrap();
+    held.mirror_triangle(LOWER, ni, &mut c, ni).unwrap();
+    let got = host(held.stream(), &c, n * n);
+    let want: Vec<f64> = (0..n * n)
+        .map(|ix| {
+            let (i, j) = (ix % n, ix / n);
+            2.0 * (0..k).map(|l| a[i + l * n] * a[j + l * n]).sum::<f64>()
+        })
+        .collect();
+    let symmetric =
+        (0..n).all(|j| (0..n).all(|i| got[i + j * n].to_bits() == got[j + i * n].to_bits()));
+    assert!(symmetric, "the mirrored C is not exactly symmetric");
+    assert!(
+        got.iter().all(|x| x.is_finite()),
+        "a NaN survived the mirror"
+    );
+    let largest = want.iter().fold(0f64, |m, x| m.max(x.abs()));
+    let error = got
+        .iter()
+        .zip(&want)
+        .fold(0f64, |m, (g, w)| m.max((g - w).abs()));
+    assert!(
+        error <= 1e-12 * largest,
+        "max error {error:e} of largest {largest:e}"
+    );
+}
