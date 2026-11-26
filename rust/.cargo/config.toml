@@ -1,0 +1,15 @@
+# Every member is built with the FMA target feature on x86-64. The host
+# integral crates' hot loops are `f64::mul_add`, one instruction with the
+# feature and a software call without it, and each refuses to compile
+# without it (integrals/df_metric/src/lib.rs, the guard below its
+# `forbid`). Workspace-wide rather than per crate, so every dependent of
+# those crates, and every test binary that links them, gets it from the one
+# file. It changes no other crate's bits: Rust never fuses a multiply and an
+# add on its own, so the feature reaches only an explicit `mul_add`, which
+# is correctly rounded either way.
+#
+# Cargo reads this file when run from rust/ or below, as the gates and the
+# hooks run it; a RUSTFLAGS in the environment replaces it, so pass the flag
+# there too.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-feature=+fma"]

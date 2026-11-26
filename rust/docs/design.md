@@ -97,7 +97,9 @@ before it is planned; the bound is preferred
 arenas"). An adaptive width is chosen at planning from the room the schedule
 leaves, never at run time from free memory. Threads are a resource too: host
 work that would fan out is CPU nodes the planner can see, never a pool inside
-a task, and the plan's thread count is a budget admitted beside memory.
+a task (the host integrals on rayon's threads are the one exception,
+[`programming_model.md`](programming_model.md), "CPU workers"), and the
+plan's thread count is a budget admitted beside memory.
 
 **Recorded.** `layout(dims)`, the task's first function; `run(bufs, stream)`
 reaches a buffer only through it. Nobody writes a footprint. An adaptive

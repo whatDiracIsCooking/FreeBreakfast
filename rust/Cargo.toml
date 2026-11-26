@@ -58,6 +58,10 @@ members = [
     "integrals/eri/density_fitting/transform",
     "core/device",
     "core/pack",
+    "integrals/df_metric",
+    "integrals/s_overlap_host",
+    "integrals/t_kinetic_host",
+    "integrals/v_potential_en_host",
 ]
 
 [workspace.package]
@@ -120,6 +124,10 @@ fb-integrals-schwarz = { path = "integrals/schwarz" }
 fb-integrals-eri-density-fitting-transform = { path = "integrals/eri/density_fitting/transform" }
 fb-core-device = { path = "core/device" }
 fb-core-pack = { path = "core/pack" }
+fb-integrals-df-metric = { path = "integrals/df_metric" }
+fb-integrals-s-overlap-host = { path = "integrals/s_overlap_host" }
+fb-integrals-t-kinetic-host = { path = "integrals/t_kinetic_host" }
+fb-integrals-v-potential-en-host = { path = "integrals/v_potential_en_host" }
 
 contracts = "0.6.11"
 # core::log: the line's local time, and the OS thread id (std has none).
@@ -128,6 +136,12 @@ jiff = "0.2.43"
 # dev-dependency only).
 guppy = "0.19.1"
 libc = "0.2"
+# integrals/df_metric: erf for the host Boys function's far branch, which
+# std lacks.
+libm = "0.2.16"
+# The host integral crates' shell-pair loops, on rayon's own pool
+# (docs/programming_model.md, "CPU workers"); no other member names it.
+rayon = "1.12"
 # The executor the redesign moves to (experimental/rust/v0.0.4/v0.0.4.html, "The step DAG
 # on rustflow"). Unpublished, so a git dependency pinned by its full commit,
 # here alone; a prototype under experimental/rust/, a workspace of its own,

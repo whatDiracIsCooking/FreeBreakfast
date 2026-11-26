@@ -20,6 +20,8 @@ fb-recipes-matrix-ao.workspace = true
 fb-recipes-symmetrize.workspace = true
 
 [dev-dependencies]
+# tests/host.rs: the host build of the same matrix, held to this crate's.
+fb-integrals-df-metric.workspace = true
 fb-io-basis.workspace = true
 fb-io-npy.workspace = true
 fb-io-xyz.workspace = true

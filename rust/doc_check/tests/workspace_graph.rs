@@ -21,7 +21,9 @@
 //! - a member declares a direct dependency its sources never name
 //!   ([`check_unused`]), unless [`UNNAMED`] gives the reason;
 //! - a member reaches a thread-pool crate ([`POOL_CRATES`]) through any
-//!   edge (`docs/programming_model.md`, "CPU workers").
+//!   edge, but rayon and the pool crates below it through a
+//!   [`RAYON_MEMBERS`] crate's own edge to rayon
+//!   (`docs/programming_model.md`, "CPU workers").
 //!
 //! Tier 3: it reads text and runs `cargo metadata`, and links nothing.
 
@@ -116,6 +118,17 @@ impl Graph {
 
     /// A chain of edges from `from` to `to`, `from` first, if there is one.
     fn path(&self, from: &str, to: &str) -> Option<Vec<String>> {
+        self.path_without(from, to, &|_, _| false)
+    }
+
+    /// [`Graph::path`] with every edge `(a, b)` for which `skip(a, b)` holds
+    /// left out.
+    fn path_without(
+        &self,
+        from: &str,
+        to: &str,
+        skip: &dyn Fn(&str, &str) -> bool,
+    ) -> Option<Vec<String>> {
         let mut parent: BTreeMap<String, String> = BTreeMap::new();
         let mut todo = std::collections::VecDeque::from([from.to_owned()]);
         while let Some(n) = todo.pop_front() {
@@ -128,7 +141,7 @@ impl Graph {
                 return Some(chain);
             }
             for d in self.deps.get(&n).into_iter().flatten() {
-                if d != from && !parent.contains_key(d) {
+                if d != from && !parent.contains_key(d) && !skip(&n, d) {
                     parent.insert(d.clone(), n.clone());
                     todo.push_back(d.clone());
                 }
@@ -1333,13 +1346,29 @@ const POOL_CRATES: &[(&str, &str)] = &[
     ),
 ];
 
+/// The members that may name rayon: the host integral crates, which run
+/// on rayon's threads, called from inside one step
+/// (`docs/programming_model.md`, "CPU workers": "The host integrals run on
+/// rayon, and nothing else does"). A crate above them reaches rayon only
+/// through them.
+const RAYON_MEMBERS: &[&str] = &[
+    "fb-integrals-df-metric",
+    "fb-integrals-s-overlap-host",
+    "fb-integrals-t-kinetic-host",
+    "fb-integrals-v-potential-en-host",
+];
+
 /// Each member that reaches a [`POOL_CRATES`] package through any edge,
-/// with the chain.
+/// with the chain. A [`RAYON_MEMBERS`] crate's own edge to rayon is left
+/// out, so rayon and what lies below it pass through one of them and fail
+/// by any other route: a member naming rayon itself, or another crate
+/// bringing it.
 fn check_pools(g: &Graph) -> Vec<String> {
+    let allowed = |a: &str, b: &str| b == "rayon" && RAYON_MEMBERS.contains(&a);
     let mut failures = Vec::new();
     for member in g.members.keys() {
         for (pool, why) in POOL_CRATES {
-            if let Some(chain) = g.path(member, pool) {
+            if let Some(chain) = g.path_without(member, pool, &allowed) {
                 failures.push(format!(
                     "{member}: depends on the pool crate {pool} ({why}): {}; a run's \
                      threads are the orchestrator's alone (docs/programming_model.md, \
@@ -1356,6 +1385,46 @@ fn check_pools(g: &Graph) -> Vec<String> {
 fn no_member_depends_on_a_thread_pool_crate() {
     let failures = check_pools(&read_graph(&rust_root()));
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// rayon, and the pool crates below it, pass through a [`RAYON_MEMBERS`]
+/// crate's own edge, from the crate or a member above it; a member naming
+/// rayon itself fails, and so does a pool a listed crate reaches another
+/// way.
+#[test]
+fn rayon_passes_only_through_a_host_integral_crate() {
+    let g = graph(
+        &[
+            ("fb-integrals-df-metric", &["rayon", "some-io"]),
+            ("fb-step", &["fb-integrals-df-metric"]),
+            ("fb-other", &["rayon"]),
+            ("some-io", &["tokio"]),
+            ("rayon", &["rayon-core"]),
+            ("rayon-core", &["crossbeam-deque"]),
+            ("crossbeam-deque", &[]),
+            ("tokio", &[]),
+        ],
+        &["rayon", "rayon-core", "crossbeam-deque", "some-io", "tokio"],
+    );
+    let failures = check_pools(&g);
+    assert_eq!(failures.len(), 5, "{failures:#?}");
+    assert!(
+        failures[0].contains("fb-integrals-df-metric -> some-io -> tokio"),
+        "{failures:#?}"
+    );
+    for (f, pool) in failures[1..4]
+        .iter()
+        .zip(["rayon", "rayon-core", "crossbeam-deque"])
+    {
+        assert!(
+            f.starts_with(&format!("fb-other: depends on the pool crate {pool} (")),
+            "{failures:#?}"
+        );
+    }
+    assert!(
+        failures[4].contains("fb-step -> fb-integrals-df-metric -> some-io -> tokio"),
+        "{failures:#?}"
+    );
 }
 
 /// A pool reached directly, or through an external crate, fails with the

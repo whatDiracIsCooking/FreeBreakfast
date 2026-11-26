@@ -1,0 +1,20 @@
+[package]
+name = "fb-integrals-s-overlap-host"
+description = "integrals/s_overlap_host: the spherical AO overlap S on the host, on rayon's threads"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Device-free: the basis and its spherical layout, and rayon. None links wwr.
+[dependencies]
+fb-basis.workspace = true
+fb-core-primitives.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+fb-io-basis.workspace = true
+fb-io-npy.workspace = true
+fb-io-xyz.workspace = true

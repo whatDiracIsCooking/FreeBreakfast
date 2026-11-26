@@ -1031,11 +1031,18 @@ def link_free_crates() -> tuple[list[str], list[str]]:
     with --no-default-features (tier 3, what the cargo half tests), and
     those with their default features (linted too). A member qualifies when
     no package in its own graph -- normal, dev and build edges, under that
-    feature set -- declares `links`: wwr-sys does, and so does every kernel
-    library's -sys crate. Each member is resolved alone, as `cargo test -p`
-    resolves it, so another member's features do not leak in."""
+    feature set -- declares `links` from a path, not the registry: wwr-sys
+    does, and so does every kernel library's -sys crate. Each member is
+    resolved alone, as `cargo test -p` resolves it, so another member's
+    features do not leak in."""
     meta = json.loads(cargo_query("metadata", "--format-version", "1"))
-    linking = {p["name"] for p in meta["packages"] if p.get("links")}
+    # Path packages alone: a registry crate's `links` key names no native
+    # library of this tree's (rayon-core's guards against two rayons).
+    linking = {
+        p["name"]
+        for p in meta["packages"]
+        if p.get("links") and p.get("source") is None
+    }
     ids = set(meta["workspace_members"])
     members = [p["name"] for p in meta["packages"] if p["id"] in ids]
 

@@ -1,0 +1,23 @@
+[package]
+name = "fb-integrals-v-potential-en-host"
+description = "integrals/v_potential_en_host: the spherical AO nuclear attraction V on the host, on rayon's threads"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Device-free: the molecule, the basis and its spherical layout, the host DF
+# metric's Boys function, and rayon. None links wwr.
+[dependencies]
+fb-basis.workspace = true
+fb-core-primitives.workspace = true
+fb-integrals-df-metric.workspace = true
+fb-molecule.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+fb-io-basis.workspace = true
+fb-io-npy.workspace = true
+fb-io-xyz.workspace = true
