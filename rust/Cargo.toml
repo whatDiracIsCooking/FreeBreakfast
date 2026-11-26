@@ -58,6 +58,7 @@ members = [
     "integrals/schwarz",
     "integrals/eri/density_fitting/transform",
     "core/device",
+    "core/budget",
     "core/pack",
     "integrals/df_metric",
     "integrals/s_overlap_host",
@@ -125,6 +126,7 @@ fb-integrals-eri-density-fitting-pair-map = { path = "integrals/eri/density_fitt
 fb-integrals-schwarz = { path = "integrals/schwarz" }
 fb-integrals-eri-density-fitting-transform = { path = "integrals/eri/density_fitting/transform" }
 fb-core-device = { path = "core/device" }
+fb-core-budget = { path = "core/budget" }
 fb-core-pack = { path = "core/pack" }
 fb-integrals-df-metric = { path = "integrals/df_metric" }
 fb-integrals-s-overlap-host = { path = "integrals/s_overlap_host" }

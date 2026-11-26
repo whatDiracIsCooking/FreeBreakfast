@@ -82,6 +82,11 @@ const ERROR_LOGS: &[(&str, usize, &str)] = &[
         "a block's `Drop`, whose device could not be made current, frees anyway (docs/diagnostics.md, \"`Drop` cannot fail\")",
     ),
     (
+        "core/budget/src/raw.rs",
+        1,
+        "a budget buffer's `Drop`, whose free failed (docs/diagnostics.md, \"`Drop` cannot fail\")",
+    ),
+    (
         "core/device/src/lib.rs",
         1,
         "`log_destroy`, what a stream's or an event's `Drop` does with a failed destroy (docs/diagnostics.md, \"`Drop` cannot fail\")",
@@ -108,6 +113,11 @@ const ERROR_LOGS: &[(&str, usize, &str)] = &[
 /// `#[cfg(test)]` item) is not read: a test may make one to assert on.
 /// `core/arena/src/block.rs` is not here: [`ABORTS`] holds it.
 const ALLOCATIONS: &[(&str, usize, &str)] = &[
+    (
+        "core/budget/src/ledger.rs",
+        1,
+        "the budget DAG's final node refusing a plan over its caps, the v0.0.4 layer's admission (docs/memory.md, \"The final node\")",
+    ),
     (
         "core/arena/src/admit.rs",
         2,
@@ -973,6 +983,10 @@ fn allocations_outside_admission_fail() {
         (
             "core/thread_pool/src/run.rs".to_owned(),
             "const KINDS: [ErrorKind; 1] = [ErrorKind::Allocation];".to_owned(),
+        ),
+        (
+            "core/budget/src/ledger.rs".to_owned(),
+            "return Err(Error::allocation(table));".to_owned(),
         ),
         (
             "core/arena/src/block.rs".to_owned(),

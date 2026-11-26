@@ -927,7 +927,7 @@ inherits `[workspace.lints]` and adds a `[lints.rust]` table of its own. The
 list is in two tiers:
 
 - **Core:** `fb-core-wwr`, `fb-core-arena`, `fb-core-log`,
-  `fb-core-thread-pool`, `fb-core-device`.
+  `fb-core-thread-pool`, `fb-core-device`, `fb-core-budget`.
 - **Bindings:** `fb-integrals-sys`, `fb-localization-sys`, `fb-recipes-sys`,
   `fb-recipes-launch`.
 
