@@ -77,9 +77,16 @@ fn energy(run: &Run) -> (f64, usize) {
     (scf.energy(), scf.iterations())
 }
 
-/// `case` on one GPU against its recorded energy.
+/// `case` on one GPU against its recorded energy, its J/K passes one per
+/// iteration (exact).
 fn against_the_record((xyz, recorded, pyscf): (&str, f64, f64)) {
-    let (e, iterations) = energy(&converged(chain(xyz)));
+    let run = converged(chain(xyz));
+    let (e, iterations) = energy(&run);
+    assert_eq!(
+        run.plan.output(EriStep).passes(),
+        iterations,
+        "{xyz}: one J/K pass per iteration"
+    );
     println!(
         "{xyz}: E = {e:.12} in {iterations} iterations, |E - recorded| = {:.1e}, \
          |E - PySCF| = {:.1e}",
@@ -260,7 +267,8 @@ fn the_worker_count_does_not_move_waters_energy() {
 
 /// A replay of water at the same dimensions starts from the orbitals the
 /// run left, converges to its energy again, and allocates nothing: the
-/// ledger's count is unchanged, exactly.
+/// ledger's count is unchanged, exactly. B is built again, so the passes
+/// are counted again: the replay's equal its iterations, exactly.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn a_replay_gives_waters_energy_and_allocates_nothing() {
@@ -281,6 +289,11 @@ fn a_replay_gives_waters_energy_and_allocates_nothing() {
         "the replay starts from the converged orbitals"
     );
     assert_eq!(run.plan.bus().ledger().allocations(), allocations);
+    assert_eq!(
+        run.plan.output(EriStep).passes(),
+        n_again,
+        "the replay's J/K passes, one per iteration"
+    );
 }
 
 /// Water's B against PySCF's `L⁻¹ (P|mn)` over the same documents

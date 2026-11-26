@@ -55,6 +55,7 @@
 
 use std::ops::Range;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use contracts::debug_requires;
 use fb_core_budget::{
@@ -165,6 +166,9 @@ pub struct EriManager {
     l: Vec<DeviceBuf<f64>>,
     b: HeapSlab<f64>,
     state: Mutex<Vec<GpuState>>,
+    /// The J/K passes made since B was built: zeroed by `eri`'s run,
+    /// counted by [`Self::build_jk`] under the manager's lock.
+    passes: AtomicUsize,
 }
 
 impl EriManager {
@@ -208,6 +212,13 @@ impl EriManager {
     #[must_use]
     pub fn jk_width(&self) -> usize {
         self.jk_width
+    }
+
+    /// The J/K passes [`Self::build_jk`] has finished since B was last
+    /// built: an SCF's iterations, when it is the one reader.
+    #[must_use]
+    pub fn passes(&self) -> usize {
+        self.passes.load(Ordering::Relaxed)
     }
 
     /// J and K for each density, on gpu0, into the caller's `j` and `k`.
@@ -302,6 +313,7 @@ impl EriManager {
             let kk = st0.buf.tenant(&layout.r.span::<f64>(layout.k, n2));
             gpu0.stream().copy_device(&mut j[0], &jj)?;
             gpu0.stream().copy_device(&mut k[0], &kk)?;
+            self.passes.fetch_add(1, Ordering::Relaxed);
             return Ok(());
         }
         let mut sums: Option<(PinnedTenant<f64>, PinnedTenant<f64>)> = None;
@@ -327,6 +339,7 @@ impl EriManager {
         let s0 = &state[GPU0].streams[0];
         let (sj, sk) = (s0.upload(&mut j[0], sj)?, s0.upload(&mut k[0], sk)?);
         drop((ring_wait!(sj)?, ring_wait!(sk)?));
+        self.passes.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -723,6 +736,7 @@ impl Step<MainBus> for EriStep {
             // B's home: one slab on the host heap, at the unscreened bound.
             b: budget.heap(d.n_col * q),
             state: Mutex::new(gpus),
+            passes: AtomicUsize::new(0),
         })
     }
 
@@ -756,6 +770,8 @@ impl Step<MainBus> for EriStep {
             }
         }
         let (width, depth) = (out.width, out.depth);
+        // B is built again: no pass has read it yet.
+        *out.passes.get_mut() = 0;
         let state = out.state.get_mut().unwrap_or_else(|e| e.into_inner());
         let work: Vec<_> = held
             .all_gpus()
