@@ -1,4 +1,4 @@
-//! Eight rules of the register (`docs/rules.md`) that a scan of the sources
+//! Nine rules of the register (`docs/rules.md`) that a scan of the sources
 //! holds, each failing with the file and line of every departure:
 //!
 //! - **`#[ignore]` is a device case's, and says so**: every `ignore` in an
@@ -27,6 +27,10 @@
 //!   free function of `fb_core_wwr::blas` (`core/wwr/src/blas.rs`), and
 //!   no `pub use` there re-exports a glob (`docs/gpu_layer.md`,
 //!   "Layering").
+//! - **A GPU's handles take their stream once, before the workspace**: in
+//!   `core/device/src/`, each `SetStream` of the C ABI is named once, in
+//!   `GpuResources::new`, and the BLAS `SetWorkspace` once, in
+//!   `bind_workspace` (`docs/gpu_layer.md`, "The v0.0.4 runtime").
 //! - **A test that trips a contract is debug-only exactly when the
 //!   contract is**: a `#[should_panic(expected = …)]` whose text is a
 //!   `#[debug_requires]`, `#[debug_ensures]` or `#[debug_invariant]`
@@ -607,6 +611,91 @@ fn a_library_triangular_solve_is_found_by_its_name() {
     let good = "use fb_recipes_launch::trsm;\n// wwr_blas_dtrsm\nconst S: &str = \"wwr_blas_dtrsm\";\n\
                 fn g() {\n    trsm();\n    wwr_blas_dtrsv();\n}\n";
     assert!(library_triangular_solves("a.rs", good).is_empty());
+}
+
+// ------------------------------------- a v0.0.4 handle's stream, set once
+
+/// The v0.0.4 layer's handle calls that must each sit in one function of
+/// `GpuResources`: the two `SetStream`s in `new`, before any workspace can
+/// be bound, and the BLAS `SetWorkspace` in `bind_workspace`, which runs
+/// once. A `SetStream` after the bind resets cuBLAS's handle to its own
+/// workspace (`docs/gpu_layer.md`, "The v0.0.4 runtime").
+const HANDLE_CALLS: [(&str, &str); 3] = [
+    ("wwr_blas_set_stream", "new"),
+    ("wwr_solver_dn_set_stream", "new"),
+    ("wwr_blas_set_workspace", "bind_workspace"),
+];
+
+/// Each departure from [`HANDLE_CALLS`] in `core/device/src/`'s
+/// `sources`: a call named outside its function, or named other than
+/// once, with the function each is in (the nearest `fn` above it).
+fn misplaced_handle_calls(sources: &[(String, String)]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (call, home) in HANDLE_CALLS {
+        let mut seen = 0;
+        for (path, source) in sources
+            .iter()
+            .filter(|(p, _)| p.starts_with("core/device/src/"))
+        {
+            let code = code_only(source);
+            let ws = words(&code);
+            for (k, (i, w)) in ws.iter().enumerate() {
+                if *w != call {
+                    continue;
+                }
+                seen += 1;
+                let within = ws[..k]
+                    .windows(2)
+                    .rev()
+                    .find(|p| p[0].1 == "fn")
+                    .map_or("", |p| p[1].1);
+                if within != home {
+                    out.push(format!(
+                        "{path}:{}: {call} is in `{within}`, not in GpuResources::{home}",
+                        line_of(source, *i)
+                    ));
+                }
+            }
+        }
+        if seen != 1 {
+            out.push(format!(
+                "{call} is named {seen} times under core/device/src/, not once"
+            ));
+        }
+    }
+    out
+}
+
+#[test]
+fn a_gpus_handles_take_their_stream_once_before_the_workspace() {
+    let failures = misplaced_handle_calls(&workspace_sources());
+    assert!(
+        failures.is_empty(),
+        "{} handle call(s) out of place (docs/gpu_layer.md, \"The v0.0.4 runtime\"):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn a_set_stream_outside_new_is_found() {
+    let src = |body: &str| {
+        vec![(
+            "core/device/src/gpu.rs".to_owned(),
+            format!(
+                "fn new() {{ wwr_blas_set_stream(); wwr_solver_dn_set_stream(); }}\n\
+                 fn bind_workspace() {{ wwr_blas_set_workspace(); }}\n{body}"
+            ),
+        )]
+    };
+    assert!(misplaced_handle_calls(&src("// wwr_blas_set_stream\n")).is_empty());
+    let f = misplaced_handle_calls(&src("fn rebind() {\n    wwr_blas_set_stream();\n}\n"));
+    assert_eq!(f.len(), 2, "{f:#?}");
+    assert!(
+        f[0].starts_with("core/device/src/gpu.rs:4: wwr_blas_set_stream is in `rebind`"),
+        "{f:#?}"
+    );
+    assert!(f[1].contains("named 2 times"), "{f:#?}");
 }
 
 // ------------------------------------------------------ one name per BLAS call

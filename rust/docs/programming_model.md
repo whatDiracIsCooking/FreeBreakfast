@@ -1024,8 +1024,14 @@ to the plan's worker total plus the main thread, over GPU workers of several
 lanes each, and reads the same count before a loop's first iteration and
 after its last. It is the one check that
 catches what a lint cannot see: a linked host library opening a pool of its
-own at load, as a host BLAS does. If one is ever linked, its thread count is
-set to one at initialization, and this test is what notices when that slips.
+own at load, as a host BLAS does. A HIP build links one, ROCm's host
+OpenBLAS, through hipSOLVER: its load-time constructor starts one thread per
+core before `main`, and no call of the tree runs on it. So the v0.0.4
+layer's setup, before it starts a thread of its own, sets it to one thread
+and joins that pool (`fb_core_device::single_thread_host_blas`, which finds
+OpenBLAS's controls by name in the loaded objects and does nothing on a
+build without one), and `steps/tests/steps_threads.rs` counts against the
+main thread alone, which is what notices when that slips.
 
 ### Capabilities are enforced by lints
 

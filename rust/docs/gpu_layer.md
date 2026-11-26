@@ -737,7 +737,11 @@ and fills a stream enqueues, device slices, and each GPU's
   of the hold. `SetStream` is called once, when the handles are made, and
   the workspace, `HANDLE_WORKSPACE_BYTES` (128 MiB) of the budget's, is
   bound once and kept until the handles are destroyed, since the library
-  keeps its pointer; no handle manages memory of its own. Nothing the guard
+  keeps its pointer; no handle manages memory of its own. The order is
+  cuBLAS's: a `SetStream` resets its handle to a workspace of its own,
+  while hipBLAS keeps the caller's, and binding gives back rocBLAS's own
+  pool (`experimental/rust/handle_ring`), so `SetStream` then the bind is
+  right on both. Nothing the guard
   lends outlives it, a `compile_fail` doctest on the type.
 - **A call takes slices and checks them before it enqueues.** The BLAS
   calls (`gemm`, `gemm_strided_batched`, `gemv`, `geam`, `dgmm`, `syrk`)

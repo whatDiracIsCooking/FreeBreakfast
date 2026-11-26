@@ -52,3 +52,5 @@ harness = false
 [dev-dependencies]
 # The chain test's PySCF B, a committed .npy.
 fb-io-npy.workspace = true
+# chain_vram's per-process VRAM reading on an AMD card.
+fb-test-support.workspace = true

@@ -436,8 +436,10 @@ pub struct MainBus {
 }
 
 impl MainBus {
-    /// Setup: parse the geometry and the bases on the host, count the
-    /// dimensions, start the host integrals' pool, make each GPU's
+    /// Setup: set a linked host BLAS to one thread
+    /// ([`fb_core_device::single_thread_host_blas`]), parse the geometry
+    /// and the bases on the host, count the dimensions, start the host
+    /// integrals' pool, make each GPU's
     /// `GpuResources`, and read and clamp the caps (a GPU's after its
     /// handles exist). Not budgeted.
     ///
@@ -453,6 +455,7 @@ impl MainBus {
     /// runtime does not see (`InvalidConfig`); the host integrals' threads
     /// not starting (`Io`); the recipes library's mismatch; a cap's reading.
     pub fn setup(config: Config, backing: Backing) -> Result<Arc<MainBus>> {
+        fb_core_device::single_thread_host_blas();
         let molecule = fb_io_xyz::read_xyz(&config.molecule.xyz, 0, 1)?;
         let electrons = molecule.electron_count().unsigned_abs() as usize;
         if !electrons.is_multiple_of(2) {

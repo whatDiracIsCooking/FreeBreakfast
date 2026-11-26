@@ -307,6 +307,7 @@ dependencies = [
  "fb-core-log",
  "fb-kernel-abi",
  "fb-recipes-sys",
+ "libc",
  "wwr-sys",
 ]
 
@@ -1191,6 +1192,7 @@ dependencies = [
  "fb-molecule",
  "fb-recipes-sys",
  "fb-sad",
+ "fb-test-support",
  "log",
  "serde",
  "toml",
