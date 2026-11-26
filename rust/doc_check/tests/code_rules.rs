@@ -1,4 +1,4 @@
-//! Five rules of the design docs that a scan of the Rust sources holds,
+//! Three rules of the design docs that a scan of the Rust sources holds,
 //! each failing with the file and line of what breaks it:
 //!
 //! - **Nothing between the detection site and `main` logs an error**
@@ -11,35 +11,14 @@
 //!   identifier or in a string it passes on ([`LAUNCH_SHAPE`]).
 //! - **`Allocation` is a value only at admission** (`docs/diagnostics.md`,
 //!   "Allocation is a planning-time error"): an `Allocation` error is made
-//!   only where [`ALLOCATIONS`] says, and the block's failed allocation
-//!   makes one only to abort with it.
-//! - **A copy between kinds that is a node's whole work is a planner copy
-//!   node** (`docs/memory.md`, "The table"): an `impl GpuTask` whose `run`
-//!   calls `memcpy_p2d` or `memcpy_d2p` and no other free function, its
-//!   other calls the views' and iterators' methods, and an `impl CpuTask`
-//!   whose `run` names its heap view and does nothing but a
-//!   `copy_from_slice` between rows, its range perhaps clamped to a row's
-//!   end, are in [`COPY_TASKS`]: the planner's
-//!   own three, and the two host halves of its heap copies.
-//! - **"The planner" names `fb_core_planner` alone**
-//!   (`docs/programming_model.md`, "The orchestrator derives"): no item
-//!   outside [`PLANNER`] has a name containing `planner`, in any case: a
-//!   crate (a manifest's `name`), a source file, a module, a type, a trait,
-//!   a function, a const, a static, a type alias or a macro. A test
-//!   function is exempt: its name is a sentence, which may say "planner"
-//!   as prose does, and nothing calls it; so are the [`CHECKS`], this scan
-//!   among them.
+//!   only where [`ALLOCATIONS`] says.
 //!
 //! Every member's `.rs` is read, and the two at `rust/`'s top that the
-//! `build.rs` files include; the planner rule reads every member's
-//! `Cargo.toml` too. Tier 3: it reads files and nothing else.
+//! `build.rs` files include. Tier 3: it reads files and nothing else.
 
 #![forbid(unsafe_code)]
 
-use fb_doc_check::{
-    Attr, attributes, code_only, is_ident, rust_root, without_comments, word_at, workspace_members,
-    workspace_sources,
-};
+use fb_doc_check::{code_only, is_ident, rust_root, without_comments, workspace_sources};
 
 /// The places a line is logged at error or critical, as `(file, how many,
 /// why)`. A file not listed may log none, and a listed one exactly its
@@ -50,36 +29,6 @@ const ERROR_LOGS: &[(&str, usize, &str)] = &[
         "steps/src/main.rs",
         1,
         "the binary's `main`, the one boundary (docs/diagnostics.md, \"The one boundary\")",
-    ),
-    (
-        "core/wwr/src/status.rs",
-        1,
-        "`gpu_log_error_at`, what a `Drop` does with a failed destroy (docs/diagnostics.md, \"`Drop` cannot fail\")",
-    ),
-    (
-        "core/wwr/src/handle/base_handle.rs",
-        1,
-        "a handle's `Drop`, through `gpu_log_error_at` (docs/diagnostics.md, \"`Drop` cannot fail\")",
-    ),
-    (
-        "core/wwr/src/ccl.rs",
-        1,
-        "a communicator's `Drop`, through `gpu_log_error_at` (docs/diagnostics.md, \"`Drop` cannot fail\")",
-    ),
-    (
-        "core/wwr/src/blas.rs",
-        1,
-        "the BLAS handle's `Drop`, whose drain failed, through `gpu_log_error_at` (docs/diagnostics.md, \"`Drop` cannot fail\")",
-    ),
-    (
-        "core/arena/src/kind/device.rs",
-        2,
-        "the device and pinned frees, from a block's `Drop`, through `gpu_log_error_at` (docs/diagnostics.md, \"`Drop` cannot fail\")",
-    ),
-    (
-        "core/arena/src/block.rs",
-        1,
-        "a block's `Drop`, whose device could not be made current, frees anyway (docs/diagnostics.md, \"`Drop` cannot fail\")",
     ),
     (
         "core/budget/src/raw.rs",
@@ -102,7 +51,7 @@ const ERROR_LOGS: &[(&str, usize, &str)] = &[
         "the logger itself: the `critical!` macro and the panic hook (docs/diagnostics.md, \"Panics and profiles\")",
     ),
     (
-        "core/diagnostics/tests/log.rs",
+        "core/error_handling/tests/log.rs",
         4,
         "the logger's own test of each level",
     ),
@@ -111,7 +60,6 @@ const ERROR_LOGS: &[(&str, usize, &str)] = &[
 /// Where an `Allocation` error may be made, as `(file, how many, why)`,
 /// counted as [`ERROR_LOGS`] is. Test code (`tests/`, a `tests.rs`, a
 /// `#[cfg(test)]` item) is not read: a test may make one to assert on.
-/// `core/arena/src/block.rs` is not here: [`ABORTS`] holds it.
 const ALLOCATIONS: &[(&str, usize, &str)] = &[
     (
         "core/budget/src/ledger.rs",
@@ -119,27 +67,11 @@ const ALLOCATIONS: &[(&str, usize, &str)] = &[
         "the budget DAG's final node refusing a plan over its caps, the v0.0.4 layer's admission (docs/memory.md, \"The final node\")",
     ),
     (
-        "core/arena/src/admit.rs",
-        2,
-        "admission refusing a plan, a table over its cap or a node's host blocks over its memory, the one place the error is a value (docs/diagnostics.md, \"Allocation is a planning-time error\")",
-    ),
-    (
         "core/error_handling/src/lib.rs",
         1,
         "`Error::allocation`, the constructor admission calls",
     ),
-    (
-        "core/thread_pool/src/run.rs",
-        1,
-        "the timing record reading a kind back by name: an error already returned, not a new one",
-    ),
 ];
-
-/// The files whose `Allocation` errors are made only to abort with: each
-/// must sit inside a `check_or_abort` call, with no statement between. The
-/// block's one allocation at instantiation aborts when it fails, as every
-/// create does (docs/diagnostics.md, "Allocation is a planning-time error").
-const ABORTS: &[&str] = &["core/arena/src/block.rs"];
 
 /// The names of a warp width or a launch shape, lowercased with `_`
 /// removed, as a substring of an identifier or a word in a string. The
@@ -157,38 +89,6 @@ const LAUNCH_SHAPE: &[&str] = &[
     "dim3",
     "threadsperblock",
     "launchbounds",
-];
-
-/// The tasks whose whole work is a copy between kinds, as `(file, how
-/// many, why)`, counted as [`ERROR_LOGS`] is, in non-test code: everything
-/// else adds a copy node (`Dag::upload`, `Dag::download`,
-/// `Dag::download_rows`, `Dag::upload_heap`, `Dag::download_heap`,
-/// `Dag::download_heap_pitched`). The list only shrinks.
-const COPY_TASKS: &[(&str, usize, &str)] = &[(
-    "core/planner/src/copy.rs",
-    6,
-    "the planner's copy nodes themselves, `Dag::upload`, `Dag::download` and `Dag::download_rows`, \
-     and the host halves of `Dag::upload_heap`, `Dag::download_heap` and \
-     `Dag::download_heap_pitched`",
-)];
-
-/// The one crate whose items may be named for the planner, as a path from
-/// `rust/`.
-const PLANNER: &str = "core/planner/";
-
-/// The keywords that name the item after them (`static mut` and
-/// `macro_rules!` are read through).
-const ITEM_KEYWORDS: &[&str] = &[
-    "mod",
-    "struct",
-    "enum",
-    "union",
-    "trait",
-    "type",
-    "fn",
-    "const",
-    "static",
-    "macro_rules",
 ];
 
 /// The checks that name what they forbid: this file, and
@@ -210,9 +110,9 @@ fn sources() -> Vec<(String, String)> {
             out.push((name, std::fs::read_to_string(&path).unwrap()));
         }
     }
-    // At least the arena's admission, so a walk that found nothing fails.
+    // At least the budget's ledger, so a walk that found nothing fails.
     assert!(
-        out.iter().any(|(p, _)| p == "core/arena/src/admit.rs"),
+        out.iter().any(|(p, _)| p == "core/budget/src/ledger.rs"),
         "no sources under {}",
         root.display()
     );
@@ -361,14 +261,6 @@ fn allocations(code: &str) -> Vec<(usize, usize)> {
     found
 }
 
-/// Whether the error at `offset` is inside a `check_or_abort` call: the
-/// text since the last one has no `;`, so it is the call's argument.
-fn inside_abort(code: &str, offset: usize) -> bool {
-    code[..offset]
-        .rfind("check_or_abort")
-        .is_some_and(|c| !code[c..offset].contains(';'))
-}
-
 /// The failures of `hits`, a file's count of something, against `allowed`,
 /// each `(file, count, why)`: a file not listed with any hit, a listed one
 /// whose count differs, and an entry whose file has none.
@@ -441,412 +333,21 @@ fn launch_shape_failures(files: &[(String, String)]) -> Vec<String> {
 
 fn allocation_failures(files: &[(String, String)]) -> Vec<String> {
     let mut hits = Vec::new();
-    let mut failures = Vec::new();
     for (path, src) in files
         .iter()
         .filter(|(p, _)| !is_test_file(p) && !CHECKS.contains(&p.as_str()))
     {
         let code = without_test_items(&code_only(src));
-        for (at, line) in allocations(&code) {
-            if !ABORTS.contains(&path.as_str()) {
-                hits.push((path.clone(), line, "an `Allocation` error".to_owned()));
-            } else if !inside_abort(&code, at) {
-                failures.push(format!(
-                    "{path}:{line}: an `Allocation` error outside `check_or_abort`: the \
-                     block's allocation aborts, it does not return the error \
-                     (docs/diagnostics.md, \"Allocation is a planning-time error\")"
-                ));
-            }
+        for (_, line) in allocations(&code) {
+            hits.push((path.clone(), line, "an `Allocation` error".to_owned()));
         }
     }
-    failures.extend(against(
+    against(
         "`Allocation` is a value only at admission (docs/diagnostics.md, \
          \"Allocation is a planning-time error\")",
         &hits,
         ALLOCATIONS,
-    ));
-    failures
-}
-
-/// The end of the brace block opening at or after `from` in `code`.
-fn block_end(code: &str, from: usize) -> Option<(usize, usize)> {
-    let open = code[from..].find('{')? + from;
-    let mut depth = 0;
-    for (i, c) in code.bytes().enumerate().skip(open) {
-        match c {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some((open, i + 1));
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// The line of each `impl … GpuTask … for` in `code` (from [`code_only`],
-/// test items removed) whose `run` is a copy between kinds alone: it calls
-/// `memcpy_p2d` or `memcpy_d2p`, and every other call is a method (`.name(`)
-/// or `Ok(`, never another free or path function, a kernel's launch, a
-/// BLAS call or another copy. And of each `impl … CpuTask … for` whose
-/// `run` is a copy between a heap row and a pinned one alone: its heap
-/// view is named, not `_`, and its calls are `copy_from_slice`, the
-/// views' `get`, `take_mut` and `iteration`, and a range's clamp to a
-/// row's end, `len` and `min`, nothing else.
-fn copy_tasks(code: &str) -> Vec<usize> {
-    let mut found = Vec::new();
-    let mut from = 0;
-    while let Some(at) = code[from..].find("impl").map(|e| from + e) {
-        from = at + 4;
-        let Some((open, close)) = block_end(code, at) else {
-            break;
-        };
-        let header = &code[at..open];
-        let bounded = at == 0 || !is_ident(code.as_bytes()[at - 1]);
-        let gpu = idents(header).any(|(_, w)| w == "GpuTask");
-        let cpu = idents(header).any(|(_, w)| w == "CpuTask");
-        if !bounded || !(gpu || cpu) {
-            continue;
-        }
-        let body = &code[open..close];
-        let Some(run) = body.find("fn run") else {
-            continue;
-        };
-        let Some((run_open, run_close)) = block_end(body, run) else {
-            continue;
-        };
-        let run_body = &body[run_open..run_close];
-        let mut copies = 0;
-        let mut other = false;
-        for (i, w) in idents(run_body) {
-            let after = run_body[i + w.len()..].trim_start();
-            if !after.starts_with('(') {
-                continue;
-            }
-            let method = run_body[..i].trim_end().ends_with('.');
-            match w {
-                "memcpy_p2d" | "memcpy_d2p" if gpu => copies += 1,
-                "copy_from_slice" if cpu && method => copies += 1,
-                "get" | "take_mut" | "iteration" | "len" | "min" if cpu && method => {}
-                _ if gpu && method => {}
-                // A tuple pattern or a condition, not a call.
-                "Ok" | "Some" | "for" | "in" | "if" | "while" | "match" | "return" | "let" => {}
-                _ => other = true,
-            }
-        }
-        if cpu && !names_its_heap_view(&body[run..run_open]) {
-            other = true;
-        }
-        if copies > 0 && !other {
-            found.push(line_of(code, at));
-        }
-        from = close;
-    }
-    found
-}
-
-/// Whether a CPU task's `run` parameters, `params`, bind its heap view
-/// (`…: &Bufs<'_, Heap>`) to a name rather than `_`.
-fn names_its_heap_view(params: &str) -> bool {
-    idents(params).any(|(i, w)| {
-        let Some(colon) = (w == "Heap").then(|| params[..i].rfind(':')).flatten() else {
-            return false;
-        };
-        idents(&params[..colon])
-            .last()
-            .is_some_and(|(_, name)| name != "_")
-    })
-}
-
-fn copy_task_failures(files: &[(String, String)]) -> Vec<String> {
-    let hits: Vec<(String, usize, String)> = files
-        .iter()
-        .filter(|(p, _)| !is_test_file(p) && !CHECKS.contains(&p.as_str()))
-        .flat_map(|(p, src)| {
-            copy_tasks(&without_test_items(&code_only(src)))
-                .into_iter()
-                .map(move |l| {
-                    (
-                        p.clone(),
-                        l,
-                        "a task whose `run` is a copy alone".to_owned(),
-                    )
-                })
-        })
-        .collect();
-    against(
-        "a copy between kinds that is a node's whole work is a planner copy node: \
-         `Dag::upload`, `Dag::download` or their heap forms, not a hand-written task \
-         (docs/memory.md, \"The table\")",
-        &hits,
-        COPY_TASKS,
     )
-}
-
-/// Whether `name` says "planner", in any case.
-fn says_planner(name: &str) -> bool {
-    name.to_ascii_lowercase().contains("planner")
-}
-
-/// Whether the item whose keyword is at `at` in `code` carries `#[test]`:
-/// back from it, past its qualifiers and its other attributes.
-fn is_test_item(code: &str, attrs: &[Attr], at: usize) -> bool {
-    let mut end = at;
-    loop {
-        let before = code[..end].trim_end();
-        if let Some(a) = attrs.iter().find(|a| a.end == before.len()) {
-            if a.name == "test" {
-                return true;
-            }
-            end = a.start;
-        } else if let Some(q) = ["pub", "async", "unsafe", "const", "extern", ")"]
-            .iter()
-            .find(|q| before.ends_with(*q))
-        {
-            // `pub(crate)`: back over the parenthesis to the `pub`.
-            end = if *q == ")" {
-                match before.rfind("pub") {
-                    Some(p) => p,
-                    None => return false,
-                }
-            } else {
-                before.len() - q.len()
-            };
-        } else {
-            return false;
-        }
-    }
-}
-
-/// Each item `code` (from [`code_only`]) names for the planner, with its
-/// line and name, test functions left out.
-fn planner_items(code: &str) -> Vec<(usize, String)> {
-    let attrs = attributes(code);
-    let mut found = Vec::new();
-    for (at, word) in idents(code) {
-        if !ITEM_KEYWORDS.contains(&word) || (word == "fn" && is_test_item(code, &attrs, at)) {
-            continue;
-        }
-        // The name follows the keyword after whitespace, through a
-        // `static mut`, a `macro_rules!` and a raw identifier's `r#`; so
-        // `fn(` and `const _` name nothing.
-        let mut from = at + word.len();
-        if word == "macro_rules" {
-            match next_char(code, from) {
-                Some((bang, b'!')) => from = bang + 1,
-                _ => continue,
-            }
-        }
-        let Some((mut start, _)) = next_char(code, from) else {
-            continue;
-        };
-        if start == from && word != "macro_rules" {
-            continue;
-        }
-        if word == "static" && word_at(code.as_bytes(), start) == "mut" {
-            start = next_char(code, start + 3).map_or(start, |(i, _)| i);
-        }
-        if code[start..].starts_with("r#") {
-            start += 2;
-        }
-        let name = word_at(code.as_bytes(), start);
-        if says_planner(name) {
-            found.push((line_of(code, start), name.to_owned()));
-        }
-    }
-    found
-}
-
-/// Each package or target `name` in `manifest` (a `Cargo.toml`'s text),
-/// with its line.
-fn manifest_names(manifest: &str) -> Vec<(usize, String)> {
-    manifest
-        .lines()
-        .enumerate()
-        .filter_map(|(i, l)| {
-            let (key, value) = l.split_once('=')?;
-            (key.trim() == "name").then(|| (i + 1, value.trim().trim_matches('"').to_owned()))
-        })
-        .collect()
-}
-
-/// Every name for the planner outside [`PLANNER`] and [`CHECKS`], over
-/// `files` (path from `rust/` and text, sources and manifests alike), as
-/// one line each.
-fn planner_name_failures(files: &[(String, String)]) -> Vec<String> {
-    let mut failures = Vec::new();
-    for (path, text) in files
-        .iter()
-        .filter(|(p, _)| !p.starts_with(PLANNER) && !CHECKS.contains(&p.as_str()))
-    {
-        let names = if path.ends_with("Cargo.toml") {
-            manifest_names(text)
-        } else {
-            let stem = path.rsplit('/').next().unwrap_or(path);
-            let mut names = planner_items(&code_only(text));
-            if says_planner(stem) {
-                names.insert(0, (1, stem.to_owned()));
-            }
-            names
-        };
-        for (line, name) in names.into_iter().filter(|(_, n)| says_planner(n)) {
-            failures.push(format!(
-                "{path}:{line}: `{name}` names the planner outside {PLANNER}: \
-                 \"the planner\" is `fb_core_planner` alone \
-                 (docs/programming_model.md, \"The orchestrator derives\")"
-            ));
-        }
-    }
-    failures
-}
-
-/// Every member's manifest, as its path from `rust/` and its text.
-fn manifests() -> Vec<(String, String)> {
-    let root = rust_root();
-    workspace_members()
-        .into_iter()
-        .map(|m| {
-            let path = m.join("Cargo.toml");
-            let name = path
-                .strip_prefix(&root)
-                .unwrap_or(&path)
-                .display()
-                .to_string();
-            (name, std::fs::read_to_string(&path).unwrap())
-        })
-        .collect()
-}
-
-#[test]
-fn only_fb_core_planner_is_named_planner() {
-    let mut files = sources();
-    files.extend(manifests());
-    assert!(
-        files.iter().any(|(p, _)| p == "core/planner/Cargo.toml"),
-        "no manifests read"
-    );
-    let failures = planner_name_failures(&files);
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
-}
-
-/// The scan sees each kind of item named for the planner, in any case, a
-/// source file's name and a manifest's package and target names; and
-/// passes a test function, a use of `fb_core_planner`, a local, prose in a
-/// comment or a string, and every name under [`PLANNER`].
-#[test]
-fn the_planner_scan_sees_each_item() {
-    let src = "\
-        pub mod planner;\n\
-        pub(crate) struct Planner;\n\
-        enum PlannerKind {}\n\
-        trait ThePlanner {}\n\
-        type PlannerOut = u8;\n\
-        pub const fn plan_with_planner() {}\n\
-        static mut PLANNER_COUNT: u8 = 0;\n\
-        macro_rules! planner { () => {} }\n\
-        use fb_core_planner::Dag;\n\
-        let planner = fb_core_planner::Plan::new();\n\
-        // the planner's copy node\n\
-        let s = \"fn planner\";\n\
-        #[test]\n\
-        fn a_whole_copy_is_a_planner_copy_node() {}\n\
-        #[test]\n\
-        #[ignore = \"tier 4: needs a GPU\"]\n\
-        pub(crate) async fn the_planner_on_a_card() {}\n\
-        fn r#planner_raw() {}\n";
-    let got: Vec<(usize, String)> = planner_items(&code_only(src));
-    let want: Vec<(usize, String)> = [
-        (1, "planner"),
-        (2, "Planner"),
-        (3, "PlannerKind"),
-        (4, "ThePlanner"),
-        (5, "PlannerOut"),
-        (6, "plan_with_planner"),
-        (7, "PLANNER_COUNT"),
-        (8, "planner"),
-        (18, "planner_raw"),
-    ]
-    .into_iter()
-    .map(|(l, w)| (l, w.to_owned()))
-    .collect();
-    assert_eq!(got, want);
-
-    let files = vec![
-        (
-            "pipeline/config/src/planner_glue.rs".to_owned(),
-            "fn f() {}".to_owned(),
-        ),
-        (
-            "pipeline/config/Cargo.toml".to_owned(),
-            "[package]\nname = \"fb-pipeline-planner\"\n\n[[test]]\nname = \"config\"\n".to_owned(),
-        ),
-        (
-            "core/planner/Cargo.toml".to_owned(),
-            "[package]\nname = \"fb-core-planner\"\n".to_owned(),
-        ),
-        (
-            "core/planner/src/lib.rs".to_owned(),
-            "pub struct Planner;".to_owned(),
-        ),
-    ];
-    let failures = planner_name_failures(&files);
-    assert_eq!(failures.len(), 2, "{failures:#?}");
-    assert!(
-        failures[0].starts_with("pipeline/config/src/planner_glue.rs:1: `planner_glue.rs`"),
-        "{failures:#?}"
-    );
-    assert!(
-        failures[1].starts_with("pipeline/config/Cargo.toml:2: `fb-pipeline-planner`"),
-        "{failures:#?}"
-    );
-}
-
-#[test]
-fn a_whole_copy_is_a_planner_copy_node() {
-    let failures = copy_task_failures(&sources());
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
-}
-
-/// The copy scan finds a task whose `run` copies alone, in a loop or not,
-/// and a CPU task that copies between its heap and pinned rows alone; and
-/// passes one that copies beside a launch, a BLAS call or a device copy,
-/// a CPU task that copies a `Vec` in, one whose heap view is `_`, and one
-/// that computes what it copies.
-#[test]
-fn the_copy_scan_sees_a_copy_alone() {
-    let alone = "impl GpuTask for Up {\n    fn layout(&self) {}\n    fn run(&self, r: &R, d: &Bufs, h: &CopyOnly, s: &S) -> Status {\n        \
-                 memcpy_p2d(&mut d.take_mut(*r), h, self.0, s)\n    }\n}\n";
-    assert_eq!(copy_tasks(alone), [1]);
-    let looped = "fn f() {}\nimpl<T> GpuTask for Down<T> {\n    fn run(&self) -> Status {\n        \
-                  for (a, b) in self.rows.iter().zip(r) {\n            memcpy_d2p(h, b, d.get(a), s)?;\n        }\n        Ok(())\n    }\n}\n";
-    assert_eq!(copy_tasks(looped), [2]);
-    let staged = "impl<T, P: StagingKind> CpuTask<P> for Stage<T> {\n    fn layout(&self) {}\n    \
-                  fn run(&self, w: &R, pinned: &Bufs<'_, P>, heap: &Bufs<'_, Heap>) -> Status {\n        \
-                  let from = self.start + heap.iteration() * self.len;\n        \
-                  pinned.take_mut(*w).copy_from_slice(&heap.get(self.src)[from..from + self.len]);\n        Ok(())\n    }\n}\n";
-    assert_eq!(copy_tasks(staged), [1]);
-    let clamped = "impl CpuTask for Stage {\n    fn run(&self, w: &R, p: &Bufs<'_, Pinned>, heap: &Bufs<'_, Heap>) -> Status {\n        \
-                   let src = heap.get(self.src);\n        let to = src.len().min(from + self.len);\n        \
-                   let range = &src[from..to];\n        p.take_mut(*w)[..range.len()].copy_from_slice(range);\n        Ok(())\n    }\n}\n";
-    assert_eq!(copy_tasks(clamped), [1]);
-    let unstaged = "impl CpuTask for Back {\n    fn run(&self, _: &(), p: &Bufs<'_, Pinned>, heap: &Bufs<'_, Heap>) -> Status {\n        \
-                    heap.take_mut(self.dst)[a..b].copy_from_slice(p.get(self.w));\n        Ok(())\n    }\n}\n";
-    assert_eq!(copy_tasks(unstaged), [1]);
-    for busy in [
-        "impl CpuTask for C {\n    fn run(&self, _: &(), p: &Bufs<'_, Pinned>, _: &Bufs<'_, Heap>) -> Status {\n        \
-         p.take_mut(self.0).copy_from_slice(&self.data);\n        Ok(())\n    }\n}\n",
-        "impl CpuTask for C {\n    fn run(&self, _: &(), p: &Bufs<'_, Pinned>, heap: &Bufs<'_, Heap>) -> Status {\n        \
-         let x = heap.get(self.0);\n        p.take_mut(self.1).copy_from_slice(&scale(x));\n        Ok(())\n    }\n}\n",
-        "impl GpuTask for G {\n    fn run(&self) -> Status {\n        memcpy_p2d(&mut a, h, x, s)?;\n        gemm(s.blas(), a)\n    }\n}\n",
-        "impl GpuTask for G {\n    fn run(&self) -> Status {\n        memcpy_d2p(h, x, &f, s)?;\n        fb_recipes_sys::inverse_sqrt(s, n, f)\n    }\n}\n",
-        "impl GpuTask for G {\n    fn run(&self) -> Status {\n        memcpy_d2d(&a, b, s)\n    }\n}\n",
-        "impl CpuTask for C {\n    fn run(&self) -> Status {\n        memcpy_h2p(h, r, &v);\n        Ok(())\n    }\n}\n",
-    ] {
-        assert!(copy_tasks(busy).is_empty(), "{busy}");
-    }
 }
 
 #[test]
@@ -911,7 +412,7 @@ fn error_logs_are_held_to_their_counts() {
             "log::log_at(LogLevel::Error, o, a);".to_owned(),
         ),
         (
-            "core/arena/src/block.rs".to_owned(),
+            "core/budget/src/raw.rs".to_owned(),
             "error!(\"a\");\nerror!(\"b\");".to_owned(),
         ),
         (
@@ -928,7 +429,7 @@ fn error_logs_are_held_to_their_counts() {
         "{all}"
     );
     assert!(
-        all.contains("core/arena/src/block.rs is allowed 1") && all.contains("has 2"),
+        all.contains("core/budget/src/raw.rs is allowed 1") && all.contains("has 2"),
         "{all}"
     );
     assert!(
@@ -938,7 +439,7 @@ fn error_logs_are_held_to_their_counts() {
     assert!(!all.contains("main.rs"), "{all}");
 }
 
-/// The width in an identifier or a string is seen; `WarpWraps`, an arena
+/// The width in an identifier or a string is seen; `WarpWraps`, a
 /// `Block` and a comment are not.
 #[test]
 fn the_launch_shape_scan_sees_names_and_strings() {
@@ -964,16 +465,11 @@ fn the_launch_shape_scan_sees_names_and_strings() {
     assert_eq!(got, want);
 }
 
-/// An `Allocation` made outside admission fails, one in a test item or a
-/// comparison of a kind read elsewhere does not, and the block's must be an
-/// abort's argument.
+/// An `Allocation` made outside admission fails, one in a test item, a
+/// test file or a comparison of a kind read elsewhere does not.
 #[test]
 fn allocations_outside_admission_fail() {
     let files = vec![
-        (
-            "core/arena/src/admit.rs".to_owned(),
-            "Err(Error::allocation(m))\nErr(Error::allocation(n))".to_owned(),
-        ),
         (
             "core/error_handling/src/lib.rs".to_owned(),
             "Self::at_caller(ErrorKind::Allocation, m)\n\
@@ -981,37 +477,22 @@ fn allocations_outside_admission_fail() {
                 .to_owned(),
         ),
         (
-            "core/thread_pool/src/run.rs".to_owned(),
-            "const KINDS: [ErrorKind; 1] = [ErrorKind::Allocation];".to_owned(),
-        ),
-        (
             "core/budget/src/ledger.rs".to_owned(),
             "return Err(Error::allocation(table));".to_owned(),
         ),
         (
-            "core/arena/src/block.rs".to_owned(),
-            "check_or_abort::<()>(Err(Error {\n    kind: ErrorKind::Allocation,\n}));\n\
-             return Err(Error::allocation(m));"
-                .to_owned(),
-        ),
-        (
-            "core/planner/src/lib.rs".to_owned(),
+            "core/flow/src/dag.rs".to_owned(),
             "fn f() -> Status {\n    Err(Error::allocation(\"late\"))\n}".to_owned(),
         ),
         (
-            "core/planner/tests/t.rs".to_owned(),
+            "core/flow/tests/t.rs".to_owned(),
             "Err(Error::allocation(\"a test\"))".to_owned(),
         ),
     ];
     let failures = allocation_failures(&files);
-    assert_eq!(failures.len(), 2, "{failures:#?}");
+    assert_eq!(failures.len(), 1, "{failures:#?}");
     assert!(
-        failures[0].starts_with("core/arena/src/block.rs:4: an `Allocation` error outside"),
-        "{failures:#?}"
-    );
-    assert!(
-        failures[1]
-            .contains("core/planner/src/lib.rs is not allowed any:\n  core/planner/src/lib.rs:2:"),
+        failures[0].contains("core/flow/src/dag.rs is not allowed any:\n  core/flow/src/dag.rs:2:"),
         "{failures:#?}"
     );
 }

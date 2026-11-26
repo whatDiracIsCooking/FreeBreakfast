@@ -1393,7 +1393,7 @@ def cargo_package(package_id: str) -> str:
 def cargo_cases(lines: list[str]) -> list[dict]:
     """Every case a recorded cargo test ran (CARGO_RECORD_FLAG among its
     arguments), as a metrics record's case: `binary` the package and the
-    target's source (`cargo fb-core-arena tests/plan.rs`; a doc-test's
+    target's source (`cargo fb-core-budget tests/budget_device.rs`; a doc-test's
     `cargo <crate> doc-tests`), `name` that and the case, `status` from
     libtest's outcome (an ignored case is `skip`), and `seconds` null:
     libtest's stable output times no case. The package comes from the

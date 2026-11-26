@@ -10,3 +10,7 @@ workspace = true
 
 [dependencies]
 fb-core-log.workspace = true
+
+[dev-dependencies]
+libc.workspace = true
+log.workspace = true

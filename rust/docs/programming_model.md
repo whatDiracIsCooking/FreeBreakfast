@@ -1451,23 +1451,17 @@ an attribute rather than a manifest line because Cargo refuses a member that
 inherits `[workspace.lints]` and adds a `[lints.rust]` table of its own. The
 list is in two tiers:
 
-- **Core:** `fb-core-wwr`, `fb-core-arena`, `fb-core-log`,
-  `fb-core-thread-pool`, `fb-core-device`, `fb-core-budget`.
+- **Core:** `fb-core-log`, `fb-core-device`, `fb-core-budget`.
 - **Bindings:** `fb-integrals-sys`, `fb-localization-sys`, `fb-recipes-sys`.
 
-The core crates hold the wrappers: `fb-core-wwr` over the `wwr-sys`
-bindings (and the `statvfs` of `/dev/shm` a collectives' system error
-reports), the arena over the raw allocation and copy bindings, the two
-`libc` calls in `core::log`, and the one `unsafe impl Sync` in
-`core::thread_pool`, on `run`'s private wrapper of the backend it shares
-with its workers, which rests on a run borrowing the backend exclusively
-and on `Backend` being sealed ("Plan once, run many"). `fb-core-wwr` also
-holds the `unsafe impl Send` of the handles a step carries between
-workers: `Stream` and `Event`, `Sync` as well, on the runtime's thread
-safety; the BLAS and dense-solver handles, `Send` but never `Sync`, since
-the libraries allow a handle on any thread one call at a time. Each impl
-states its argument and is asserted at compile time beside it. The CCL
-rank stays neither. The binding crates declare a kernel
+The core crates hold the wrappers: `fb-core-device` over the `wwr-sys`
+runtime, BLAS and dense-solver bindings, with the `unsafe impl Send` of the
+handles a step carries between workers (`Stream` and `Event`, `Sync` as
+well, on the runtime's thread safety; `GpuResources`, `Send` but never
+`Sync`, since the libraries allow a handle on any thread one call at a
+time); `fb-core-budget` over the raw allocations, with the slices' and
+leases' marker impls; and the two `libc` calls in `core::log`. Each impl
+states its argument beside it. The binding crates declare a kernel
 library's `extern "C"` functions, check its version at load, and wrap its
 launches safely beside the bindings, over `fb-core-device`'s stream and
 slices, each call uploading the indices its kernel trusts itself; the

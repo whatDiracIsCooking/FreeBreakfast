@@ -267,21 +267,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fb-core-arena"
-version = "0.1.0"
-dependencies = [
- "contracts",
- "fb-core-error-handling",
- "fb-core-log",
- "fb-core-wwr",
- "fb-test-support",
- "libc",
- "log",
- "proptest",
- "wwr-sys",
-]
-
-[[package]]
 name = "fb-core-budget"
 version = "0.1.0"
 dependencies = [
@@ -312,22 +297,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "fb-core-diagnostics"
-version = "0.1.0"
-dependencies = [
- "fb-core-error-handling",
- "fb-core-log",
- "fb-core-wwr",
- "libc",
- "log",
- "wwr-sys",
-]
-
-[[package]]
 name = "fb-core-error-handling"
 version = "0.1.0"
 dependencies = [
  "fb-core-log",
+ "libc",
+ "log",
 ]
 
 [[package]]
@@ -362,52 +337,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "fb-core-planner"
-version = "0.1.0"
-dependencies = [
- "contracts",
- "fb-core-arena",
- "fb-core-error-handling",
- "fb-core-thread-pool",
- "fb-core-wwr",
- "fb-test-support",
- "log",
- "proptest",
- "wwr-sys",
-]
-
-[[package]]
 name = "fb-core-primitives"
 version = "0.1.0"
 
 [[package]]
-name = "fb-core-thread-pool"
-version = "0.1.0"
-dependencies = [
- "contracts",
- "fb-core-error-handling",
- "fb-core-log",
- "fb-core-wwr",
- "log",
- "serde",
- "serde_json",
- "wwr-sys",
-]
-
-[[package]]
 name = "fb-core-types"
 version = "0.1.0"
-
-[[package]]
-name = "fb-core-wwr"
-version = "0.1.0"
-dependencies = [
- "contracts",
- "fb-core-error-handling",
- "fb-core-log",
- "libc",
- "wwr-sys",
-]
 
 [[package]]
 name = "fb-device-check"

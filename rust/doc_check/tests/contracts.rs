@@ -323,11 +323,7 @@ const CONDITION_WORDS: [&str; 6] = ["as", "true", "false", "self", "Self", "crat
 /// The leading preconditions the tree keeps as body checks, each
 /// `path:function` with why. An entry whose site is gone fails
 /// [`a_leading_precondition_is_a_requires`], so the list only shrinks.
-const KEPT: &[(&str, &str)] = &[(
-    "core/arena/src/bufs.rs:hold",
-    "the arena's row flags: `taken` is what the body's compare_exchange did to the row's \
-     flag, state the body produces, though the scan reads it as a `let` of the arguments",
-)];
+const KEPT: &[(&str, &str)] = &[];
 
 /// One leading check at the head of a public function's body that could
 /// be a `#[requires]`: `path:function`, and the line it is on.

@@ -11,9 +11,8 @@
 //! | `:abort`: both `check_or_abort` overloads | [`check_or_abort`], one generic function |
 //!
 //! Like the C++ module it does not name WarpWraps: the bridge from a GPU
-//! status (`fb_core_wwr::gpu_status`) and the log line
-//! a failed destroy gets (`fb_core_wwr::gpu_log_error_at`)
-//! live in `fb_core_wwr`, which builds on this.
+//! status, and the log line a failed destroy gets, live in
+//! `fb_core_device`, which builds on this.
 //!
 //! **The `err_*` helpers have no counterpart.** They exist because a C++
 //! defaulted `std::source_location` cannot follow a parameter pack, so the
@@ -94,8 +93,8 @@ pub struct Error {
     /// unchanged, so this stays the detection site.
     pub origin: &'static Location<'static>,
     /// What the error crossed on its way out, innermost first: the
-    /// orchestrator pushes `task@worker` when an error leaves a task
-    /// (`fb_core_thread_pool`). Empty at the detection site.
+    /// executor pushes `step '<name>'` when an error leaves a step
+    /// (`fb_core_flow`). Empty at the detection site.
     pub context: Vec<String>,
 }
 

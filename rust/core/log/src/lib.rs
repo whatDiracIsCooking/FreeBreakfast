@@ -61,8 +61,9 @@
 //!
 //! **A line written inside a task names it.** While a [`TaskScope`] is open on
 //! a thread, every line that thread writes carries `[task@worker]` after its
-//! location. The orchestrator opens one around each node it runs
-//! (`fb_core_thread_pool`); a task does nothing for it.
+//! location. A task does nothing for it. No runner opens one since the old
+//! orchestrator went: rustflow's executor names a failed step on its
+//! error's context instead (`fb_core_flow`).
 //!
 //! `log` has no critical level; it stops at error. A critical line goes
 //! around the facade, straight to the sinks, labelled `critical`. It is

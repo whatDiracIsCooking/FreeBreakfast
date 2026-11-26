@@ -1,6 +1,6 @@
 [package]
 name = "fb-test-support"
-description = "What more than one crate's unit tests use"
+description = "What the crates' tests share"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

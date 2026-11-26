@@ -1,6 +1,5 @@
-# Spawning belongs to the orchestrator and to an all-GPU step's fan-out:
-# core/thread_pool/src/run.rs and core/flow/src/fan_out.rs are the modules
-# with the allow (docs/programming_model.md, "Capabilities are enforced by
+# Spawning belongs to rustflow's executor and to an all-GPU step's fan-out:
+# core/flow/src/fan_out.rs is the module with the allow (docs/programming_model.md, "Capabilities are enforced by
 # lints"). rustflow's executor spawns its own workers, out of clippy's sight;
 # the workspace graph holds it to fb-core-flow (doc_check's
 # workspace_graph.rs).
@@ -12,36 +11,31 @@
 #
 # The sync entries hold the task rule: a task has no internal host sync, so a
 # wait inside a computation is an edge (docs/programming_model.md,
-# "Granularity"). The executor's edges, a destroy, a block's fill at
-# instantiation and a test reading back are the allowed sites, each with its
-# reason. In the v0.0.4 layer (fb-core-device) the step wrapper's sync after
-# `run`, a manager's ring wait and a step reading a solver's flag after its
-# last enqueue are the allowed sites, beside a destroy and a test.
+# "Granularity"). The step wrapper's sync after `run` (fb-core-device), a
+# manager's ring wait and a step reading a solver's flag after its last
+# enqueue are the allowed sites, beside a destroy and a test, each with its
+# reason.
 #
 # The raw allocators are fb-core-budget's alone: device, pinned and budgeted
 # heap memory is allocated in `mem_budget`, through a `Budget`
-# (docs/memory.md, "The budget"). The old layer's arena blocks and the
-# tests' own buffers are the other allowed sites, each with its reason.
+# (docs/memory.md, "The budget"). The tests' own buffers are the other
+# allowed sites, each with its reason.
 #
 # rust/steps/clippy.toml is fb-steps' own copy of this list, with the heap
 # growers added (doc_check's lint_config.rs keeps it a superset).
 disallowed-methods = [
-  { path = "std::thread::spawn", reason = "workers belong to the orchestrator (core::thread_pool), or to an all-GPU step's fan-out (core::flow::fan_out)" },
-  { path = "std::thread::scope", reason = "workers belong to the orchestrator (core::thread_pool), or to an all-GPU step's fan-out (core::flow::fan_out)" },
-  { path = "std::thread::Builder::spawn", reason = "workers belong to the orchestrator (core::thread_pool), or to an all-GPU step's fan-out (core::flow::fan_out)" },
-  { path = "std::thread::Builder::spawn_scoped", reason = "workers belong to the orchestrator (core::thread_pool), or to an all-GPU step's fan-out (core::flow::fan_out)" },
+  { path = "std::thread::spawn", reason = "workers belong to rustflow's executor (core::flow), or to an all-GPU step's fan-out (core::flow::fan_out)" },
+  { path = "std::thread::scope", reason = "workers belong to rustflow's executor (core::flow), or to an all-GPU step's fan-out (core::flow::fan_out)" },
+  { path = "std::thread::Builder::spawn", reason = "workers belong to rustflow's executor (core::flow), or to an all-GPU step's fan-out (core::flow::fan_out)" },
+  { path = "std::thread::Builder::spawn_scoped", reason = "workers belong to rustflow's executor (core::flow), or to an all-GPU step's fan-out (core::flow::fan_out)" },
   { path = "wwr_sys::wwr_launch_kernel_ex_c", reason = "Rust never launches a kernel itself: call the kernel library's C wrapper through its binding crate (docs/gpu_layer.md, \"Layering\")" },
   { path = "wwr_sys::wwr_malloc_managed", reason = "managed memory is not used (docs/memory.md, \"The three kinds\")" },
   { path = "wwr_sys::wwr_stream_attach_mem_async", reason = "managed memory is not used (docs/memory.md, \"The three kinds\")" },
   { path = "wwr_sys::wwr_mem_get_info", reason = "an adaptive width is chosen at planning, never from free memory at run time (docs/memory.md, \"Adaptive widths: one planner routine\")" },
-  { path = "fb_core_wwr::runtime::stream::Stream::sync", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },
-  { path = "fb_core_wwr::runtime::stream::sync", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },
-  { path = "fb_core_wwr::runtime::event::Event::sync", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },
-  { path = "fb_core_wwr::runtime::event::sync", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },
   { path = "wwr_sys::wwr_stream_synchronize", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },
   { path = "wwr_sys::wwr_event_synchronize", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },
   { path = "wwr_sys::wwr_device_synchronize", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },
-  { path = "wwr_sys::wwr_memcpy", reason = "a blocking copy is a host sync, and a task has none: copy on the task's stream (fb_core_arena::memcpy_*) and wait at an edge (docs/programming_model.md, \"Granularity\")" },
+  { path = "wwr_sys::wwr_memcpy", reason = "a blocking copy is a host sync, and a task has none: copy on the task's stream (fb_core_device::Stream's upload, download and copy_device) and wait at an edge (docs/programming_model.md, \"Granularity\")" },
   { path = "fb_core_device::Stream::sync", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },
   { path = "fb_core_device::Pending::sync", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },
   { path = "fb_core_device::Event::sync", reason = "a task has no internal host sync: a wait inside a computation is an edge, and the computation two tasks (docs/programming_model.md, \"Granularity\")" },

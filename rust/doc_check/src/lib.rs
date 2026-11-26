@@ -29,10 +29,8 @@
 //! is exported to C, the safe wrappers link down to their bindings, and a
 //! test that trips a contract is debug-only exactly when the contract is; and `tests/code_rules.rs`,
 //! which checks that only the boundary logs an error, that no Rust source
-//! names a warp width or a launch shape, that an `Allocation` error is
-//! made only at admission, that a copy between kinds that is a node's
-//! whole work is a planner copy node, and that no item outside
-//! `fb_core_planner` is named for the planner; and `tests/doc_lists.rs`, which holds the docs'
+//! names a warp width or a launch shape, and that an `Allocation` error is
+//! made only at admission; and `tests/doc_lists.rs`, which holds the docs'
 //! lists of what the tree holds to the tree: the kernel libraries' ABI
 //! versions and functions in `docs/gpu_layer.md`, the slow cases in
 //! `docs/testing.md`, and which members link the library in `README.md`;
