@@ -23,11 +23,15 @@
 //! **A replay** starts from the orbitals the last run left: D carries
 //! over in the `Output`, and nothing in scratch does.
 
+use std::time::{Duration, Instant};
+
 use fb_core_error_handling::{Error, Result, Status};
 
 use crate::budget::{Budget, DeviceBuf, HeapSlab, Kind, Layout, Lease, LockId, ManagerId, Span};
 use crate::bus::{Held, Lane, MainBus, ScfTable, Shared};
-use crate::device::{DeviceSlice, DeviceSliceMut, GpuResources, OP_N, OP_T, part, part_mut};
+use crate::device::{
+    DeviceSlice, DeviceSliceMut, GpuResources, OP_N, OP_T, part, part_mut, sync_meter,
+};
 use crate::flow::{Placement, Slot, Step, View};
 use crate::steps::GPU0;
 use crate::steps::core_hamiltonian::CoreHamiltonianStep;
@@ -40,12 +44,25 @@ use crate::steps::overlap::OverlapStep;
 #[derive(Clone, Copy)]
 pub struct ScfStep;
 
+/// What the last run's loop took: a measurement, not a product.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LoopMeter {
+    /// The loop's wall time, from its first J/K build to the converged
+    /// orbitals on the host.
+    pub wall: Duration,
+    /// The stream syncs inside it, on every GPU.
+    pub syncs: u64,
+    /// The time blocked in them, summed over the GPUs' threads.
+    pub blocked: Duration,
+}
+
 /// The converged run's products.
 pub struct ScfOutput {
     energy: f64,
     residual: f64,
     iterations: usize,
     converged: bool,
+    meter: LoopMeter,
     c: DeviceBuf<f64>,
     epsilon: DeviceBuf<f64>,
     d: DeviceBuf<f64>,
@@ -74,6 +91,11 @@ impl ScfOutput {
     /// Whether the loop converged.
     pub fn converged(&self) -> bool {
         self.converged
+    }
+
+    /// The last run's loop, timed.
+    pub fn meter(&self) -> LoopMeter {
+        self.meter
     }
 
     /// The orbital energies on the host, ascending.
@@ -274,6 +296,7 @@ impl Step<MainBus> for ScfStep {
             residual: 0.0,
             iterations: 0,
             converged: false,
+            meter: LoopMeter::default(),
             c: budget.device(GPU0, n * n),
             epsilon: budget.device(GPU0, n),
             d: budget.device(GPU0, n * n),
@@ -341,6 +364,7 @@ impl Step<MainBus> for ScfStep {
         // Roothaan step, so on a replay from the start, and never for the
         // guess.
         let mut factored = !fresh;
+        let (start, (syncs, blocked)) = (Instant::now(), sync_meter());
         loop {
             let (slot, held_pairs) = diis.advance();
             // J and K of the carried D: the manager's, into this step's
@@ -358,6 +382,9 @@ impl Step<MainBus> for ScfStep {
                 &mut [part_mut(&mut k, 0, n2)],
             )?;
             let gpu = held.gpu(GPU0);
+            if options.stage_sync {
+                gpu.stream().sync()?;
+            }
             // F = H + J - K/2.
             gpu.geam(OP_N, OP_N, ni, ni, 1.0, h, 1.0, &j, &mut t1)?;
             gpu.geam(OP_N, OP_N, ni, ni, 1.0, &t1, -0.5, &k, &mut f)?;
@@ -386,6 +413,9 @@ impl Step<MainBus> for ScfStep {
                 gpu.gemv(OP_T, n2i, 1, 1.0, &error, n2i, &error, 0.0, &mut norm2)?;
             }
             gpu.stream().download(h_scalars, &scalars)?;
+            if options.stage_sync {
+                gpu.stream().sync()?;
+            }
 
             // The DIIS step: F and the scaled residual into the ring's
             // column, the Gram of the held residuals, the bordered solve,
@@ -428,6 +458,9 @@ impl Step<MainBus> for ScfStep {
                 gpu.stream().zero(&mut singular)?;
             }
             gpu.stream().download(h_singular, &singular)?;
+            if options.stage_sync {
+                gpu.stream().sync()?;
+            }
 
             // The Roothaan step on the extrapolation: the next D.
             roothaan(
@@ -507,6 +540,12 @@ impl Step<MainBus> for ScfStep {
                 out.epsilon_host.copy_from_slice(h_epsilon);
                 out.d_host.copy_from_slice(h_d);
                 out.converged = true;
+                let (now_syncs, now_blocked) = sync_meter();
+                out.meter = LoopMeter {
+                    wall: start.elapsed(),
+                    syncs: now_syncs - syncs,
+                    blocked: now_blocked - blocked,
+                };
                 log::info!("scf: converged in {iteration} iterations, E = {energy:.12}");
                 return Ok(());
             }

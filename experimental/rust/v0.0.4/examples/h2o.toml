@@ -17,6 +17,7 @@ aux_basis = "cc-pvdz-jkfit"
 # energy_tolerance = 1e-10
 # commutator_tolerance = 1e-7
 # diis_history = 8
+# stage_sync = true        # a measurement: sync gpu0 where the iteration would end a step, were it three
 
 [resources]
 devices = [0]

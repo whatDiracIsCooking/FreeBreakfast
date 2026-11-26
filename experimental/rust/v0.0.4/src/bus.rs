@@ -97,6 +97,11 @@ pub struct ScfTable {
     pub commutator_tolerance: f64,
     /// The DIIS subspace's size.
     pub diis_history: usize,
+    /// A measurement, off by default: synchronize gpu0's stream where the
+    /// iteration would end a step were it three (the J/K build, the Fock
+    /// matrix with its energy and residual, the DIIS step), as the wrapper
+    /// does at a step's end.
+    pub stage_sync: bool,
 }
 
 impl Default for ScfTable {
@@ -106,6 +111,7 @@ impl Default for ScfTable {
             energy_tolerance: 1e-10,
             commutator_tolerance: 1e-7,
             diis_history: 8,
+            stage_sync: false,
         }
     }
 }

@@ -2232,10 +2232,12 @@ which catches code that is right only for two.</p>
 </tr>
 </tbody>
 </table></div>
-<p>One measurement beside them, with no bar: each molecule's budget total against
-the old path's planner block for the same run. One-off times are printed, not
-benchmarked; the question that matters is at gly10's size, which
-<a href="#what-it-showed">what it showed</a> has on 1, 2 and 4 GPUs.</p>
+<p>Two measurements beside them, with no bar: each molecule's budget total
+against the old path's planner block for the same run, and the SCF iteration
+with a sync where it would end a step, were it three steps
+(<code>[scf] stage_sync</code>). One-off times are printed, not benchmarked; the question
+that matters is at gly10's size, which <a href="#what-it-showed">what it showed</a> has
+on 1, 2 and 4 GPUs.</p>
 <h3 id="what-it-showed">What it showed</h3>
 <p>RTX A6000 (CUDA), 2026-11-26, one run each, cc-pVDZ over cc-pVDZ-JKFIT.
 <code>|ΔE|</code> in hartree against the bar of 1e-9. The recorded energies are
@@ -2259,7 +2261,7 @@ Rust path.</p>
 </tr>
 <tr>
 <td>Ethylene (#865's geometry), one GPU</td>
-<td>−77.867545824336 in 52 iterations, 3.8e-13</td>
+<td>−77.867545824336 in 54 iterations, 3.8e-13</td>
 </tr>
 <tr>
 <td>Water at forced batches: <code>mem_per_gpu</code> at its least, 94.59 KiB, NaN-filled</td>
@@ -2434,6 +2436,171 @@ with or without huge pages.</li>
 buffer (gly10 at 16 GiB: 794 rows against 124) has no test; these runs'
 energies are its check.</li>
 </ul>
+<p><strong>The budget against the planner's block.</strong> One GPU, the same runs through
+the old Rust path (<code>rust/</code>'s <code>free-breakfast</code>, <code>schwarz_threshold = 0</code>, its
+blocks as <code>admit_plan</code> logs them) and through v0.0.4, at the default step
+limit of 2 GiB and at the least <code>mem_per_gpu</code> each molecule accepts (budget
+mode alone, the solver work buffers added from the default run).</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Molecule</th>
+<th>Old path: device block</th>
+<th>pinned block</th>
+<th>heap block</th>
+<th>v0.0.4 at 2 GiB: device</th>
+<th>pinned</th>
+<th>heap</th>
+<th>v0.0.4 at the least limit: device</th>
+<th>pinned</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Water</td>
+<td>33.35 MiB</td>
+<td>322.00 KiB</td>
+<td>292.02 KiB</td>
+<td>130.73 MiB</td>
+<td>429.25 KiB</td>
+<td>301.00 KiB</td>
+<td>129.21 MiB</td>
+<td>213.34 KiB</td>
+</tr>
+<tr>
+<td>Ethylene</td>
+<td>37.44 MiB</td>
+<td>1.19 MiB</td>
+<td>2.16 MiB</td>
+<td>143.09 MiB</td>
+<td>2.69 MiB</td>
+<td>2.19 MiB</td>
+<td>130.74 MiB</td>
+<td>663.62 KiB</td>
+</tr>
+<tr>
+<td>Benzene</td>
+<td>62.26 MiB</td>
+<td>6.90 MiB</td>
+<td>28.39 MiB</td>
+<td>307.19 MiB</td>
+<td>31.46 MiB</td>
+<td>28.59 MiB</td>
+<td>140.00 MiB</td>
+<td>3.31 MiB</td>
+</tr>
+<tr>
+<td>gly5</td>
+<td>906.52 MiB</td>
+<td>263.87 MiB</td>
+<td>1.00 GiB</td>
+<td>2.24 GiB</td>
+<td>713.82 MiB</td>
+<td>1.01 GiB</td>
+<td>250.66 MiB</td>
+<td>36.84 MiB</td>
+</tr>
+<tr>
+<td>gly10</td>
+<td>3.01 GiB</td>
+<td>989.67 MiB</td>
+<td>7.27 GiB</td>
+<td>2.54 GiB</td>
+<td>1.14 GiB</td>
+<td>7.28 GiB</td>
+<td>583.00 MiB</td>
+<td>138.27 MiB</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>The heap is the same</strong>: B, packed, on the host in both.</li>
+<li><strong>The device total is the batch widths, not the sum.</strong> v0.0.4's is the BLAS
+workspace (128 MiB against the old path's 32 MiB) and the ERI buffer, which
+at 2 GiB caches the whole B of all but gly10. The old block is its
+planner's adaptive widths.</li>
+<li><strong>What the sum can cost is what lies outside those two</strong>: the other
+<code>Output</code>s and the packed scratch, 89 MiB at gly5 and 329 MiB at gly10. A
+fold over lifetimes could recover part of that and no more.</li>
+<li><strong>At the least limit the sum is under the fold's block</strong> on the glycine
+chains, 3.6× and 5.3×. Less each path's workspace it is on the small ones
+too: 1.21 MiB against 1.35 MiB on water, 12.00 MiB against 30.26 MiB on
+benzene.</li>
+</ul>
+<p><strong>The step-end sync on the SCF iteration.</strong> The loop is one step, so the
+wrapper syncs once after it. <code>[scf] stage_sync</code> adds a sync of gpu0's stream
+where the iteration would end a step were it three: after the J/K build, after
+F with its energy and residual, after the DIIS step. Time per iteration, each
+run listed.</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Run</th>
+<th>Iterations</th>
+<th>As built</th>
+<th>With the three syncs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Water</td>
+<td>11</td>
+<td>3.83, 3.61, 3.51 ms</td>
+<td>3.60, 4.51, 3.68 ms</td>
+</tr>
+<tr>
+<td>Ethylene</td>
+<td>54</td>
+<td>2.68, 2.71, 2.68 ms</td>
+<td>2.78, 2.75, 2.77 ms</td>
+</tr>
+<tr>
+<td>Benzene</td>
+<td>11</td>
+<td>11.33, 10.59, 10.74 ms</td>
+<td>10.88, 10.73, 10.72 ms</td>
+</tr>
+<tr>
+<td>gly5</td>
+<td>19</td>
+<td>355.9, 356.0, 357.9 ms</td>
+<td>356.0, 358.1, 357.9 ms</td>
+</tr>
+<tr>
+<td>gly10</td>
+<td>19</td>
+<td>3.361, 3.339 s</td>
+<td>3.339, 3.339 s</td>
+</tr>
+<tr>
+<td>gly10, four GPUs</td>
+<td>19</td>
+<td>847.7, 849.7 ms</td>
+<td>849.2, 848.6 ms</td>
+</tr>
+<tr>
+<td>gly10, ERI buffer 16 GiB</td>
+<td>19</td>
+<td>3.129 s</td>
+<td>3.132 s</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>The sync costs nothing that shows above ethylene's size</strong>, and there
+0.08 ms of 2.7 ms: about 27 µs for each of the three, what a sync of an idle
+stream costs (the wrapper's own, after each step of the chain, took 40 to
+110 µs with the lock release).</li>
+<li><strong>The iteration already waits for the GPU once</strong>, whatever the wrapper does:
+the decision reads E and the residual on the host, and the eigensolver's
+call returns only when the stream has drained. At gly10 with the whole B
+cached, the 50 syncs of the loop as built blocked for 0.43 s of its 59.5 s;
+the wait was inside <code>syevd</code>. With the three syncs it moves to the one after
+the J/K build, 58.4 s, and the loop takes the same time.</li>
+<li><strong>So the host is never far ahead of the device in this loop</strong>, and a sync at
+a step's end takes nothing from it. A loop whose host work could overlap the
+device's is where it would cost; none of the DF-RHF chain's is.</li>
+</ul>
 <h3 id="where-the-code-departs-from-this-page">Where the code departs from this page</h3>
 <ul>
 <li><strong>The manager's lock is a <code>Mutex&lt;()&gt;</code> on the MainBus</strong>, taken by the wrapper
@@ -2449,6 +2616,9 @@ J/K pass's with its cache, whichever is larger; <code>mem_per_gpu</code> only bo
 step declares how many streams of its own it has per GPU.</li>
 <li><strong><code>--budget-only</code> reports each solver call's work buffer as zero</strong>, as the
 page says; every other length is exact.</li>
+<li><strong><code>Stream::sync</code> counts and times itself</strong>, and the SCF's <code>Output</code> carries
+its loop's wall time, sync count and time blocked: the measurement above,
+with <code>[scf] stage_sync</code>, off by default.</li>
 </ul>
 <h3 id="what-is-not-built">What is not built</h3>
 <p>Rows of the two tables above that have no test here:</p>
@@ -2461,7 +2631,6 @@ path's. B against v0.0.3's.</li>
 <li>The default cap against a reading taken by hand.</li>
 <li>An undeclared <code>syevd</code> refused naming the step: the binding panics naming
 the call and its size query.</li>
-<li>The budget total against the old path's planner block.</li>
 </ul>
 <h3 id="build-and-run">Build and run</h3>
 <p><code>rust/</code>'s CMake project and the <code>ssperi3</code> kernel library first (<code>build.rs</code> has
@@ -2472,6 +2641,7 @@ cargo test --test chain -- --include-ignored --test-threads=1     # with the dev
 cargo run --release --example run -- examples/h2o.toml            # setup, budget mode, execute mode
 cargo run --release --example run -- --budget-only examples/h2o.toml
 cargo run --release --example run -- examples/h2o.toml --devices 0,1 --mem-per-gpu-mib 1
+cargo run --release --example run -- examples/h2o.toml --stage-sync   # the SCF iteration as three steps' syncs
 </code></pre>
 <h3 id="not-in-it">Not in it</h3>
 <ul>
@@ -2494,7 +2664,9 @@ v0.0.3.</li>
 J/K build, on one GPU and two logical GPUs).</li>
 <li><strong>The DF-RHF chain as steps</strong>: built in v0.0.4.</li>
 <li><strong>Measure</strong>: the budget's total against the planner's block for the same
-runs, and what the step-end sync costs on the SCF iteration.</li>
+runs, and what the step-end sync costs on the SCF iteration. Measured in
+v0.0.4: the total is set by the batch widths, with at most 329 MiB at
+gly10 for a fold to recover; the sync costs about 27 µs each.</li>
 <li><strong>The enforcement checks and HIP.</strong> Batching and every GPU are not on this
 list: each step has them from its first form.</li>
 </ol>
@@ -2525,12 +2697,12 @@ change.</li>
 placeholder; the threshold of the
 allocation record.</li>
 <li><strong>The blocking sync</strong>: which scheduling flag makes a waiting worker sleep, on
-each backend, and what the sync costs per SCF iteration.</li>
+each backend.</li>
 <li><strong>The executor's width</strong> against the GPU steps that can wait at once, on a
 sync or a lock.</li>
-<li><strong>What the sum costs</strong>: per <code>examples/</code> config, the summed step peaks against
-the fold, split into <code>Output</code> and scratch bytes, and whether the peak is
-inside one step or across many.</li>
+<li><strong>What the sum costs</strong> on a chain with more steps than DF-RHF's: here the
+bytes outside the ERI buffer are too few to matter
+(<a href="#what-it-showed">what it showed</a>).</li>
 <li><strong>Packing quality</strong> on real configs: the table's lower-bound row answers it
 on each.</li>
 <li><strong>The rest of the workspace sweep</strong>: upper solves, rectangular <code>syrk</code> and
