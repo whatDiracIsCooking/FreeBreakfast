@@ -759,8 +759,10 @@ and fills a stream enqueues, device slices, and each GPU's
   `work` puts hipSOLVER's handle in library-managed mode.
 - **The recipes take the guard.** `GpuResources::inverse_sqrt` is the
   recipes' kernel (each element `1 / sqrt(x)`, 0 at or below a floor) on
-  the guard's stream, and `GpuResources::diis_solve` the recipes' bordered
-  DIIS solve there. `GpuResources::trsm` is the tree's
+  the guard's stream, `GpuResources::diis_solve` the recipes' bordered
+  DIIS solve there, and `GpuResources::mirror_triangle` the recipes' copy
+  of one strict triangle onto the other, a `syrk`'s `fill` passed
+  through. `GpuResources::trsm` is the tree's
   blocked triangular solve, as `fb_recipes_launch::trsm` is above, and
   `GpuResources::cholesky` the blocked Cholesky in place of a vendor
   `potrf` (rocSOLVER's raced across processes, #410); their diagonal
@@ -785,6 +787,11 @@ and fills a stream enqueues, device slices, and each GPU's
   are checked against what they index and are uploaded by the call, and
   each equals its old-layer counterpart (`add_record_tasks`,
   `PackedTables::gather`) bitwise, the same kernel on the same inputs.
+- **A library call may differ by backend where one was measured
+  faster.** K's update in a J/K pass from C is a syrk on CUDA (−13% at
+  gly10, RTX 3080) and a gemm on HIP (rocBLAS's dsyrk +15%, gfx1200),
+  chosen at compile time from the backend the kernel libraries were built
+  for (`steps/src/steps/eri.rs`, `K_BY_SYRK`).
 
 ## Build
 
