@@ -185,3 +185,63 @@ fn benzenes_x_matches_the_hosts_inverse_square_root_of_s() {
     }
     x_against_the_host("benzene.xyz", None, 2);
 }
+
+/// Water's metric over cc-pVDZ-JKFIT on the `devices` named, run once: the
+/// one staging uploaded to every GPU under one token. Each GPU's (P|Q) is
+/// the host integrals' full matrix, bit for bit (exact: a copy of one
+/// host build).
+fn the_metric_reaches_every_gpu(devices: &str) {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    let text = format!(
+        "[molecule]\nxyz = \"h2o.xyz\"\n[basis]\nname = \"cc-pvdz\"\n\
+         [eri]\naux_basis = \"cc-pvdz-jkfit\"\n[resources]\ndevices = {devices}\n"
+    );
+    let config = fb_steps::Config::parse(&text, &dir).unwrap();
+    let physical = config.resources.devices.clone();
+    let executor = Executor::new(4);
+    let plan = plan(MainBus::setup(config, Backing::Real).unwrap()).unwrap();
+    plan.budget(&executor).unwrap();
+    plan.execute(&executor).unwrap();
+
+    let shared = plan.bus().shared();
+    let q = shared.dims.n_aux;
+    let packed = fb_integrals_df_metric::metric(shared.aux.as_ref().unwrap());
+    let mut want = vec![0.0; q * q];
+    for p in 0..q {
+        for r in 0..=p {
+            let v = packed[p * (p + 1) / 2 + r];
+            want[p * q + r] = v;
+            want[r * q + p] = v;
+        }
+    }
+    let caps = Caps::read(&[0], &[None], None, Backing::Real).unwrap();
+    let ledger = Ledger::new(caps, Backing::Real, vec![0], false);
+    let mut host = ledger.budget("test").pinned::<f64>(0, q * q);
+    let metric = plan.output(fb_steps::MetricStep);
+    let gpus = metric.gpus();
+    assert_eq!(gpus.len(), physical.len());
+    for (gpu, (metric, &device)) in gpus.iter().zip(&physical).enumerate() {
+        let stream = Stream::new(device);
+        host = stream.download(host, metric).unwrap().sync().unwrap();
+        assert!(
+            host.iter()
+                .zip(&want)
+                .all(|(g, w)| g.to_bits() == w.to_bits()),
+            "gpu {gpu} (device {device}): (P|Q) is not the host's"
+        );
+    }
+}
+
+/// The metric to two logical GPUs on the card (`the_metric_reaches_every_gpu`).
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn the_metric_reaches_two_gpus_of_one_card() {
+    the_metric_reaches_every_gpu("[0, 0]");
+}
+
+/// The metric to two devices (`the_metric_reaches_every_gpu`).
+#[test]
+#[ignore = "tier 5: needs two GPUs"]
+fn tier5_the_metric_reaches_two_devices() {
+    the_metric_reaches_every_gpu("[0, 1]");
+}

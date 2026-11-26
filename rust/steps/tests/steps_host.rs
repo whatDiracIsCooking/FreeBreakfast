@@ -21,6 +21,31 @@ fn aligned(bytes: usize) -> u64 {
     (bytes as u64).div_ceil(ALIGN) * ALIGN
 }
 
+/// The metric on four GPUs, dry: one pinned staging, gpu0's, of `n_aux²`
+/// doubles, uploaded to every GPU under one token, and none on the
+/// others; (P|Q) on each GPU's device side.
+#[test]
+fn the_metric_stages_once_for_every_gpu() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    let text = "[molecule]\nxyz = \"h2o.xyz\"\n[basis]\nname = \"cc-pvdz\"\n\
+                [eri]\naux_basis = \"cc-pvdz-jkfit\"\n[resources]\ndevices = [0, 1, 2, 3]\n";
+    let config = fb_steps::Config::parse(text, &dir).unwrap();
+    let plan = plan(MainBus::setup(config, Backing::Dry).unwrap()).unwrap();
+    plan.budget(&Executor::new(2)).unwrap();
+    let q = plan.bus().shared().dims.n_aux;
+    let ledger = plan.bus().ledger();
+    let pinned: Vec<(usize, u64)> = ledger
+        .regions()
+        .iter()
+        .filter(|r| r.step == "metric" && r.kind == Kind::Pinned)
+        .map(|r| (r.gpu, r.bytes))
+        .collect();
+    assert_eq!(pinned, [(0, aligned(q * q * 8))]);
+    for gpu in 1..4 {
+        assert!(ledger.device_total(gpu) >= (q * q * 8) as u64, "gpu {gpu}");
+    }
+}
+
 /// `--budget-only` on gly10: every length a count, exact with no device;
 /// syevd's work buffer zero.
 #[test]

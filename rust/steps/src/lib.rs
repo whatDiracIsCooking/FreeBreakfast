@@ -25,7 +25,7 @@
 //! |---|---|---|---|---|
 //! | [`OverlapStep`] | host, then gpu0 | none | S on gpu0 | the pinned staging |
 //! | [`CoreHamiltonianStep`] | host, then gpu0 | none | H = T + V on gpu0 | the pinned staging |
-//! | [`MetricStep`] | host, then every GPU | none | (P\|Q) on every GPU | a pinned staging per GPU |
+//! | [`MetricStep`] | host, then every GPU | none | (P\|Q) on every GPU | the pinned staging, uploaded to every GPU under one token |
 //! | [`GuessStep`] | host, then gpu0 | none | the SAD density on gpu0 | the pinned staging |
 //! | [`OrthogonalizerStep`] | gpu0 | gpu0 | X = S^(-1/2) on gpu0 | the eigenvectors, a scaled copy, syevd's work and flag |
 //!

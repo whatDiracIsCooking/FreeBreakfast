@@ -67,6 +67,6 @@ impl Step<MainBus> for GuessStep {
         let n = view.shared().dims.n_ao;
         let mut staged = scratch.pinned(GPU0, staging(n * n).1);
         sad_density(view.shared(), &mut staged)?;
-        upload(lane, GPU0, &mut out.d, staged)
+        upload(lane, std::slice::from_mut(&mut out.d), staged)
     }
 }

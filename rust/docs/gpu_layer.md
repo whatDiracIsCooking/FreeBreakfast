@@ -684,6 +684,25 @@ and fills a stream enqueues, device slices, and each GPU's
   that rewrites a buffer's host end once the copy that read it has run
   gives each buffer a stream of its own, so the token's sync waits for
   that buffer's copies and no other's.
+- **One host end goes to every GPU under one token.** A step that uploads
+  the same bytes to each GPU (the metric) stages them once:
+  `Pending::and_upload(stream, dst)` enqueues a second upload of the
+  token's host end on another stream, any device's, records an event
+  there after it, and has the token's stream wait for that event, so the
+  token returned covers both copies and its one sync, or the step-end
+  sync of its stream, waits for every copy that reads the bytes. An event
+  is made and destroyed within the call (a create aborts, as above; the
+  wait keeps the recorded point, not the event). One staging rather than
+  one per GPU, because the bytes grow with the GPUs otherwise: the
+  metric's is `n_aux² × 8`, 104 MB at gly10's 3606 aux, 312 MB more
+  pinned on four GPUs. Only an upload's token takes it: the token carries
+  whether its copies only read the host end (`Pending<'_, H>`, an
+  upload's) or write it (`Pending<'_, H, false>`, a download's, which has
+  no `and_upload`: a `compile_fail,E0599` doctest), since a second copy
+  may read the bytes only while nothing writes them. The cost is an
+  order: gpu0's stream waits for the later GPUs' copies before anything
+  enqueued on it after the call, which a host step, whose copies are its
+  last work, does not see.
 - **`Stream::sync` counts and times itself.** `sync_meter` reads the syncs
   made so far and the time blocked in them, a difference over a span
   being one step's. In this layer a host sync is the step wrapper's, after
