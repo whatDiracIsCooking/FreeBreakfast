@@ -19,6 +19,12 @@ What v0.0.4 builds is [the DF-RHF chain as steps](#the-v004-prototype), on
 `num_gpus` GPUs, batched. Like its predecessors it is throwaway: a crate and a
 Cargo workspace of its own, in no gate, never merged into `rust/`.
 
+**It is the last prototype.** The model covers what `rust/` and the C++ `src/`
+compute ([what the model covers](#what-the-model-covers)), and nothing left
+open would change its core: the MainBus, `Dims` counted in setup, one budget
+mode. The next work is the layer itself, in `rust/`
+([the order of work](#the-order-of-work)).
+
 ## Vocabulary
 
 Each word below means one thing on this page.
@@ -576,13 +582,23 @@ case is the batched one with a single batch on a single GPU.
   layout (270,497 pair columns on gly10, where n_ao(n_ao+1)/2 gives 269,745).
   On a large sparse molecule that wastes host memory, and a replay can never
   outgrow its buffers.
-- **Out of scope:** AVAS, the semi-numerical Hessian, semi-numerical
-  gradients.
+- **A size a step chooses at run time is allocated at a bound set in setup.** AVAS's
+  active space is bounded by its labels: at most twice the MINAO functions
+  they name, capped by `avas_max_ncas`, as `src/pipeline/shape`'s
+  `largest_active_space` does. The CI is sized at the largest determinant
+  count at or under that bound. A run that selects past the bound fails, as a
+  `Result` naming the count it wanted; it never truncates, which would change
+  the chemistry unannounced. The rerun loads the SCF's `Output` from disk and
+  pays setup and budget mode, not the SCF. A bound too large is refused in
+  budget mode, before anything runs.
+- **The SCF's `Output` is written on every run.** It is the checkpoint every
+  size fixed at run time leans on.
 
 What can still be refused: a plan whose O(N²) data does not fit its GPUs, whose
 B does not fit the host, whose step limit holds no batch, or whose `Output`s,
 each fitting alone, do not fit summed down a chain. The last is the sum's
-price; the remedy is a narrower batch in the step concerned.
+price; the remedy is a narrower batch in the step concerned, and past that
+`Output`s packed by the closure (*open*, built when a chain is first refused).
 
 ## GPUs, streams and locks
 
@@ -1260,6 +1276,44 @@ cargo run --release --example touch_probe -- 7.27 16              # first touch 
 - Screening, measuring the default step limit (2 GiB stands in), packing
   `Output`s, several nodes.
 
+## What the model covers
+
+**`rust/`.** `rust/pipeline` is the DF-RHF chain (config, eri, guess, scf),
+over integrals with Schwarz screening, Pipek-Mezey localization and the
+recipes. v0.0.4 runs that chain batched on one to four GPUs, with B on the
+host, to the same energies. Screening, localization and HIP are ports; none
+asks the model anything new.
+
+**`src/`.** Each of the model's constraints, against what the C++ tree needs:
+
+| The model holds | What `src/` needs |
+|---|---|
+| Every length is counted before anything runs | Already so: `src/pipeline/shape` and `footprint` size every step from its dimensions at plan time, AVAS included. A size known only at run time is allocated at its bound ([batched only](#batched-only)) |
+| One config table, one slot, one instance per step | The C++ step contract (`kTable`, `kKeys`). Two states' gradients for an MECI, or a QD pair's, live inside one step |
+| Nothing is allocated in `run` | Steps sized from footprints already allocate up front |
+| A library-using step holds its GPUs for its whole run | Two heavy steps on one GPU time-slice anyway |
+| Every GPU step is batched and spans every GPU | A cost of each port, not a limit of the model |
+
+**Repeated evaluations are replays.** Finite-difference gradients and
+Hessians, geometry optimization, IRC, and molecular dynamics over a fixed
+atom list, basis and active space (Born-Oppenheimer, surface hopping over the
+NAC steps) run execute mode again at the same `Dims`, in the same buffers,
+each from the orbitals of the evaluation before. Displacements run one after
+another: every heavy step already spans every GPU, so a serial replay leaves
+none idle. Concurrent replays would need copies of the chain's buffers and pay
+only on molecules too small to fill the GPUs; none is in scope.
+
+**A calculation whose `Dims` change mid-run is a new DAG per segment**: a
+QM/MM run whose QM region moves, an active space that changes along a
+trajectory. Each segment pays setup and budget mode, seconds against its run.
+
+**The sum is bounded by batching.** Every O(N³) tensor is batched under a
+step limit, so what stays alive as an `Output` is O(N²) matrices (32 MB each
+at n_ao = 2000) and active-space tensors (a 3-RDM at 16 orbitals is 134 MB).
+A Hessian's per-perturbation response, 3 n_atom × n_ao × n_occ, is its step's
+scratch, batched over perturbations, and does not stack. A chain the sum
+refuses has a remedy within the model: `Output`s packed by the same closure.
+
 ## The order of work
 
 1. **The core, device-free**: the MainBus, the declared View and the builder,
@@ -1273,13 +1327,21 @@ cargo run --release --example touch_probe -- 7.27 16              # first touch 
    runs, and what the step-end sync costs on the SCF iteration. Measured in
    v0.0.4: the total is set by the batch widths, with at most 329 MiB at
    gly10 for a fold to recover; the sync costs about 30 µs each.
-5. **The enforcement checks and HIP.** Batching and every GPU are not on this
-   list: each step has them from its first form.
+5. **The layer in `rust/`**, beside the old crates: the DF-RHF chain first,
+   with the enforcement checks and the tests v0.0.4 left unbuilt (the negative
+   controls, the `compile_fail` doctests) as its acceptance. No further
+   prototype comes before it.
+6. **HIP, with the gate's card.** The vendor behaviour the design's rules rest
+   on is measured on both backends (`../library_handle_workspace`,
+   `blas_workspace_scaling`, `handle_ring`); what is left is plumbing, which
+   the cross-backend check and the HIP tier see.
 
-Development on the old task layer has stopped. The new layer lands in `rust/`
-beside the old crates, and the old ones are deleted once the gates pass on the
-new one alone. `rust/docs/memory.md` and `programming_model.md` change with
-the implementation, not before.
+Batching and every GPU are not on this list: each step has them from its
+first form.
+
+Development on the old task layer has stopped. The old crates are deleted once
+the gates pass on the new layer alone. `rust/docs/memory.md` and
+`programming_model.md` change with the implementation, not before.
 
 ## Open questions
 
@@ -1289,8 +1351,9 @@ the implementation, not before.
   nodes open cheaply is one rule: work on different GPUs communicates only
   through the collectives layer. B on one host's heap is the first thing that
   rule would have to answer.
-- **Packing `Output`s too**, by the same closure from producer to last reader,
-  once the measurement says `Output`s are what stacks.
+- **Packing `Output`s too**, by the same closure from producer to last reader:
+  deferred until a chain is refused for its sum
+  ([what the model covers](#what-the-model-covers)).
 - **What is cleared between replays, and by whom**: a reset mode per step (as
   built), an explicit `on_replay`, or a node at the loop's entry or end.
 - **rustflow and `doc_check`'s thread-pool rule.** rustflow depends on
@@ -1308,9 +1371,6 @@ the implementation, not before.
   each backend.
 - **The executor's width** against the GPU steps that can wait at once, on a
   sync or a lock.
-- **What the sum costs** on a chain with more steps than DF-RHF's: here the
-  bytes outside the ERI buffer are too few to matter
-  ([what it showed](#what-it-showed)).
 - **Packing quality** on real configs: the table's lower-bound row answers it
   on each.
 - **The rest of the workspace sweep**: upper solves, rectangular `syrk` and
