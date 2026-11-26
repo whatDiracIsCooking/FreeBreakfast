@@ -281,6 +281,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fb-core-pack"
+version = "0.1.0"
+dependencies = [
+ "contracts",
+ "proptest",
+]
+
+[[package]]
 name = "fb-core-planner"
 version = "0.1.0"
 dependencies = [

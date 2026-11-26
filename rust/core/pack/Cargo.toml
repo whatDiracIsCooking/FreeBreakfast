@@ -1,0 +1,15 @@
+[package]
+name = "fb-core-pack"
+description = "core::pack: step scratch packed into one slab by the DAG's transitive closure"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+contracts.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

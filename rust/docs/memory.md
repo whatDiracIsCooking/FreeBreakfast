@@ -247,6 +247,25 @@ question is worth reopening only when a transform in place would lower
 the metric's peak; the row to build then is `Layout::write` with its
 loop contract relaxed to "no later user", not a new kind.
 
+## Step scratch
+
+The v0.0.4 layer's scratch, memory a step needs during its `run` and
+nothing reads afterwards, is declared per step and packed by the DAG's
+transitive closure (`../experimental/rust/v0.0.4/README.md`, "Step scratch";
+`fb_core_pack`, the packer, ahead of the ledger that calls it).
+
+**Two steps share scratch bytes only if the DAG orders them**, one
+reaching the other. A finished node is finished device work, so a path is
+a happens-before on the device as on the host, under any schedule; steps
+the DAG leaves unordered never share, whatever lock serializes them. The
+packer is first fit, largest first and then by step name, each region at
+the lowest offset clear of every unordered region already placed, so the
+offsets are the same every run. Its quality is not its safety: any
+placement that keeps unordered regions apart is safe, and a poorer one
+costs bytes. Beside the peak it reports the plain sum and the lower bound,
+the heaviest set of regions no two of which the DAG orders, so a DAG that
+packs badly shows itself.
+
 ## Admission
 
 Per worker and per kind, the block must fit:
