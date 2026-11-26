@@ -146,7 +146,7 @@ fn nothing_else_is_baked() {
 
 #[test]
 fn carries_exactly_what_the_lookup_finds() {
-    // The query the planner asks in place of the lookup: the same answer
+    // The query a caller asks in place of the lookup: the same answer
     // for every carried stamp and for every element 0 to 118 of every
     // compiled-in set, carried or not.
     for (basis, z, _) in BUILTIN {

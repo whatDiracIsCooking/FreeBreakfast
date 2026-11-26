@@ -295,8 +295,8 @@ wrappers' refusals. Density fitting's metric and three-center integrals
 are `integrals/sys/tests/density_fitting.rs`: one (s|s) aux pair and one
 (ss|s) cell, the latter through the packed launcher, against their closed
 forms (`F0` from libm's `erf`), within `1e-12` relative, and both
-wrappers' refusals. None of those launchers has a safe call since the old
-layer's tasks were deleted (#1874); the v0.0.4 layer's calls are
+wrappers' refusals. None of those launchers has a safe call; the steps'
+calls are
 `integrals/sys/tests/{records_and_gather,record_bound,three_center_spherical}.rs`.
 The FelizJueves units in
 `integrals/kernels/` are emitted, not written: after bumping

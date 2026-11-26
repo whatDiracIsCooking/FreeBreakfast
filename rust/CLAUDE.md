@@ -15,7 +15,7 @@ rule below, fix the counter-example (or file an issue) rather than copy it.
 **Which check is which** (`docs/testing.md`, "Contracts are part of the spec"):
 
 - A caller's precondition that only correctness rests on (a basis has shells,
-  `la <= lb`, a predecessor is in the plan) is a `#[debug_requires]`. rustdoc
+  `la <= lb`) is a `#[debug_requires]`. rustdoc
   renders it as the item's `§ Contracts` section, so never restate it in the
   doc comment; `fb-doc-check` fails a restatement.
 - A check that memory safety rests on (the length an `unsafe` call trusts,

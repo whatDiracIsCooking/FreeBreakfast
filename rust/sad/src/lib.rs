@@ -67,8 +67,8 @@
 //! |---|---|
 //! | `SadStampLookup`, a function pointer | [`SadStampLookup`], a `fn` pointer; `Option` for the C++ `nullptr` |
 //! | `sad_density(basis, atoms, baked = nullptr)` | [`sad_density`], `baked` always given |
-//! | `sad_density(flow, basis, atoms, out, baked)`, the task form | not here: in the model each SCF is a CPU node of the plan, `fb-pipeline-guess`'s `add_sad_guess`, which plans over [`distinct_stamps`] and runs [`stamp_density`] in each node |
-//! | `sad.cpp`: `AtomicDensityStamp`, `StampSites`, `distinct_stamps`, `stamp_density` | [`AtomicDensityStamp`], [`StampSites`], [`distinct_stamps`], [`stamp_density`], public for the task form; `stamp_density` takes the basis's name, the one thing of the basis it reads |
+//! | `sad_density(flow, basis, atoms, out, baked)`, the task form | not here: the guess step calls [`sad_density_into`] |
+//! | `sad.cpp`: `AtomicDensityStamp`, `StampSites`, `distinct_stamps`, `stamp_density` | [`AtomicDensityStamp`], [`StampSites`], [`distinct_stamps`], [`stamp_density`], public; `stamp_density` takes the basis's name, the one thing of the basis it reads |
 //! | `sad.cpp`: `place`, `same_shells`, `stamp_and_place` | the private items of those names here |
 //! | `:aufbau`: `SubshellFill`, `kAufbauOrder`, `subshell_occupation` | `aufbau`'s `SubshellFill`, `AUFBAU_ORDER`, `subshell_occupation` |
 //! | `:hermite`: `one_center_hermite`, `one_center_hermite_coulomb` | `atomic_scf::hermite`'s functions of those names |

@@ -8,8 +8,8 @@ CMake project: `rust/` shares no source file and no build with the C++ tree
 the two: what a launch wrapper may do, what crosses the C ABI and in which
 shape, where the launch shape and the angular-momentum dispatch live, how
 scratch is sized, what a status means, and how the libraries are built and
-bound. It leans on the programming model's terms, *task*, *layout* and
-*arena* ([`programming_model.md`](programming_model.md)), and on the test
+bound. It leans on the programming model's terms, *step*, *`Output`* and
+*scratch* ([`programming_model.md`](programming_model.md)), and on the test
 tiers ([`testing.md`](testing.md), "Tiers: where a check lives").
 
 ## The layer already exists
@@ -59,8 +59,8 @@ is Rust's to port; everything below it is forked. In the C++ tree `mmd.cpp` buil
 `PrimitivePairSource` on the host, packs the shells' exponents and centres
 into device arrays, computes `rec_begin`, and then launches. Under this
 design all of that is Rust: the wrapper receives device pointers only, and
-the host preparation, the copies that fill them and the arena they come from
-belong to the task and the orchestrator. "Porting a module" therefore has a
+the host preparation, the copies that fill them and the budget they come
+from belong to the step that calls it. "Porting a module" therefore has a
 definition in files, all of them under `rust/`:
 
 - its bridge header is copied to `rust/<module>/kernels/` and rewritten as a
@@ -176,7 +176,7 @@ backend run in tier 3.
 ## Layering
 
 ```
- Rust      orchestrator: DAG, fork, join, wait, sync; streams, events, memory
+ Rust      steps on rustflow: the DAG, fork, join, wait, sync; streams, events, memory
    │
  Rust      safe wrapper: owns the arguments' types and lifetimes, checks contracts
    │
@@ -191,34 +191,29 @@ backend run in tier 3.
 and parameters, picks the grid and block, launches, and returns a status. It
 never allocates, synchronizes, waits on or records an event, sets the current
 device, reads a device value back to the host, opens a profiler range, or
-holds state between calls. Fork, join, wait and sync belong to the
-orchestrator, and so does every allocation. A wrapper is therefore safe to
+holds state between calls. Fork, join, wait and sync belong to the Rust
+layer above, and every allocation to its `Budget`. A wrapper is therefore safe to
 call from any thread, and its whole cost is on the stream it was given. The
 rule is cheap to keep: a tier-3 test, `fb-device-check`'s
 `launch_wrappers.rs`, greps every forked `.cu` and `.cuh` under `rust/` for
 the runtime's allocation, synchronization, event, copy and device calls, the
 grep that produced the zero above.
 
-**And so it is capture-safe by construction.** Plan-once-run-many leans on
-stream capture into a replayed graph ([`programming_model.md`](programming_model.md),
-"Plan once, run many"), and a function that only enqueues on the stream it
-was given can be captured. The two items the "never" list gained are the two
-that would break it: a read-back to the host is a synchronization, and a
-profiler range belongs to the orchestrator, which brackets the call with the
-task's scope ([`diagnostics.md`](diagnostics.md)). A wrapper that launches
-several kernels returns the first failure; what it enqueued before stays
-enqueued, which is harmless, because a launch error is not sticky and a
-sticky fault stops everything after it anyway.
+**And so it is capture-safe by construction.** A function that only
+enqueues on the stream it was given can be captured into a graph and
+replayed. The two items the "never" list gained are the two that would
+break it: a read-back to the host is a synchronization, and a profiler
+range belongs to the caller ([`diagnostics.md`](diagnostics.md)). A wrapper
+that launches several kernels returns the first failure; what it enqueued
+before stays enqueued, which is harmless, because a launch error is not
+sticky and a sticky fault stops everything after it anyway.
 
 **The current device is the stream's, and the caller made it so.** A launch
-on a stream of a device that is not current fails at the runtime. Today the
-C++ pipeline runs on one device and never changes it; the orchestrator places
-tasks on many, so each GPU worker is a thread of its own, every lane's
-stream on its device, with that device made current for the life of the run (`ScopedDeviceIndex`, which the crate
-already has, held by that thread; [`programming_model.md`](programming_model.md),
-"CPU workers"), and every wrapper a task calls runs on it. The wrapper does
-not check, because it cannot without a runtime call
-of its own; the safe wrapper's contract (tier 2) can, in debug builds.
+on a stream of a device that is not current fails at the runtime. The
+wrapper does not check, because it cannot without a runtime call of its
+own; `fb-core-device`'s `Stream`, `Event` and `GpuResources` make their
+device current around every call ("The v0.0.4 runtime"), and a safe launch
+takes that stream.
 
 **Library calls go straight from Rust through `wwr-sys`.** BLAS, the
 solvers, the collectives: WarpWraps' C ABI already covers them, and the
@@ -228,9 +223,9 @@ Only this tree's own kernels need a C++ wrapper.
 **The library's triangular solves are not called.** rocBLAS's `trsm`
 takes workspace that grows with the right-hand sides, about a copy of B
 when the order is not a multiple of 128, so no fixed handle workspace
-covers it and a call past it allocates outside the arena's count; the
+covers it and a call past it allocates outside the budget; the
 solvers' `potrs` and `getrs` are that trsm underneath. So
-`fb_core_wwr::blas` binds no `trsm`, and a triangular solve is
+`GpuResources` binds no library `trsm`, and a triangular solve is
 `fb_core_device::GpuResources::trsm`, the C++ `src/recipes/trsm`: blocked, each
 diagonal block by a shared-memory kernel of `libfb_recipes_kernels.so`
 and the update between blocks a gemm, with one right-hand side the
@@ -241,67 +236,15 @@ backends, so CUDA runs it too. `fb-doc-check` holds it
 (`tests/source_rules.rs`): no source under `rust/` names a `wwr-sys`
 `trsm`, `potrs` or `getrs`.
 
-**A library handle is the lane's, made before the run.** Each lane of a
-GPU worker owns one handle per library, bound to its stream and on its
-device, since two lanes run at once and a handle's state and workspace are
-one stream's at a time: `fb_core_thread_pool::DeviceStream`, what a GPU
-task's `run` is handed as its stream, is the lane's stream (it derefs to `fb_core_wwr::runtime::Stream`)
-and its handles (`blas()`, an `fb_core_wwr::blas::BlasHandle`, and
-`solver()`, an `fb_core_wwr::solver::SolverHandle`, the dense solver's). The
-`Device` backend makes them when it is built over an instance's plan, with
-the streams and events, so creating a handle is never a task's work and
-never happens inside a `run`; the C++ tree's `res.blas()`, one handle per
-`DeviceResources`, is the same rule per device. Planning still needs no
-device: a task names no handle in its layout, and the tier-3 planner tests
-run on `HostOnly` workers under `--no-default-features`, with no wwr crate
-in their graph. BLAS and the
-dense solver are the libraries so far.
-
-**A lane that calls no library has no handles.** A task says whether its
-`run` may call one, `GpuTask::uses_libraries`, yes by default; a lane
-above 0 gets its handle pair, and its BLAS workspace row below, only when
-a task placed on it says yes. Lane 0 has both whatever its tasks say:
-every worker has it, `Dag::blas_workspace` declares its row at the call,
-and a one-lane plan's table is then what it was. The mmd records' class
-tasks and the copy nodes say no, so a lane of a class or of a copy costs a
-stream and nothing more (#1614). A task that said no and calls one panics
-at the call (`DeviceStream::blas`); the default is yes so that a task that
-forgets costs memory its plan golden shows rather than that panic.
-
-Every task of the lane shares the handles, so a task that changes one's
-state (its pointer mode) sets it back before it returns. A run borrows the
-backend exclusively (`Instance::run` takes it by `&mut`), so the handles
-serve one run at a time, and within it each is called only from its
-worker's thread.
-
-**A library's workspace is part of the layout.** The solvers' is
-already a dimension: the pipeline treats `syevd_lwork` as one, and a layout
-takes the query's answer as a number ([`programming_model.md`](programming_model.md),
-"Memory: layouts and arenas"; "Scratch: the workspace query" below has why
-the query itself runs before planning). cuBLAS and hipBLAS allocate a workspace per
-handle on their own unless they are handed one (`cublasSetWorkspace` and its
-HIP twin), so the design hands every handle a worker row of the arena
-([`memory.md`](memory.md), "The table"), and a run allocates nothing through
-a library either. The planner declares it: `Dag::blas_workspace(worker)`
-adds `blas workspace`, a worker row of `fb_core_planner::BLAS_WORKSPACE_BYTES`
-(32 MiB), to the worker's device table, and one more, `blas workspace lane
-<l>`, per further lane a task that uses the libraries is placed on, where
-admission counts them like any
-other row, and keeps their ids, so no task can name them. They are bound where the
-backend and the instance meet: `Instance::backend` builds the `Device` over
-the instance's plan and hands each lane's handle its row, once, as an
-`fb_core_arena::HeldRow`, which holds the row's writer flag and keeps the
-block alive. The library keeps the pointer for every later call, beyond any
-borrow, so the handle owns the memory: `BlasHandle::bind_workspace` takes it
-by value, a `DeviceSliceMut` that is `'static`, and releases it only after
-the library holds the next one's pointer and the stream has drained, or
-after the handle is destroyed. That call's one `unsafe` block, in
-`fb-core-wwr`, carries the argument; a borrow-scoped hand-off per task or
-per run is not offered, since resetting a handle to no workspace is
-vendor-dependent. A plan that declares none still runs, on the workspace the
-handle allocated for itself when the `Device` backend made it, outside the
-arena's count; the plans of `overlap`'s and `scf`'s `Run` and the binary
-declare it.
+**A GPU's library handles are its `GpuResources`, made in setup.** One
+per GPU, behind a `Mutex` whose guard a step's `run` is handed, never made
+inside a `run`; its stream is set once, at creation, and its BLAS workspace,
+which cuBLAS and hipBLAS would otherwise allocate for themselves, is a
+`DeviceBuf` the final node allocates and binds once, kept until the handles
+are destroyed, so a run allocates nothing through a library either
+([`memory.md`](memory.md), "The budget"; "The v0.0.4 runtime" below). A
+step that changes a handle's state (its pointer mode) sets it back before
+it releases the guard.
 
 **Rust never launches a kernel itself.** The C ABI exports a launch call
 (`wwr_launch_kernel_ex_c`), so Rust could take a kernel's address and launch
@@ -343,7 +286,7 @@ crate still offers them and a new library adds no copy. There
 `fb_backend` stays the integer a library returns, read by value as
 `fb_kernel_abi::Backend`. The two integer types are the bridges'
 own: every count, index and momentum is an `int32_t`, and bytes, which only
-the workspace queries and the arena speak, are `size_t`.
+the workspace queries and the budget speak, are `size_t`.
 
 The seven template bridges, none forked yet, are `recipes`'
 element-generic kernels (`abs_at`, `complex_cast`, `expm`, `einsum`, `cg_unitary`, `inverse_sqrt`,
@@ -413,34 +356,31 @@ the footprint problem the programming model names, one level down.
 plain host function in the
 same header, pure in its dimensions, and it returns the bytes of one buffer
 the wrapper partitions internally, with each piece aligned as the kernel
-needs. The task's layout calls it at planning, the arena carves that amount,
-and the wrapper receives one pointer and its length. A size that is a fixed
+needs. The step's `mem_budget` calls it and declares that amount as
+scratch, `run` carves it from its `Lease`, and the wrapper receives one pointer and its length. A size that is a fixed
 constant is exported as a constant instead, and the bindings carry it across.
 
 **Pure in dimensions means two things.** First, no runtime call inside: the
-query runs on the host at planning, where the tier-3 planner tests have no
+query runs on the host in budget mode, where a dry budget has no
 device. Second, if a kernel's scratch depends on the device, say an SM count
 for a persistent grid, that count is one of its dimensions, and Rust passes
-it: the orchestrator knows every worker's device at planning. The query is
+it: a step's GPUs are fixed before budget mode. The query is
 checked at tier 4 by handing the wrapper exactly the bytes it asked for under
 `memcheck` ([`testing.md`](testing.md), "The C++ boundary").
 
 **Alignment is part of the kernel's contract.** In the C++ tree every buffer a
 launcher receives came from the pool, whose allocations are 256-byte
-aligned, and nothing had to say so. Under an arena the offset assigner decides
-where a buffer starts inside a block ([`programming_model.md`](programming_model.md),
-"The arena is a table and a block"), so the alignment a kernel assumes must
-be stated. The C header exports it, one tree-wide `FB_DEVICE_ALIGNMENT`
-unless a kernel needs more, the assigner honours it for every buffer it
-places, scratch and output alike, which is enough because the block itself
-comes from the plain device allocation and is at least that aligned on both
-vendors, and the safe wrapper checks each pointer against it at tier 2. The workspace
-query's internal partitioning follows the same constant, so a wrapper never
-assumes more of its scratch than the arena gave.
+aligned, and nothing had to say so. Under a packed scratch region the
+packer decides where a carve starts inside a slab ([`memory.md`](memory.md),
+"Step scratch"), so the alignment a kernel assumes must be stated. The C
+header exports it, one tree-wide `FB_DEVICE_ALIGNMENT` unless a kernel needs
+more, and the safe wrapper checks each pointer against it at tier 2. The
+workspace query's internal partitioning follows the same constant, so a
+wrapper never assumes more of its scratch than it was given.
 
 **A vendor library's query is not pure, so its answer is a dimension.**
 cuSOLVER's and hipSOLVER's `*_bufferSize` take a handle, which a
-device-free planner does not have, and the answer can differ between
+dry budget does not have, and the answer can differ between
 backends and library versions. So the orthogonalizer step does what the
 C++ `diagonalize_footprint(lwork)` already does: it asks
 `GpuResources::syevd_lwork` on GPU 0's handle at budgeting and lays out
@@ -472,7 +412,7 @@ them, so that an unsupported momentum reaches Rust as `Unsupported` through
 the whole stack and is tested as such from Rust.
 
 **A kernel's own fault is not a launch status.** It surfaces at the next
-synchronization, which the orchestrator owns, and it is sticky: the device
+synchronization, which the step's wrapper owns, and it is sticky: the device
 accepts no more launches. [`diagnostics.md`](diagnostics.md) has how a sticky
 fault is reported once and stops launches on its device.
 
@@ -536,7 +476,7 @@ launch's memory safety rests on is checked in every build, and what only its
 correctness rests on is a contract.
 
 - **Buffers are typed slices with lengths, and the lengths are checked in
-  every build.** A device buffer carved from the arena knows its length and
+  every build.** A device slice knows its length and
   element type, so "`bound` is `n_rec` long, written whole" is a check on
   the length, not a sentence. A release build that skipped it would let the
   kernel read or write past the buffer, so it is always on, as is an extent
@@ -565,7 +505,7 @@ correctness rests on is a contract.
   with any pointers, never reaches a safe call. A call's view carries the
   record fields its kernel reads and null for the rest.
 - **Non-overlap is checked from offsets.** "No array may overlap another" is
-  decidable from arena offsets at tier 2.
+  decidable from the slices' offsets at tier 2.
 - **Correctness-only rules are `debug_requires`.** `la <= lb` for a basis's
   own class, a momentum within the exported table limit (the launcher
   refuses one outside it with a status, so it is never memory-unsafe), a
@@ -593,13 +533,12 @@ since a type is unforgeable only inside the crate that defines it.
 ## The v0.0.4 runtime
 
 The v0.0.4 layer ([`programming_model.md`](programming_model.md), "Steps
-on rustflow"; [`memory.md`](memory.md), "The budget") stands beside the
-layer above, which it replaces once the old crates are deleted. Its runtime is `fb-core-device`, written over `wwr-sys`, the
+on rustflow"; [`memory.md`](memory.md), "The budget") runs on the layer
+above. Its runtime is `fb-core-device`, written over `wwr-sys`, the
 recipes kernels' raw `extern` declarations (`fb-recipes-sys`'s generated
 bindings and its tile constants, whose safe calls are its own), `fb-kernel-abi`'s
 launch status and the device-free crates (`fb-core-error-handling`,
-`fb-core-log`), and nothing else of `rust/`: no type of `fb-core-wwr`, the
-arena or the thread pool. It holds the current device (`ScopedDevice`),
+`fb-core-log`), and nothing else of `rust/`. It holds the current device (`ScopedDevice`),
 `device_count` and `memory` (a device's free and total bytes, read for the
 budget's default cap before anything runs), `Stream`, `Event`, the copies
 and fills a stream enqueues, device slices, and each GPU's
@@ -615,7 +554,8 @@ and fills a stream enqueues, device slices, and each GPU's
   every create does ([`diagnostics.md`](diagnostics.md), "Allocation is a
   planning-time error"); the rest return the runtime's
   status as a `Status`, a `GpuRuntime` error naming it, out of memory
-  included, since an `Allocation` error is a value only at admission.
+  included, since an `Allocation` error is a value only where the budget
+  refuses a plan.
 - **The slices are the layer above's, again.** `DeviceSlice` and
   `DeviceSliceMut` carry the same promise; `part`, `part_mut` and
   `split_at_mut` cut runs (`Part`, `PartMut`) from them, each cut an
@@ -627,8 +567,7 @@ and fills a stream enqueues, device slices, and each GPU's
 - **The host end of a copy is a `HostSlice`, handed over by value, and
   the copy's token holds it until a sync.** A copy from or into pinned
   memory runs after the call returns, and a borrow that ends with the call
-  says nothing about a copy that has not run, the argument the arena's
-  `memcpy_*` make for naming a pinned row. So `upload` and `download` take
+  says nothing about a copy that has not run. So `upload` and `download` take
   the host end by value and return a `Pending`, which holds it until a
   sync of the stream has covered the copy: `Pending::sync` hands it back,
   without blocking again when an earlier sync of the stream already
@@ -891,20 +830,11 @@ changes").
   The first three crossed that way when `mmd` and the overlap were forked,
   and `fb_nuclei_view` with the nuclear attraction ("From bridge to C
   ABI"), each layout asserted on both sides ("Shared types").
-- **Where the workspace query runs for a planner with no library.** The query
-  is a host function in the kernel's `.so`, so a tier-3 planner test that
-  calls it links that `.so` even though it launches nothing. Loading it is
-  safe on a device-less box, as WarpWraps' device surface notes, but the
-  dependency is real. A pure-Rust mirror of the formula would remove it and
-  reintroduce a second program about sizes, which the query exists to avoid.
 - **The C ABI's own evolution.** This layer leans on three C ABI entries
   beyond the runtime it already used: `wwr_stream`, `wwr_status` and
   `wwr_get_last_error()`. If WarpWraps' C ABI ever grows a launch-wrapper
   convention of its own (its device surface is one unit so far), this
   tree's wrappers should match it.
-
-**The v0.0.4 runtime's:**
-
 - **The rest of the workspace sweep**: upper solves, rectangular `syrk`
   and `gemv`, the batched solver calls, hipBLASLt. What a sentinel test of
   the handle workspace would run.

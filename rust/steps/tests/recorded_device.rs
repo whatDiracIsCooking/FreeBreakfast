@@ -1,5 +1,5 @@
 //! The steps against the old Rust path's recorded results (tier 4, device
-//! 0): `rust/`'s planner-and-arena layer, run once and its output
+//! 0): `rust/`'s deleted planner-and-arena layer, run once and its output
 //! committed under `tests/data/` with its provenance, so this binary needs
 //! none of its crates. The writer was the old `pipeline/scf`'s
 //! `tests/steps_reference.rs`, deleted with that crate (#1873);

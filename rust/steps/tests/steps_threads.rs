@@ -39,8 +39,7 @@ fn threads() -> usize {
 
 /// The thread count once the kernel has caught up, waiting up to five
 /// seconds for it to reach `want`; the last count seen if it never does. A
-/// join returns before the exiting thread leaves `Threads:`
-/// (`core/thread_pool/tests/thread_pool_threads.rs`'s `settled_threads`).
+/// join returns before the exiting thread leaves `Threads:`.
 fn settled_threads(want: usize) -> usize {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut now = threads();

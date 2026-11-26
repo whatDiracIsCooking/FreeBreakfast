@@ -3,7 +3,7 @@
 //!
 //! The energies are `../experimental/rust/v0.0.2/README.md`'s recorded
 //! ones, each within 1.2e-12 of PySCF's DF-RHF over the same documents
-//! (`pipeline/scf/tests/data/scf_reference.py`'s `.npy`, printed beside
+//! (the deleted `pipeline/scf`'s `tests/data/scf_reference.py`'s `.npy`, printed beside
 //! each). The bar on an energy is 1e-9 Eh, set by the loop's own
 //! convergence: `[scf] energy_tolerance` is 1e-10 between two builds and
 //! the commutator 1e-7, whose square bounds the energy's distance from the

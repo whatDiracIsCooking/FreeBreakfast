@@ -10,35 +10,30 @@ answer live in six documents of their own, cited rather than restated:
 
 | Document | Owns |
 |---|---|
-| [`programming_model.md`](programming_model.md) | Steps, the MainBus and the step DAG on rustflow, the `EriManager`, the vocabulary; and the old layer: what a task and an edge declare, what the orchestrator derives, layouts and arenas, workers, plan-once-run-many |
-| [`memory.md`](memory.md) | The budget, caps and margins, step scratch, the final node, batching; and the old layer: the arena's table and its rows' owners, lifetimes and aliasing, admission, adaptive widths, nested plans, the device and pinned blocks |
+| [`programming_model.md`](programming_model.md) | Steps, the MainBus and the step DAG on rustflow, the `EriManager`, the vocabulary, threads and capabilities |
+| [`memory.md`](memory.md) | The budget, caps and margins, step scratch, the final node, batching |
 | [`gpu_layer.md`](gpu_layer.md) | The C ABI between Rust and the kernels: the launch wrapper, the workspace query, statuses, shared types, the build; the v0.0.4 runtime: streams, events, copies and their tokens, a GPU's handles under its lock |
 | [`testing.md`](testing.md) | Contracts, tiers and levels, what runs when, selection, redundancy, regression, fuzzing, sanitizers |
 | [`diagnostics.md`](diagnostics.md) | Timing, logging, errors, panics |
 | [`documentation.md`](documentation.md) | rustdoc, the C header's comments, equations, references, the config reference, the book, diagrams, publishing |
 | [`rules.md`](rules.md) | The register: every rule these documents state, where it is stated, and what checks it, or that nothing does |
 
-Two layers are in the tree ([`programming_model.md`](programming_model.md),
-"Steps on rustflow"). **A new feature is a step of the v0.0.4 layer**, or
-part of one, and "A step's design" below is each question as a step
-answers it. The sections after it give each question at length, in the old
-layer's terms where the two differ: there a feature is a DAG of tasks
-([`programming_model.md`](programming_model.md), "Three owners"), most
-questions are asked per task and a few per DAG, and those answers stand
-until the old crates are deleted. Porting a C++ module is a feature whose
-answers the C++ counterpart mostly fixes; the last section says what
-differs.
+A new feature is a step, or part of one
+([`programming_model.md`](programming_model.md), "Steps on rustflow"), and
+"A step's design" below is each question as a step answers it. The
+sections after it give each question at length. Porting a C++ module is a
+feature whose answers the C++ counterpart mostly fixes; the last section
+says what differs.
 
 ## Where a design lives
 
 **Before the code, in the issue.** The issue that scopes the feature
-answers every question below, in prose, with the DAG drawn in the shape of
-the Coulomb example ([`programming_model.md`](programming_model.md),
-"Example: the Coulomb build under two placements"). A question the issue
-cannot answer is a design question to settle before the PR, not during it.
+answers every question below, in prose, with the steps it adds and the
+`Output`s they read drawn as a DAG. A question the issue cannot answer is a
+design question to settle before the PR, not during it.
 
 **After the code, in the code.** Each answer lands in one artefact: a
-layout, a declaration, a contract, a doc comment, a golden. There is no
+type, a declaration, a contract, a doc comment, a golden. There is no
 design document beside a module, because rustdoc renders the doc comment and
 a second copy would drift ([`documentation.md`](documentation.md), "Code:
 rustdoc"). The PR's description says which answers changed from the issue
@@ -77,114 +72,86 @@ fill tests, and on nothing a replay did not carry in an `Output`.
 
 ## What it computes
 
-**Answers.** The inputs, the outputs, and what the task promises not to
-touch: its boundary. The reference it will be compared against, computing
+**Answers.** The `Output`s it reads, its own `Output`, and nothing else it
+touches: its boundary. The reference it will be compared against, computing
 the same approximation, and the bar, fixed by analysis before the code
 exists and never loosened to pass.
 
-**Recorded.** The boundary is the task's declaration
-([`programming_model.md`](programming_model.md), "A task declares"); the
+**Recorded.** The boundary is the step's `Reads` and `Output`
+([`programming_model.md`](programming_model.md), "Steps on rustflow"); the
 reference, its version and the command that produced it are committed with
 the golden ([`testing.md`](testing.md), "Reference data").
 
-**Checks.** A unit test of the node from a fixture, never from the sub-DAG
-upstream of it; the wiring at the integration level; the whole run as an
-example config `cargo test` runs ([`testing.md`](testing.md), "Levels: how
-much of the DAG a test covers"). The comparison is one run at the bar
+**Checks.** A unit test of the method code from a fixture, never from the
+steps upstream of it; the chain at the integration level; the whole run as
+an example config `cargo test` runs ([`testing.md`](testing.md), "Levels:
+how much of the DAG a test covers"). The comparison is one run at the bar
 ([`testing.md`](testing.md), "Correctness").
 
 ## Where it runs
 
-**Answers.** GPU or host-only. A host-only node is a CPU worker's: a file
-write, a decision between runs of a sub-DAG, a small assembly
-([`programming_model.md`](programming_model.md), "CPU workers"). A GPU task
-says which library surfaces it reaches through `wwr-sys` (BLAS, a solver, a
-collective) and which of the tree's own kernels it launches, since that
-fixes the `-sys` features and the shared objects it links
-([`gpu_layer.md`](gpu_layer.md), "Layering").
+**Answers.** The host, gpu0 alone, or every GPU, and which library
+surfaces it reaches (BLAS, a solver) and which of the tree's own kernels it
+launches, since that fixes the `-sys` crates it links
+([`gpu_layer.md`](gpu_layer.md), "Layering", "The v0.0.4 runtime").
 
-**Recorded.** The device is the task's declaration. The library surfaces
-are the crate's `wwr-sys` features and its `-sys` dependencies in
-`Cargo.toml`.
+**Recorded.** `Step::placement` and the locks `mem_budget` declares; the
+`-sys` dependencies in `Cargo.toml`.
 
-**Checks.** The tier the test lands in: a task that touches no device is
-tier 3 and runs on every PR with fake workers; a GPU task is tier 4 and
-runs when its crate is affected ([`testing.md`](testing.md), "Tiers: where a
-check lives", "What runs when").
+**Checks.** The tier the test lands in: code that touches no device is
+tier 3 and runs on every PR; a device case is tier 4 and runs when its
+crate is affected ([`testing.md`](testing.md), "Tiers: where a check
+lives", "What runs when").
 
 ## What it holds
 
-**Answers.** Every buffer, as a function of the dimensions, per memory kind
-([`programming_model.md`](programming_model.md), "Memory kinds"):
+**Answers.** Every buffer, as a function of `Dims`, its options and the
+caps, per kind: device, pinned and heap, an `Output`'s or scratch
+([`memory.md`](memory.md), "The budget", "Step scratch"). A pageable `Vec`
+is for structured input alone (the config, the basis) and small scratch
+within O(n_ao²). A kernel's share is its `*_workspace_bytes(dims)` query
+and a solver's its size query ([`gpu_layer.md`](gpu_layer.md), "Scratch:
+the workspace query"). A size the dimensions do not fix is allocated at a
+bound setup gives ([`memory.md`](memory.md), "Batched only"). A batch width
+is chosen in `mem_budget` from the step's own limit, never at run time
+from free memory. Threads are a resource too: no step opens a pool or a
+thread of its own, the host integrals on rayon's threads and an all-GPU
+step's fan-out aside ([`programming_model.md`](programming_model.md), "CPU
+workers").
 
-- **Device**, carved from the worker's block, scratch or output.
-- **Pinned host**, owned by the GPU worker whose copies it stages, in the
-  layout with its lifetime extended to the last copy or write that reads it.
-- **Heap**, the plan's, held by CPU nodes alone: large flat host data no
-  copy engine meets, laid out and admitted like the rest.
-- **Pageable host**, `Vec`, for structured planning input alone (the
-  config, the basis, the planner's tables), not modelled and not admitted.
+**Recorded.** `mem_budget`, which allocates the `Output` through the
+`Budget` and declares scratch as one `Layout`; `run` carves the same
+layout from its `Lease`. Nobody writes a footprint: the budget table is
+what was allocated.
 
-A kernel's share is its `*_workspace_bytes(dims)` query and a solver's its
-`lwork` query, called at planning ([`gpu_layer.md`](gpu_layer.md), "Scratch:
-the workspace query"). A size the dimensions do not fix declares its bound
-from them, or justifies a sizing node that fixes a sub-DAG's dimensions
-before it is planned; the bound is preferred
-([`programming_model.md`](programming_model.md), "Memory: layouts and
-arenas"). An adaptive width is chosen at planning from the room the schedule
-leaves, never at run time from free memory. Threads are a resource too: host
-work that would fan out is CPU nodes the planner can see, never a pool inside
-a task (the host integrals on rayon's threads are the one exception,
-[`programming_model.md`](programming_model.md), "CPU workers"), and the
-plan's thread count is a budget admitted beside memory.
-
-**Recorded.** `layout(dims)`, the task's first function; `run(bufs, stream)`
-reaches a buffer only through it. Nobody writes a footprint. An adaptive
-part is `bytes(width)` and `width_max(dims)` beside the layout, bisected by
-the planner ([`memory.md`](memory.md), "Adaptive widths: one planner
-routine"); the rows the layout becomes, and who owns each, are
-[`memory.md`](memory.md), "The table".
-
-**Checks.** A task may ask the arena only for a buffer its layout named, a
-`debug_requires` on the arena. The plan's arena size is a tier-3 golden,
-committed and compared bitwise, so a layout change is a diff in the PR
-([`testing.md`](testing.md), "Performance"). The thread count after a
-device-free run is compared with the plan's worker total
+**Checks.** Only a `Budget` allocates; a carve past the declaration
+panics; a dry budget of gly10 pins the lengths. The thread count after a
+device-free run is counted exactly
 ([`programming_model.md`](programming_model.md), "CPU workers"). Reading
-free memory is clippy's `disallowed_methods` outside the sites
-[`memory.md`](memory.md) ("Adaptive widths: one planner routine") allows.
+free memory is clippy's `disallowed_methods` outside the sites that say
+why.
 
 ## Whether it splits
 
-**Answers.** Every task is placeable on any worker of any topology, so the
-question is not whether several GPUs are allowed but whether this task's own
-work can be sliced: along which axis, recombined by which reduce, in which
-order. Ordered fixes the combination order; either kind is held, one
-worker against many, to a tolerance the acceptance rule fixes by
-analysis, and bitwise across worker counts is not promised. Most tasks
-declare no partition, and parallelism across independent sub-DAGs, the
-displacements of a Hessian, the roots of a state average, the fragments of
-an expansion, costs the task nothing and is the orchestrator's by placement
-([`programming_model.md`](programming_model.md), "Two kinds of
-distribution").
+**Answers.** Every step over an O(N³) tensor is batched and spans every
+GPU: along which axis, recombined onto gpu0 by which reduce, in which
+order ([`memory.md`](memory.md), "Batched only"). Either kind of reduce is
+held, one GPU against many, to a tolerance the acceptance rule fixes by
+analysis, and bitwise across GPU counts is not promised.
 
-**Recorded.** The partition, if any, in the task's declaration, and the
-reduce's kind and order on the edge
-([`programming_model.md`](programming_model.md), "An edge declares").
+**Recorded.** The batch axis and width in `mem_budget`; the reduce in
+`run`.
 
-**Checks.** One worker against many: streams on one card at tier 4, cards
-at tier 5, at a tolerance fixed by analysis, ordered reduce or unordered
+**Checks.** One GPU against many, at a tolerance fixed by analysis
 ([`testing.md`](testing.md), "Determinism and placements").
 
 ## What it depends on, and what depends on it
 
-**Answers.** Two graphs. In the DAG: the edges in, with their producers, and
-the edges out, with their consumers, which is what decides whether a buffer
-is scratch or an output that outlives the task, and how long each edge
-lives. A computation that must wait for part of itself is two tasks and an
-edge ([`programming_model.md`](programming_model.md), "Granularity"); a
-replayed loop is a planned sub-DAG with a host decision node between runs
-([`programming_model.md`](programming_model.md), "Plan once, run many"). In
+**Answers.** Two graphs. In the step DAG: the `Output`s it reads, with
+their producers, and the steps that will read its own, which is what
+decides whether a buffer is scratch or an `Output`. A computation that
+must wait on the host for part of itself splits there
+([`programming_model.md`](programming_model.md), "Granularity"). In
 the workspace: which crates the feature uses and which will use it. Every
 crate edge costs selection on every PR that touches its target, there is no
 umbrella crate, and a crate that only logs must not depend on the handle
@@ -197,14 +164,12 @@ inherits a normal edge. An edge no source can show, a `links` crate kept so
 its link line reaches the binary or a feature switched on in another crate,
 is listed with its reason in the check.
 
-**Recorded.** The edges, each with its size, kind, order and lifetime, in
-the DAG; the crate edges in `Cargo.toml`.
+**Recorded.** `Step::Reads`; the crate edges in `Cargo.toml`.
 
-**Checks.** The planner's invariants over the DAG, fuzzed as a pure
-function: every edge's sync precedes its first read, no two live buffers
-alias ([`testing.md`](testing.md), "Fuzzing"). The workspace graph is read
-by a tier-3 test that fails when a crate's reverse dependents pass a bar,
-and when a crate declares a dependency its sources do not name.
+**Checks.** `Dag::build` refuses a read of a step the config left out, a
+step added twice and a cycle. The workspace graph is read by a tier-3 test
+that fails when a crate's reverse dependents pass a bar, and when a crate
+declares a dependency its sources do not name.
 
 ## What already exists
 
@@ -224,7 +189,7 @@ the design is settled:
   port changes"). Forking hand-written device code adds to what is kept in
   step by hand, so a feature forks what it uses and no more.
 - **The C++ implementation**, as the reference design of the algorithm and
-  the source of its footprint formula, which becomes the layout.
+  the source of its footprint formula, which becomes `mem_budget`.
 
 A new kernel is a FelizJueves emit or a `.cu` under `rust/`, never Rust
 ([`gpu_layer.md`](gpu_layer.md), "Launch shape and dispatch"); a kernel the
@@ -239,18 +204,15 @@ review, which is why the issue names what it reuses.
 
 ## What it says about itself
 
-**Answers.** Usually nothing: the orchestrator times every task on its
-stream, sets the task record every log line and error carries, and
-attributes an asynchronous fault to the tasks since the last sync
-([`diagnostics.md`](diagnostics.md), "What the orchestrator times on its
-own", "The task context", "Context accrues at task boundaries"). The design
-says what the task logs and at which level, by the table in
-[`diagnostics.md`](diagnostics.md), "Levels": a step starting and a result
-at `info`, something a user should look at, such as slow convergence or a
-width planned at 1, at `warn`, orchestration at `debug`. It says whether a
-`scope!` inside the task is worth having for finer timing.
+**Answers.** Usually nothing: the wrapper times every step, records its
+locks, and names it on any error ([`diagnostics.md`](diagnostics.md), "What
+a step says"). The design says what the step logs and at which level, by
+the table in [`diagnostics.md`](diagnostics.md), "Levels": a step starting
+and a result at `info`, something a user should look at, such as slow
+convergence or a batch width of 1, at `warn`, the wrapper's own lines at
+`debug`.
 
-**Recorded.** The log lines and scopes in `run`. Every fallible path
+**Recorded.** The log lines in `mem_budget` and `run`. Every fallible path
 returns `Result`; nothing between the detection site and `main` logs the
 error ([`diagnostics.md`](diagnostics.md), "Values, never panics", "The one
 boundary").
@@ -261,19 +223,12 @@ written.
 
 ## What it writes
 
-**Answers.** The products the feature leaves on disk, and when. Each write
-is a CPU node that depends on a device-to-pinned copy node and feeds
-nothing, so the pinned buffer is in the layout and the next iteration's GPU
-work proceeds while the write runs
-([`programming_model.md`](programming_model.md), "CPU workers"). A dump
-switched on is a different plan, not a branch inside
-a task. The timing record beside the products is the orchestrator's
-([`diagnostics.md`](diagnostics.md), "The timing record"), and the plan
-and its graph the binary's ([`diagnostics.md`](diagnostics.md), "The plan
-beside the record").
+**Answers.** The products the feature leaves on disk. They are written on
+the host after execute mode, from the `Output`'s host copies, never in
+`run` ([`diagnostics.md`](diagnostics.md), "What a step says").
 
-**Recorded.** The write nodes and their edges in the DAG; the pinned buffer
-in the producer's layout.
+**Recorded.** One private function of its `Output` in
+`steps/src/write.rs`, called from `Run::write`.
 
 **Checks.** The example config that exercises the feature, which runs
 through the binary and reads what it wrote.
@@ -299,8 +254,8 @@ rustdoc").
 
 **Checks.** `missing_docs` and broken links denied; the doctests; the
 bibliography keys matched against citations; the config reference
-regenerated and diffed; the plan's diagram as a tier-3 golden
-([`documentation.md`](documentation.md), "Publishing").
+regenerated and diffed ([`documentation.md`](documentation.md),
+"Publishing").
 
 ## The spec is the contracts
 
@@ -313,11 +268,10 @@ a check lives"):
 |---|---|
 | A dimension, a buffer's memory kind, a shell's angular momentum | A type: a newtype, a distinct buffer type, a `const` generic. Misuse does not build, and the `compile_fail` doctest is the test |
 | What may cross between workers | `Send` and `Sync` |
-| A contract: a precondition (shapes agree, an index is in range, `la <= lb`, a buffer is in the layout), a postcondition on host-side state the function builds (a staging's cells tile its records), an invariant | `#[debug_requires]`, `#[debug_ensures]`, `#[debug_invariant]`; `#[contract_trait]` on a trait every implementation must honour. One memory safety rests on, a condition on the arguments, is the always-on `#[requires]`, its operands' values printed by `fb_core_log`'s value checks (`le!`, `lt!`, `eq!`, `fits_i32!`) |
-| The layout | The arena size, a committed tier-3 golden |
-| The DAG's shape | The emitted diagram, a committed tier-3 golden |
+| A contract: a precondition (shapes agree, an index is in range, `la <= lb`, a carve is in the declared layout), a postcondition on host-side state the function builds (a staging's cells tile its records), an invariant | `#[debug_requires]`, `#[debug_ensures]`, `#[debug_invariant]`; `#[contract_trait]` on a trait every implementation must honour. One memory safety rests on, a condition on the arguments, is the always-on `#[requires]`, its operands' values printed by `fb_core_log`'s value checks (`le!`, `lt!`, `eq!`, `fits_i32!`) |
+| What a step holds | The budget table of a dry run, its lengths pinned by a test |
 | The boundary and the bar | The reference comparison, one run |
-| The partition and its reduce order | One worker against many |
+| The batch axis and its reduce | One GPU against many |
 | What a launch wrapper requires | The C header's `///` comment, carried into the `-sys` crate by `devtools/rust-bindings.py`. In the safe wrapper, every length or extent the launcher trusts is checked in every build, a `#[requires]` written with the value checks or, when the check is on state the body produces or its recomputation would be long, an `assert!` named in `# Panics`, and only the rules a launch's correctness alone rests on (`la <= lb`, a momentum within the table, the stream's device current) are `debug_requires` ([`gpu_layer.md`](gpu_layer.md), "The safe wrapper") |
 
 Three rules hold for all of them. A contract is debug-only, so a release
@@ -336,10 +290,10 @@ replaces one. rustdoc renders each contract as its item's `§ Contracts`
 section, so the doc comment never restates one
 ([`documentation.md`](documentation.md), "Code: rustdoc").
 
-The capabilities a task may not have are contracts the manifest holds:
+The capabilities a step may not have are contracts the manifest holds:
 `unsafe_code` forbidden outside the core wrappers and the `-sys` bindings
 with their safe launchers, spawning
-disallowed outside the worker module
+disallowed outside the modules that say why
 ([`programming_model.md`](programming_model.md), "Capabilities are enforced
 by lints"). A feature that needs more than the lints allow has found a
 design question, not an exception.
@@ -348,7 +302,7 @@ design question, not an exception.
 
 A module port answers the same questions, and the C++ counterpart fixes most
 of them: what it computes, its reference, its dimensions, and the footprint
-formula that becomes the layout. What differs:
+formula that becomes `mem_budget`. What differs:
 
 - **The port line is the bridge header.** Everything above it, the host
   preparation, the copies, the allocation, the `.cppm` and `.cpp`, is

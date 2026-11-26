@@ -1297,15 +1297,15 @@ fn unused_dependencies_fail_and_used_ones_pass() {
 }
 
 /// The crates that bring a thread pool or an executor of their own, as
-/// `(package, why it is on the list)`. The orchestrator's workers are the
-/// standard library's scoped threads, and nothing else owns a thread
-/// (`docs/programming_model.md`, "CPU workers": "The standard library, and
-/// no pool crate"); clippy's spawn list cannot see a thread a dependency
-/// opens, so the graph holds it.
+/// `(package, why it is on the list)`. A run's threads are rustflow's
+/// executor's, the host integrals' rayon pool's and `fan_out`'s, each
+/// reached through its one listed crate (`docs/programming_model.md`, "CPU
+/// workers"); clippy's spawn list cannot see a thread a dependency opens,
+/// so the graph holds it.
 const POOL_CRATES: &[(&str, &str)] = &[
     (
         "rayon",
-        "a work-stealing scheduler: stealing is placement, which is the orchestrator's",
+        "a work-stealing scheduler, the host integral crates' alone",
     ),
     ("rayon-core", "rayon's pool itself"),
     (
@@ -1383,7 +1383,7 @@ fn check_pools(g: &Graph) -> Vec<String> {
             if let Some(chain) = g.path_without(member, pool, &allowed) {
                 failures.push(format!(
                     "{member}: depends on the pool crate {pool} ({why}): {}; a run's \
-                     threads are the orchestrator's alone (docs/programming_model.md, \
+                     threads are the executor's and the listed pools' alone (docs/programming_model.md, \
                      \"CPU workers\")",
                     chain.join(" -> ")
                 ));

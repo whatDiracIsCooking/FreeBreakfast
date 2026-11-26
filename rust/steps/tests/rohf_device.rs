@@ -1,8 +1,8 @@
 //! ROHF in the SCF step on a card (tier 4): the water cation's doublet and
 //! triplet CH₂, cc-pVDZ over cc-pVDZ-JKFIT, from the SAD guess through
 //! [`fb_steps::run`], against PySCF's DF-ROHF over the same documents and
-//! geometries: `tests/data/df_rohf.json`, the old path's reference
-//! (`pipeline/scf/tests/rohf.rs`) and the C++ tree's before it, copied, its
+//! geometries: `tests/data/df_rohf.json`, the deleted old path's reference
+//! (`pipeline/scf/tests/rohf.rs`, #1873) and the C++ tree's before it, copied, its
 //! provenance inside, written by `tools/emit/df_reference.py` at
 //! `conv_tol = 1e-12`, `conv_tol_grad = 1e-9`. Its geometries are in bohr
 //! and written out here as an XYZ file in Angstrom, at CODATA 2018's bohr,

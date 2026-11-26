@@ -226,8 +226,8 @@ impl BasisSet {
 /// `U`'s columns are orthonormal under the Cartesian overlap, not the plain
 /// dot product: `Uᵀ U` is not the identity.
 ///
-/// It writes into a slice, so a task computes `U` straight into the row
-/// it is bound for (`docs/memory.md`, "The table").
+/// It writes into a slice, so a step computes `U` straight into the buffer
+/// it is bound for (`docs/memory.md`, "The budget").
 #[debug_requires(
     u.len() == basis.nao_cart() as usize * basis.nao_sphe() as usize,
     "u holds nao_cart × nao_sphe"
