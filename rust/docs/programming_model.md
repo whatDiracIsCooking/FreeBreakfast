@@ -120,12 +120,13 @@ stays in its module's crate.
   the occupations.** `charge` (default 0) and `multiplicity` (default 1)
   give `Dims`' `n_alpha` and `n_beta`, `n_alpha - n_beta = multiplicity -
   1`, beside `n_occ`, the doubly occupied, `n_beta`. A multiplicity the
-  electron count cannot have is refused `InvalidConfig`, and an open shell
-  `Unsupported`, naming the key, until the ROHF step: the steps run a
-  closed shell, a closed-shell ion among them. A refusal of the config
-  names the key, the file and the line ([`documentation.md`](documentation.md),
-  "Configuration: the reference is emitted from the type"). No
-  `mem_budget` reads the occupations, so an ion's budget is the neutral's.
+  electron count cannot have is refused `InvalidConfig`, naming the key,
+  the file and the line ([`documentation.md`](documentation.md),
+  "Configuration: the reference is emitted from the type"); an open
+  shell, `n_alpha > n_beta`, runs ROHF in the SCF. A `mem_budget` reads
+  the occupations only for whether the shell is open (the SCF's open-shell
+  scratch, the J/K pass's second density), so a closed-shell ion's budget
+  is the neutral's.
 - **Setup is the unbudgeted host phase, and it counts.**
   `MainBus::setup` reads the geometry and both bases, fills `Dims` by a
   walk over the shells that builds no array (`for_each_pair`), makes each
@@ -155,7 +156,14 @@ stays in its module's crate.
   guess's eigen-factor above a floor), F, the energy,
   the residual, the DIIS step and the Roothaan step, on gpu0's guarded
   stream in its scratch; the turn's scalars are read on the host through
-  their download's token once, after the turn's last enqueue. `fb_steps::run`
+  their download's token once, after the turn's last enqueue. An open
+  shell's iteration is ROHF's: one J/K pass over its alpha and beta
+  factors, the spin Fock matrices, and the Roothaan effective Fock matrix
+  in place of F, on which the residual, the DIIS step and the Roothaan
+  step are the closed shell's; its scratch follows the closed shell's in
+  the one layout, and its `Output` adds the effective Fock matrix, the
+  occupation classes C's columns `[0, n_beta)` and `[n_beta, n_alpha)`.
+  `fb_steps::run`
   is setup, budget mode and execute mode over the run's one executor, and
   `Run::replay` execute mode again in the same buffers: the SCF's orbitals
   carry over in its `Output`, nothing in scratch does.
@@ -188,9 +196,12 @@ J and K for each density of `d`, on gpu0, into the caller's `j` and `k`.
   passed, reads the densities it is passed, and keeps nothing of the
   caller's. A caller's own state (its DIIS, its Fock matrix) stays in the
   caller's scratch.
-- **It takes a slice of densities.** DF-RHF passes one. UHF passes two,
-  and a response solve, a Davidson or a state average pass many. The
-  buffers are sized for one today, a contract of `build_jk`.
+- **It takes a slice of densities.** DF-RHF passes one, and ROHF two,
+  its alpha and beta factors, in one pass: each aux batch is uploaded and
+  gathered once, and contracted with each density in turn. A response
+  solve, a Davidson or a state average would pass many. The buffers are
+  sized for an open shell's two, a closed shell's one, from `Dims`, a
+  contract of `build_jk`.
 - **A density is D, or a factor C of D = 2 C Cᵀ** (`Density::Dense`,
   `Density::Occupied`). From D, K costs two n_aux × n_ao³ products; from
   C, two n_aux × n_ao² × n_occ ones, and J comes from the same

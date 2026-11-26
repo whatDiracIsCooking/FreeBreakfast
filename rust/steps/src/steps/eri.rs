@@ -67,6 +67,7 @@ use fb_core_device::{
 };
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_flow::{GpuLane, Held, Lane, Placement, Slot, Step, View, fan_out};
+use fb_core_log::{eq, le};
 use fb_integrals_sys::{
     FB_THREE_CENTER_AUX_FIELDS, FB_THREE_CENTER_PACKED_CELL_FIELDS, RECORD_F64_FIELDS,
     RECORD_I32_FIELDS, mmd_records, packed_gather, three_center_spherical_class,
@@ -242,7 +243,14 @@ impl EriManager {
     /// # Panics
     /// If the manager's state is held elsewhere: the caller did not declare
     /// the manager's lock.
-    #[debug_requires(d.len() == 1 && j.len() == 1 && k.len() == 1, "one density: v0.0.4 sizes for one")]
+    #[debug_requires(
+        le!(1, d.len()) && le!(d.len(), densities(&shared.dims)),
+        "one density, or an open shell's two: the pass's buffers are sized for them"
+    )]
+    #[debug_requires(
+        eq!(j.len(), d.len()) && eq!(k.len(), d.len()),
+        "one J and one K per density"
+    )]
     #[debug_requires(
         held.taken().contains(&LockId::Manager(ManagerId::Eri)),
         "the caller declared the manager's lock"
@@ -262,53 +270,44 @@ impl EriManager {
             .expect("the manager's state is reached under the manager's lock alone");
         let dims = &shared.dims;
         let n2 = dims.n_ao * dims.n_ao;
-        let (d0, n_occ) = (d[0].matrix(), d[0].n_occ());
         let layout = jk_layout(dims, self.jk_width, self.depth);
         let mut gpus = held.all_gpus();
         let n_gpus = gpus.len();
         let shares: Vec<Range<usize>> = (0..n_gpus).map(|g| share(self.n_aux, g, n_gpus)).collect();
 
-        // D, or its factor, reaches the other GPUs through the host: a
-        // download from gpu0 on the manager's stream after the caller's
-        // work, then one host end uploaded to every other GPU under one
-        // token.
+        // Each density, or its factor, reaches the other GPUs through the
+        // host: a download from gpu0 on the manager's stream after the
+        // caller's work, then one host end uploaded to every other GPU
+        // under one token.
         if n_gpus > 1 {
-            let st0 = &mut state[GPU0];
-            let gpu0 = &mut *gpus[GPU0];
-            let ready = &st0.events[st0.events.len() - 2];
-            ready.record(gpu0.stream())?;
-            st0.streams[0].wait(ready)?;
-            let h_d = st0
-                .pinned
-                .tenant(&layout.p.span::<f64>(layout.h_d, d0.len()));
-            let h_d = ring_wait!(st0.streams[0].download(h_d, &d0)?)?;
-            let mut here: Vec<_> = state
-                .iter_mut()
-                .skip(1)
-                .map(|st| st.buf.tenant(&layout.r.span::<f64>(layout.d, d0.len())))
-                .collect();
-            let mut copies = state[1].streams[0].upload(&mut here[0], h_d)?;
-            for (st, dst) in state.iter().skip(2).zip(here.iter_mut().skip(1)) {
-                copies = copies.and_upload(&st.streams[0], dst)?;
+            let ready = &state[GPU0].events[state[GPU0].events.len() - 2];
+            ready.record(gpus[GPU0].stream())?;
+            state[GPU0].streams[0].wait(ready)?;
+            for (i, density) in d.iter().enumerate() {
+                let m = density.matrix();
+                let st0 = &mut state[GPU0];
+                let h_d = st0
+                    .pinned
+                    .tenant(&layout.p.span::<f64>(layout.h_d[i], m.len()));
+                let h_d = ring_wait!(st0.streams[0].download(h_d, &m)?)?;
+                let mut here: Vec<_> = state
+                    .iter_mut()
+                    .skip(1)
+                    .map(|st| st.buf.tenant(&layout.r.span::<f64>(layout.d[i], m.len())))
+                    .collect();
+                let mut copies = state[1].streams[0].upload(&mut here[0], h_d)?;
+                for (st, dst) in state.iter().skip(2).zip(here.iter_mut().skip(1)) {
+                    copies = copies.and_upload(&st.streams[0], dst)?;
+                }
+                drop(ring_wait!(copies)?);
             }
-            drop(ring_wait!(copies)?);
         }
         let b = &self.b[..];
         let work: Vec<_> = gpus.iter_mut().zip(state.iter_mut()).zip(&shares).collect();
         let (jk_width, l) = (self.jk_width, &layout);
         fan_out(work, |((gpu, st), share)| {
-            let source = (gpu.gpu() == GPU0).then_some(d0);
-            gpu_pass(
-                shared,
-                b,
-                share.clone(),
-                jk_width,
-                gpu,
-                st,
-                l,
-                source,
-                n_occ,
-            )
+            let source = (gpu.gpu() == GPU0).then_some(d);
+            gpu_pass(shared, b, share.clone(), jk_width, gpu, st, l, source, d)
         })?;
 
         // The reduction onto gpu0. One GPU: its fragments are the result,
@@ -316,38 +315,39 @@ impl EriManager {
         // stream after its contractions, summed on the host in gpu0's
         // pinned staging, and uploaded.
         let gpu0 = &mut *gpus[GPU0];
-        if n_gpus == 1 {
-            let st0 = &mut state[GPU0];
-            let jj = st0.buf.tenant(&layout.r.span::<f64>(layout.j, n2));
-            let kk = st0.buf.tenant(&layout.r.span::<f64>(layout.k, n2));
-            gpu0.stream().copy_device(&mut j[0], &jj)?;
-            gpu0.stream().copy_device(&mut k[0], &kk)?;
-            self.passes.fetch_add(1, Ordering::Relaxed);
-            return Ok(());
-        }
-        let mut sums: Option<(PinnedTenant<f64>, PinnedTenant<f64>)> = None;
-        for st in state.iter_mut() {
-            let s = &st.streams[0];
-            let (jj, kk) = (
-                st.buf.tenant(&layout.r.span::<f64>(layout.j, n2)),
-                st.buf.tenant(&layout.r.span::<f64>(layout.k, n2)),
-            );
-            let h_j = st.pinned.tenant(&layout.p.span::<f64>(layout.h_j, n2));
-            let h_k = st.pinned.tenant(&layout.p.span::<f64>(layout.h_k, n2));
-            let (h_j, h_k) = (s.download(h_j, &jj)?, s.download(h_k, &kk)?);
-            let (h_j, h_k) = (ring_wait!(h_j)?, ring_wait!(h_k)?);
-            match &mut sums {
-                None => sums = Some((h_j, h_k)),
-                Some((sj, sk)) => {
-                    sj.iter_mut().zip(h_j.iter()).for_each(|(s, x)| *s += x);
-                    sk.iter_mut().zip(h_k.iter()).for_each(|(s, x)| *s += x);
+        for (i, (j, k)) in j.iter_mut().zip(k.iter_mut()).enumerate() {
+            if n_gpus == 1 {
+                let st0 = &mut state[GPU0];
+                let jj = st0.buf.tenant(&layout.r.span::<f64>(layout.j[i], n2));
+                let kk = st0.buf.tenant(&layout.r.span::<f64>(layout.k[i], n2));
+                gpu0.stream().copy_device(j, &jj)?;
+                gpu0.stream().copy_device(k, &kk)?;
+                continue;
+            }
+            let mut sums: Option<(PinnedTenant<f64>, PinnedTenant<f64>)> = None;
+            for st in state.iter_mut() {
+                let s = &st.streams[0];
+                let (jj, kk) = (
+                    st.buf.tenant(&layout.r.span::<f64>(layout.j[i], n2)),
+                    st.buf.tenant(&layout.r.span::<f64>(layout.k[i], n2)),
+                );
+                let h_j = st.pinned.tenant(&layout.p.span::<f64>(layout.h_j[i], n2));
+                let h_k = st.pinned.tenant(&layout.p.span::<f64>(layout.h_k[i], n2));
+                let (h_j, h_k) = (s.download(h_j, &jj)?, s.download(h_k, &kk)?);
+                let (h_j, h_k) = (ring_wait!(h_j)?, ring_wait!(h_k)?);
+                match &mut sums {
+                    None => sums = Some((h_j, h_k)),
+                    Some((sj, sk)) => {
+                        sj.iter_mut().zip(h_j.iter()).for_each(|(s, x)| *s += x);
+                        sk.iter_mut().zip(h_k.iter()).for_each(|(s, x)| *s += x);
+                    }
                 }
             }
+            let (sj, sk) = sums.expect("at least one GPU");
+            let s0 = &state[GPU0].streams[0];
+            let (sj, sk) = (s0.upload(j, sj)?, s0.upload(k, sk)?);
+            drop((ring_wait!(sj)?, ring_wait!(sk)?));
         }
-        let (sj, sk) = sums.expect("at least one GPU");
-        let s0 = &state[GPU0].streams[0];
-        let (sj, sk) = (s0.upload(&mut j[0], sj)?, s0.upload(&mut k[0], sk)?);
-        drop((ring_wait!(sj)?, ring_wait!(sk)?));
         self.passes.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -435,24 +435,32 @@ struct JkLayout {
     r: Regions,
     p: Regions,
     weights: usize,
-    d: usize,
-    j: usize,
-    k: usize,
+    d: Vec<usize>,
+    j: Vec<usize>,
+    k: Vec<usize>,
     bd: usize,
     gamma: usize,
     tables: Vec<usize>,
     staging: Vec<usize>,
     squares: Vec<usize>,
-    h_d: usize,
-    h_j: usize,
-    h_k: usize,
+    h_d: Vec<usize>,
+    h_j: Vec<usize>,
+    h_k: Vec<usize>,
     h_tables: Vec<usize>,
     h_packed: Vec<usize>,
+}
+
+/// The densities a J/K pass takes at most, and the pass's buffers are
+/// sized for: an open shell's two spin factors, a closed shell's one.
+fn densities(d: &Dims) -> usize {
+    if d.n_alpha > d.n_beta { 2 } else { 1 }
 }
 
 fn jk_layout(d: &Dims, w: usize, depth: usize) -> JkLayout {
     let (n2, n_col) = (d.n_ao * d.n_ao, d.n_col);
     let (mut r, mut p) = (Regions::default(), Regions::default());
+    let each =
+        |r: &mut Regions| -> Vec<usize> { (0..densities(d)).map(|_| r.add::<f64>(n2)).collect() };
     let ring = |r: &mut Regions, len: usize, of_i32: bool| -> Vec<usize> {
         (0..depth)
             .map(|_| {
@@ -466,17 +474,17 @@ fn jk_layout(d: &Dims, w: usize, depth: usize) -> JkLayout {
     };
     JkLayout {
         weights: r.add::<f64>(n_col),
-        d: r.add::<f64>(n2),
-        j: r.add::<f64>(n2),
-        k: r.add::<f64>(n2),
+        d: each(&mut r),
+        j: each(&mut r),
+        k: each(&mut r),
         bd: r.add::<f64>(w * n2),
         gamma: r.add::<f64>(w),
         tables: ring(&mut r, 2 * n_col, true),
         staging: ring(&mut r, w * n_col, false),
         squares: ring(&mut r, w * n2, false),
-        h_d: p.add::<f64>(n2),
-        h_j: p.add::<f64>(n2),
-        h_k: p.add::<f64>(n2),
+        h_d: each(&mut p),
+        h_j: each(&mut p),
+        h_k: each(&mut p),
         h_tables: ring(&mut p, 2 * n_col, true),
         h_packed: ring(&mut p, w * n_col, false),
         r,
@@ -1228,9 +1236,11 @@ fn pair_columns(shared: &Shared, mut f: impl FnMut(usize, i32, i32, f64)) {
     });
 }
 
-/// One GPU's J/K pass: its share of B's rows contracted with D, or with
-/// the `n_occ` occupied orbitals of `D = 2 C Cᵀ`, into its fragments of J
-/// and K. The uploads and gathers go on the manager's streams, one per
+/// One GPU's J/K pass: its share of B's rows contracted with each density
+/// of `d`, D or the `n_occ` occupied orbitals of `D = 2 C Cᵀ`, into its
+/// fragments of J and K, each density's in turn on one aux batch's
+/// squares: the batch is uploaded and gathered once for all of them. gpu0
+/// reads the caller's matrices (`here`), every other GPU its copies. The uploads and gathers go on the manager's streams, one per
 /// ring buffer, the contractions on the GPU's stream, joined by the ring's
 /// events; everything on the manager's streams has run when it returns.
 #[allow(clippy::too_many_arguments, reason = "a manager's inner task")]
@@ -1242,23 +1252,45 @@ fn gpu_pass(
     gpu: &mut GpuResources,
     st: &mut GpuState,
     l: &JkLayout,
-    here: Option<Part<'_, f64>>,
-    n_occ: Option<usize>,
+    here: Option<&[Density<'_>]>,
+    densities: &[Density<'_>],
 ) -> Status {
     let d = &shared.dims;
     let (n, n_col) = (d.n_ao, d.n_col);
     let n2 = n * n;
     let depth = l.staging.len();
-    let d_len = n_occ.map_or(n2, |o| n * o);
     let weights = st.buf.tenant(&l.r.span::<f64>(l.weights, n_col));
-    let staged_d = st.buf.tenant(&l.r.span::<f64>(l.d, d_len));
-    let mut jj = st.buf.tenant(&l.r.span::<f64>(l.j, n2));
-    let mut kk = st.buf.tenant(&l.r.span::<f64>(l.k, n2));
+    let staged: Vec<_> = densities
+        .iter()
+        .zip(&l.d)
+        .map(|(m, &at)| st.buf.tenant(&l.r.span::<f64>(at, m.matrix().len())))
+        .collect();
+    let mut jk: Vec<_> =
+        l.j.iter()
+            .zip(&l.k)
+            .take(densities.len())
+            .map(|(&j, &k)| {
+                (
+                    st.buf.tenant(&l.r.span::<f64>(j, n2)),
+                    st.buf.tenant(&l.r.span::<f64>(k, n2)),
+                )
+            })
+            .collect();
     let mut bd = st.buf.tenant(&l.r.span::<f64>(l.bd, width * n2));
     let mut gamma = st.buf.tenant(&l.r.span::<f64>(l.gamma, width));
-    let dm: Part<'_, f64> = here.unwrap_or_else(|| part(&staged_d, 0, d_len));
-    gpu.stream().zero(&mut jj)?;
-    gpu.stream().zero(&mut kk)?;
+    let dms: Vec<(Part<'_, f64>, Option<usize>)> = densities
+        .iter()
+        .zip(&staged)
+        .enumerate()
+        .map(|(i, (m, staged))| {
+            let dm = here.map_or_else(|| part(staged, 0, m.matrix().len()), |h| h[i].matrix());
+            (dm, m.n_occ())
+        })
+        .collect();
+    for (jj, kk) in &mut jk {
+        gpu.stream().zero(jj)?;
+        gpu.stream().zero(kk)?;
+    }
     let mut slots: Vec<_> = (0..depth)
         .map(|s| {
             (
@@ -1328,92 +1360,94 @@ fn gpu_pass(
         gpu.stream().wait(gathered)?;
         let sq = part(squares, 0, rows * n2);
         let r = rows as i32;
-        if let Some(n_occ) = n_occ {
-            // With D = 2 C Cᵀ: every B_Q C in one batched gemm, the blocks
-            // side by side as one n × (n_occ rows) matrix M; gamma_Q =
-            // B_Q · D = 2 (B_Q C) · C, J += Σ_Q gamma_Q B_Q, K += 2 M Mᵀ:
-            // a syrk on CUDA, a gemm on HIP ([`K_BY_SYRK`]).
-            let (oi, no) = (n_occ as i32, (n * n_occ) as i32);
-            gpu.gemm_strided_batched(
-                op_n,
-                op_n,
-                ni,
-                oi,
-                ni,
-                1.0,
-                &sq,
-                ni,
-                i64::from(n2i),
-                &dm,
-                ni,
-                0,
-                0.0,
-                &mut bd,
-                ni,
-                i64::from(no),
-                r,
-            )?;
-            gpu.gemv(op_t, no, r, 2.0, &bd, no, &dm, 0.0, &mut gamma)?;
-            gpu.gemv(op_n, n2i, r, 1.0, &sq, n2i, &gamma, 1.0, &mut jj)?;
-            if K_BY_SYRK {
-                gpu.syrk(lower, op_n, ni, oi * r, 2.0, &bd, ni, 1.0, &mut kk, ni)?;
+        for (&(dm, n_occ), (jj, kk)) in dms.iter().zip(&mut jk) {
+            if let Some(n_occ) = n_occ {
+                // With D = 2 C Cᵀ: every B_Q C in one batched gemm, the blocks
+                // side by side as one n × (n_occ rows) matrix M; gamma_Q =
+                // B_Q · D = 2 (B_Q C) · C, J += Σ_Q gamma_Q B_Q, K += 2 M Mᵀ:
+                // a syrk on CUDA, a gemm on HIP ([`K_BY_SYRK`]).
+                let (oi, no) = (n_occ as i32, (n * n_occ) as i32);
+                gpu.gemm_strided_batched(
+                    op_n,
+                    op_n,
+                    ni,
+                    oi,
+                    ni,
+                    1.0,
+                    &sq,
+                    ni,
+                    i64::from(n2i),
+                    &dm,
+                    ni,
+                    0,
+                    0.0,
+                    &mut bd,
+                    ni,
+                    i64::from(no),
+                    r,
+                )?;
+                gpu.gemv(op_t, no, r, 2.0, &bd, no, &dm, 0.0, &mut gamma)?;
+                gpu.gemv(op_n, n2i, r, 1.0, &sq, n2i, &gamma, 1.0, jj)?;
+                if K_BY_SYRK {
+                    gpu.syrk(lower, op_n, ni, oi * r, 2.0, &bd, ni, 1.0, kk, ni)?;
+                } else {
+                    gpu.gemm(
+                        op_n,
+                        op_t,
+                        ni,
+                        ni,
+                        oi * r,
+                        2.0,
+                        &bd,
+                        ni,
+                        &bd,
+                        ni,
+                        1.0,
+                        kk,
+                        ni,
+                    )?;
+                }
             } else {
+                // gamma_Q = B_Q · D, J += Σ_Q gamma_Q B_Q; K += Σ_Q (B_Q D)
+                // B_Qᵀ, every B_Q D in one batched gemm, then the blocks side by
+                // side as one n × (n rows) matrix times B's.
+                gpu.gemv(op_t, n2i, r, 1.0, &sq, n2i, &dm, 0.0, &mut gamma)?;
+                gpu.gemv(op_n, n2i, r, 1.0, &sq, n2i, &gamma, 1.0, jj)?;
+                gpu.gemm_strided_batched(
+                    op_n,
+                    op_n,
+                    ni,
+                    ni,
+                    ni,
+                    1.0,
+                    &sq,
+                    ni,
+                    i64::from(n2i),
+                    &dm,
+                    ni,
+                    0,
+                    0.0,
+                    &mut bd,
+                    ni,
+                    i64::from(n2i),
+                    r,
+                )?;
                 gpu.gemm(
                     op_n,
                     op_t,
                     ni,
                     ni,
-                    oi * r,
-                    2.0,
+                    ni * r,
+                    1.0,
                     &bd,
                     ni,
-                    &bd,
+                    &sq,
                     ni,
                     1.0,
-                    &mut kk,
+                    kk,
                     ni,
                 )?;
             }
-        } else {
-            // gamma_Q = B_Q · D, J += Σ_Q gamma_Q B_Q; K += Σ_Q (B_Q D)
-            // B_Qᵀ, every B_Q D in one batched gemm, then the blocks side by
-            // side as one n × (n rows) matrix times B's.
-            gpu.gemv(op_t, n2i, r, 1.0, &sq, n2i, &dm, 0.0, &mut gamma)?;
-            gpu.gemv(op_n, n2i, r, 1.0, &sq, n2i, &gamma, 1.0, &mut jj)?;
-            gpu.gemm_strided_batched(
-                op_n,
-                op_n,
-                ni,
-                ni,
-                ni,
-                1.0,
-                &sq,
-                ni,
-                i64::from(n2i),
-                &dm,
-                ni,
-                0,
-                0.0,
-                &mut bd,
-                ni,
-                i64::from(n2i),
-                r,
-            )?;
-            gpu.gemm(
-                op_n,
-                op_t,
-                ni,
-                ni,
-                ni * r,
-                1.0,
-                &bd,
-                ni,
-                &sq,
-                ni,
-                1.0,
-                &mut kk,
-                ni,
-            )?;
         }
         contracted.record(gpu.stream())?;
         in_flight[s] = Some((packed, tables));
@@ -1425,11 +1459,13 @@ fn gpu_pass(
         drop((ring_wait!(tables)?, ring_wait!(packed)?));
     }
     drop((homes, slots));
-    if K_BY_SYRK && n_occ.is_some() {
-        // K from C holds its lower triangle alone: the upper from it, on
-        // the GPU's stream after the last syrk, so the fragment is read in
-        // full.
-        gpu.mirror_triangle(lower, ni, &mut kk, ni)?;
+    for ((_, n_occ), (_, kk)) in dms.iter().zip(&mut jk) {
+        if K_BY_SYRK && n_occ.is_some() {
+            // K from C holds its lower triangle alone: the upper from it,
+            // on the GPU's stream after the last syrk, so the fragment is
+            // read in full.
+            gpu.mirror_triangle(lower, ni, kk, ni)?;
+        }
     }
     // The fragments are read on the manager's first stream: it waits for
     // the contractions.

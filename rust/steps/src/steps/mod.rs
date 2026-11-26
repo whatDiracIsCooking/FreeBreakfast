@@ -9,6 +9,7 @@ pub mod metric;
 pub mod orthogonalizer;
 pub mod overlap;
 pub mod scf;
+mod scf_open;
 
 use contracts::debug_requires;
 use fb_core_budget::{DeviceBuf, HostPart, Layout, Span};

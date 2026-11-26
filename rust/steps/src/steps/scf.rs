@@ -1,5 +1,5 @@
-//! The closed-shell RHF loop over the fitted integrals, with Pulay DIIS on
-//! the Fock matrix: an all-GPU step through [`EriManager::build_jk`], its
+//! The RHF loop over the fitted integrals, ROHF at a multiplicity above
+//! 1, with Pulay DIIS on the Fock matrix: an all-GPU step through [`EriManager::build_jk`], its
 //! eigensolve and everything else on gpu0's stream, under the manager's
 //! lock and every GPU's (`docs/programming_model.md`, "The MainBus and its
 //! steps", "The EriManager"; the prototype's `src/steps/scf.rs`).
@@ -33,6 +33,17 @@
 //! gly10's is 237 of 734 AOs, beside 155 occupied orbitals. The energy is
 //! still `tr(D (H + F))/2` of the guess's D.
 //!
+//! **An open shell** (`n_alpha > n_beta`, ROHF) changes the iteration's
+//! J/K pass, F and its energy, and the density, and its published
+//! orbitals' open block; the module `scf_open` has its equations. Its
+//! J/K pass is given C's first `n_alpha` and first `n_beta` columns at
+//! once, F is the Roothaan effective Fock matrix of the two spin Fock
+//! matrices, and the residual, the DIIS step and the Roothaan step are the
+//! closed shell's on it. Its scratch, the spin matrices, the second
+//! density's J and K, the identity and the open block, follows the closed
+//! shell's in the one layout, and its `Output` adds PySCF's effective Fock
+//! matrix ([`ScfOutput::fock`]).
+//!
 //! **A replay** starts from the orbitals the last run left: C and D carry
 //! over in the `Output`, and nothing in scratch does (v0.0.2's reset mode).
 //!
@@ -56,6 +67,10 @@ use crate::steps::eri::{Density, EriStep};
 use crate::steps::guess::GuessStep;
 use crate::steps::orthogonalizer::OrthogonalizerStep;
 use crate::steps::overlap::OverlapStep;
+use crate::steps::scf_open::{
+    Open, OpenSpans, Pass, RoothaanScratch, canonical_open, pyscf_fock, roothaan_fock,
+    spin_densities, spin_fock,
+};
 
 const OP_N: wwr_blas_operation = wwr_blas_operation::WWR_BLAS_OP_N;
 const OP_T: wwr_blas_operation = wwr_blas_operation::WWR_BLAS_OP_T;
@@ -127,6 +142,7 @@ pub struct ScfOutput {
     c: DeviceBuf<f64>,
     epsilon: DeviceBuf<f64>,
     d: DeviceBuf<f64>,
+    fock: Option<DeviceBuf<f64>>,
     c_host: HeapSlab<f64>,
     epsilon_host: HeapSlab<f64>,
     d_host: HeapSlab<f64>,
@@ -194,6 +210,16 @@ impl ScfOutput {
     pub fn d_device(&self) -> &DeviceBuf<f64> {
         &self.d
     }
+
+    /// An open shell's effective Fock matrix on gpu0, `n_ao²`: PySCF's
+    /// Roothaan matrix at the densities of the last build, whose
+    /// occupation classes are C's columns `[0, n_beta)`, doubly occupied,
+    /// `[n_beta, n_alpha)`, singly, and the rest (`Dims`); `None` for a
+    /// closed shell.
+    #[must_use]
+    pub fn fock(&self) -> Option<&DeviceBuf<f64>> {
+        self.fock.as_ref()
+    }
 }
 
 /// The step's one layout on gpu0 and its pinned reads: `mem_budget`
@@ -224,9 +250,13 @@ struct ScfLayout {
     h_epsilon: Span<f64>,
     h_d: Span<f64>,
     h_w: Span<f64>,
+    open: Option<OpenSpans>,
 }
 
-fn layout(n: usize, cap: usize, lwork: usize) -> ScfLayout {
+/// The layout at `n` AOs, a DIIS ring of `cap`, a work buffer of `lwork`
+/// and, for an open shell, `m` singly occupied orbitals, whose tenants
+/// follow the closed shell's.
+fn layout(n: usize, cap: usize, lwork: usize, open: Option<usize>) -> ScfLayout {
     let n2 = n * n;
     let (mut dev, mut pin) = (Layout::new(), Layout::new());
     ScfLayout {
@@ -253,6 +283,7 @@ fn layout(n: usize, cap: usize, lwork: usize) -> ScfLayout {
         h_epsilon: pin.span(n),
         h_d: pin.span(n2),
         h_w: pin.span(n),
+        open: open.map(|m| OpenSpans::new(&mut dev, &mut pin, n, m)),
         device_bytes: dev.bytes(),
         pinned_bytes: pin.bytes(),
     }
@@ -286,8 +317,8 @@ impl Diis {
 }
 
 /// The Roothaan step's matrices: the operator and X it reads, the scratch
-/// it writes through, and the orbitals and density it leaves.
-struct Roothaan<'a, F, X, T, O, E, W, I, C, D> {
+/// it writes through, and the orbitals it leaves.
+struct Roothaan<'a, F, X, T, O, E, W, I, C> {
     f: &'a F,
     x: &'a X,
     t: &'a mut T,
@@ -296,17 +327,14 @@ struct Roothaan<'a, F, X, T, O, E, W, I, C, D> {
     work: &'a mut W,
     info: &'a mut I,
     c: &'a mut C,
-    d: &'a mut D,
 }
 
-/// The Roothaan step at the operator `r.f`: `F' = X F X`, its eigensolve,
-/// the orbitals `C = X C'` and the density `D = 2 C_occ C_occᵀ`, on the
-/// GPU's stream.
-fn roothaan<F, X, T, O, E, W, I, C, D>(
+/// The Roothaan step at the operator `r.f`: `F' = X F X`, its eigensolve
+/// and the orbitals `C = X C'`, on the GPU's stream.
+fn roothaan<F, X, T, O, E, W, I, C>(
     gpu: &mut GpuResources,
     n: usize,
-    n_occ: usize,
-    r: Roothaan<'_, F, X, T, O, E, W, I, C, D>,
+    r: Roothaan<'_, F, X, T, O, E, W, I, C>,
 ) -> Status
 where
     F: DeviceSlice<f64>,
@@ -317,10 +345,9 @@ where
     W: DeviceSliceMut<f64>,
     I: DeviceSliceMut<i32>,
     C: DeviceSliceMut<f64>,
-    D: DeviceSliceMut<f64>,
 {
     // In range: mem_budget refused an n² past i32.
-    let (ni, occ) = (n as i32, n_occ as i32);
+    let ni = n as i32;
     // X is symmetric, so Xᵀ F X is X (F X).
     gpu.gemm(OP_N, OP_N, ni, ni, ni, 1.0, r.f, ni, r.x, ni, 0.0, r.t, ni)?;
     gpu.gemm(
@@ -341,10 +368,21 @@ where
         0.0,
         r.c,
         ni,
-    )?;
-    gpu.gemm(
-        OP_N, OP_T, ni, ni, occ, 2.0, &*r.c, ni, &*r.c, ni, 0.0, r.d, ni,
     )
+}
+
+/// A closed shell's density from its orbitals, `D = 2 C_occ C_occᵀ`, on
+/// the GPU's stream.
+fn closed_density(
+    gpu: &mut GpuResources,
+    n: usize,
+    n_occ: usize,
+    c: &impl DeviceSlice<f64>,
+    d: &mut impl DeviceSliceMut<f64>,
+) -> Status {
+    // In range: mem_budget refused an n² past i32.
+    let (ni, occ) = (n as i32, n_occ as i32);
+    gpu.gemm(OP_N, OP_T, ni, ni, occ, 2.0, c, ni, c, ni, 0.0, d, ni)
 }
 
 impl Step<MainBus> for ScfStep {
@@ -381,8 +419,16 @@ impl Step<MainBus> for ScfStep {
                 "scf: {n} AOs, whose n² is past the BLAS's i32"
             )));
         }
-        // Every eigensolve of the loop is at n: one work buffer.
-        let l = layout(n, options.diis_history, shared.syevd_lwork(budget, n)?);
+        // Every eigensolve of the loop is at n, and an open shell's
+        // published orbitals add one at m: one work buffer for both.
+        let m = open_width(&shared.dims);
+        let lwork = match m {
+            Some(m) => shared
+                .syevd_lwork(budget, n)?
+                .max(shared.syevd_lwork(budget, m)?),
+            None => shared.syevd_lwork(budget, n)?,
+        };
+        let l = layout(n, options.diis_history, lwork, m);
         budget.scratch(GPU0, Kind::Device, l.device_bytes);
         budget.scratch(GPU0, Kind::Pinned, l.pinned_bytes);
         // The manager and every GPU; the wrapper takes them in rank order.
@@ -400,6 +446,7 @@ impl Step<MainBus> for ScfStep {
             c: budget.device(GPU0, n * n),
             epsilon: budget.device(GPU0, n),
             d: budget.device(GPU0, n * n),
+            fock: m.map(|_| budget.device(GPU0, n * n)),
             c_host: budget.heap(n * n),
             epsilon_host: budget.heap(n),
             d_host: budget.heap(n * n),
@@ -427,6 +474,8 @@ impl Step<MainBus> for ScfStep {
             .as_ref()
             .ok_or_else(|| Error::config("the scf step runs with [scf]"))?;
         let (n, n_occ) = (shared.dims.n_ao, shared.dims.n_occ);
+        let (n_alpha, n_beta) = (shared.dims.n_alpha, shared.dims.n_beta);
+        let m = open_width(&shared.dims);
         // In range: mem_budget refused an n² past i32.
         let (ni, n2) = (n as i32, n * n);
         let n2i = n2 as i32;
@@ -437,7 +486,14 @@ impl Step<MainBus> for ScfStep {
         let (s, h, x) = (overlap.s(), core.h(), orthogonalizer.x());
 
         let cap = options.diis_history;
-        let l = layout(n, cap, held.gpu(GPU0).syevd_lwork(n)?);
+        let lwork = match m {
+            Some(m) => {
+                let gpu = held.gpu(GPU0);
+                gpu.syevd_lwork(n)?.max(gpu.syevd_lwork(m)?)
+            }
+            None => held.gpu(GPU0).syevd_lwork(n)?,
+        };
+        let mut l = layout(n, cap, lwork, m);
         let dev = |span| scratch.device(GPU0, span);
         let (mut j, mut k, mut f, mut f_star) = (dev(l.j), dev(l.k), dev(l.f), dev(l.f_star));
         let (mut f_ortho, mut error, mut t1, mut t2) =
@@ -456,6 +512,10 @@ impl Step<MainBus> for ScfStep {
         let mut h_scalars = scratch.pinned(GPU0, l.h_scalars);
         let mut h_info = scratch.pinned(GPU0, l.h_info);
         let mut h_singular = scratch.pinned(GPU0, l.h_singular);
+        let mut open = match l.open.take() {
+            Some(spans) => Some(Open::carve(held.gpu(GPU0), scratch, spans, n)?),
+            None => None,
+        };
 
         // A fresh loop in the same buffers. The first run starts from the
         // guess and its factor; a replay from the C and D the last run left.
@@ -463,7 +523,15 @@ impl Step<MainBus> for ScfStep {
         // The columns of `out.c` the next pass is given: the occupied
         // orbitals of `out.d` after any Roothaan step, so on a replay from
         // the start, and the guess's factor's rank on a fresh run's first.
-        let mut cols = n_occ;
+        // An open shell's are its alpha factor's, its beta factor their
+        // first `n_beta`; a closed shell's `n_alpha` is `n_occ`.
+        let mut cols = n_alpha;
+        let after_roothaan = if n_beta > 0 { Pass::Both } else { Pass::Alpha };
+        let mut pass = if fresh {
+            Pass::Spinless
+        } else {
+            after_roothaan
+        };
         if fresh {
             let guess = view.read(GuessStep);
             let gpu = held.gpu(GPU0);
@@ -525,6 +593,31 @@ impl Step<MainBus> for ScfStep {
             )?;
             (cols, out.guess_rank) = (rank, rank);
         }
+        if let Some(o) = open.as_mut() {
+            // The spin densities of the first build: the guess's split
+            // evenly, or the carried orbitals'.
+            let gpu = held.gpu(GPU0);
+            if fresh {
+                let guess = view.read(GuessStep);
+                gpu.geam(
+                    OP_N,
+                    OP_N,
+                    ni,
+                    ni,
+                    0.5,
+                    guess.d(),
+                    ni,
+                    0.0,
+                    guess.d(),
+                    ni,
+                    &mut o.da,
+                    ni,
+                )?;
+                gpu.stream().copy_device(&mut o.db, &o.da)?;
+            } else {
+                spin_densities(gpu, n, (n_alpha, n_beta), &out.c, o, &mut out.d)?;
+            }
+        }
         out.converged = false;
         let mut diis = Diis {
             cap,
@@ -539,31 +632,77 @@ impl Step<MainBus> for ScfStep {
             let (slot, held_pairs) = diis.advance();
             // J and K of the carried D, from its factor: the manager's, into
             // this step's scratch.
-            eri.build_jk(
-                shared,
-                held,
-                &[Density::Occupied(part(&out.c, 0, n * cols), cols)],
-                &mut [part_mut(&mut j, 0, n2)],
-                &mut [part_mut(&mut k, 0, n2)],
-            )?;
+            match open.as_mut() {
+                // An open shell's alpha and beta factors, in one pass.
+                Some(o) if pass == Pass::Both => eri.build_jk(
+                    shared,
+                    held,
+                    &[
+                        Density::Occupied(part(&out.c, 0, n * n_alpha), n_alpha),
+                        Density::Occupied(part(&out.c, 0, n * n_beta), n_beta),
+                    ],
+                    &mut [part_mut(&mut j, 0, n2), part_mut(&mut o.j2, 0, n2)],
+                    &mut [part_mut(&mut k, 0, n2), part_mut(&mut o.k2, 0, n2)],
+                )?,
+                _ => eri.build_jk(
+                    shared,
+                    held,
+                    &[Density::Occupied(part(&out.c, 0, n * cols), cols)],
+                    &mut [part_mut(&mut j, 0, n2)],
+                    &mut [part_mut(&mut k, 0, n2)],
+                )?,
+            }
             let gpu = held.gpu(GPU0);
             stage_sync!(options.stage_sync, gpu);
-            // F = H + J - K/2.
-            gpu.geam(OP_N, OP_N, ni, ni, 1.0, h, ni, 1.0, &j, ni, &mut t1, ni)?;
-            gpu.geam(OP_N, OP_N, ni, ni, 1.0, &t1, ni, -0.5, &k, ni, &mut f, ni)?;
-            // E_electronic = tr(D (H + F)) / 2, a dot of two n² vectors.
-            gpu.geam(OP_N, OP_N, ni, ni, 1.0, h, ni, 1.0, &f, ni, &mut t1, ni)?;
-            gpu.gemv(
-                OP_T,
-                n2i,
-                1,
-                0.5,
-                &t1,
-                n2i,
-                &out.d,
-                0.0,
-                &mut part_mut(&mut scalars, 0, 1),
-            )?;
+            if let Some(o) = open.as_mut() {
+                // Fa, Fb and their energy, then the Roothaan matrix, its
+                // scratch the pass's J and K and what the residual
+                // overwrites after it.
+                spin_fock(
+                    gpu,
+                    n,
+                    pass,
+                    h,
+                    (&j, &k),
+                    &out.d,
+                    o,
+                    &mut t2,
+                    &mut part_mut(&mut scalars, 0, 1),
+                )?;
+                roothaan_fock(
+                    gpu,
+                    n,
+                    s,
+                    [&o.fa, &o.fb, &o.da, &o.db, &o.identity],
+                    RoothaanScratch {
+                        fc: &mut j,
+                        fo_half: &mut k,
+                        pc: &mut o.j2,
+                        po: &mut o.k2,
+                        pv: &mut t1,
+                        a: &mut f_ortho,
+                        work: &mut t2,
+                    },
+                    &mut f,
+                )?;
+            } else {
+                // F = H + J - K/2.
+                gpu.geam(OP_N, OP_N, ni, ni, 1.0, h, ni, 1.0, &j, ni, &mut t1, ni)?;
+                gpu.geam(OP_N, OP_N, ni, ni, 1.0, &t1, ni, -0.5, &k, ni, &mut f, ni)?;
+                // E_electronic = tr(D (H + F)) / 2, a dot of two n² vectors.
+                gpu.geam(OP_N, OP_N, ni, ni, 1.0, h, ni, 1.0, &f, ni, &mut t1, ni)?;
+                gpu.gemv(
+                    OP_T,
+                    n2i,
+                    1,
+                    0.5,
+                    &t1,
+                    n2i,
+                    &out.d,
+                    0.0,
+                    &mut part_mut(&mut scalars, 0, 1),
+                )?;
+            }
             // e = Xᵀ (F D S - S D F) X: with M = F D S, M - Mᵀ.
             gpu.gemm(
                 OP_N, OP_N, ni, ni, ni, 1.0, &f, ni, &out.d, ni, 0.0, &mut t1, ni,
@@ -657,7 +796,6 @@ impl Step<MainBus> for ScfStep {
             roothaan(
                 gpu,
                 n,
-                n_occ,
                 Roothaan {
                     f: &f_star,
                     x,
@@ -667,10 +805,13 @@ impl Step<MainBus> for ScfStep {
                     work: &mut work,
                     info: &mut info,
                     c: &mut out.c,
-                    d: &mut out.d,
                 },
             )?;
-            cols = n_occ;
+            match open.as_mut() {
+                Some(o) => spin_densities(gpu, n, (n_alpha, n_beta), &out.c, o, &mut out.d)?,
+                None => closed_density(gpu, n, n_occ, &out.c, &mut out.d)?,
+            }
+            (cols, pass) = (n_alpha, after_roothaan);
 
             // The turn's read, after its last enqueue: E, ‖e‖² and the two
             // flags, under one sync (the later tokens are covered by it).
@@ -704,11 +845,16 @@ impl Step<MainBus> for ScfStep {
             out.iterations = iteration;
 
             if converged {
+                if let (Some(o), Some(fock)) = (open.as_ref(), out.fock.as_mut()) {
+                    // PySCF's Roothaan matrix at this build's densities,
+                    // from F as built and its Po, before either is
+                    // overwritten.
+                    pyscf_fock(gpu, n, (&f, &o.k2), o, (&mut t1, &mut t2), fock)?;
+                }
                 // The orbitals of F as built, not of the extrapolation.
                 roothaan(
                     gpu,
                     n,
-                    n_occ,
                     Roothaan {
                         f: &f,
                         x,
@@ -718,9 +864,25 @@ impl Step<MainBus> for ScfStep {
                         work: &mut work,
                         info: &mut info,
                         c: &mut out.c,
-                        d: &mut out.d,
                     },
                 )?;
+                match open.as_mut() {
+                    Some(o) => {
+                        spin_densities(gpu, n, (n_alpha, n_beta), &out.c, o, &mut out.d)?;
+                        // Fc of this build is still in J's tenant.
+                        canonical_open(
+                            gpu,
+                            n,
+                            (n_alpha, n_beta),
+                            &j,
+                            o,
+                            &mut work,
+                            &mut out.c,
+                            &mut out.epsilon,
+                        )?;
+                    }
+                    None => closed_density(gpu, n, n_occ, &out.c, &mut out.d)?,
+                }
                 let on = gpu.stream();
                 let (h_c, h_epsilon, h_d) = (
                     on.download(scratch.pinned(GPU0, l.h_c), &out.c)?,
@@ -728,6 +890,17 @@ impl Step<MainBus> for ScfStep {
                     on.download(scratch.pinned(GPU0, l.h_d), &out.d)?,
                 );
                 let read_info = on.download(h_info, &info)?;
+                let read_open = match open.as_mut() {
+                    Some(o) => Some(
+                        on.download(
+                            o.h_info
+                                .take()
+                                .expect("the open flag's pinned end, read once"),
+                            &o.info,
+                        )?,
+                    ),
+                    None => None,
+                };
                 // The solver's flag, with the orbitals it vouches for, read
                 // on the host after the step's last enqueue: the solver-flag
                 // site, which waits for no part of the step still to come.
@@ -735,16 +908,23 @@ impl Step<MainBus> for ScfStep {
                     clippy::disallowed_methods,
                     reason = "a step reading a solver's flag after its last enqueue (docs/gpu_layer.md, \"The v0.0.4 runtime\")"
                 )]
-                let (h_info, h_c, h_epsilon, h_d) = (
+                let (h_info, h_c, h_epsilon, h_d, h_open) = (
                     read_info.sync()?,
                     h_c.sync()?,
                     h_epsilon.sync()?,
                     h_d.sync()?,
+                    read_open.map(|r| r.sync()).transpose()?,
                 );
                 if h_info[0] != 0 {
                     return Err(Error::numerical(format!(
                         "scf: the converged F's syevd: info = {}",
                         h_info[0]
+                    )));
+                }
+                if let Some(h_open) = h_open.filter(|h| h[0] != 0) {
+                    return Err(Error::numerical(format!(
+                        "scf: the open block's syevd: info = {}",
+                        h_open[0]
                     )));
                 }
                 out.c_host.copy_from_slice(&h_c);
@@ -778,6 +958,12 @@ impl Step<MainBus> for ScfStep {
             }
         }
     }
+}
+
+/// An open shell's singly occupied orbitals, `n_alpha - n_beta`; `None`
+/// for a closed shell.
+fn open_width(dims: &crate::bus::Dims) -> Option<usize> {
+    (dims.n_alpha > dims.n_beta).then(|| dims.n_alpha - dims.n_beta)
 }
 
 /// `[scf] diis_history`'s ceiling: the bordered solve's largest order less

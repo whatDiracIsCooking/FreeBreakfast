@@ -2,9 +2,9 @@
 //! counts on gly10 in cc-pVDZ / cc-pVDZ-JKFIT against the prototype's,
 //! the dry budget's exact bytes from them, the orthogonalizer's scratch
 //! apart from every step unordered with it, the config's refusals (an
-//! unknown key and an impossible or open-shell multiplicity naming the
-//! file and the line), a closed-shell ion's budget the neutral's, the
-//! allocation record failing a step that allocates on the plain heap in its
+//! unknown key and an impossible multiplicity naming the file and the
+//! line), an open shell set up and its SCF's budget exact, a closed-shell
+//! ion's budget the neutral's, the allocation record failing a step that allocates on the plain heap in its
 //! `run`, and the four host steps passing it: each builds its triangle in
 //! its pinned staging, so no `run` allocates one of its own
 //! (`docs/memory.md`, "The budget"), past 1 MiB from about 360 AOs.
@@ -19,7 +19,7 @@ use fb_core_error_handling::{ErrorKind, Result, Status};
 use fb_core_flow::{Bus, Dag, Executor, Held, Lane, Locks, Slot, Step, View};
 use fb_steps::{
     CoreHamiltonianStep, DEFAULT_MEM_PER_GPU, EriStep, GuessStep, MainBus, MetricStep, OverlapStep,
-    plan,
+    ScfStep, plan,
 };
 
 const ALIGN: u64 = 256;
@@ -160,24 +160,88 @@ fn read_config(
     (path, config)
 }
 
-/// The water cation's doublet counts five alpha and four beta electrons,
-/// and setup refuses it `Unsupported`, naming the key, the file and the
-/// line: the steps run a closed shell.
+/// The water cation's doublet counts five alpha and four beta electrons
+/// and is set up, an open shell the SCF runs as ROHF.
 #[test]
-fn the_water_cations_doublet_is_five_alpha_and_four_beta_and_refused_open() {
+fn the_water_cations_doublet_is_five_alpha_and_four_beta() {
     let text = "[molecule]\nxyz = \"@data/h2o.xyz\"\ncharge = 1\nmultiplicity = 2\n\
                 [basis]\nname = \"cc-pvdz\"\n";
-    let (path, config) = read_config("h2o_cation.toml", text);
+    let (_, config) = read_config("h2o_cation.toml", text);
     let config = config.unwrap();
     let spin = &config.molecule;
     let molecule = fb_io_xyz::read_xyz(&spin.xyz, spin.charge, spin.multiplicity).unwrap();
     assert_eq!(spin.occupations(molecule.electron_count()).unwrap(), (5, 4));
-    let Err(error) = MainBus::setup(config, Backing::Dry) else {
-        panic!("an open shell");
-    };
-    assert_eq!(error.kind, ErrorKind::Unsupported, "{}", error.message);
-    let at = format!("{}:4: [molecule] multiplicity = 2", path.display());
-    assert!(error.message.starts_with(&at), "{}", error.message);
+    let bus = MainBus::setup(config, Backing::Dry).expect("an open shell is set up");
+    let dims = &bus.shared().dims;
+    assert_eq!((dims.n_occ, dims.n_alpha, dims.n_beta), (4, 5, 4));
+}
+
+/// The SCF's scratch, dry, as its layout places it: the closed shell's
+/// tenants, then an open shell's after them at `m` singly occupied
+/// orbitals; syevd's work buffer zero.
+fn scf_scratch(n: usize, cap: usize, m: Option<usize>) -> (u64, u64) {
+    let (mut dev, mut pin) = (Layout::new(), Layout::new());
+    for _ in 0..8 {
+        let _ = dev.span::<f64>(n * n);
+    }
+    let _ = (dev.span::<f64>(2), dev.span::<i32>(1));
+    let _ = (dev.span::<f64>(n * n * cap), dev.span::<f64>(n * n * cap));
+    let _ = (dev.span::<f64>(cap * cap), dev.span::<f64>(cap));
+    let _ = (dev.span::<i32>(1), dev.span::<f64>(0));
+    let _ = (pin.span::<f64>(2), pin.span::<i32>(1), pin.span::<i32>(1));
+    let _ = (pin.span::<f64>(n * n), pin.span::<f64>(n));
+    let _ = (pin.span::<f64>(n * n), pin.span::<f64>(n));
+    if let Some(m) = m {
+        // Fa, Fb, Da, Db, the second density's J and K, the identity.
+        for _ in 0..7 {
+            let _ = dev.span::<f64>(n * n);
+        }
+        let _ = (dev.span::<f64>(n * m), dev.span::<f64>(n * m));
+        let _ = (
+            dev.span::<f64>(m * m),
+            dev.span::<f64>(m),
+            dev.span::<i32>(1),
+        );
+        let _ = (pin.span::<f64>(n * n), pin.span::<i32>(1));
+    }
+    (aligned(dev.bytes()), aligned(pin.bytes()))
+}
+
+/// The dry budget of an open shell is exact: the SCF scratch of the
+/// water cation's doublet and of its dication's triplet is the closed
+/// shell's layout with the open shell's tenants after it, and its outputs
+/// add the effective Fock matrix; the neutral water's is the closed
+/// shell's alone.
+#[test]
+fn an_open_shells_dry_budget_is_exact() {
+    for (charge, multiplicity, m) in [(0, 1, None), (1, 2, Some(1)), (2, 3, Some(2))] {
+        let text = format!(
+            "[molecule]\nxyz = \"h2o.xyz\"\ncharge = {charge}\nmultiplicity = {multiplicity}\n\
+             [basis]\nname = \"cc-pvdz\"\n[eri]\naux_basis = \"cc-pvdz-jkfit\"\n[scf]\n"
+        );
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+        let config = fb_steps::Config::parse(&text, &dir).unwrap();
+        let plan = plan(MainBus::setup(config, Backing::Dry).unwrap()).unwrap();
+        plan.budget(&Executor::new(2)).unwrap();
+        let n = plan.bus().shared().dims.n_ao;
+        let ledger = plan.bus().ledger();
+        let region = |kind: Kind| {
+            ledger
+                .regions()
+                .iter()
+                .find(|r| r.gpu == 0 && r.kind == kind && r.step == "scf")
+                .map(|r| r.bytes)
+        };
+        let (device, pinned) = scf_scratch(n, 8, m);
+        assert_eq!(region(Kind::Device), Some(device), "charge {charge}");
+        assert_eq!(region(Kind::Pinned), Some(pinned), "charge {charge}");
+        assert_eq!(
+            plan.output(ScfStep).fock().is_some(),
+            m.is_some(),
+            "charge {charge}: the effective Fock matrix"
+        );
+        assert!(ledger.table().starts_with("memory budget: accepted"));
+    }
 }
 
 /// A multiplicity the electron count cannot have, and an unknown key, are
@@ -226,7 +290,8 @@ fn an_impossible_multiplicity_and_an_unknown_key_name_the_file_and_line() {
 
 /// A closed-shell ion, water's dication, is budgeted exactly as the
 /// neutral: its dimensions differ in the occupations alone, and no step's
-/// budget reads them, so the table is the same text.
+/// budget reads them but for whether the shell is open, so the table is
+/// the same text, but for the host's available memory read at setup.
 #[test]
 fn a_closed_shell_ions_dry_budget_is_the_neutrals() {
     let budget = |charge: i32| {
@@ -239,7 +304,17 @@ fn a_closed_shell_ions_dry_budget_is_the_neutrals() {
         let plan = plan(MainBus::setup(config, Backing::Dry).unwrap()).unwrap();
         plan.budget(&Executor::new(2)).unwrap();
         let dims = plan.bus().shared().dims.clone();
-        (dims, plan.bus().ledger().table())
+        // The host's line reads its available memory at setup, which
+        // moves between the two runs on a shared machine.
+        let table: Vec<String> = plan
+            .bus()
+            .ledger()
+            .table()
+            .lines()
+            .filter(|l| !l.starts_with("host: "))
+            .map(str::to_owned)
+            .collect();
+        (dims, table)
     };
     let (neutral, neutral_table) = budget(0);
     let (ion, ion_table) = budget(2);
