@@ -9,8 +9,8 @@
 //! the commutator 1e-7, whose square bounds the energy's distance from the
 //! stationary point, so a converged energy is a few 1e-11 from it, and two
 //! runs that converge in different orders (batches, rings, GPUs, workers)
-//! agree within the same. B's bar is 1e-10 of its largest element, the
-//! v0.0.4 page's: the same three-centre integrals and the same unique
+//! agree within the same. B's bar is 1e-10 of its largest element
+//! (`docs/testing.md`, "The steps' tests"): the same three-centre integrals and the same unique
 //! Cholesky factor, its triangular solve's forward error a modest multiple
 //! of `ε κ(L)` on a metric whose condition water's JKFIT keeps under 1e5.
 //!

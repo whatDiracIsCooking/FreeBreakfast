@@ -933,3 +933,14 @@ changes").
   `wwr_get_last_error()`. If WarpWraps' C ABI ever grows a launch-wrapper
   convention of its own (its device surface is one unit so far), this
   tree's wrappers should match it.
+
+**The v0.0.4 runtime's:**
+
+- **The rest of the workspace sweep**: upper solves, rectangular `syrk`
+  and `gemv`, the batched solver calls, hipBLASLt. What a sentinel test of
+  the handle workspace would run.
+- **cuBLAS and rocBLAS handle thread-safety**: the lock answers it either
+  way; verify what each documents.
+- **The `cells` work list as a kernel's own**: a dense cross product a
+  kernel could derive from two short lists (58,653 and 1,272 entries on
+  gly10), a FelizJueves change. It lowers the ERI buffer a batch needs.

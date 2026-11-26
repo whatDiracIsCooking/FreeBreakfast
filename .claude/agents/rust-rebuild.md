@@ -34,8 +34,9 @@ are relative to `rust/`.
 
 | The task | Read |
 |---|---|
-| A task, an edge, a DAG, a plan, placement, workers | `docs/programming_model.md`, "Three owners", "Plan once, run many", "Workers are a hierarchy", "Granularity" |
-| A buffer, a layout, a row's owner or lifetime, admission, a width chosen at planning | `docs/programming_model.md`, "Memory: layouts and arenas"; `docs/memory.md`, "The table", "Lifetimes", "Admission", "Adaptive widths: one planner routine" |
+| A step, its `Output`, `mem_budget` and `run`, the MainBus, the `EriManager` (new work is here) | `docs/design.md`, "A step's design"; `docs/programming_model.md`, "Steps on rustflow", "The MainBus and its steps", "The EriManager", "Vocabulary"; `docs/memory.md`, "The budget", "Step scratch", "Batched only"; `docs/gpu_layer.md`, "The v0.0.4 runtime"; `docs/testing.md`, "The steps' tests"; `docs/diagnostics.md`, "What a step says" |
+| The old layer: a task, an edge, a DAG, a plan, placement, workers | `docs/programming_model.md`, "Three owners", "Plan once, run many", "Workers are a hierarchy", "Granularity" |
+| The old layer: a buffer, a layout, a row's owner or lifetime, admission, a width chosen at planning | `docs/programming_model.md`, "Memory: layouts and arenas"; `docs/memory.md`, "The table", "Lifetimes", "Admission", "Adaptive widths: one planner routine" |
 | A kernel, a launch wrapper, a `-sys` crate, a forked `.cu`, a workspace query, the CMake build | `docs/gpu_layer.md`, "Layering", "From bridge to C ABI", "Launch shape and dispatch", "Scratch: the workspace query", "Statuses", "The safe wrapper", "Build" |
 | `unsafe`, spawning, a capability a crate may hold | `docs/programming_model.md`, "Capabilities are enforced by lints" |
 | A test, a golden, a reference, a tolerance, what a gate runs | `docs/testing.md`, "Contracts are part of the spec", "Tiers: where a check lives", "Levels: how much of the DAG a test covers", "Selecting GPU tiers in cargo", "Slow cases", "Regression" |

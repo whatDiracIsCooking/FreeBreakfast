@@ -187,6 +187,45 @@ most of their card time:
   passes alone OOMs in the nightly (#1248). The cache here is one, explicit,
   and its footprint is a number the binary can print.
 
+## The steps' tests
+
+The v0.0.4 layer ([`programming_model.md`](programming_model.md), "Steps
+on rustflow") is tested at the same tiers and levels, with facilities of
+its own. Most of `fb-steps`' test targets say their tier in their name:
+`*_host.rs` touches no device and is tier 3, `*_device.rs` is tier 4,
+each case `#[ignore = "tier 4: needs a GPU"]`, and a case that needs two
+real GPUs is named `tier5_*` ("Selecting GPU tiers in cargo").
+
+| Facility | What it is | What it tests |
+|---|---|---|
+| A dry budget | Setup and budget mode with `Backing::Dry`: every `mem_budget` runs, nothing is allocated, no device is touched | Tier 3. Every length a step asks for, the table, the packed offsets, the locks declared, and each refusal (a step limit under its least, a step that reads one the config left out), on molecules of any size: gly10's whole budget is exact with no card |
+| The NaN fill | `[resources] nan_fill`: the wrapper fills each lease's host and device regions with `0xFF` before `run` | A step that relies on what its scratch held on entry, or reads a region before the copy or kernel that writes it has run, gives NaN instead of a stale right answer |
+| The allocation record | `fb_core_budget::AllocationRecord`, a `#[global_allocator]` every test binary of the steps installs | A `run` that takes 1 MiB from the plain heap fails the execute, named ([`memory.md`](memory.md), "The budget") |
+| Forced batches | A step limit at its least, or twice it, from the config | Every ring buffer reused many times a pass on a molecule as small as water; the many-batch path against the default run at the energy's bar |
+| A ring of one | `[eri] ring = 1` | The rings' events and waits against the unoverlapped order |
+| Logical GPUs | `[resources] devices = [0, 0]`: two GPU indices on one device | Tier 4. The all-GPU paths without a second card: the device made current in each thread of a fan-out, the lock order across GPUs, the reduction onto gpu0, a ring per GPU. Real GPUs are tier 5 |
+| A negative control | A test-only switch that removes one ordering: the event before the fit (`#[cfg(test)]` in the build), the wrapper's step-end sync (`fb-core-flow`'s `test-support` feature) | That the test for the ordering can fail: under the NaN fill the run without it gives a wrong result, and the first run's with it restored. A control whose failure depends on a race is not kept |
+| The old path | `rust/`'s planner-and-arena layer as merged, a dev-dependency of `old_path_device.rs` alone | The steps' energies, S, H and the metric against the old layer's in one process, until its crates are deleted |
+| A replay | `Run::replay` | The same energy from the carried orbitals, and the allocation count unchanged |
+| The executor's width | `[resources] threads` at 2 and at 8 | The same energy, and no starvation with workers waiting on locks |
+
+**The bars are fixed by analysis and compared in one run**, as everywhere
+("Correctness"): 1e-9 Eh between two converged energies
+(`energy_tolerance` 1e-10 between two builds, and the commutator's 1e-7,
+whose square bounds a converged energy's distance from the stationary
+point), 1e-10 of the largest element for B between two rings, 1e-12 of
+the largest element for a host-built matrix against the device's.
+
+**A type-level rule's test is its `compile_fail` doctest**, with its
+error code: a `run` that keeps a handle past its guard, a recipe handed a
+step's stream, a download's token asked for a second upload, a whole
+buffer reached beside its tenant.
+
+**The layer names nothing of the old one outside its tests.**
+`fb-core-device`, `fb-core-budget`, `fb-core-flow` and `fb-steps` depend
+on `fb-core-wwr`, the arena, the planner and the thread pool only under
+`[dev-dependencies]`.
+
 ## What runs when
 
 | Run | Tiers | Runs |

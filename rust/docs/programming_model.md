@@ -306,6 +306,168 @@ is its step's scratch, batched over perturbations, and does not stack. A
 chain the sum refuses has a remedy within the model: `Output`s packed by
 the same closure that packs scratch.
 
+### What the chain measured
+
+The prototype's numbers, of the design `fb-steps` ports: 4× RTX A6000
+(CUDA), 2026-11-26, a release build, one run each, cc-pVDZ over
+cc-pVDZ-JKFIT. They are measurements, not bars; the steps' tests hold the
+energies ([`testing.md`](testing.md), "The steps' tests"). Since then the
+SCF's first pass is from the guess's factor, not from D, and on CUDA K's
+update is a syrk ([`gpu_layer.md`](gpu_layer.md), "The v0.0.4 runtime"),
+so the `scf` column is an upper bound on today's.
+
+**The glycine chains on 1, 2 and 4 GPUs.** 19 iterations every time, at
+the default `mem_per_gpu` of 2 GiB. PySCF is its DF-RHF over the same two sets. The ERI buffer is what the plan
+charges a GPU for it; the aux batches are 231 rows at gly5 and 62 at gly10,
+what a 128 MiB staging buffer holds.
+
+| Molecule | ERI buffer | GPUs | E, hartree | \|E − PySCF\| | Budget mode | `eri` | `scf` |
+|---|---|---|---|---|---|---|---|
+| gly5: 379 AOs, 1861 aux | 792 MiB | 1 | −1110.135779508227 | 3.9e-11 | 1.0 s | 1.1 s | 5.1 s |
+| | | 2 | −1110.135779508228 | 3.8e-11 | 1.3 s | 0.7 s | 3.0 s |
+| | | 4 | −1110.135779508227 | 3.9e-11 | 1.8 s | 0.5 s | 1.9 s |
+| gly10: 734 AOs, 3606 aux | 881 MiB | 1 | −2144.284111689077 | 5.5e-11 | 5.7 s | 10.2 s | 58.3 s |
+| | | 2 | −2144.284111689077 | 5.5e-11 | 6.0 s | 5.3 s | 29.9 s |
+| | | 4 | −2144.284111689077 | 5.5e-11 | 6.5 s | 2.8 s | 15.6 s |
+
+- **The energy does not depend on the GPU count**: the same to 1e-12 across
+  each molecule's three runs, 5.5e-11 from PySCF at gly10, against the bar
+  of 1e-9.
+- **K from the occupied orbitals is what the SCF's time was.** gly10 has 155
+  occupied orbitals of 734. From D, one GPU took 233.6 s for the 19 passes;
+  from C it takes 58.3 s, of which the guess's pass, still from D, is about
+  12 s.
+- **The SCF scales with the GPUs**: 1.9× on two and 3.7× on four at gly10.
+  At gly5, 1.7× and 2.6×.
+- **The pass's ring hides the copies.** A pass uploads its GPU's whole share
+  of B: at gly10, 7.27 GiB, about 0.45 s of host copy and 0.27 s of upload
+  beside 2.5 s of contraction (timed apart, with a sync after each). Both
+  run under the batch before's contraction, so the pass takes the
+  contraction's time and no GPU needs to keep rows of B. The copies grow as
+  n_aux × n_ao² and the contraction as that times n_occ, so they hide
+  better as the molecule grows.
+- **Where it does not hide: one batch.** A share that fits one aux batch
+  has no batch before it to hide under. Benzene's iteration is 13.4 ms, of
+  which about 2.7 ms is the copy of its 28 MiB of B up.
+- **The build of B was the host's scatter, and now scales**: 1.9× on two and
+  3.7× on four at gly10. Element by element the scatter was 14.2 s of the
+  17.3 s build on one GPU, with the GPU idle behind it; in tiles it is 2.7 s,
+  and the build waits on the device, whose time is the fit.
+- **An aux batch is one upload.** Its width is capped at what the staging
+  buffer holds, so no batch is split across buffers, and the ERI buffer
+  stops growing with the limit: at gly10 the batch is 62 rows and the
+  buffer 881 MiB, at 2 GiB and at any limit above.
+
+**The step-end sync on the SCF iteration.** The loop is one step, so the
+wrapper syncs once after it. `[scf] stage_sync` adds a sync of gpu0's stream
+where the iteration would end a step were it three: after the J/K build, after
+F with its energy and residual, after the DIIS step. Time per iteration, each
+run listed.
+
+| Run | Iterations | As built | With the three syncs |
+|---|---|---|---|
+| Water | 11 | 3.47, 3.53, 3.51 ms | 3.61, 3.60, 3.58 ms |
+| Ethylene | 54 | 2.98, 2.86, 2.87 ms | 3.10, 2.94, 2.98 ms |
+| Benzene | 11 | 13.74, 13.44, 13.41 ms | 13.68, 13.55, 13.53 ms |
+| gly5 | 19 | 268.4, 269.6, 270.0 ms | 268.3, 270.1, 270.2 ms |
+| gly10 | 19 | 3.066, 3.075 s | 3.070, 3.076 s |
+| gly10, four GPUs | 19 | 825.3, 822.2 ms | 824.2, 824.8 ms |
+
+- **The sync costs nothing that shows above benzene's size**, and at water
+  and ethylene about 0.1 ms of 3 ms: some 30 µs for each of the three, what
+  a sync of an idle stream costs (the wrapper's own, after each step of the
+  chain, took 40 to 110 µs with the lock release).
+- **The iteration already waits for the GPU**, whatever the wrapper does:
+  the pass's ring keeps the host at most two aux batches ahead of the
+  device, the decision reads E and the residual on the host, and the
+  eigensolver's call returns only when the stream has drained. At gly10 the
+  20 stream syncs of the loop as built blocked for 0.13 s of its 58.3 s.
+  With the three syncs, 1.44 s is spent in them, 0.07 s an iteration, and
+  the loop takes the same time: the wait moved, from `syevd`'s call to the
+  sync after the J/K build.
+- **So the host is never far ahead of the device in this loop**, and a sync at
+  a step's end takes nothing from it. A loop whose host work could overlap the
+  device's is where it would cost; none of the DF-RHF chain's is.
+
+### Vocabulary
+
+Each word below means one thing in the v0.0.4 layer's sections of these
+documents.
+
+**The calculation**
+
+| Word | Means |
+|---|---|
+| **step** | One node of the outer graph: a type with `mem_budget` and `run`, one config table and one slot. Something is its own step only if another step reads its `Output`, its `Output` carries over a replay, or it has a config table of its own |
+| **inner task** | A unit of a step's own work inside `run`: one GPU's thread of a fan-out, one turn of its loop. Plain code, not a rustflow task, and not a step |
+| **node** | A node of the outer graph; one per step, plus budget mode's final node |
+| **wrapper** | The one generic function around every step's `mem_budget` and `run`: it makes the device current, takes the step's locks, calls the body, syncs, and releases |
+| **`Output`** | What a step leaves on the MainBus: what other steps read, or what carries over a replay |
+| **MainBus** | The one shared object: the config, `Dims`, the caps and counters, each GPU's `GpuResources`, and one slot per step |
+| **slot** | A step's `RwLock<Option<Output>>` on the MainBus. Used only in this sense |
+| **View** | What `run` receives in place of the bus: the shared setup and the `Output`s the step declared it reads, and nothing else |
+| **`Dims`** | Every count setup makes: `n_atom`, `n_ao`, `n_aux`, `n_occ`, and every array length a step needs |
+| **setup** | Before the DAG: parse the config, the geometry and the bases on the host, fill `Dims`, make each GPU's `GpuResources`. Not budgeted |
+| **budget mode** | The DAG run once with each node calling `mem_budget`: count, check, allocate. Then the final node |
+| **final node** | The last node of budget mode: packs step scratch, checks the totals, prints the budget table, accepts or refuses |
+| **execute mode** | The same DAG with each node calling `run`. Allocates nothing |
+| **replay** | Execute mode again at the same `Dims` (a geometry optimization, AIMD), in the same buffers |
+
+**Memory**
+
+| Word | Means |
+|---|---|
+| **kind** | Where bytes live: **device** (a GPU's memory), **pinned** (page-locked host memory) or **heap** (ordinary host memory) |
+| **counter** | The running total of one kind (per GPU for device and pinned), charged as steps allocate |
+| **cap** | The most a kind may hold: from the config, or the machine's reading less a margin, always clamped to the machine |
+| **margin** | What a defaulted cap leaves unpromised, for what the budget does not count |
+| **step limit** | A step's own bound on its batch memory; it picks the batch width. The cap still admits or refuses. For `eri`, `[eri] mem_per_gpu` |
+| **flag** | The shared over-budget flag: set by the first over-cap charge, read by the final node |
+| **budget table** | One row per step and kind, plus the packed scratch, the lower bound, the handle workspace and the caps. Logged every run, printed whole on a refusal |
+| **step scratch** | Memory a step uses during its `run` and nothing reads afterwards |
+| **slab** | One allocation of one kind on one GPU (or the host): a `HeapSlab<T>`, an `Output`'s buffer, or the scratch slab the final node packs |
+| **region** | One step's part of the scratch slab, at an offset fixed by the final node |
+| **layout** | A step's function from `Dims` and its options to the offsets of its **tenants**, the pieces its region holds |
+| **lease** | The borrow of its region that `run` receives, for the length of `run` |
+| **closure** | The DAG's transitive closure: which steps a path orders. Two regions may overlap only if the closure orders their steps |
+| **lower bound** | The heaviest set of mutually unordered scratch declarations: no packing does better |
+| **sum, fold** | For a calculation: every buffer alive at once (sum), and the peak with bytes reused perfectly (fold) |
+| **allocation record** | The global allocator's record of large heap allocations made during `run`, checked in the test tiers |
+
+**GPUs**
+
+| Word | Means |
+|---|---|
+| **GPU** | One device of the run, `gpu0` on: an index into `[resources] devices` |
+| **gpu0** | The GPU that one-GPU steps run on and all-GPU results are reduced onto |
+| **all-GPU step** | A step that uses every GPU, its data split across them |
+| **logical GPU** | One of several GPU indices mapped onto one physical device, a test facility (`[resources] devices = [0, 0]`) |
+| **`GpuResources`** | Per GPU, a `Mutex` around that GPU's stream, the BLAS and solver handles made on it, and the handle workspace |
+| **the GPU's stream** | The stream inside `GpuResources`, used only by the holder of that GPU's lock |
+| **a step's streams** | Streams the wrapper makes for a step, one per GPU it spans by default; the step's kernels and copies go there |
+| **guard** | A held lock: on a GPU's `GpuResources`, or on a manager |
+| **handle set** | One GPU's BLAS and solver handles |
+| **handle workspace** | The fixed 128 MiB per GPU the BLAS handle draws on, bound once |
+| **work buffer** | A solver call's `work` argument, sized by its query, a slice of the caller's scratch |
+| **recipe** | The tree's own dense routine in place of a vendor call (the blocked `trsm`, the Cholesky), from the recipes' kernel library |
+| **binding** | The layer's function over one C ABI call or kernel: it takes slices and checks their lengths before enqueueing |
+
+**Density fitting**
+
+| Word | Means |
+|---|---|
+| **B** | The fitted three-centre tensor B<sub>μν</sub><sup>P</sup>, on the host heap |
+| **pair column** | One orbital shell-pair function index μν of B, in spherical functions. Not used bare |
+| **pair batch** | A run of pair columns, the unit the build of B works in |
+| **aux batch** | A run of aux functions P, the unit a J/K pass works in |
+| **J/K pass** | One sweep over all of B building J and K for a set of densities |
+| **`EriManager`** | `eri`'s `Output`: B, the metric's factor, and per GPU the ERI buffer, its streams and their events. Reached by its readers under its lock |
+| **ERI buffer** | One device buffer per GPU within `[eri] mem_per_gpu`, owned by the `EriManager`: the build's ring of pair batches, then a pass's gather tables, a copy of the density, the J and K fragments, one aux batch's work and the pass's ring of aux batches |
+| **ring** | The buffers of the batches in flight: two by default (`[eri] ring`), one filling while the other is used. The build has one, of pair batches; a J/K pass has one, of aux batches |
+| **staging buffer** | One pinned buffer that B passes through between a GPU and the host: a fitted pair batch on its way down, of at most 64 MiB, or an aux batch of B's rows on its way up, of at most 128 MiB. One per ring buffer |
+| **records** | Per-primitive input data a kernel reads: centre, exponent, weighted coefficient |
+| **work list** | Indices, one entry per unit of kernel work. `cells` is one of them, by name |
+
 ## Three owners
 
 The things one has to decide about a feature belong to three owners. A task
@@ -1427,3 +1589,28 @@ itself, split it there.
   block is allocated on its worker's thread, so pinning that thread to the
   GPU's socket would place the block without the planner knowing. Whether
   the gap is worth the pinning is a measurement on such a node.
+
+**The v0.0.4 layer's**, to discuss:
+
+- **Several nodes.** The commitment is to one node's GPUs. Keeping several
+  nodes open cheaply is one rule: work on different GPUs communicates only
+  through the collectives layer. B on one host's heap is the first thing
+  that rule would have to answer.
+- **What is cleared between replays, and by whom**: a reset mode per step
+  (as built), an explicit `on_replay`, or a node at the loop's entry or
+  end.
+
+And to measure or verify:
+
+- **The blocking sync**: which scheduling flag makes a waiting worker
+  sleep, on each backend.
+- **The executor's width** against the GPU steps that can wait at once, on
+  a sync or a lock.
+- **An inner graph on rustflow**: none is built. The case to measure is a
+  step whose inner work has independent host-heavy parts, which no step of
+  the DF-RHF chain has.
+- **Rebuilding only the records on a replay**, if the full rebuild costs.
+- **Collectives**: whether NCCL and RCCL mind a rank moving between steps'
+  streams.
+- **Idle workers**: what rustflow's parking costs while a run waits on the
+  device.
