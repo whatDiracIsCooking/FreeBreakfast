@@ -11,8 +11,8 @@
 // no CMake build (the Pages workflow, `.github/workflows/docs.yml`), every
 // build.rs here asks `doc_only()` first and links nothing. rustdoc never
 // links, so the docs build; a test or binary built so fails at the link.
-// The crates' env!() backends are set to CUDA then (`rust/kernel_lib.rs`,
-// `core/wwr/build.rs`), which no rendered page shows.
+// The crates' env!() backends are set to CUDA then (`rust/kernel_lib.rs`),
+// which no rendered page shows.
 
 /// Whether `FB_RUST_DOC_ONLY` is `1`: document, and link nothing.
 fn doc_only() -> bool {

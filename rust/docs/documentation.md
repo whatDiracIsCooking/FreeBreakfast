@@ -22,7 +22,7 @@ keeps the habits, and drops one: the README beside every module, which
 rustdoc makes a second copy.
 
 The design leans on the other documents' terms: the *tiers* of
-[`testing.md`](testing.md), a *plan* and its *arena*
+[`testing.md`](testing.md), a *step* and its *`Output`*
 ([`programming_model.md`](programming_model.md)), and the *timing record*
 ([`diagnostics.md`](diagnostics.md)).
 
@@ -301,25 +301,18 @@ hand-written SVG, and rendered when the docs build. The tree already does the
 second half: `experimental/cope_rearrangement`'s surfaces and scans are SVG
 written by stdlib Python, committed as text, and shown by its READMEs.
 
-**DAG diagrams are emitted from the plan.** The programming model derives a
-plan from the DAG: the fork and sync points, the placement, the arena. The
-diagram worth having shows the plan, not the DAG the author drew, so the
-emitter is on the plan type and writes Mermaid (for the pages) or DOT (for a
-reader's own tools). It cannot drift from what the orchestrator runs, because
-it is produced from the same structure.
+**A step DAG's diagram is emitted, not drawn.** The diagram worth having
+shows the DAG the config built, its steps and their declared reads, so its
+emitter is on the built DAG and writes Mermaid (for the pages) or DOT (for a
+reader's own tools), and a committed one is a tier-3 golden compared as
+text, so a change that adds or moves a read is a diagram diff in the PR. No
+emitter is built yet.
 
-**A plan's diagram is a tier-3 golden.** The plan is a deterministic function
-of the DAG and its dimensions, which is what makes the arena's size a committed
-number compared bitwise ([`testing.md`](testing.md), "Performance"). The
-emitted Mermaid is the same kind of number: committed beside the arena size,
-compared as text, so a planning change that adds a sync point or moves a task
-is a diagram diff in the PR, read in review.
-
-**Animations are generated from real runs, never drawn by hand.** A task
+**Animations are generated from real runs, never drawn by hand.** A step
 timeline from a run's timing record, SCF convergence, an IRC path, orbitals
 along a reaction coordinate. A run needs a card, and the docs build has none
 (below), so the nightly makes them: it already runs on a card and already
-writes the timing record's task times to the metrics branch
+writes the timing record's step times to the metrics branch
 ([`diagnostics.md`](diagnostics.md), "The timing record"). The media goes to
 the same branch, and the site build reads it from there. Binary media stays
 out of `main` either way, and the site shows last night's run.
@@ -366,13 +359,13 @@ and run where the testing document puts those tiers:
 | Section citations name a heading that exists; `mdbook-linkcheck` | 3 | Every PR, on the runner |
 | No doc comment restates a contract, debug or always-on | 3 | Every PR, on the runner |
 | The config reference matches the config type | 3 | Every PR, on the runner; it is generated, so the check is that the committed page is the generated one |
-| Plan diagrams match their goldens | 3 | Every PR, on a card host (the planner is in the crate) |
+| Step DAG diagrams match their goldens | 3 | Every PR, on the runner (not built) |
 | The book builds, with every equation and diagram rendered | 3 | Every PR, on the runner; `mdbook-katex` and `mdbook-mermaid` fail on a construct they cannot render |
 
 ## Open questions
 
 - **Private items.** `cargo doc --document-private-items` would put the
-  orchestrator's internals on the site, which the design pages describe
+  executor's and the wrapper's internals on the site, which the design pages describe
   anyway. The question is whether `missing_docs` should extend to them, which
   it does not by default.
 - **How a doc comment links to the book.** A rustdoc page can link to a book

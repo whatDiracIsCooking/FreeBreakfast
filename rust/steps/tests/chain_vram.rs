@@ -1,5 +1,5 @@
 //! No library allocates behind the budget on a live handle set (tier 4,
-//! `docs/memory.md`, "What is checked"; `docs/gpu_layer.md`, "The v0.0.4
+//! `docs/memory.md`, "The budget"; `docs/gpu_layer.md`, "The v0.0.4
 //! runtime"): this process's VRAM, read from amdgpu's fdinfo
 //! ([`amdgpu_process_vram`]), once budget mode has allocated the slabs and
 //! the handle workspace, after a plan's first execute and after a second.

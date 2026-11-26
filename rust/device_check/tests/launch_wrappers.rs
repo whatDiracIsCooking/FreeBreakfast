@@ -29,7 +29,7 @@ const CAMEL: &[&str] = &[
     "GetDevice",
     "DeviceReset",
     "DeviceSetLimit",
-    // Capture: the orchestrator's.
+    // Capture: never a launch wrapper's.
     "StreamBeginCapture",
     "StreamEndCapture",
 ];

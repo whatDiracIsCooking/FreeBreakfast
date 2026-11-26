@@ -2,7 +2,7 @@
 //! atoms aborts at the caller with a critical line.
 //!
 //! A binary of its own, because the case re-runs it as a child (selected by
-//! `FB_MOLECULE_CHILD`), as `core/arena/tests/arena_block.rs` does: what it
+//! `FB_MOLECULE_CHILD`): what it
 //! checks, the line flushed and the abort, is what survives the process
 //! ending.
 

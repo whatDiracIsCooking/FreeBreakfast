@@ -9,23 +9,15 @@ already carries all three (`core::log`, `core::error_handling`,
 fourth, timing, is new: the C++ tree has no timing infrastructure beyond two
 files that pair `steady_clock` reads by hand.
 
-The design leans on the programming model's terms
-([`programming_model.md`](programming_model.md)): a *task*, the unit the
-orchestrator admits, times, tests and retries; a *worker*, which is a thread, a
-stream, a GPU or a node; and the DAG's *sync points*, which the orchestrator
-derives. Those are the old layer's terms. In the v0.0.4 layer the unit is a
-*step* and the one function around its `run` is the *wrapper*
-([`programming_model.md`](programming_model.md), "Steps on rustflow"):
-"What a step says", next, is that layer's timing, logging and failure, and
-the sections after it are the old layer's where they speak of tasks, the
-orchestrator and the record, until its crates are deleted. Logging's
-levels, the error kinds, the one boundary and the panic hook hold for
-both.
+The unit is a *step*, and the one function around its `run` is the
+*wrapper* ([`programming_model.md`](programming_model.md), "Steps on
+rustflow"). "What a step says", next, is the layer's timing, memory,
+logging and failure; the sections after it are the rules under them.
 
 ## What a step says
 
-A step says nothing about itself by default, as a task does not: the
-wrapper and the plan do it.
+A step says nothing about itself by default: the wrapper and the plan do
+it.
 
 **Time.** `Plan::execute` returns one `StepTime` per step: the time inside
 `run`, the time inside the wrapper's sync and release, when the node
@@ -123,115 +115,27 @@ The macro exists for two reasons:
   `!Send`. A range opened on one thread then cannot be popped on another, and
   that rule is enforced at compile time.
 
-### What the orchestrator times on its own
-
-The orchestrator opens a stream scope around every task, on the stream the
-task was given, and a host scope around the whole run and around each sync
-point. The task-level timing that performance regression reads therefore
-needs no code in the task. Scopes inside a task are for finer detail, and are
-recorded under the task that opened them.
-
-The orchestrator also resolves the stream scopes. It owns every sync point in
-the run, so each pending event pair is read at the first sync point after its
-closing event, and no scope ever adds a sync of its own. A task that has no
-internal host sync (the programming model's rule) can therefore be timed on
-the device without being slowed down.
-
-What `fb_core_thread_pool` does today is a part of this. It opens a stream
-scope around every GPU node: an event recorded on the node's stream after the
-waits its edges need and before it runs, closed by the event recorded after
-it returns, which is also the event its consumers wait on, so the closing
-half costs nothing new. It opens a host scope around every node's callable,
-which for a CPU node is its compute and for a GPU node its enqueueing, and
-one around the whole run. Every pair is read after the run, when each GPU
-worker has synced its lanes on the way out: that is a sync point after
-every closing event, if not always the first. It also opens a host scope
-around every sync point: each CPU node's wait on each GPU predecessor, and
-each GPU worker's sync of each lane as it exits. An edge between two lanes
-is a wait on the device and no sync point. A loop's body runs its GPU nodes
-on the same events every iteration, so the loop's decision, after the host
-waits that make the whole body complete, reads that iteration's stream
-scopes before it readies the body again: a sync point the loop has anyway,
-the first after each closing event. `scope!` inside a task is not here
-yet. A failed run still returns the times of the tasks that ran; a scope
-that cannot be read fails a run that otherwise succeeded, and is dropped
-from one that already failed, since it would only echo that failure
-(below, "Sticky faults").
-
 ### The timing record
 
-The numbers go to one place: a timing record the run writes beside its
-products, as JSON like `hessian.json` and the rest. It holds, per task, the
-task's name, its worker, its dimensions, its host enqueue time and its device
-time; the run's sync points and what each waited for; and the plan's arena
-size, so a run's footprint and its time are read from the same file. It also
-says which profile built the binary, because a debug build's timings are not
-comparable with a release build's.
+The numbers go to one place: `timing.json`, which `Run::write` puts beside
+the products after the run, every time integer nanoseconds ("What a step
+says", above). It says which profile built the binary, because a debug
+build's timings are not comparable with a release build's, and it is a
+file of its own rather than a section of a larger report, so a nightly
+diff of the times is not a diff of the config too.
 
-**It is a file of its own,** `timing.json` beside the products, not a
-section of a larger run report that would also carry the plan. The plan's
-text already has a home that is compared rather than measured (the
-planner's golden), it changes only when the code does, and a record that
-carried it would make every nightly diff a diff of the DAG too. The record
-names what it timed instead: each task by its name and worker, and the
-plan by its arena size and profile, which is what a reader of the times
-needs from it. The second option's gain, the plan and its measurement read
-together, comes from the task names, which are the plan's own.
+The record has three readers, each written down elsewhere:
 
-### The plan beside the record
-
-The binary also writes the plan into the output directory, in files of
-their own for the reason above. `plan.txt` is the plan's text, the golden's
-format; `plan.dot` is its graph as Graphviz (`fb_core_planner::Graph`,
-`Plan::graph` and `Graph::dot`): each task's rank, name, lane and
-dimensions and, per kind, the bytes it produces and the bytes the block
-holds live while it runs, the table's peak drawn bold; each edge labelled
-with the rows behind it, or dashed for an ordering with none (a handoff of
-bytes, or a decision after its body), which is drawn only where no other
-path implies it, since most handoffs are, and the label counts those left
-out; each loop a cluster. Both are
-written after planning and **before admission**, so a plan admission
-refuses, the one whose memory a reader most wants to see, is still on
-disk. `timing.dot`, written after the run beside `timing.json` and
-whether or not the run failed, is the same graph with the record joined
-on by rank: each task's host and device time summed over its iterations,
-its fill its share of the most any task took, a task that did not run
-grey, each decision loop's iteration count, and the run's wall time,
-profile and error in the label. The graph is copied out of the plan
-before the blocks are made, so it outlives `Plan::instantiate`, which
-consumes the plan.
-
-In memory, the record is what a run returns: `fb_core_thread_pool::Record`,
-from `thread_pool::run` and the planner's `Instance::run`. Today it holds
-the run's result; the profile that built it (`debug` or `release`, from
-`cfg!(debug_assertions)`); its wall time; per task its node's rank, its
-name, its worker, its dimensions (a task's `GpuTask::dims` or `CpuTask::dims`, empty by default),
-its host time and its device time, and for a loop's body node or decision
-the iteration of its innermost loop it ran in, one entry per iteration;
-for a body node of a counted loop inside a decision loop, both indices,
-its trip as the iteration and the decision loop's iteration as `outer`,
-one entry per pair; every sync point, with
-the worker that waited, the node it waited for, the indices of the node
-that waited and the host time of the wait; each loop's iteration count, by
-its decision node; and, from
-`Instance::run`, the plan's block sizes per worker and kind. `Record::to_json`
-is the `timing.json` text, and the type's rustdoc is its schema: times are
-integer nanoseconds, nodes their ranks, and an error keeps its kind,
-message and context but not its origin, a source location in the binary
-that wrote the file. Writing the file waits for a binary that writes
-products, and so do the tasks' dimensions: no task names its own yet.
-
-The record has three readers, and each is already written down elsewhere:
-
-- **The nightly** writes the task times to the metrics branch, keyed by host,
-  card, task and dimensions, and flags a task that drifts over its rolling
-  median ([`testing.md`](testing.md), "Performance").
-- **The documentation site** shows a task timeline the nightly draws from its
-  own run's record and publishes with the task times
-  ([`documentation.md`](documentation.md), "Diagrams and animations").
-- **Someone reading a slow run**, who wants the task, not the kernel, that
-  took the time, and whether the device or the enqueueing host was the one
-  that waited.
+- **The nightly**, which is to write the step times to the metrics
+  branch, keyed by host, card, step and molecule, and flag a step that
+  drifts over its rolling median ([`testing.md`](testing.md),
+  "Performance").
+- **The documentation site**, which is to show a step timeline drawn from
+  a run's record ([`documentation.md`](documentation.md), "Diagrams and
+  animations").
+- **Someone reading a slow run**, who wants the step, not the kernel, that
+  took the time, and whether it was the step's enqueueing or the wrapper's
+  sync that waited.
 
 ## Logging
 
@@ -249,9 +153,9 @@ The rule for each level:
 | Level | For | Examples |
 |---|---|---|
 | `trace` | Inner-loop detail, off by default | Per batch, per kernel launch |
-| `debug` | Orchestration, for whoever is debugging the run | A task starts or ends, its placement, its layout's share of the arena, sync points |
+| `debug` | The plan's workings, for whoever is debugging the run | A step skipped, a lock waited on |
 | `info` | What someone running a calculation wants to see | A step starts, SCF iterations and energies, final results |
-| `warn` | A result is produced, but someone should look at it | Near-linear dependence, slow convergence, an adaptive task planned at width 1 |
+| `warn` | A result is produced, but someone should look at it | Near-linear dependence, slow convergence, a batch width of one |
 | `error` | An error that reached the place that handles it | Logged once, there |
 | `critical` | The process is about to abort | `check_or_abort`, a broken contract in release, a panic in release |
 
@@ -260,39 +164,14 @@ The rules that go with the table:
 - **Log an error once, where it is handled, not at every layer it passes
   through.** Propagation is silent, and the error carries its origin with it.
   Where it is handled is named below ("The one boundary").
-- **A log line from a task names the task and its worker**, so interleaved lines
-  from concurrent workers can be pulled apart. The mechanism is below.
+- **A step's line names the step**, by hand ("What a step says", above),
+  so interleaved lines from concurrent steps can be pulled apart.
 - **Formatting a message costs nothing when its level is off.** `log`'s macros
   check the level before they format.
 - **A warning counts when it is written.** The counter is bumped in the
   backend, so a warning filtered out by the level does not count, as the C++
   `FBF_LOG_WARN` behaves. The count is printed at the boundary, so a run that
   completed with warnings says so on its last line.
-
-### The task context
-
-The line format is the C++ one,
-`[time] [tid] [level] [file:line] message`, and the thread id in it is not
-enough to tell tasks apart: a worker's thread runs every task placed on that
-worker over the run, the id is a number a reader would have to map to a
-worker by hand, and at tier 3 the fake workers share one thread anyway.
-
-So the orchestrator sets a thread-local *current task* record, the task's name
-and its worker, for exactly the span of the task's run, and the backend reads
-it when it writes a line and appends it as `[task@worker]`. A line written
-outside any task carries nothing extra. The task does nothing for this, in
-the same way it does nothing for its own timing: both are the orchestrator's,
-because both are properties of the task as a node in the DAG rather than of
-the code inside it.
-
-The same record is what error context reads (below), so a log line and an
-error from the same task name it the same way.
-
-The record is thread-local, and that is enough because one thread runs one
-node at a time: a worker is a thread the orchestrator owns, and host work
-that would fan out is written as nodes the DAG can see rather than as a pool
-inside a task ([`programming_model.md`](programming_model.md), "CPU
-workers"). No record is ever forwarded into a pool, because no task has one.
 
 ## Errors
 
@@ -313,12 +192,12 @@ too, not just its text:
   `hipErrorOutOfMemory`), so a message can be searched for in the vendor docs.
 - **The numeric code and the backend are kept**, so a caller can branch on them.
 - **Codes are mapped to `ErrorKind`.** A runtime code that fails becomes
-  `GpuRuntime`, out-of-memory from either vendor included, in both layers:
-  fb-core-wwr's `gpu_status` and fb-core-device's statuses. Memory is
-  taken at admission, and admission's refusal is the one `Allocation` value
-  ("Allocation is a planning-time error", below); a create that fails
-  aborts, and an out-of-memory code met after admission is a runtime fault
-  like any other.
+  `GpuRuntime`, out-of-memory from either vendor included, in
+  fb-core-device's statuses. Memory is counted in budget mode, and the
+  final node's refusal is the one `Allocation` value ("Allocation is a
+  planning-time error", below); a create that fails aborts, and an
+  out-of-memory code met after the final node is a runtime fault like any
+  other.
   An unsupported configuration the backend refuses is to become
   `Unsupported`; no wrapper maps one yet. The kinds are what the exit code and
   the boundary's message are read from, so a reader learns what went wrong
@@ -327,17 +206,16 @@ too, not just its text:
 
 ### Allocation is a planning-time error
 
-The programming model makes a run allocate nothing: the arena is laid out at
-planning, and admission is where a plan can be refused. So the orchestrator
-never meets an `Allocation` error while a DAG runs, and it has no retry to
-attempt there; the C++ tree's rule that a failed create or allocation aborts
-(`CreatePolicy`) carries over unchanged, and the one allocation a plan makes,
-its blocks at instantiation ([`programming_model.md`](programming_model.md),
-"Blocks, plans and the process"), is under it: a card that another process
-has emptied below the admitted budget aborts there. An `Allocation` error is a value in
-one place only: admission refusing a plan that does not fit a worker's
-budget, before anything is launched. It keeps the kind, and exit code 2,
-because it is the same failure reported earlier.
+A run allocates nothing: a step's `mem_budget` allocates through a
+`Budget`, and `run` is handed none ([`memory.md`](memory.md), "The
+budget"). So no `Allocation` error is met while a plan executes, and there
+is no retry to attempt there; the C++ tree's rule that a failed create or
+allocation aborts (`CreatePolicy`) carries over unchanged, and the
+allocations the final node makes are under it: a card another process has
+emptied below the accepted budget aborts there. An `Allocation` error is a
+value in one place only: the final node refusing a plan over a cap, before
+anything is launched. It keeps the kind, and exit code 2, because it is the
+same failure reported earlier.
 
 ### Sticky faults
 
@@ -349,49 +227,48 @@ The vendors distinguish two kinds of runtime error, and the design does too:
 - **Everything else** (an invalid value, an unsupported configuration, an
   out-of-memory) reports once and the context stays usable.
 
-Only the first error after a sticky fault means anything. The orchestrator
-therefore stops launching on a poisoned device as soon as it sees one, and
-reports the fault rather than the echoes that follow it. The `Error` records
-that the fault was sticky, so the boundary can say the device was lost rather
-than listing the same code once per task.
+Only the first error after a sticky fault means anything. The plan is
+therefore to stop launching on a poisoned device as soon as it sees one,
+and to report the fault rather than the echoes that follow it, the `Error`
+recording that the fault was sticky, so the boundary can say the device
+was lost rather than listing the same code once per step.
 
 ### Asynchronous errors surface at sync points
 
 A fault in a kernel is reported at the next sync on its stream, not at the
-launch that caused it. Its origin is therefore the sync point. The orchestrator
-attributes it to the tasks that ran on that stream since the previous sync,
-and that attribution is where the DAG's sync points pay for themselves in
-diagnostics. In release it is as narrow as the DAG makes it.
+launch that caused it. Its origin is therefore the sync point. The wrapper
+syncs every stream a step has after its `run`, so a fault names the step
+that enqueued it, unless the step itself synced first (a loop deciding on
+the host), where it names the step and that sync.
 
-For debugging there is a switch that makes the orchestrator sync after every
-task, so a fault names exactly one task, at the price of every bit of
-concurrency the DAG had. It is this tree's `CUDA_LAUNCH_BLOCKING`, and the
-compute-sanitizer runs turn it on, since a sanitizer report is only as good as
-the task it points at.
+For debugging, a switch that syncs after every launch would make a fault
+name exactly one kernel, at the price of the overlap inside a step. It is
+this tree's `CUDA_LAUNCH_BLOCKING`, and the compute-sanitizer runs would
+turn it on, since a sanitizer report is only as good as the launch it
+points at.
 
-### Context accrues at task boundaries
+### Context accrues at step boundaries
 
-`Error::origin` stays the detection site. When an error crosses a task's
-boundary, the orchestrator pushes the task's name and worker, read from the
-same current-task record the logger uses, onto the error's *context*: one
-list the error carries beside its kind, message and origin. `Display` prints
-the message and then the context, innermost first. The reader then gets the
-line where it happened, the task in the DAG that was running, and the worker
-it ran on, in one log line.
+`Error::origin` stays the detection site. When an error leaves a step, the
+wrapper pushes `step '<name>'` (`step '<name>', mem_budget` in budget mode)
+onto the error's *context*: one list the error carries beside its kind,
+message and origin. `Display` prints the message and then the context,
+innermost first. The reader then gets the line where it happened and the
+step that was running, in one log line.
 
 ### One worker fails
 
-A failed node fails its successors and nothing else (the programming model's
-rule). Concretely:
+A failed step fails its successors and nothing else
+([`programming_model.md`](programming_model.md), "Steps on rustflow").
+Concretely:
 
-- **Nothing new is launched** downstream of the failure, or anywhere on a
-  poisoned device.
+- **Nothing new is launched** downstream of the failure: a step that reads
+  a failed one is skipped and flagged in turn.
 - **Siblings already launched run to their sync.** Enqueued device work cannot
   be recalled, and a sibling's result may still be worth having.
 - **The run returns one error: the first in topological order.** Topological,
-  not first in time, so the same failure reports the same way at every worker
-  count. A genuinely distinct sibling failure (two configs refused on two
-  workers) is pushed onto that error's context, so the boundary still logs
+  not first in time, so the same failure reports the same way at every
+  executor width. A genuinely distinct sibling failure is pushed onto that error's context, so the boundary still logs
   once and loses nothing.
 
 ### `Drop` cannot fail
@@ -491,5 +368,5 @@ other.
   than checking the level in a hot loop. Whether the trace lines in inner loops
   are worth that, or whether the level check is already free enough, is a
   measurement.
-- **How the sync-every-task switch is set.** An environment variable (as
+- **How the sync-every-launch switch is set.** An environment variable (as
   `CUDA_LAUNCH_BLOCKING` is), a config key, or a debug-build default.

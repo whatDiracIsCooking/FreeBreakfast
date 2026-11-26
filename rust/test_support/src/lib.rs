@@ -8,7 +8,7 @@
 /// duplicated into two descriptors is one client). The kernel keeps it per
 /// file, so it is this process's alone: no other tenant of the card moves
 /// it, as one moves the device's free memory, and it counts every buffer of
-/// ours in VRAM, the arena's and a library's alike. `None` when the process
+/// ours in VRAM, the budget's and a library's alike. `None` when the process
 /// has no amdgpu file open: on CUDA, or before the runtime opened one.
 pub fn amdgpu_process_vram() -> Option<u64> {
     let dir = std::fs::read_dir("/proc/self/fdinfo").ok()?;

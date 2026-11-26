@@ -2,7 +2,7 @@
 
 Testing absorbs contracts. A contract is a check the code carries with it, and
 every test that reaches the code runs that check. The rest of this document is
-where a check lives (tiers), how much of a DAG a test covers (levels), what
+where a check lives (tiers), how much of the step DAG a test covers (levels), what
 runs when and how a run holds a card, how a PR's run is chosen from the diff,
 what keeps the tests few, and the checks no unit test provides: regression,
 fuzzing, the C++ boundary's parity checks and sanitizers.
@@ -39,7 +39,7 @@ The rules already in the crate carry over:
   |---|---|---|
   | A caller's precondition only correctness rests on (a basis has shells, a matrix has a row, a predecessor is in the plan) | `#[debug_requires]` | `§ Contracts`, as `Pre-condition - debug` |
   | A caller's precondition memory safety rests on, a condition on the arguments (the length an `unsafe` copy trusts, an `n²` that must fit a kernel's or BLAS's 32-bit index), its values printed through the value checks | `#[requires]` | `§ Contracts`, as `Pre-condition`; not repeated under `# Panics` |
-  | A safety check on state the body produces partway through, one whose recomputation in an attribute would be long, a private helper's called once per operand whose message names that operand, or the arena's row flags ([`memory.md`](memory.md), "The Rust shape") | a body `assert!` | `# Panics` |
+  | A safety check on state the body produces partway through, one whose recomputation in an attribute would be long, or a private helper's called once per operand whose message names that operand | a body `assert!` | `# Panics` |
   | An invariant no caller can break | `debug_assert!` under an `// INVARIANT:` comment | the source alone |
   | The outcome of a GPU call | a status or a `Result` | `# Errors` |
 
@@ -131,9 +131,9 @@ Push each check to the cheapest tier that can express it:
 | Tier | Catches | Examples |
 |---|---|---|
 | **1. Compile time** | Misuse that should not build | A view borrows its handle, so it cannot outlive it. A host buffer and a device buffer are different types. Dimensions are newtypes (`Nbf`, `Naux`), so they cannot be swapped. `Send`/`Sync` decide which data may cross between workers (the programming model's sharing question, enforced). `const` generics fix angular momentum. |
-| **2. Contract** | Preconditions and invariants the type system cannot express | Shapes agree, an index is in range, a task asks the arena only for a buffer its layout named |
-| **3. CPU only** | Logic that touches no device | The DAG planner, placement, memory admission, layouts and the arena's offsets, config parsing, error codes. Multi-worker orchestration runs with fake workers, as the fake `HandleKind` already does for handles. |
-| **4. Single GPU** | One task's numbers on one device | One J build against a reference. Several workers as streams on one card. |
+| **2. Contract** | Preconditions and invariants the type system cannot express | Shapes agree, an index is in range, a carve meets no live tenant |
+| **3. CPU only** | Logic that touches no device | The step DAG's construction, a dry budget and its packed offsets, config parsing, error codes. The executor runs fake steps on several workers. |
+| **4. Single GPU** | One step's numbers on one device | One J build against a reference. Logical GPUs on one card. |
 | **5. Multi GPU** | What only real separate devices show | Peer transfers, broadcast and reduce across cards, per-device placement |
 
 Each tier down costs more and runs less often. A check that can move up a tier
@@ -141,29 +141,26 @@ should.
 
 Moving down a tier does not mean a host copy of every kernel. The tree is
 GPU-first. Tier 3 is for code that never needed a device in the first place,
-mainly the orchestrator, not for CPU twins of the GPU tasks.
+mainly the DAG, the budget and the packing, not for CPU twins of the GPU steps.
 
 Tier 3 is also where the expensive tools pay: fuzzing, mutation testing and
 Miri all run thousands of times per case, and only a case that never touches a
-card can afford that. The more of the orchestrator stays device-free, the more
-of it those tools can reach. The arena, the thread pool and the planner build
-with no wwr library for this (their `device` feature off,
-[`README.md`](../README.md), "Build and test"), so a tier-3 run needs no CMake
-step and nothing in it calls into a C library, which Miri cannot follow.
-Miri itself has not been run on them yet: it needs a nightly toolchain the
-image does not carry.
+card can afford that. The more of the layer stays device-free, the more
+of it those tools can reach: `fb-core-pack`, `fb-core-flow` and a dry
+budget need no card. Miri has not been run on them yet: it needs a
+nightly toolchain the image does not carry.
 
 ## Levels: how much of the DAG a test covers
 
 | Level | Covers | DAG terms |
 |---|---|---|
-| **Unit** | One function, type or task | One node |
-| **Integration** | Tasks wired together | A sub-DAG: the edges, the fork and the sync |
+| **Unit** | One function, type or step | One node |
+| **Integration** | Steps wired together | A sub-DAG: the edges, the fork and the sync |
 | **End to end** | A whole calculation from its config | Traversing the whole DAG |
 
 A feature is tested in that order: its nodes first, then their wiring, then the
 whole run. The tiers and levels are independent axes. A unit test of the
-planner is tier 3. A unit test of the J kernel is tier 4.
+packing is tier 3. A unit test of the J kernel is tier 4.
 
 **The examples are the end-to-end level.** `cargo test` compiles everything
 under `examples/`, and one case runs each example config through the binary,
@@ -205,7 +202,7 @@ real GPUs is named `tier5_*` ("Selecting GPU tiers in cargo").
 | A ring of one | `[eri] ring = 1` | The rings' events and waits against the unoverlapped order |
 | Logical GPUs | `[resources] devices = [0, 0]`: two GPU indices on one device | Tier 4. The all-GPU paths without a second card: the device made current in each thread of a fan-out, the lock order across GPUs, the reduction onto gpu0, a ring per GPU. Real GPUs are tier 5 |
 | A negative control | A test-only switch that removes one ordering: the event before the fit (`#[cfg(test)]` in the build), the wrapper's step-end sync (`fb-core-flow`'s `test-support` feature) | That the test for the ordering can fail: under the NaN fill the run without it gives a wrong result, and the first run's with it restored. A control whose failure depends on a race is not kept |
-| Recorded references | The old Rust path's results, run once and committed under `steps/tests/data/` with their writer, card and revision (`old_path.json`, `old_path_h2o_*.npy`; the writer, the old `pipeline/scf`'s `tests/steps_reference.rs`, went with that crate, #1873, and `old_path.json` names it and its revision) | The steps' energies, S, H and the metric against the old layer's (`recorded_device.rs`), with no old-layer crate in `fb-steps`' manifest |
+| Recorded references | The first Rust path's results, run once before its crates were deleted and committed under `steps/tests/data/` with their writer, card and revision (`old_path.json`, `old_path_h2o_*.npy`; `old_path.json` names the writer and its revision) | The steps' energies, S, H and the metric against those recorded values (`recorded_device.rs`) |
 | A replay | `Run::replay` | The same energy from the carried orbitals, and the allocation count unchanged |
 | The executor's width | `[resources] threads` at 2 and at 8 | The same energy, and no starvation with workers waiting on locks |
 
@@ -220,11 +217,6 @@ the largest element for a host-built matrix against the device's.
 error code: a `run` that keeps a handle past its guard, a recipe handed a
 step's stream, a download's token asked for a second upload, a whole
 buffer reached beside its tenant.
-
-**The layer names nothing of the old one outside its tests.**
-`fb-core-device`, `fb-core-budget`, `fb-core-flow` and `fb-steps` depend
-on `fb-core-wwr`, the arena, the planner and the thread pool only under
-`[dev-dependencies]`.
 
 ## What runs when
 
@@ -308,9 +300,9 @@ card OOMed it. So:
   That is the C++ gates' model since PR #499: one gtest process per GPU
   binary, because a process per case paid the device's context init on every
   case, and that was most of the batch's wall clock.
-- **Workers within a case are the case's own.** A tier-4 test of several
-  workers as streams starts them itself, and a run's threads are scoped to
-  the run and joined before it returns
+- **Threads within a case are the case's own.** A tier-4 test's plan
+  starts its executor and host pool itself, and they are joined when the
+  plan drops
   ([`programming_model.md`](programming_model.md), "CPU workers"), so a case
   leaks no thread into the next. The harness never runs two cases
   concurrently on a device.
@@ -322,7 +314,7 @@ card OOMed it. So:
   a flaky case, and a flaky case is a blocker with an issue filed at once,
   which is the tree's rule for every test failure.
 - **A failure reproduces alone, in one command.** Every failure prints what
-  recreates it: the seed, the shapes, the task and the worker. The output
+  recreates it: the seed, the shapes, the step and the GPU. The output
   names the one command that runs that case by itself. A failure that needs
   the whole batch to reproduce is a shared-state bug, and the one cache per
   process ("Levels") is the only shared state a binary may hold.
@@ -355,8 +347,8 @@ reason, so no runner, feature or harness is needed to see it:
   aborts ([`diagnostics.md`](diagnostics.md), "Allocation is a
   planning-time error"), so a by-hand `--include-ignored` on a device-less
   machine is a crash, never a pass.
-- **A case that re-runs its own binary as a child** (the arena's abort
-  case) passes `--include-ignored` to the child, whose case is ignored too.
+- **A case that re-runs its own binary as a child** (an abort case)
+  passes `--include-ignored` to the child, whose case is ignored too.
 
 The tier 4 the gates run is every test, device cases included, of the
 crates the diff affects that link the library (a member whose default
@@ -411,11 +403,6 @@ every case that calls it is named here, which `fb-doc-check`'s
 - `fb-io-sad`'s `baked_matches_computed_through_argon`, every element
   through argon in every compiled-in set against the atomic SCF;
   `baked_matches_computed_for_hco` is its fast representative.
-- `fb-core-planner`'s `tier5_every_split_is_bitwise_one_workers`, the
-  partitioned product on one, two and four workers against one another,
-  a clique made per run;
-  `tier5_a_partitioned_product_in_a_loop_across_devices` is its family's
-  representative.
 - `fb-core-device`'s `trsm_matches_a_host_solve`, the guard's triangular
   solve at order 512 in four side, triangle and operation cases against
   substitution on the host, most of its time the library's first load of
@@ -464,14 +451,14 @@ The causes were structural, not the tool's:
 Rust removes the first cause and makes the second a design decision, so the
 decision is written down here:
 
-- **One crate per module, mirroring `src/`, and a task's GPU tests live in
-  the crate that owns the task.** Cargo's unit of build and test is the crate,
+- **One crate per module, mirroring `src/`, and a kernel's GPU tests live
+  in the crate that wraps it.** Cargo's unit of build and test is the crate,
   so the crate graph is the only graph a selector can read, and "the affected
   crates' tier-4 tests" is then exactly the set to run. A module declaration
   lives in a `.rs`, so adding a file touches no build file. Adding a
   dependency touches one `Cargo.toml`. A `Cargo.lock` change affects
   everything, which is honest. The tree is that workspace: `core` split as
-  the next rule says, `core/wwr/` the crate `fb-core-wwr` and so on, one per
+  the next rule says, `core/device/` the crate `fb-core-device` and so on, one per
   module ([`README.md`](../README.md), "What is here").
 - **No umbrella crate.** No prelude, no crate that re-exports the tree. `core`
   is split so that a crate which only logs does not depend on the handle
@@ -521,8 +508,8 @@ A test earns its place by catching a defect no other test catches. The rules:
   tests kill each mutant. A test whose killed set is a subset of another's is
   redundant by construction, and a surviving mutant is either a test to add or
   code that nothing needs. It runs weekly over tier 3; a mutant round over a
-  GPU tier would take days, which is one more reason the orchestrator stays
-  device-free.
+  GPU tier would take days, which is one more reason the DAG and the
+  budget stay device-free.
 - **Coverage is a guide, never a bar.** `cargo-llvm-cov` says which lines no
   test reaches, which is where to point the mutants first. A coverage
   percentage as a gate buys tests that reach lines without checking them.
@@ -574,15 +561,13 @@ and the diff reviewed.
 
 ### Determinism and placements
 
-The programming model promises that a planned DAG gives the same answer
-under every placement, within a tolerance its analysis fixes; bitwise
-across worker counts is not promised, even where every reduce is ordered.
-That promise is a test here:
+The step DAG promises the same answer on one GPU and on several, within
+a tolerance its analysis fixes; bitwise across GPU counts is not promised,
+even where every reduce is ordered. That promise is a test here:
 
-- **One worker against many.** At tier 4 the many are streams on one card;
-  at tier 5 they are cards. The comparison is at the bar the task's
-  analysis fixes (the dense J and K: `2 n_cart² ε` of the result's scale,
-  a GEMV row's `n_cart²` terms each side), never one loosened to fit.
+- **One GPU against many.** At tier 4 the many are logical GPUs on one
+  card; at tier 5 they are cards. The comparison is at the bar the step's
+  analysis fixes, never one loosened to fit.
 - **Seeds are fixed and printed.** A test that draws random shapes or data
   seeds its generator from a constant, or from a value it prints on failure.
 - **Atomics do not loosen a bar.** A result that varies run to run because a
@@ -595,44 +580,31 @@ That promise is a test here:
   the kernels whose predicates match, two that round differently, and takes
   one or the other from one process to the next, with nothing but a log
   setting changed (#1575; the RTX 3080's cuBLASLt picks one kernel every
-  time). So two plans, two placements or two versions of a task are compared
+  time). So two runs, two GPU counts or two versions of a step are compared
   bitwise by running both in one process; a result held across processes,
   as a committed value or another run's, meets a bar fixed by analysis.
 
 ### Performance
 
-- **Time.** The orchestrator opens a stream scope around every task
-  ([`diagnostics.md`](diagnostics.md), "Timing and profiling"), so each task's device
-  time is recorded per run with no code in the task. The nightly, built in
-  release, writes them to the metrics branch keyed by host, card, task and
-  dimensions. A task is flagged when it passes a fixed fraction over its
-  rolling median on that key; the nightly fails on it, and a PR run never
-  times anything, since it is a debug build on a shared card.
-- **Memory is a tier-3 golden.** A run allocates nothing, so a plan's arena
-  is its peak, and the arena's size is a deterministic function of the DAG
-  and its dimensions. It is therefore a committed number per plan, compared
-  bitwise, with no card involved. A planning change that grows the footprint
-  is a diff in the PR, read in review, rather than a measurement taken later.
+- **Time.** Each step's host times are recorded per run in `timing.json`
+  with no code in the step ([`diagnostics.md`](diagnostics.md), "Timing
+  and profiling"). The nightly, built in release, is to write them to the
+  metrics branch keyed by host, card, step and molecule, and to flag a step
+  that passes a fixed fraction over its rolling median on that key; a PR
+  run never times anything, since it is a debug build on a shared card.
+- **Memory is a tier-3 number.** A run allocates nothing, so a plan's
+  budget table is what it holds, and a dry budget computes it with no card
+  (`steps/tests/steps_host.rs`'s gly10 case holds it exact). A change that
+  grows it is a diff in the PR, read in review.
 
 ## Fuzzing
 
-The best fuzz target in the tree is the planner. It is pure, CPU-only and
-has invariants that are short to state:
-
-- no two buffers live at once alias in the arena;
-- every buffer's offset honours its alignment, and a sub-DAG's offsets lie
-  inside the region its parent reserved for it;
-- every edge's sync precedes its first read;
-- the plan is deterministic in its inputs;
-- the same DAG plans to the same footprint for one worker and for many,
-  up to the transport buffers the placement adds;
-- every task's placement satisfies its declared device, and the plan's
-  worker total is within the budget it was admitted against.
-
-These are [`proptest`](https://crates.io/crates/proptest) properties over
-random DAGs with fake workers: a few hundred cases per PR, and many more
-weekly. Property tests run on stable and cost no card, so they are a tier-3
-unit test with a generator in place of a hand-picked input.
+The best fuzz target in the tree is the packing (`fb-core-pack`). It is
+pure, CPU-only, and its invariant is short to state: two steps' scratch
+regions share bytes only if the DAG orders them. Its tests draw random
+DAGs and check every overlapping pair against reachability, a
+[`proptest`](https://crates.io/crates/proptest)-shaped property: a few
+hundred cases per PR, and many more weekly once a weekly run exists.
 
 [`cargo-fuzz`](https://rust-fuzz.github.io/book/) (libFuzzer, nightly only)
 fits the parsers: the TOML config, the basis JSON, the status `TryFrom`, and
@@ -696,13 +668,13 @@ schedule. Here they are weekly from the start.
 - **Miri is the sanitizer for unsafe Rust.** It runs tier-3 tests under an
   interpreter that catches undefined behaviour in `unsafe` code. It cannot
   cross FFI, so every wwr call is out of its reach, and that is the right
-  division: Miri for the orchestrator's unsafe code, ASan for the C++ side,
+  division: Miri for the budget's and the device wrappers' host-side unsafe code, ASan for the C++ side,
   compute-sanitizer for the device.
 
 ## Open questions
 
 - **Tier 5 on this box.** The two cards here run different backends, so no
-  single build sees two devices. Can several workers on one card stand in for
+  single build sees two devices. Can logical GPUs on one card stand in for
   most of tier 5, with true multi-GPU tested only on a multi-GPU VM?
 - **Determinator's path rules.** The rules that map a kernel library's
   sources to the crate that wraps them are hand-written. The graph test

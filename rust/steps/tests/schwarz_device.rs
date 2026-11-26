@@ -4,7 +4,7 @@
 //! convergence through the chain.
 //!
 //! **The bar, one run: `|E(default) - E(0)| <= 1e-10` Eh**, the old
-//! path's (`fb-pipeline-config`'s `tests/schwarz_default.rs`). A dropped
+//! path's (the deleted `fb-pipeline-config`'s `tests/schwarz_default.rs`). A dropped
 //! pair's columns of B have 2-norm under the threshold (the fit a
 //! projection, the pair's bound at least its largest `sqrt((mn|mn))`), so
 //! the energy moves by about the threshold times the density's elements,

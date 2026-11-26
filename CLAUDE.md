@@ -304,7 +304,8 @@ which a commit touching `rust/` also runs) + the fast pytest tier per PR.
 `CMakeLists.txt` does not add: it configures `deps/WarpWraps` alone and
 builds the wwr C ABI library and the forked kernel libraries the crates
 link, with presets `cuda` and `hip` into `rust/build-cuda` and
-`rust/build-hip` (`rust/README.md` "Build and test"). No gate builds it.
+`rust/build-hip` (`rust/README.md` "Build and test"). The C++ build never
+builds it; the cargo half's tier 4 does, for the gate's card.
 
 **The `cpp` job in `.github/workflows/ci.yml` is `if: false`** — both matrix
 legs, cuda and hip. A PR touching only `src/` gets its formatting and CMake lint

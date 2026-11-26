@@ -1,6 +1,6 @@
 ---
 name: rust-rebuild
-description: Designs, writes and reviews code under rust/ (the Rust rebuild of free-breakfast) by the design docs in rust/docs/. Use for any task that adds or changes a crate, a task or DAG, a kernel binding, a test or a doc under rust/ — porting a C++ module, wrapping a wwr-sys call, adding a rule — and for reviewing such a change against the docs. Not for the C++ tree under src/.
+description: Designs, writes and reviews code under rust/ (the Rust rebuild of free-breakfast) by the design docs in rust/docs/. Use for any task that adds or changes a crate, a step, a kernel binding, a test or a doc under rust/ — porting a C++ module, wrapping a wwr-sys call, adding a rule — and for reviewing such a change against the docs. Not for the C++ tree under src/.
 ---
 
 You work on `rust/`, free-breakfast's core rebuilt in Rust over WarpWraps' C
@@ -35,8 +35,6 @@ are relative to `rust/`.
 | The task | Read |
 |---|---|
 | A step, its `Output`, `mem_budget` and `run`, the MainBus, the `EriManager` (new work is here) | `docs/design.md`, "A step's design"; `docs/programming_model.md`, "Steps on rustflow", "The MainBus and its steps", "The EriManager", "Vocabulary"; `docs/memory.md`, "The budget", "Step scratch", "Batched only"; `docs/gpu_layer.md`, "The v0.0.4 runtime"; `docs/testing.md`, "The steps' tests"; `docs/diagnostics.md`, "What a step says" |
-| The old layer: a task, an edge, a DAG, a plan, placement, workers | `docs/programming_model.md`, "Three owners", "Plan once, run many", "Workers are a hierarchy", "Granularity" |
-| The old layer: a buffer, a layout, a row's owner or lifetime, admission, a width chosen at planning | `docs/programming_model.md`, "Memory: layouts and arenas"; `docs/memory.md`, "The table", "Lifetimes", "Admission", "Adaptive widths: one planner routine" |
 | A kernel, a launch wrapper, a `-sys` crate, a forked `.cu`, a workspace query, the CMake build | `docs/gpu_layer.md`, "Layering", "From bridge to C ABI", "Launch shape and dispatch", "Scratch: the workspace query", "Statuses", "The safe wrapper", "Build" |
 | `unsafe`, spawning, a capability a crate may hold | `docs/programming_model.md`, "Capabilities are enforced by lints" |
 | A test, a golden, a reference, a tolerance, what a gate runs | `docs/testing.md`, "Contracts are part of the spec", "Tiers: where a check lives", "Levels: how much of the DAG a test covers", "Selecting GPU tiers in cargo", "Slow cases", "Regression" |
@@ -90,10 +88,13 @@ full, with its check, in the section cited.
   bindings; if the wrapper you need does not exist, add it in the crate
   that may hold `unsafe`, with the extents it trusts checked always
   (`docs/gpu_layer.md`, "The safe wrapper").
-- **A task allocates nothing and spawns nothing.** Its buffers are its
-  layout's, its threads are the orchestrator's
-  (`docs/programming_model.md`, "Memory: layouts and arenas", "CPU
-  workers"). A task that must wait for part of itself is two tasks
+- **A step's `run` allocates nothing and spawns nothing.** What it owns
+  its `mem_budget` allocated through a `Budget`, which `run` is not given;
+  its scratch is its `Lease` (`docs/memory.md`, "The budget", "Step
+  scratch"). Its threads are the executor's, and an all-GPU step's inner
+  work across its GPUs is `fb_core_flow::fan_out`, the one place the layer
+  spawns (`docs/programming_model.md`, "CPU workers"). A computation that
+  must wait for part of itself waits only as the docs allow
   (`docs/programming_model.md`, "Granularity").
 - **Errors are values** (`docs/diagnostics.md`, "Values, never panics",
   "The one boundary"). Nothing between the detection site and the binary's
@@ -102,7 +103,7 @@ full, with its check, in the section cited.
   rustdoc"). Every example compiles; a type-level rule gets a compile-fail
   example with its error code.
 - **GPU-first** (`docs/testing.md`, "Tiers: where a check lives"). No host
-  twin of a GPU task to make it testable. A reference computes the same
+  twin of a GPU step to make it testable. A reference computes the same
   approximation, and its bar is fixed by analysis and never loosened to
   pass (`docs/testing.md`, "Correctness").
 - **Prefer fewer names.** A small public surface beats a family of aliases
@@ -148,8 +149,7 @@ change done:
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo clippy --all-targets --no-default-features \
-  -p fb-core-arena -p fb-core-thread-pool -p fb-core-planner -- -D warnings
+cd .. && uv run --frozen devtools/test.py cargo-lint && cd rust
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p <each crate you touched>
 cargo test -p fb-doc-check
 cd .. && uv run --frozen devtools/test.py pr --only cargo --preset default

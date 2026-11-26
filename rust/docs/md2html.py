@@ -7,10 +7,11 @@ splices in the hand-drawn SVG figures it holds (see `insert_figures`). The
 .md is the source; regenerate the .html after editing either. From this
 directory:
 
-    for d in programming_model memory; do
-      uv run --no-project --with markdown-it-py python md2html.py \
-        $d.md $d.html programming_model.md memory.md figures/$d.figs
-    done
+    uv run --no-project --with markdown-it-py python md2html.py \
+      programming_model.md programming_model.html memory.md \
+      figures/programming_model.figs
+    uv run --no-project --with markdown-it-py python md2html.py \
+      memory.md memory.html programming_model.md
 """
 
 import html
