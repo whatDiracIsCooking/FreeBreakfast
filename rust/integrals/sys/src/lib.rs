@@ -72,7 +72,7 @@ pub use mmd_records::{RECORD_F64_FIELDS, RECORD_I32_FIELDS, mmd_records, record_
 pub use packed_gather::packed_gather;
 pub use three_center_spherical::three_center_spherical_class;
 
-use fb_core_error_handling::{Error, Status};
+use fb_core_error_handling::Status;
 use fb_kernel_abi::Backend;
 
 /// Checks that the `libfb_integrals_kernels.so` this process loaded is the one
@@ -120,8 +120,8 @@ const _: () = {
 
 /// A launch status as a [`Status`] naming the wrapper and the class by its
 /// momenta, `fb_metric_class (2, 3)`, or the wrapper alone when `momenta`
-/// is empty: a launch error by its `wwr_status` code, at the safe call's
-/// caller.
+/// is empty, as [`fb_core_device::launch_status`] maps it, at the safe
+/// call's caller.
 #[track_caller]
 fn launched(what: &str, momenta: &[i32], status: fb_launch_status) -> Status {
     let what = if momenta.is_empty() {
@@ -130,9 +130,5 @@ fn launched(what: &str, momenta: &[i32], status: fb_launch_status) -> Status {
         let momenta: Vec<String> = momenta.iter().map(i32::to_string).collect();
         format!("{what} ({})", momenta.join(", "))
     };
-    fb_kernel_abi::launch_status(&what, status, |code, at| {
-        let mut e = Error::gpu(format!("runtime error {code} at the launch"));
-        e.origin = at;
-        Some(Err(e))
-    })
+    fb_core_device::launch_status(&what, status)
 }

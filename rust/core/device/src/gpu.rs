@@ -9,7 +9,6 @@ use std::sync::Mutex;
 use contracts::requires;
 use fb_core_error_handling::{Error, Result, Status, check_or_abort};
 use fb_core_log::{eq, fits_i32, le};
-use fb_kernel_abi::LaunchStatus;
 use fb_recipes_sys::{FB_CHOLESKY_TILE, FB_TRSM_TILE, fb_cholesky_diagonal, fb_trsm_diagonal_f64};
 use wwr_sys::{
     wwr_blas_diag_type, wwr_blas_fill_mode, wwr_blas_handle, wwr_blas_operation,
@@ -19,7 +18,7 @@ use wwr_sys::{
 
 use crate::slice::{DeviceSlice, DeviceSliceMut, part, part_mut, split_at_mut};
 use crate::stream::Stream;
-use crate::{ScopedDevice, log_destroy};
+use crate::{ScopedDevice, launch_status as launched, log_destroy};
 
 /// The handle workspace's size: the device memory every BLAS call on a GPU
 /// draws on, bound once ([`GpuResources::bind_workspace`]).
@@ -50,16 +49,6 @@ fn solver_status(what: &str, code: wwr_solver_status) -> Status {
         wwr_solver_status::WWR_SOLVER_STATUS_SUCCESS => Ok(()),
         _ => Err(Error::gpu(format!("{what}: {code:?}"))),
     }
-}
-
-/// A recipe kernel's launch status as a [`Status`] naming `what`.
-#[track_caller]
-fn launched(what: &str, status: LaunchStatus) -> Status {
-    fb_kernel_abi::launch_status(what, status, |code, _| {
-        Some(Err(Error::gpu(format!(
-            "runtime error {code} at the launch"
-        ))))
-    })
 }
 
 /// The elements a column-major `rows × cols` matrix at leading dimension

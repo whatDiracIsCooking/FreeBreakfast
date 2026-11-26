@@ -166,7 +166,9 @@ sync, and an owned buffer is never freed.
   - **When the room is not there** the run fails with an out-of-memory
     error at the eri build's first launches, before the first SCF
     iteration. Lower the device cap, or `[eri] mem_per_gpu`, by what
-    the stack needs.
+    the stack needs. The error says so itself: a launch's out-of-memory
+    status names the kernel stack and this remedy
+    ([`gpu_layer.md`](gpu_layer.md), "Statuses").
 
 ## Step scratch
 
