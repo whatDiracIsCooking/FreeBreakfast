@@ -91,7 +91,7 @@ svg .fh{fill:currentColor}
 </head>
 <body>
 <div class="wrap">
-<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#vocabulary">Vocabulary</a></li><li class="l2"><a href="#the-shape">The shape</a></li><li class="l2"><a href="#steps-and-the-mainbus">Steps and the MainBus</a></li><li class="l2"><a href="#the-erimanager">The EriManager</a></li><li class="l2"><a href="#the-memory-budget">The memory budget</a></li><li class="l3"><a href="#what-is-budgeted-by-kind">What is budgeted, by kind</a></li><li class="l3"><a href="#host-heap">Host heap</a></li><li class="l3"><a href="#caps-and-margins">Caps and margins</a></li><li class="l3"><a href="#what-the-budget-leaves-out">What the budget leaves out</a></li><li class="l2"><a href="#lengths-counted-in-setup-built-by-the-step">Lengths: counted in setup, built by the step</a></li><li class="l2"><a href="#step-scratch">Step scratch</a></li><li class="l2"><a href="#batched-only">Batched only</a></li><li class="l2"><a href="#gpus-streams-and-locks">GPUs, streams and locks</a></li><li class="l3"><a href="#which-gpus-a-step-runs-on">Which GPUs a step runs on</a></li><li class="l3"><a href="#streams">Streams</a></li><li class="l3"><a href="#one-handle-set-per-gpu-under-its-lock">One handle set per GPU, under its lock</a></li><li class="l3"><a href="#lock-order">Lock order</a></li><li class="l3"><a href="#a-step-with-streams-of-its-own-and-library-calls">A step with streams of its own and library calls</a></li><li class="l3"><a href="#library-workspace-and-work-buffers">Library workspace and work buffers</a></li><li class="l2"><a href="#the-step-dag-on-rustflow">The step DAG on rustflow</a></li><li class="l2"><a href="#failure-diagnostics-determinism">Failure, diagnostics, determinism</a></li><li class="l2"><a href="#enforcement">Enforcement</a></li><li class="l2"><a href="#example-the-df-hf-setup-dag">Example: the DF-HF setup DAG</a></li><li class="l3"><a href="#nodes">Nodes</a></li><li class="l3"><a href="#how-it-maps-onto-this-design">How it maps onto this design</a></li><li class="l3"><a href="#choices-the-graph-leaves-open">Choices the graph leaves open</a></li><li class="l2"><a href="#the-v004-prototype">The v0.0.4 prototype</a></li><li class="l3"><a href="#built-from-scratch-over-the-c-abi">Built from scratch over the C ABI</a></li><li class="l3"><a href="#the-df-rhf-chain">The DF-RHF chain</a></li><li class="l3"><a href="#what-it-is-held-against">What it is held against</a></li><li class="l3"><a href="#what-it-runs-that-no-prototype-has">What it runs that no prototype has</a></li><li class="l3"><a href="#what-it-showed">What it showed</a></li><li class="l3"><a href="#where-the-code-departs-from-this-page">Where the code departs from this page</a></li><li class="l3"><a href="#what-is-not-built">What is not built</a></li><li class="l3"><a href="#build-and-run">Build and run</a></li><li class="l3"><a href="#not-in-it">Not in it</a></li><li class="l2"><a href="#the-order-of-work">The order of work</a></li><li class="l2"><a href="#open-questions">Open questions</a></li><li class="l2"><a href="#this-page-as-html">This page as HTML</a></li></ol></nav>
+<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#vocabulary">Vocabulary</a></li><li class="l2"><a href="#the-shape">The shape</a></li><li class="l2"><a href="#steps-and-the-mainbus">Steps and the MainBus</a></li><li class="l2"><a href="#the-erimanager">The EriManager</a></li><li class="l2"><a href="#the-memory-budget">The memory budget</a></li><li class="l3"><a href="#what-is-budgeted-by-kind">What is budgeted, by kind</a></li><li class="l3"><a href="#host-heap">Host heap</a></li><li class="l3"><a href="#caps-and-margins">Caps and margins</a></li><li class="l3"><a href="#what-the-budget-leaves-out">What the budget leaves out</a></li><li class="l2"><a href="#lengths-counted-in-setup-built-by-the-step">Lengths: counted in setup, built by the step</a></li><li class="l2"><a href="#step-scratch">Step scratch</a></li><li class="l2"><a href="#batched-only">Batched only</a></li><li class="l2"><a href="#gpus-streams-and-locks">GPUs, streams and locks</a></li><li class="l3"><a href="#which-gpus-a-step-runs-on">Which GPUs a step runs on</a></li><li class="l3"><a href="#streams">Streams</a></li><li class="l3"><a href="#one-handle-set-per-gpu-under-its-lock">One handle set per GPU, under its lock</a></li><li class="l3"><a href="#lock-order">Lock order</a></li><li class="l3"><a href="#a-step-with-streams-of-its-own-and-library-calls">A step with streams of its own and library calls</a></li><li class="l3"><a href="#library-workspace-and-work-buffers">Library workspace and work buffers</a></li><li class="l2"><a href="#the-step-dag-on-rustflow">The step DAG on rustflow</a></li><li class="l2"><a href="#failure-diagnostics-determinism">Failure, diagnostics, determinism</a></li><li class="l2"><a href="#enforcement">Enforcement</a></li><li class="l2"><a href="#example-the-df-hf-setup-dag">Example: the DF-HF setup DAG</a></li><li class="l3"><a href="#nodes">Nodes</a></li><li class="l3"><a href="#how-it-maps-onto-this-design">How it maps onto this design</a></li><li class="l3"><a href="#choices-the-graph-leaves-open">Choices the graph leaves open</a></li><li class="l2"><a href="#the-v004-prototype">The v0.0.4 prototype</a></li><li class="l3"><a href="#built-from-scratch-over-the-c-abi">Built from scratch over the C ABI</a></li><li class="l3"><a href="#the-df-rhf-chain">The DF-RHF chain</a></li><li class="l3"><a href="#what-it-is-held-against">What it is held against</a></li><li class="l3"><a href="#what-it-runs-that-no-prototype-has">What it runs that no prototype has</a></li><li class="l3"><a href="#what-it-showed">What it showed</a></li><li class="l3"><a href="#where-the-code-departs-from-this-page">Where the code departs from this page</a></li><li class="l3"><a href="#what-is-not-built">What is not built</a></li><li class="l3"><a href="#build-and-run">Build and run</a></li><li class="l3"><a href="#not-in-it">Not in it</a></li><li class="l2"><a href="#what-the-model-covers">What the model covers</a></li><li class="l2"><a href="#the-order-of-work">The order of work</a></li><li class="l2"><a href="#open-questions">Open questions</a></li><li class="l2"><a href="#this-page-as-html">This page as HTML</a></li></ol></nav>
 <main>
 <h1><span class="pre">rust/v0.0.4</span>The design, and the prototype built from scratch</h1>
 <p><strong>The design of the Rust rebuild as it stands at v0.0.4, and what v0.0.4 will
@@ -110,6 +110,11 @@ not settled; everything else is the design.</p>
 <p>What v0.0.4 builds is <a href="#the-v004-prototype">the DF-RHF chain as steps</a>, on
 <code>num_gpus</code> GPUs, batched. Like its predecessors it is throwaway: a crate and a
 Cargo workspace of its own, in no gate, never merged into <code>rust/</code>.</p>
+<p><strong>It is the last prototype.</strong> The model covers what <code>rust/</code> and the C++ <code>src/</code>
+compute (<a href="#what-the-model-covers">what the model covers</a>), and nothing left
+open would change its core: the MainBus, <code>Dims</code> counted in setup, one budget
+mode. The next work is the layer itself, in <code>rust/</code>
+(<a href="#the-order-of-work">the order of work</a>).</p>
 <h2 id="vocabulary">Vocabulary</h2>
 <p>Each word below means one thing on this page.</p>
 <p><strong>The calculation</strong></p>
@@ -1383,13 +1388,23 @@ orbital count after dropping linear dependencies) are allocated at the bound
 layout (270,497 pair columns on gly10, where n_ao(n_ao+1)/2 gives 269,745).
 On a large sparse molecule that wastes host memory, and a replay can never
 outgrow its buffers.</li>
-<li><strong>Out of scope:</strong> AVAS, the semi-numerical Hessian, semi-numerical
-gradients.</li>
+<li><strong>A size a step chooses at run time is allocated at a bound set in setup.</strong> AVAS's
+active space is bounded by its labels: at most twice the MINAO functions
+they name, capped by <code>avas_max_ncas</code>, as <code>src/pipeline/shape</code>'s
+<code>largest_active_space</code> does. The CI is sized at the largest determinant
+count at or under that bound. A run that selects past the bound fails, as a
+<code>Result</code> naming the count it wanted; it never truncates, which would change
+the chemistry unannounced. The rerun loads the SCF's <code>Output</code> from disk and
+pays setup and budget mode, not the SCF. A bound too large is refused in
+budget mode, before anything runs.</li>
+<li><strong>The SCF's <code>Output</code> is written on every run.</strong> It is the checkpoint every
+size fixed at run time leans on.</li>
 </ul>
 <p>What can still be refused: a plan whose O(N²) data does not fit its GPUs, whose
 B does not fit the host, whose step limit holds no batch, or whose <code>Output</code>s,
 each fitting alone, do not fit summed down a chain. The last is the sum's
-price; the remedy is a narrower batch in the step concerned.</p>
+price; the remedy is a narrower batch in the step concerned, and past that
+<code>Output</code>s packed by the closure (<em>open</em>, built when a chain is first refused).</p>
 <h2 id="gpus-streams-and-locks">GPUs, streams and locks</h2>
 <h3 id="which-gpus-a-step-runs-on">Which GPUs a step runs on</h3>
 <p><code>num_gpus</code> comes from the config. A step runs on no GPU, on gpu0, or on all of
@@ -2661,6 +2676,60 @@ unbudgeted-heap row.</li>
 <li>Screening, measuring the default step limit (2 GiB stands in), packing
 <code>Output</code>s, several nodes.</li>
 </ul>
+<h2 id="what-the-model-covers">What the model covers</h2>
+<p><strong><code>rust/</code>.</strong> <code>rust/pipeline</code> is the DF-RHF chain (config, eri, guess, scf),
+over integrals with Schwarz screening, Pipek-Mezey localization and the
+recipes. v0.0.4 runs that chain batched on one to four GPUs, with B on the
+host, to the same energies. Screening, localization and HIP are ports; none
+asks the model anything new.</p>
+<p><strong><code>src/</code>.</strong> Each of the model's constraints, against what the C++ tree needs:</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>The model holds</th>
+<th>What <code>src/</code> needs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Every length is counted before anything runs</td>
+<td>Already so: <code>src/pipeline/shape</code> and <code>footprint</code> size every step from its dimensions at plan time, AVAS included. A size known only at run time is allocated at its bound (<a href="#batched-only">batched only</a>)</td>
+</tr>
+<tr>
+<td>One config table, one slot, one instance per step</td>
+<td>The C++ step contract (<code>kTable</code>, <code>kKeys</code>). Two states' gradients for an MECI, or a QD pair's, live inside one step</td>
+</tr>
+<tr>
+<td>Nothing is allocated in <code>run</code></td>
+<td>Steps sized from footprints already allocate up front</td>
+</tr>
+<tr>
+<td>A library-using step holds its GPUs for its whole run</td>
+<td>Two heavy steps on one GPU time-slice anyway</td>
+</tr>
+<tr>
+<td>Every GPU step is batched and spans every GPU</td>
+<td>A cost of each port, not a limit of the model</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Repeated evaluations are replays.</strong> Finite-difference gradients and
+Hessians, geometry optimization, IRC, and molecular dynamics over a fixed
+atom list, basis and active space (Born-Oppenheimer, surface hopping over the
+NAC steps) run execute mode again at the same <code>Dims</code>, in the same buffers,
+each from the orbitals of the evaluation before. Displacements run one after
+another: every heavy step already spans every GPU, so a serial replay leaves
+none idle. Concurrent replays would need copies of the chain's buffers and pay
+only on molecules too small to fill the GPUs; none is in scope.</p>
+<p><strong>A calculation whose <code>Dims</code> change mid-run is a new DAG per segment</strong>: a
+QM/MM run whose QM region moves, an active space that changes along a
+trajectory. Each segment pays setup and budget mode, seconds against its run.</p>
+<p><strong>The sum is bounded by batching.</strong> Every O(N³) tensor is batched under a
+step limit, so what stays alive as an <code>Output</code> is O(N²) matrices (32 MB each
+at n_ao = 2000) and active-space tensors (a 3-RDM at 16 orbitals is 134 MB).
+A Hessian's per-perturbation response, 3 n_atom × n_ao × n_occ, is its step's
+scratch, batched over perturbations, and does not stack. A chain the sum
+refuses has a remedy within the model: <code>Output</code>s packed by the same closure.</p>
 <h2 id="the-order-of-work">The order of work</h2>
 <ol>
 <li><strong>The core, device-free</strong>: the MainBus, the declared View and the builder,
@@ -2674,13 +2743,20 @@ J/K build, on one GPU and two logical GPUs).</li>
 runs, and what the step-end sync costs on the SCF iteration. Measured in
 v0.0.4: the total is set by the batch widths, with at most 329 MiB at
 gly10 for a fold to recover; the sync costs about 30 µs each.</li>
-<li><strong>The enforcement checks and HIP.</strong> Batching and every GPU are not on this
-list: each step has them from its first form.</li>
+<li><strong>The layer in <code>rust/</code></strong>, beside the old crates: the DF-RHF chain first,
+with the enforcement checks and the tests v0.0.4 left unbuilt (the negative
+controls, the <code>compile_fail</code> doctests) as its acceptance. No further
+prototype comes before it.</li>
+<li><strong>HIP, with the gate's card.</strong> The vendor behaviour the design's rules rest
+on is measured on both backends (<code>../library_handle_workspace</code>,
+<code>blas_workspace_scaling</code>, <code>handle_ring</code>); what is left is plumbing, which
+the cross-backend check and the HIP tier see.</li>
 </ol>
-<p>Development on the old task layer has stopped. The new layer lands in <code>rust/</code>
-beside the old crates, and the old ones are deleted once the gates pass on the
-new one alone. <code>rust/docs/memory.md</code> and <code>programming_model.md</code> change with
-the implementation, not before.</p>
+<p>Batching and every GPU are not on this list: each step has them from its
+first form.</p>
+<p>Development on the old task layer has stopped. The old crates are deleted once
+the gates pass on the new layer alone. <code>rust/docs/memory.md</code> and
+<code>programming_model.md</code> change with the implementation, not before.</p>
 <h2 id="open-questions">Open questions</h2>
 <p><strong>To discuss</strong></p>
 <ul>
@@ -2688,8 +2764,9 @@ the implementation, not before.</p>
 nodes open cheaply is one rule: work on different GPUs communicates only
 through the collectives layer. B on one host's heap is the first thing that
 rule would have to answer.</li>
-<li><strong>Packing <code>Output</code>s too</strong>, by the same closure from producer to last reader,
-once the measurement says <code>Output</code>s are what stacks.</li>
+<li><strong>Packing <code>Output</code>s too</strong>, by the same closure from producer to last reader:
+deferred until a chain is refused for its sum
+(<a href="#what-the-model-covers">what the model covers</a>).</li>
 <li><strong>What is cleared between replays, and by whom</strong>: a reset mode per step (as
 built), an explicit <code>on_replay</code>, or a node at the loop's entry or end.</li>
 <li><strong>rustflow and <code>doc_check</code>'s thread-pool rule.</strong> rustflow depends on
@@ -2707,9 +2784,6 @@ allocation record.</li>
 each backend.</li>
 <li><strong>The executor's width</strong> against the GPU steps that can wait at once, on a
 sync or a lock.</li>
-<li><strong>What the sum costs</strong> on a chain with more steps than DF-RHF's: here the
-bytes outside the ERI buffer are too few to matter
-(<a href="#what-it-showed">what it showed</a>).</li>
 <li><strong>Packing quality</strong> on real configs: the table's lower-bound row answers it
 on each.</li>
 <li><strong>The rest of the workspace sweep</strong>: upper solves, rectangular <code>syrk</code> and
