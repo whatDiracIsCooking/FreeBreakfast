@@ -136,7 +136,7 @@ fn a_run_of_no_gpu_or_no_host_thread_and_a_table_of_no_step_here_are_refused() {
         panic!("a host pool of no thread");
     };
     assert_eq!(error.kind, ErrorKind::InvalidConfig);
-    let text = "[molecule]\nxyz = \"h2o.xyz\"\n[basis]\nname = \"cc-pvdz\"\n[scf]\n";
+    let text = "[molecule]\nxyz = \"h2o.xyz\"\n[basis]\nname = \"cc-pvdz\"\n[gradient]\n";
     let error = fb_steps::Config::parse(text, std::path::Path::new(".")).unwrap_err();
     assert_eq!(error.kind, ErrorKind::InvalidConfig, "{}", error.message);
 }

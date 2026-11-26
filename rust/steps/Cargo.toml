@@ -48,3 +48,7 @@ toml.workspace = true
 [[test]]
 name = "steps_threads"
 harness = false
+
+[dev-dependencies]
+# The chain test's PySCF B, a committed .npy.
+fb-io-npy.workspace = true

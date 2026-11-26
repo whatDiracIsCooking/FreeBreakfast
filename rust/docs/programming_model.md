@@ -111,8 +111,9 @@ and the MainBus").
 
 - **The config is one table per step family.** `[molecule]` and `[basis]`
   bring the overlap, the core Hamiltonian, the guess and the orthogonalizer;
-  `[eri]` the metric; `[resources]` the GPUs, the executor's width and the
-  caps. A step whose table is absent is not in the DAG.
+  `[eri]` the metric and the ERI; `[scf]` the SCF; `[resources]` the GPUs,
+  the executor's width and the caps. A step whose table is absent is not in
+  the DAG, and a step that reads one the config leaves out is refused.
 - **Setup is the unbudgeted host phase, and it counts.**
   `MainBus::setup` reads the geometry and both bases, fills `Dims` by a
   walk over the shells that builds no array (`for_each_pair`), makes each
@@ -136,6 +137,15 @@ and the MainBus").
   event, its eigenvectors and work buffer in its device scratch; it reads
   the solver's flag on the host after its last enqueue
   ([`gpu_layer.md`](gpu_layer.md), "The v0.0.4 runtime").
+- **The SCF is one all-GPU step whose loop is plain code in `run`.** Each
+  iteration is the `EriManager`'s `build_jk` over the carried density (its
+  occupied orbitals on every pass but a fresh run's first), F, the energy,
+  the residual, the DIIS step and the Roothaan step, on gpu0's guarded
+  stream in its scratch; the turn's scalars are read on the host through
+  their download's token once, after the turn's last enqueue. `fb_steps::run`
+  is setup, budget mode and execute mode over the run's one executor, and
+  `Run::replay` execute mode again in the same buffers: the SCF's orbitals
+  carry over in its `Output`, nothing in scratch does.
 
 ## Three owners
 

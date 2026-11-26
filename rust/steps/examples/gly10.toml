@@ -1,7 +1,7 @@
 # Ten glycines in cc-pVDZ over cc-pVDZ-JKFIT, on one GPU: the steps of
-# fb-steps (overlap, core_hamiltonian, guess, orthogonalizer, and metric
-# and eri with [eri]). One table per step family: a step whose table is absent is
-# not in the DAG.
+# fb-steps (overlap, core_hamiltonian, guess, orthogonalizer, metric and
+# eri with [eri], and scf with [scf]). One table per step family: a step
+# whose table is absent is not in the DAG.
 
 [molecule]
 xyz = "../tests/data/gly10.xyz"
@@ -13,6 +13,13 @@ name = "cc-pvdz"
 aux_basis = "cc-pvdz-jkfit"
 # mem_per_gpu = 2147483648   # bytes, each GPU's ERI buffer; absent: 2 GiB
 # ring = 2                   # the build's and a J/K pass's ring depth, 2 or 1
+
+[scf]
+# max_iterations = 100          # the most Fock builds
+# energy_tolerance = 1e-10      # |dE| between builds, hartree
+# commutator_tolerance = 1e-7   # |X^T (F D S - S D F) X|_F
+# diis_history = 8              # the DIIS subspace, 1 to 64 pairs
+# stage_sync = false            # measurement: sync gpu0 at each stage's end
 
 [resources]
 devices = [0]

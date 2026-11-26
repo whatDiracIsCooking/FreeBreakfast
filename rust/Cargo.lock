@@ -1185,6 +1185,7 @@ dependencies = [
  "fb-integrals-t-kinetic-host",
  "fb-integrals-v-potential-en-host",
  "fb-io-basis",
+ "fb-io-npy",
  "fb-io-sad",
  "fb-io-xyz",
  "fb-molecule",
