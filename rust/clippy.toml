@@ -1,6 +1,9 @@
-# Spawning belongs to the orchestrator: core/thread_pool/src/run.rs is the
-# one module with the allow (docs/programming_model.md, "Capabilities are
-# enforced by lints").
+# Spawning belongs to the orchestrator and to an all-GPU step's fan-out:
+# core/thread_pool/src/run.rs and core/flow/src/fan_out.rs are the modules
+# with the allow (docs/programming_model.md, "Capabilities are enforced by
+# lints"). rustflow's executor spawns its own workers, out of clippy's sight;
+# the workspace graph holds it to fb-core-flow (doc_check's
+# workspace_graph.rs).
 #
 # The wwr-sys entries are the GPU rules (docs/rules.md): a kernel launch goes
 # through its kernel library's C wrapper, managed memory is not used, and
@@ -13,10 +16,10 @@
 # instantiation and a test reading back are the allowed sites, each with its
 # reason.
 disallowed-methods = [
-  { path = "std::thread::spawn", reason = "workers belong to the orchestrator (core::thread_pool)" },
-  { path = "std::thread::scope", reason = "workers belong to the orchestrator (core::thread_pool)" },
-  { path = "std::thread::Builder::spawn", reason = "workers belong to the orchestrator (core::thread_pool)" },
-  { path = "std::thread::Builder::spawn_scoped", reason = "workers belong to the orchestrator (core::thread_pool)" },
+  { path = "std::thread::spawn", reason = "workers belong to the orchestrator (core::thread_pool), or to an all-GPU step's fan-out (core::flow::fan_out)" },
+  { path = "std::thread::scope", reason = "workers belong to the orchestrator (core::thread_pool), or to an all-GPU step's fan-out (core::flow::fan_out)" },
+  { path = "std::thread::Builder::spawn", reason = "workers belong to the orchestrator (core::thread_pool), or to an all-GPU step's fan-out (core::flow::fan_out)" },
+  { path = "std::thread::Builder::spawn_scoped", reason = "workers belong to the orchestrator (core::thread_pool), or to an all-GPU step's fan-out (core::flow::fan_out)" },
   { path = "wwr_sys::wwr_launch_kernel_ex_c", reason = "Rust never launches a kernel itself: call the kernel library's C wrapper through its binding crate (docs/gpu_layer.md, \"Layering\")" },
   { path = "wwr_sys::wwr_malloc_managed", reason = "managed memory is not used (docs/memory.md, \"The three kinds\")" },
   { path = "wwr_sys::wwr_stream_attach_mem_async", reason = "managed memory is not used (docs/memory.md, \"The three kinds\")" },

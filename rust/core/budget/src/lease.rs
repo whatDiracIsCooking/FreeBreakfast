@@ -6,8 +6,9 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Mutex;
 
 use contracts::requires;
-use fb_core_device::{DeviceSlice, DeviceSliceMut, HostSlice, HostSliceMut};
-use fb_core_log::le;
+use fb_core_device::{DeviceSlice, DeviceSliceMut, HostSlice, HostSliceMut, Stream};
+use fb_core_error_handling::Status;
+use fb_core_log::{eq, le, lt};
 
 use crate::Kind;
 use crate::buffers::Plain;
@@ -178,6 +179,38 @@ impl Lease<'_> {
             // carved from it is alive.
             unsafe { std::ptr::write_bytes(r.ptr, 0xFF, r.bytes) };
         }
+    }
+
+    /// Enqueue the test-mode fill of the step's device region on `gpu` on
+    /// `stream`, every byte `0xFF`, before any tenant is carved: the device
+    /// half of [`Lease::fill_host`], which fills a host-backed plan's
+    /// device regions itself, so nothing is enqueued for one. The wrapper
+    /// syncs `stream` before the step's other streams may find the region.
+    ///
+    /// # Errors
+    /// The enqueue's failure.
+    #[requires(
+        lt!(gpu, self.ledger.physical.len()),
+        "gpu is a gpu of the run"
+    )]
+    #[requires(
+        eq!(stream.physical(), self.ledger.physical[gpu]),
+        "the stream is on the region's device"
+    )]
+    #[track_caller]
+    pub fn fill_device(&mut self, gpu: usize, stream: &Stream) -> Status {
+        let Some(r) = self.region(gpu, Kind::Device).filter(|r| !r.host) else {
+            return Ok(());
+        };
+        // The step's whole region, a tenant of no one: `&mut self` means
+        // nothing has been carved from it for this run.
+        let mut whole = ScratchBuf::<u8> {
+            ptr: r.ptr,
+            len: r.bytes,
+            host: false,
+            life: PhantomData,
+        };
+        stream.fill(&mut whole, 0xFF)
     }
 
     /// Where tenant `span` of `gpu`'s `kind` starts, its bytes recorded as

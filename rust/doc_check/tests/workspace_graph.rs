@@ -22,7 +22,8 @@
 //!   ([`check_unused`]), unless [`UNNAMED`] gives the reason;
 //! - a member reaches a thread-pool crate ([`POOL_CRATES`]) through any
 //!   edge, but rayon and the pool crates below it through a
-//!   [`RAYON_MEMBERS`] crate's own edge to rayon
+//!   [`RAYON_MEMBERS`] crate's own edge to rayon, and rustflow and the pool
+//!   crates below it through [`FLOW_MEMBER`]'s own edge to rustflow
 //!   (`docs/programming_model.md`, "CPU workers").
 //!
 //! Tier 3: it reads text and runs `cargo metadata`, and links nothing.
@@ -1344,6 +1345,10 @@ const POOL_CRATES: &[(&str, &str)] = &[
         "crossbeam-deque",
         "the work-stealing deque a stealing scheduler is built on",
     ),
+    (
+        "rustflow",
+        "an executor with work-stealing threads of its own: the v0.0.4 layer's",
+    ),
 ];
 
 /// The members that may name rayon: the host integral crates, which run
@@ -1358,13 +1363,23 @@ const RAYON_MEMBERS: &[&str] = &[
     "fb-integrals-v-potential-en-host",
 ];
 
+/// The member that may name rustflow: the v0.0.4 layer's step DAG, whose
+/// executor runs the outer graph (`docs/programming_model.md`, "CPU
+/// workers": "The v0.0.4 layer's executor"). It re-exports `Executor`, so a
+/// crate above it reaches rustflow, and the crossbeam deque below it, only
+/// through it.
+const FLOW_MEMBER: &str = "fb-core-flow";
+
 /// Each member that reaches a [`POOL_CRATES`] package through any edge,
 /// with the chain. A [`RAYON_MEMBERS`] crate's own edge to rayon is left
-/// out, so rayon and what lies below it pass through one of them and fail
-/// by any other route: a member naming rayon itself, or another crate
+/// out, and so is [`FLOW_MEMBER`]'s own edge to rustflow, so rayon,
+/// rustflow and what lies below them pass through those and fail by any
+/// other route: a member naming rayon or rustflow itself, or another crate
 /// bringing it.
 fn check_pools(g: &Graph) -> Vec<String> {
-    let allowed = |a: &str, b: &str| b == "rayon" && RAYON_MEMBERS.contains(&a);
+    let allowed = |a: &str, b: &str| {
+        (b == "rayon" && RAYON_MEMBERS.contains(&a)) || (b == "rustflow" && a == FLOW_MEMBER)
+    };
     let mut failures = Vec::new();
     for member in g.members.keys() {
         for (pool, why) in POOL_CRATES {
@@ -1423,6 +1438,41 @@ fn rayon_passes_only_through_a_host_integral_crate() {
     }
     assert!(
         failures[4].contains("fb-step -> fb-integrals-df-metric -> some-io -> tokio"),
+        "{failures:#?}"
+    );
+}
+
+/// rustflow, and the deque below it, pass through [`FLOW_MEMBER`]'s own
+/// edge, from it or a member above it; another member naming rustflow
+/// fails, and so does a pool fb-core-flow reaches another way.
+#[test]
+fn rustflow_passes_only_through_fb_core_flow() {
+    let g = graph(
+        &[
+            ("fb-core-flow", &["rustflow", "some-io"]),
+            ("fb-steps", &["fb-core-flow"]),
+            ("fb-other", &["rustflow"]),
+            ("some-io", &["tokio"]),
+            ("rustflow", &["crossbeam-deque"]),
+            ("crossbeam-deque", &[]),
+            ("tokio", &[]),
+        ],
+        &["rustflow", "crossbeam-deque", "some-io", "tokio"],
+    );
+    let failures = check_pools(&g);
+    assert_eq!(failures.len(), 4, "{failures:#?}");
+    assert!(
+        failures[0].contains("fb-core-flow -> some-io -> tokio"),
+        "{failures:#?}"
+    );
+    for (f, pool) in failures[1..3].iter().zip(["crossbeam-deque", "rustflow"]) {
+        assert!(
+            f.starts_with(&format!("fb-other: depends on the pool crate {pool} (")),
+            "{failures:#?}"
+        );
+    }
+    assert!(
+        failures[3].contains("fb-steps -> fb-core-flow -> some-io -> tokio"),
         "{failures:#?}"
     );
 }
