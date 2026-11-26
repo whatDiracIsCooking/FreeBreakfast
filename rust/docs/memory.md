@@ -63,7 +63,8 @@ workspace's list, `vec!`, `Vec::with_capacity`, `reserve`, `reserve_exact`,
 each exception an `allow` with its reason: setup's counts, the config's
 defaults, a test's reference. And the allocation record,
 `fb_core_budget::AllocationRecord`, a `#[global_allocator]` over the
-system's that every test binary of the steps installs: the wrapper watches
+system's that every test binary of the steps, and `fb-core-flow`'s
+`tests/flow_device.rs`, installs: the wrapper watches
 each `run`, and a step that made one allocation past
 `fb_core_budget::RECORD_THRESHOLD`, 1 MiB, on the thread running it fails
 the execute, named. The record records and never panics, since unwinding
@@ -73,7 +74,11 @@ a pool's or a fan-out's. So a library that returns an O(n_ao²) `Vec`
 is not called from a `run`: the host integrals and the SAD guess each have
 an `_into` form that writes into a caller's slice, and a host step hands
 them its pinned staging. The budget table prints an execute's peak heap
-growth, as the record saw it, as its unbudgeted row.
+growth, as the record saw it, as its unbudgeted row. The growth is the
+process's, so another thread's allocations and frees meanwhile move it,
+but a second execute's start does not reset it: an execute that starts
+during another leaves the peak the other reads alone, so several executes
+may share one binary.
 
 **Host-visible bytes are plain data.** A pinned buffer, a heap slab and
 every tenant of a lease are read as a `Plain` type, sealed to the

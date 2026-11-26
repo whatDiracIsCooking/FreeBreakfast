@@ -1,7 +1,9 @@
 //! The step wrapper on a card (tier 4): a real plan over device 0, where
 //! the wrapper makes the step's stream, takes its declared locks in rank
 //! order, binds gpu0's handle workspace, fills its device scratch with NaN
-//! in the ledger's test mode, and syncs before it releases.
+//! in the ledger's test mode, and syncs before it releases. The
+//! allocation record is installed, as in the steps' test binaries, so the
+//! wrapper watches each `run` here too (`docs/memory.md`, "The budget").
 
 #![allow(
     clippy::disallowed_methods,
@@ -13,6 +15,11 @@ use std::sync::Arc;
 use fb_core_budget::{Backing, Budget, Caps, Kind, Layout, Lease, Ledger, LockId, ManagerId, Span};
 use fb_core_error_handling::{Result, Status};
 use fb_core_flow::{Bus, Dag, Executor, Held, Lane, Locks, Placement, Slot, Step, View};
+
+/// The allocation record: every `run` the wrapper calls in this binary is
+/// watched, and each execute's heap growth measured.
+#[global_allocator]
+static RECORD: fb_core_budget::AllocationRecord = fb_core_budget::AllocationRecord;
 
 const N: usize = 1024;
 
@@ -118,4 +125,10 @@ fn the_wrapper_takes_the_locks_by_rank_and_fills_device_scratch_with_nan() {
     // NaN on entry both runs, though the first left zeros behind.
     assert_eq!(x.found.len(), 4);
     assert!(x.found.iter().all(|v| v.is_nan()), "{:?}", x.found);
+    // Under the record: each execute's growth measured, and no `run`
+    // past its threshold, or the execute above would have failed.
+    assert!(
+        plan.bus().ledger.heap_growth().is_some(),
+        "the record is installed"
+    );
 }
