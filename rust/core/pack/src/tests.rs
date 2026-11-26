@@ -1,6 +1,5 @@
 //! The packer against reachability found by a plain search, and against
-//! the dummy DAG of `../experimental/rust/v0.0.4/README.md`, "Step scratch"
-//! (`experimental/dag_transitive_closure/model.py`'s `DUMMY`).
+//! the dummy DAG `DUMMY` of `experimental/dag_transitive_closure/model.py`.
 
 use super::{Region, closure, lower_bound, ordered, pack};
 use proptest::prelude::*;

@@ -40,9 +40,9 @@ problem, not two. Parallelism is whatever room the chosen order leaves.
 
 Two layers are in the tree, as in [`memory.md`](memory.md). **The v0.0.4
 layer** (`fb_core_flow`, over `fb_core_budget` and `fb_core_device`) is
-this section, ported from the prototype's design
-(`../experimental/rust/v0.0.4/README.md`, "Steps and the MainBus", "GPUs,
-streams and locks", "The step DAG on rustflow"). **The old layer**, tasks,
+this section, the design the v0.0.4 prototype was built to try; its
+streams, locks and handles are [`gpu_layer.md`](gpu_layer.md)'s, "The
+v0.0.4 runtime". **The old layer**, tasks,
 edges and the orchestrator in `fb_core_planner` and `fb_core_thread_pool`,
 is every section from "Three owners" on, until its crates are deleted;
 "CPU workers" and "Capabilities are enforced by lints" say what holds for
@@ -109,8 +109,7 @@ topological order, the others on its context
 
 `fb-steps` is the run's bus and its steps, in one crate so the bus names
 every step's `Output` with no dependency cycle; the method code a step calls
-stays in its module's crate (`../experimental/rust/v0.0.4/README.md`, "Steps
-and the MainBus").
+stays in its module's crate.
 
 - **The config is one table per step family.** `[molecule]` and `[basis]`
   bring the overlap, the core Hamiltonian, the guess and the orthogonalizer;
@@ -150,6 +149,162 @@ and the MainBus").
   is setup, budget mode and execute mode over the run's one executor, and
   `Run::replay` execute mode again in the same buffers: the SCF's orbitals
   carry over in its `Output`, nothing in scratch does.
+
+### The EriManager
+
+The density-fitted ERI is a shared product with state of its own: streams
+and events, and a ring of buffers on every GPU. That state lives in one
+object, `fb_steps::EriManager`, which is `eri`'s `Output`, and its users
+call its methods. `build_jk(shared, held, d, j, k)` is the one that works:
+J and K for each density of `d`, on gpu0, into the caller's `j` and `k`.
+
+- **It is `eri`'s `Output`.** `eri`'s `mem_budget` allocates all of it: the
+  metric's Cholesky factor L on every GPU, B's slab on the host heap, and
+  on every GPU the ERI buffer and its pinned staging
+  ([`memory.md`](memory.md), "The budget"). They are summed with every
+  other `Output`, for the whole calculation. `eri`'s `run` factors the
+  metric, builds B and fills the manager.
+- **Its readers declare it, like any `Output`.** The edge comes from the
+  declaration. A reader that calls `build_jk` also declares the manager's
+  lock and every GPU's, and the wrapper takes them, the manager's first.
+  B and L are immutable after `eri`; the per-GPU state changes only under
+  the manager's lock.
+- **It never takes a lock.** The guards it uses come in `held`, taken by
+  the wrapper, and it has no path to a GPU's `Mutex`. Its own state sits
+  behind a `Mutex` that is only ever `try_lock`ed, under the manager's
+  lock: a caller that did not declare that lock panics there, and fails
+  the method's contract first in a debug build.
+- **The caller owns its results.** `build_jk` writes the J and K it is
+  passed, reads the densities it is passed, and keeps nothing of the
+  caller's. A caller's own state (its DIIS, its Fock matrix) stays in the
+  caller's scratch.
+- **It takes a slice of densities.** DF-RHF passes one. UHF passes two,
+  and a response solve, a Davidson or a state average pass many. The
+  buffers are sized for one today, a contract of `build_jk`.
+- **A density is D, or a factor C of D = 2 C Cᵀ** (`Density::Dense`,
+  `Density::Occupied`). From D, K costs two n_aux × n_ao³ products; from
+  C, two n_aux × n_ao² × n_occ ones, and J comes from the same
+  half-transformed B. A caller that has a factor passes it: the SCF does
+  on every pass, its first the guess's eigen-factor. Only the matrix
+  given crosses to the other GPUs: downloaded from gpu0 once, and one host
+  end uploaded to each of them under one token.
+
+**B is built over pairs and contracted over aux functions.** A pair
+column of B depends on every P, so a batch of P cannot be fitted alone; a
+batch of pairs can. The pair batches, each a run of one class's pairs,
+partition the pair columns, and each GPU takes a contiguous range of
+them: it forms (μν|P) in its ring, fits it against its own L, downloads
+it and scatters it into its own columns of every row of B, which
+`split_at_mut` cut from the other GPUs', so no GPU needs anything from
+another and no pointer is shared. A J/K pass then runs over aux batches:
+the aux functions are split across the GPUs once, in budget mode, each
+GPU contracts its own share, and the fragments are summed onto gpu0
+through the host.
+
+**(μν|P) is spherical from the kernel.** FelizJueves's
+`ssperi3<la, lb, lP>` writes all three indices as real solid harmonics,
+each pair's block at its spherical pair column, the layout the fit reads.
+No bra transform runs, and the ring holds no Cartesian batch and no
+transform scratch. It is plain FP64, unscreened. No array in the DF-RHF
+chain has a Cartesian index.
+
+**The build's ring.** `[eri] ring` pair batches are in flight per GPU,
+two or one. Each ring buffer has a stream of its own, which carries its
+batch's cells, its three-centre kernels and its download. The fit, a
+blocked triangular solve, goes on the GPU's stream: it waits on the event
+the ring stream recorded after the kernels, and the download waits on the
+event recorded after the fit. The host waits on a buffer's download token,
+which syncs that buffer's stream alone, before it scatters the batch into
+B and writes the buffer's pinned bytes again
+([`gpu_layer.md`](gpu_layer.md), "The v0.0.4 runtime").
+
+**A J/K pass uploads its whole share, through a ring of the same depth.**
+B has one copy, on the host; no GPU keeps rows of it between passes. Each
+aux batch goes through one of the pass's ring buffers, each with a pinned
+end and an upload stream of the manager's own:
+
+1. The host copies the batch's rows of B into the buffer's pinned end,
+   once the upload that last read those bytes has run.
+2. The upload, and the gather of the packed rows into square matrices, go
+   on the buffer's stream, after the event the GPU's stream recorded
+   behind the contraction that last read the buffer.
+3. The contraction goes on the GPU's stream, after the event the buffer's
+   stream recorded behind the gather.
+
+So a batch's host copy and its upload both run while the batch before is
+contracted, and the GPU never waits for the host. The pass joins its
+streams before it returns: the wrapper does not know the manager's
+streams. With the ring a pass takes the contraction's time, so nothing is
+gained by keeping rows of B on a GPU.
+
+**The ERI buffer.** One device buffer per GPU within `[eri] mem_per_gpu`,
+`eri`'s step limit, charged at what it uses, with its pinned staging.
+`eri`'s build and every later J/K pass run in it, one after the other,
+since the DAG orders `eri` before every reader: during `eri`'s run it
+holds the build's ring; afterwards a pass's gather tables, a copy of the
+density, the J and K fragments, one aux batch's work and the pass's ring.
+It is held for the whole calculation, so what it takes is not available
+to later steps, and the budget table shows it in `eri`'s row.
+
+**Pinned staging does not grow with the limit.** A fitted pair batch
+comes down through a staging buffer of at most 64 MiB, and an aux batch
+of B's rows goes up through one of at most 128 MiB. Neither batch is ever
+wider than its staging buffer holds, whatever `mem_per_gpu` is: a batch
+is one copy. Page-locking costs about 0.9 s per GiB, and each ring
+page-locks a buffer for each of its depth, while the build's time is flat
+in the width well below 64 MiB ([`memory.md`](memory.md), "Batched
+only"). So the buffer stops growing with the limit.
+
+**What `mem_per_gpu` does, from config alone:**
+
+| Set to | Gives |
+|---|---|
+| Below the ring at a width of one | A refusal naming `[eri]`'s key, its value and the least it needs |
+| About the ring | Narrow pair batches and narrow aux batches, a width of one logged at `warn`: the tests' many-batch case on water |
+| More | Wider batches, up to what a staging buffer holds; past that, nothing |
+| Default | 2 GiB: a fixed constant, not a fraction of the cap, so a dry budget is exact. A placeholder for a measured value |
+
+**Derivatives of B are scratch.** A gradient or a Hessian step builds the
+derivative of B a batch at a time and contracts it at once, inside the
+step that needs it. It reads the metric and L, which is why the metric is
+an `Output` of its own and L is the manager's. No such step is built yet.
+
+### What the model covers
+
+The layer runs the DF-RHF chain batched on one to four GPUs, with B on
+the host. What follows is the argument that the same model carries the
+rest of the C++ tree: each of its constraints, against what `src/` needs.
+None of it past the chain is built.
+
+| The model holds | What `src/` needs |
+|---|---|
+| Every length is counted before anything runs | Already so: `src/pipeline/shape` and `footprint` size every step from its dimensions at plan time, AVAS included. A size known only at run time is allocated at its bound ([`memory.md`](memory.md), "Batched only") |
+| One config table, one slot, one instance per step | The C++ step contract (`kTable`, `kKeys`). Two states' gradients for an MECI, or a QD pair's, live inside one step |
+| Nothing is allocated in `run` | Steps sized from footprints already allocate up front |
+| A library-using step holds its GPUs for its whole run | Two heavy steps on one GPU time-slice anyway |
+| Every GPU step is batched and spans every GPU | A cost of each port, not a limit of the model |
+
+**Repeated evaluations are replays.** Finite-difference gradients and
+Hessians, geometry optimization, IRC, and molecular dynamics over a fixed
+atom list, basis and active space run execute mode again at the same
+`Dims`, in the same buffers, each from the orbitals of the evaluation
+before. Displacements run one after another: every heavy step already
+spans every GPU, so a serial replay leaves none idle. Concurrent replays
+would need copies of the chain's buffers and pay only on molecules too
+small to fill the GPUs; none is in scope.
+
+**A calculation whose `Dims` change mid-run is a new DAG per segment**: a
+QM/MM run whose QM region moves, an active space that changes along a
+trajectory. Each segment pays setup and budget mode, seconds against its
+run.
+
+**The sum is bounded by batching.** Every O(N³) tensor is batched under a
+step limit, so what stays alive as an `Output` is O(N²) matrices (32 MB
+each at n_ao = 2000) and active-space tensors (a 3-RDM at 16 orbitals is
+134 MB). A Hessian's per-perturbation response, 3 n_atom × n_ao × n_occ,
+is its step's scratch, batched over perturbations, and does not stack. A
+chain the sum refuses has a remedy within the model: `Output`s packed by
+the same closure that packs scratch.
 
 ## Three owners
 
@@ -973,8 +1128,7 @@ asked for stealing on the CPU side a crate could slot in behind the same type.
 
 **The host integrals run on rayon, and nothing else does.** The one-electron
 matrices S, T and V and the density-fitting metric (P|Q) are built on the
-host, not on a card (`../experimental/rust/v0.0.4/README.md`, "Streams", whose
-last bullet is the two thread pools): each is a loop over shell pairs, one
+host, not on a card ("The MainBus and its steps", above): each is a loop over shell pairs, one
 rayon task per center writing a disjoint run of rows of a packed triangle,
 with nothing in it for the planner to place. They run on rayon's threads,
 called from inside one step, a second pool beside the orchestrator's workers

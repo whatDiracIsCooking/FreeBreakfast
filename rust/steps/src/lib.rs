@@ -3,9 +3,7 @@
 //! (`docs/programming_model.md`, "The MainBus and its steps"). Method code
 //! stays in the per-module crates the steps call.
 //!
-//! Ported from the v0.0.4 prototype's `src/bus.rs` and its first five
-//! steps (`../experimental/rust/v0.0.4/README.md`, "Steps and the MainBus",
-//! "Lengths: counted in setup, built by the step").
+//! Ported from the v0.0.4 prototype's `src/bus.rs` and its steps.
 //!
 //! - [`Config`]: the config file, one table per step family.
 //! - [`MainBus`]: setup ([`MainBus::setup`]), the unbudgeted host phase:

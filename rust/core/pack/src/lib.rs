@@ -2,9 +2,8 @@
 //! largest first, and the lower bound (`docs/memory.md`, "Step scratch").
 //! Pure functions over indices and bytes: no device, no ledger.
 //!
-//! Ported from the v0.0.4 prototype's `src/pack.rs` as it is
-//! (`../experimental/rust/v0.0.4/README.md`, "Step scratch"); the C++ tree has
-//! no counterpart, since its steps allocate as they go.
+//! Ported from the v0.0.4 prototype's `src/pack.rs` as it is; the C++ tree
+//! has no counterpart, since its steps allocate as they go.
 //!
 //! Two regions may share bytes only if the DAG orders their steps, one
 //! reaching the other. That is the packer's constraint and not its

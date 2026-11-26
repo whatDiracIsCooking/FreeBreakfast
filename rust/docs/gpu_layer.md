@@ -629,9 +629,9 @@ since a type is unforgeable only inside the crate that defines it.
 
 ## The v0.0.4 runtime
 
-The v0.0.4 layer, designed in the prototype's page under
-`experimental/rust/v0.0.4/`, is landing beside the layer above, which it will
-replace. Its runtime is `fb-core-device`, written over `wwr-sys`, the
+The v0.0.4 layer ([`programming_model.md`](programming_model.md), "Steps
+on rustflow"; [`memory.md`](memory.md), "The budget") stands beside the
+layer above, which it replaces once the old crates are deleted. Its runtime is `fb-core-device`, written over `wwr-sys`, the
 recipes kernels' raw `extern` declarations (`fb-recipes-sys`'s generated
 bindings and its tile constants; the safe calls over them are
 `fb-recipes-launch`'s), `fb-kernel-abi`'s

@@ -4,9 +4,8 @@
 //! step scratch: declared per step, packed by the final node
 //! ([`Ledger::finish`]), lent to `run` as a [`Lease`].
 //!
-//! Ported from the v0.0.4 prototype's `src/budget.rs` and `src/host.rs`
-//! (`../experimental/rust/v0.0.4/README.md`, "The memory budget", "Step
-//! scratch"); the C++ tree's counterpart is pre-flight and the footprints,
+//! Ported from the v0.0.4 prototype's `src/budget.rs` and `src/host.rs`;
+//! the C++ tree's counterpart is pre-flight and the footprints,
 //! which this replaces by counting the allocations themselves.
 //!
 //! Each [`Budget`] call for memory a step's `Output` owns, in order: adds

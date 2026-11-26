@@ -8,9 +8,8 @@
 //!
 //! on the host heap, n_aux rows of the n_col spherical pair columns, and
 //! per GPU the ERI buffer with its pinned staging and its streams' state
-//! (`../experimental/rust/v0.0.4/README.md`, "The EriManager", "A step with
-//! streams of its own and library calls"; the prototype's
-//! `src/steps/eri.rs`).
+//! (`docs/programming_model.md`, "The EriManager"; `docs/gpu_layer.md`,
+//! "The v0.0.4 runtime"; the prototype's `src/steps/eri.rs`).
 //!
 //! **B is built over pairs.** A pair column of B depends on every P, so a
 //! batch of P cannot be fitted alone; a batch of pairs can. The pair

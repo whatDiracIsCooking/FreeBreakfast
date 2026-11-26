@@ -1,8 +1,8 @@
 //! The closed-shell RHF loop over the fitted integrals, with Pulay DIIS on
 //! the Fock matrix: an all-GPU step through [`EriManager::build_jk`], its
 //! eigensolve and everything else on gpu0's stream, under the manager's
-//! lock and every GPU's (`../experimental/rust/v0.0.4/README.md`, "Steps
-//! and the MainBus"; the prototype's `src/steps/scf.rs`).
+//! lock and every GPU's (`docs/programming_model.md`, "The MainBus and its
+//! steps", "The EriManager"; the prototype's `src/steps/scf.rs`).
 //!
 //! One iteration, a plain loop inside `run`: J and K of the carried D by
 //! the manager, `F = H + J - K/2`, `E = tr(D (H + F))/2`, the residual
