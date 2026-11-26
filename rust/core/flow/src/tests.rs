@@ -416,6 +416,56 @@ fn the_wrapper_takes_a_declared_lock_and_its_holders_never_overlap() {
 }
 
 #[test]
+fn the_execute_records_each_acquisition_and_a_waiter_as_having_waited() {
+    // b and c declare the manager's lock and are ready together, once a
+    // is done; each holds it for its 2 ms sleep, so the second asks while
+    // the first holds it. Each execute's record: the lock in each holder's
+    // row and in no other, the holders' spans disjoint, and a waiter's ask
+    // inside another holder's span. Ten executes, so that a waiter is seen
+    // whichever order the workers take them in.
+    let plan = plan(bus(Spec {
+        manager: vec![1, 2],
+        ..Spec::default()
+    }));
+    let executor = Executor::new(8);
+    plan.budget(&executor).unwrap();
+    let eri = [LockId::Manager(ManagerId::Eri)];
+    let mut waiters = 0;
+    for _ in 0..10 {
+        let times = plan.execute(&executor).unwrap();
+        let holders: Vec<_> = times.iter().filter(|t| !t.locks.is_empty()).collect();
+        assert_eq!(
+            holders.iter().map(|t| t.name).collect::<Vec<_>>(),
+            ["b", "c"],
+            "{times:?}"
+        );
+        for t in &times {
+            assert!(t.began <= t.held && t.held <= t.released && t.released <= t.ended);
+        }
+        for (i, x) in holders.iter().enumerate() {
+            assert_eq!(x.locks, eri);
+            for y in &holders[i + 1..] {
+                assert!(
+                    x.released <= y.held || y.released <= x.held,
+                    "{x:?} and {y:?} held the lock at once"
+                );
+            }
+            if x.waited {
+                waiters += 1;
+                assert!(
+                    holders
+                        .iter()
+                        .any(|o| o.name != x.name && o.held <= x.held && o.released >= x.began),
+                    "{x:?} waited with no other holder"
+                );
+            }
+        }
+        assert!(times.iter().all(|t| !t.waited || !t.locks.is_empty()));
+    }
+    assert!(waiters > 0, "no execute recorded a waiter");
+}
+
+#[test]
 fn a_lock_of_a_gpu_the_step_does_not_run_on_is_refused() {
     // a is a host step, and declares gpu0's lock.
     let plan = plan(bus(Spec {

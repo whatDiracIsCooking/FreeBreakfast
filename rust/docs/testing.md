@@ -414,6 +414,10 @@ every case that calls it is named here, which `fb-doc-check`'s
   functions) under the allocation record, most of its time the metric's
   host build, twice; `benzenes_host_steps_pass_the_allocation_record` is
   its family's representative.
+- `fb-steps`' `benzenes_and_ethylenes_energies_match_the_old_paths`,
+  benzene's and ethylene's DF-RHF from the steps against the old Rust
+  path's in the same process, two full SCF runs each;
+  `waters_energy_matches_the_old_paths` is its family's representative.
 
 libtest has no skipped state, so a returned case counts as passed; the
 gate's line, not the count, is what says it did not run. `#[ignore]` is

@@ -89,7 +89,10 @@ cannot skip:
 6. Release the locks.
 
 So a finished node is finished device work, and the edges order
-everything between steps with no event between them. **Nothing takes a
+everything between steps with no event between them. Each execute
+records every step's acquisitions in its `StepTime`: the locks in the
+order taken, whether one was found held so that the step waited, and when
+it held them all and when it began to release them. **Nothing takes a
 lock inside `run`:** a step reaches a GPU's handles only through the
 guards in its `Held`, and `Locks` gives no path to a `Mutex`; its one
 locking method, `query`, takes a `Budget`, which only `mem_budget` holds.

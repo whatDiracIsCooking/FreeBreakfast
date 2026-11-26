@@ -34,7 +34,7 @@ mod common;
 
 use std::path::Path;
 
-use fb_core_budget::Backing;
+use fb_core_budget::{Backing, LockId};
 use fb_core_flow::Bus;
 use fb_steps::{Config, EriStep, MainBus, Run, ScfStep, ScfTable, for_each_pair, run};
 
@@ -183,20 +183,79 @@ fn several_gpus_give_benzenes_energy_on_one() {
 /// The executor's worker count moves no result: water on one worker and on
 /// eight, NaN-filled, gives the same energy, so a step that read a slot
 /// before its writer finished, or a lock taken out of order, shows here.
+/// On eight workers, the lock acquisitions the execute records: every
+/// step's in rank order, gpu0's three holders (the orthogonalizer, `eri`
+/// and the SCF) never holding it at once, and a step recorded as having
+/// waited asking while another held one of its locks.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn the_worker_count_does_not_move_waters_energy() {
     let at = |threads: usize| {
         let mut config = chain(WATER.0);
         (config.resources.threads, config.resources.nan_fill) = (threads, true);
-        energy(&converged(config))
+        converged(config)
     };
-    let ((one, n1), (eight, n8)) = (at(1), at(8));
+    let ((one, n1), eight) = (energy(&at(1)), at(8));
+    let (e8, n8) = energy(&eight);
     println!(
         "one worker: E in {n1} iterations; eight: in {n8}; |E1 - E8| = {:.1e}",
-        (one - eight).abs()
+        (one - e8).abs()
     );
-    assert!((one - eight).abs() < ENERGY_BAR && (one - WATER.1).abs() < ENERGY_BAR);
+    assert!((one - e8).abs() < ENERGY_BAR && (one - WATER.1).abs() < ENERGY_BAR);
+
+    let steps = &eight.steps;
+    for t in steps {
+        assert!(
+            t.locks.windows(2).all(|w| w[0] < w[1]),
+            "{}: {:?} out of rank order",
+            t.name,
+            t.locks
+        );
+        assert!(t.began <= t.held && t.held <= t.released && t.released <= t.ended);
+    }
+    let gpu0: Vec<_> = steps
+        .iter()
+        .filter(|t| t.locks.contains(&LockId::Gpu(0)))
+        .collect();
+    let mut names: Vec<_> = gpu0.iter().map(|t| t.name).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["eri", "orthogonalizer", "scf"]);
+    for (i, x) in gpu0.iter().enumerate() {
+        for y in &gpu0[i + 1..] {
+            assert!(
+                x.released <= y.held || y.released <= x.held,
+                "{} and {} held gpu0 at once",
+                x.name,
+                y.name
+            );
+        }
+    }
+    for x in steps.iter().filter(|t| t.waited) {
+        assert!(
+            steps.iter().any(|o| o.name != x.name
+                && o.locks.iter().any(|l| x.locks.contains(l))
+                && o.held <= x.held
+                && o.released >= x.began),
+            "{} is recorded as having waited with no other holder",
+            x.name
+        );
+    }
+    println!(
+        "{}",
+        steps
+            .iter()
+            .filter(|t| !t.locks.is_empty())
+            .map(|t| format!(
+                "{}: {:?} held {:?}..{:?}{}",
+                t.name,
+                t.locks,
+                t.held,
+                t.released,
+                if t.waited { ", waited" } else { "" }
+            ))
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
 }
 
 /// A replay of water at the same dimensions starts from the orbitals the

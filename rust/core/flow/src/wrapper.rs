@@ -2,7 +2,8 @@
 //! and what is done around every `run` ([`acquire`], [`release`]), with
 //! the guards it hands `run` as a [`Held`].
 
-use std::sync::MutexGuard;
+use std::sync::{Mutex, MutexGuard, TryLockError};
+use std::time::Instant;
 
 use fb_core_budget::{Lease, LockId};
 use fb_core_device::{GpuResources, ScopedDevice, Stream};
@@ -53,6 +54,10 @@ pub struct Held<'a> {
     managers: Vec<MutexGuard<'a, ()>>,
     gpus: Vec<Option<MutexGuard<'a, GpuResources>>>,
     taken: Vec<LockId>,
+    /// Whether a lock was found held by another step.
+    pub(crate) waited: bool,
+    /// When the last lock was taken.
+    pub(crate) held_at: Instant,
 }
 
 impl Held<'_> {
@@ -90,6 +95,16 @@ impl Held<'_> {
     #[must_use]
     pub fn taken(&self) -> &[LockId] {
         &self.taken
+    }
+}
+
+/// `m`'s guard, and whether another holder had it, so that taking it
+/// waited: the lock acquisition the execute records ([`crate::StepTime`]).
+fn take<T>(m: &Mutex<T>) -> (MutexGuard<'_, T>, bool) {
+    match m.try_lock() {
+        Ok(guard) => (guard, false),
+        Err(TryLockError::Poisoned(guard)) => (guard.into_inner(), false),
+        Err(TryLockError::WouldBlock) => (locked(m), true),
     }
 }
 
@@ -168,14 +183,18 @@ pub(crate) fn acquire<'a, B: Bus>(
         managers: Vec::new(),
         gpus: (0..locks.gpus.len()).map(|_| None).collect(),
         taken: Vec::new(),
+        waited: false,
+        held_at: Instant::now(),
     };
     // The declared set, in rank order: managers, then GPUs by index. A
     // step that holds a higher lock never waits for a lower one.
     for lock in ledger.locks_of(step) {
         match lock {
-            LockId::Manager(id) => held
-                .managers
-                .push(locked(&locks.managers[manager_index(id)])),
+            LockId::Manager(id) => {
+                let (guard, waited) = take(&locks.managers[manager_index(id)]);
+                held.managers.push(guard);
+                held.waited |= waited;
+            }
             LockId::Gpu(g) => {
                 // `make_lane` held every GPU lock to the plan's GPUs; a
                 // host-backed plan has no device behind them.
@@ -184,7 +203,8 @@ pub(crate) fn acquire<'a, B: Bus>(
                         "step '{step}' takes the lock of gpu {g}, which has no device in this run"
                     )));
                 };
-                let mut guard = locked(gpu);
+                let (mut guard, waited) = take(gpu);
+                held.waited |= waited;
                 if let Some(workspace) = ledger.take_workspace(g) {
                     guard.bind_workspace(workspace)?;
                 }
@@ -193,6 +213,7 @@ pub(crate) fn acquire<'a, B: Bus>(
         }
         held.taken.push(lock);
     }
+    held.held_at = Instant::now();
     if ledger.nan_fill() {
         lease.fill_host();
         for gpu in &lane.gpus {
@@ -210,27 +231,61 @@ pub(crate) fn acquire<'a, B: Bus>(
 /// After every `run`, failed or not: synchronize every stream the step has
 /// and each held GPU's stream, so that a finished node is finished device
 /// work, and only then release the locks. The first failure, after every
-/// sync was tried.
+/// sync was tried, and the moment the release began.
 #[allow(
     clippy::disallowed_methods,
     reason = "the step wrapper's syncs: the lease's fill before `run`, and every stream after it, the v0.0.4 layer's edge (docs/programming_model.md, \"Steps on rustflow\")"
 )]
-pub(crate) fn release(lane: &Lane, held: Held<'_>) -> Status {
+pub(crate) fn release(lane: &Lane, held: Held<'_>) -> (Status, Instant) {
     let mut status = Ok(());
     let mut note = |synced: Status| {
         if status.is_ok() {
             status = synced;
         }
     };
-    for gpu in &lane.gpus {
-        for stream in &gpu.streams {
-            note(stream.sync());
+    if !controls::skipping() {
+        for gpu in &lane.gpus {
+            for stream in &gpu.streams {
+                note(stream.sync());
+            }
+        }
+        for guard in held.gpus.iter().flatten() {
+            note(guard.stream().sync());
         }
     }
-    for guard in held.gpus.iter().flatten() {
-        note(guard.stream().sync());
-    }
     // Only now the locks: the next holder finds no call in flight.
+    let released = Instant::now();
     drop(held);
-    status
+    (status, released)
+}
+
+/// The negative control of the step-end sync: a switch, for a dependent's
+/// tests alone (feature `test-support`), that makes the wrapper skip every
+/// sync and release the locks with the step's work still in flight. A run
+/// with it set must fail under the NaN fill, which is what shows the sync
+/// is load-bearing. Without the feature the switch does not exist and
+/// the wrapper always syncs.
+#[cfg(feature = "test-support")]
+pub mod controls {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static SKIP: AtomicBool = AtomicBool::new(false);
+
+    /// Skip the step-end sync in every execute of the process from now on
+    /// (`true`), or sync again (`false`).
+    pub fn skip_step_end_sync(skip: bool) {
+        SKIP.store(skip, Ordering::SeqCst);
+    }
+
+    pub(crate) fn skipping() -> bool {
+        SKIP.load(Ordering::SeqCst)
+    }
+}
+
+/// Without the feature, the step-end sync is never skipped.
+#[cfg(not(feature = "test-support"))]
+mod controls {
+    pub(crate) const fn skipping() -> bool {
+        false
+    }
 }
