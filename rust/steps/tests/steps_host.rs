@@ -331,14 +331,22 @@ fn a_closed_shell_ions_dry_budget_is_the_neutrals() {
     assert_eq!(ion_table, neutral_table);
 }
 
-/// The localization's scratch at `n` AOs, `n_atom` atoms and a block of
-/// `m` orbitals, `(device, pinned)` bytes: the input, `S C`, the
-/// population tensor and its pong, U and its pong, the angles, the
-/// offsets, the schedule, `diag(ε) U`, `[L, G]` and `C U` on the device;
-/// the input, the offsets, the schedule, `[L, G]`, `C U` and the order
-/// pinned.
-fn localization_scratch(n: usize, n_atom: usize, m: usize) -> (u64, u64) {
+/// The localization's scratch at `n` AOs, `n_atom` atoms and blocks of
+/// `widths` orbitals, `(device, pinned)` bytes: each block's in turn, the
+/// input, `S C`, the population tensor and its pong, U and its pong, the
+/// angles, the offsets, the schedule, `diag(ε) U`, `[L, G]` and `C U` on
+/// the device; the input, the offsets, the schedule, `[L, G]`, `C U` and
+/// the order pinned.
+fn localization_scratch(n: usize, n_atom: usize, widths: &[usize]) -> (u64, u64) {
     let (mut dev, mut pin) = (Layout::new(), Layout::new());
+    for &m in widths {
+        block_scratch(&mut dev, &mut pin, n, n_atom, m);
+    }
+    (aligned(dev.bytes()), aligned(pin.bytes()))
+}
+
+/// One block's tenants of [`localization_scratch`].
+fn block_scratch(dev: &mut Layout, pin: &mut Layout, n: usize, n_atom: usize, m: usize) {
     let (nm, m2, tensor) = (n * m, m * m, n_atom * m * m);
     let pad = m + m % 2;
     let schedule = (pad - 1) * pad;
@@ -362,17 +370,18 @@ fn localization_scratch(n: usize, n_atom: usize, m: usize) -> (u64, u64) {
         pin.span::<f64>(nm),
         pin.span::<i32>(m),
     );
-    (aligned(dev.bytes()), aligned(pin.bytes()))
 }
 
 /// A `"localization"` run's dry budget is exact, its arrays sized by the
-/// occupied block: water's five doubly occupied orbitals and its
+/// occupied blocks: water's five doubly occupied orbitals and its
 /// dication's four, each step's scratch the formula's, `C_local`
 /// `n_ao × n_occ` on gpu0 and the host; and every other step's region
 /// the same for the two, since only the localization's budget reads more
 /// of the occupations than whether the shell is open
-/// (`docs/programming_model.md`, "The MainBus and its steps"). An open
-/// shell is refused `Unsupported` in budget mode, naming the step.
+/// (`docs/programming_model.md`, "The MainBus and its steps"). The water
+/// cation's doublet is budgeted as its two blocks, four doubly occupied
+/// columns then one singly, one after the other, and `C_local` as
+/// `n_ao × n_alpha`.
 #[test]
 fn a_localizations_dry_budget_is_exact_in_the_occupied_block() {
     let budget = |charge: i32, multiplicity: i32| {
@@ -402,7 +411,7 @@ fn a_localizations_dry_budget_is_exact_in_the_occupied_block() {
                 .find(|r| r.gpu == 0 && r.kind == kind && r.step == "localization")
                 .map(|r| r.bytes)
         };
-        let (device, pinned) = localization_scratch(dims.n_ao, dims.n_atom, m);
+        let (device, pinned) = localization_scratch(dims.n_ao, dims.n_atom, &[m]);
         assert_eq!(region(Kind::Device), Some(device), "charge {charge}");
         assert_eq!(region(Kind::Pinned), Some(pinned), "charge {charge}");
         assert_eq!(ledger.allocations(), 0, "a dry budget allocates nothing");
@@ -421,10 +430,23 @@ fn a_localizations_dry_budget_is_exact_in_the_occupied_block() {
     // C_local's host copy, n_ao × n_occ, the one heap difference.
     assert_eq!(heap[0].0 - heap[1].0, (heap[0].1 * 8) as u64);
 
-    let (_, budgeted) = budget(1, 2);
-    let error = budgeted.unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Unsupported, "{error}");
-    assert!(error.message.contains("open shell"), "{error}");
+    let (plan, budgeted) = budget(1, 2);
+    budgeted.unwrap();
+    let dims = plan.bus().shared().dims.clone();
+    assert_eq!((dims.n_alpha, dims.n_beta), (5, 4));
+    let ledger = plan.bus().ledger();
+    let region = |kind: Kind| {
+        ledger
+            .regions()
+            .iter()
+            .find(|r| r.gpu == 0 && r.kind == kind && r.step == "localization")
+            .map(|r| r.bytes)
+    };
+    let (device, pinned) = localization_scratch(dims.n_ao, dims.n_atom, &[4, 1]);
+    assert_eq!(region(Kind::Device), Some(device), "the cation");
+    assert_eq!(region(Kind::Pinned), Some(pinned), "the cation");
+    let local = plan.output(fb_steps::LocalizationStep);
+    assert_eq!(local.n_cols(), 5);
 }
 
 /// A bus of one step that allocates `BYTES` on the plain heap in its `run`.

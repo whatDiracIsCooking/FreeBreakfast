@@ -8,7 +8,7 @@
 //! | `timing.json` | always | the run's times: `profile` (`debug` or `release`), `setup`, `budget` and `execute`, and per step of the last execute its [`StepTime`], each time integer nanoseconds, each lock its rank's name (`Manager(Eri)`, `Gpu(0)`); `steps` is empty for a dry run |
 //! | `scf.json` | with `[scf]`, after execute | `energy`, `residual`, `iterations`, `converged`, `n_alpha`, `n_beta` and `epsilon`, ascending, each double in its shortest round-trip form |
 //! | `c.npy`, `d.npy` | with `[scf]`, after execute | C and D, `n_ao × n_ao` float64 in Fortran order ([`fb_io_npy::write_npy`]), the host copies' bytes as they are |
-//! | `localization.json` | with `[localization]`, after execute | `mode`, `exponent`, `functional_before`, `functional_after` (`L` of the SCF's orbitals and of the localized ones) and `sweeps` |
+//! | `localization.json` | with `[localization]`, after execute | `mode`, `exponent`, `functional_before`, `functional_after` (`L` of the SCF's orbitals and of the localized ones) and `sweeps`, each summed over the blocks |
 //! | `c_local.npy` | with `[localization]`, after execute | `C_local`, `n_ao × n_alpha` float64 in Fortran order, each block's columns ascending in `⟨i\|F\|i⟩` |
 //!
 //! A step's products are one private function of its `Output` here, called
