@@ -2,7 +2,8 @@
 //! Five fake steps over a small bus on the plain heap ([`Backing::Host`])
 //! and no GPU: `a`; `b` and `c`, which read `a`; `d`, which reads `b` and
 //! `c`; and `e`, which reads nothing. What each does comes from the bus,
-//! so one graph serves every case.
+//! so one graph serves every case. The allocation record is installed, so
+//! the wrapper watches every `run` and measures each execute.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,6 +14,11 @@ use fb_core_budget::{
 use fb_core_error_handling::{Error, ErrorKind, Result, Status};
 
 use crate::{Bus, Dag, Executor, Held, Lane, Locks, Placement, Plan, Slot, Step, View, locked};
+
+/// The allocation record: every `run` the wrapper calls in this binary is
+/// watched, and each execute's heap growth measured.
+#[global_allocator]
+static RECORD: fb_core_budget::AllocationRecord = fb_core_budget::AllocationRecord;
 
 const MIB: u64 = 1 << 20;
 const N: usize = 5;
@@ -315,6 +321,12 @@ fn every_node_runs_once_in_a_topological_order() {
             }
             assert_eq!(runs(&plan), [replay; N]);
         }
+        // Under the record: each execute's growth measured, and no `run`
+        // past its threshold, or an execute above would have failed.
+        assert!(
+            plan.bus().ledger.heap_growth().is_some(),
+            "the record is installed"
+        );
     }
 }
 
