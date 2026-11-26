@@ -15,8 +15,13 @@
 //! `--mem-per-gpu-mib N` `[eri] mem_per_gpu`, converted to bytes.
 //! `--stage-sync` sets `[scf] stage_sync`: a sync of gpu0's stream where an
 //! SCF iteration would end a step, were it three.
+//!
+//! `--output DIR` (default `fbf_output`, the old binary's) is where
+//! [`fb_steps::Run::write`] puts the run's record, `budget.txt` (the table
+//! printed here) and `timing.json`, and, unless `--budget-only`, its
+//! products: `scf.json`, `c.npy` and `d.npy` with `[scf]`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use fb_core_budget::Backing;
@@ -28,6 +33,7 @@ use fb_steps::{Config, EriStep, ScfStep, run};
 #[derive(Default)]
 struct Args {
     path: String,
+    output: Option<PathBuf>,
     budget_only: bool,
     devices: Option<Vec<i32>>,
     mem_per_gpu_mib: Option<f64>,
@@ -52,6 +58,7 @@ fn args() -> Option<Args> {
             }
             "--mem-per-gpu-mib" => out.mem_per_gpu_mib = Some(it.next()?.parse().ok()?),
             "--threads" => out.threads = Some(it.next()?.parse().ok()?),
+            "--output" => out.output = Some(it.next()?.into()),
             _ if out.path.is_empty() => out.path = arg,
             _ => return None,
         }
@@ -81,6 +88,12 @@ fn go(args: &Args) -> Result<()> {
     };
     let (has_eri, has_scf) = (config.eri.is_some(), config.scf.is_some());
     let run = run(config, backing)?;
+    let output = args
+        .output
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("fbf_output"));
+    run.write(&output)?;
+    println!("wrote {}", output.display());
     let shared = run.plan.bus().shared();
     let dims = &shared.dims;
     println!(
@@ -153,7 +166,7 @@ fn main() -> ExitCode {
     let Some(args) = args() else {
         eprintln!(
             "usage: run <config.toml> [--budget-only] [--devices 0,1] [--threads N] \
-             [--mem-per-gpu-mib N] [--stage-sync]"
+             [--mem-per-gpu-mib N] [--stage-sync] [--output DIR]"
         );
         return ExitCode::from(2);
     };

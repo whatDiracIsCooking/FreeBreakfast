@@ -43,6 +43,10 @@ fb-integrals-df-metric.workspace = true
 # The config file.
 serde.workspace = true
 toml.workspace = true
+# The run's products and record on disk: C and D as .npy, scf.json and
+# timing.json.
+fb-io-npy.workspace = true
+serde_json.workspace = true
 
 # Counts the process's threads, so no libtest harness threads beside it.
 [[test]]
@@ -50,8 +54,9 @@ name = "steps_threads"
 harness = false
 
 [dev-dependencies]
-# The chain test's PySCF B, a committed .npy.
-fb-io-npy.workspace = true
+# The written scf.json read back exactly, as a correctly rounding reader
+# (Python's json, NumPy) reads it.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 # chain_vram's per-process VRAM reading on an AMD card.
 fb-test-support.workspace = true
 # The step-end sync's negative control (`controls_device.rs`).

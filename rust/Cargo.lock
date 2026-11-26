@@ -1206,6 +1206,7 @@ dependencies = [
  "fb-test-support",
  "log",
  "serde",
+ "serde_json",
  "toml",
 ]
 
