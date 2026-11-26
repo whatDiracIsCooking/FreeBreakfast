@@ -1,0 +1,26 @@
+[package]
+name = "fb-sad-factor"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The SAD guess as a factor L, D = 2 L Lᵀ, built on the host from each element's stamp"
+
+[lib]
+name = "fb_sad_factor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sad-factor"
+path = "src/main.rs"
+
+# The rebuild's device-free crates: the SAD guess and its baked stamps, the
+# molecule, the basis, and the .npy writer. None links wwr.
+[dependencies]
+fb-atom = { path = "../../../rust/atom" }
+fb-basis = { path = "../../../rust/basis" }
+fb-core-error-handling = { path = "../../../rust/core/error_handling" }
+fb-io-basis = { path = "../../../rust/io/basis" }
+fb-io-npy = { path = "../../../rust/io/npy" }
+fb-io-sad = { path = "../../../rust/io/sad" }
+fb-io-xyz = { path = "../../../rust/io/xyz" }
+fb-sad = { path = "../../../rust/sad" }
