@@ -3,6 +3,11 @@
 //! order, binds gpu0's handle workspace, fills its device scratch with NaN
 //! in the ledger's test mode, and syncs before it releases.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
+
 use std::sync::Arc;
 
 use fb_core_budget::{Backing, Budget, Caps, Kind, Layout, Lease, Ledger, LockId, ManagerId, Span};

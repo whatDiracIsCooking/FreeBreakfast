@@ -22,6 +22,11 @@
 //! the same inputs. That runs over the basis above and over water in
 //! cc-pVDZ, unscreened.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
+
 use std::sync::{Arc, Mutex};
 
 use fb_atom::{Atom, Element};

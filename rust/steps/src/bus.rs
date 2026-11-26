@@ -98,6 +98,10 @@ pub struct ResourcesTable {
 }
 
 impl Default for ResourcesTable {
+    #[allow(
+        clippy::disallowed_macros,
+        reason = "the config's default device list, one entry, made before any step"
+    )]
     fn default() -> Self {
         ResourcesTable {
             devices: vec![0],
@@ -199,6 +203,10 @@ impl Dims {
         for shell in aux.iter().flat_map(|a| a.shells()) {
             let l = shell.angular_momentum().unsigned_abs() as usize;
             if aux_shells_of_l.len() <= l {
+                #[allow(
+                    clippy::disallowed_methods,
+                    reason = "setup, the unbudgeted host phase: one count per angular momentum"
+                )]
                 aux_shells_of_l.resize(l + 1, 0);
             }
             aux_shells_of_l[l] += 1;
@@ -376,6 +384,10 @@ impl MainBus {
         // The handles first: a defaulted cap then already sees them.
         let locks = Locks::new(if real { &res.devices } else { &[] });
         let written = res.device_cap_mib.map(|mib| mib << 20);
+        #[allow(
+            clippy::disallowed_macros,
+            reason = "setup, the unbudgeted host phase: one written cap per GPU"
+        )]
         let caps = Caps::read(
             &res.devices,
             &vec![written; res.devices.len()],

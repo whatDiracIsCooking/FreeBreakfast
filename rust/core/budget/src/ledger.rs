@@ -107,6 +107,9 @@ pub struct Ledger {
     workspaces: Mutex<Vec<Option<DeviceBuf<u8>>>>,
     /// The steps holding a lease now.
     pub(crate) leased: Mutex<Vec<String>>,
+    /// The last execute's peak heap growth, `u64::MAX` before one was
+    /// measured.
+    heap_growth: AtomicU64,
 }
 
 /// `m`'s guard, poisoned or not: every critical section here leaves its
@@ -141,6 +144,7 @@ impl Ledger {
             slabs: OnceLock::new(),
             workspaces: Mutex::new(Vec::new()),
             leased: Mutex::new(Vec::new()),
+            heap_growth: AtomicU64::new(u64::MAX),
         }
     }
 
@@ -208,6 +212,27 @@ impl Ledger {
 
     fn host_total(&self) -> u64 {
         self.heap_total() + (0..self.gpus()).map(|c| self.pinned_total(c)).sum::<u64>()
+    }
+
+    /// Run `execute`, an execute of the plan over this ledger, and keep
+    /// the plain heap's peak growth during it, as the
+    /// [`AllocationRecord`](crate::AllocationRecord) saw it, for the
+    /// table's unbudgeted row: nothing when the binary does not install
+    /// the record. Process wide, so another plan's execute meanwhile
+    /// counts too.
+    pub fn measure_execute<R>(&self, execute: impl FnOnce() -> R) -> R {
+        let (value, grown) = crate::record::growth(execute);
+        if let Some(grown) = grown {
+            self.heap_growth.store(grown, Ordering::Release);
+        }
+        value
+    }
+
+    /// The last execute's peak heap growth, if one was measured
+    /// ([`Ledger::measure_execute`]).
+    #[must_use]
+    pub fn heap_growth(&self) -> Option<u64> {
+        Some(self.heap_growth.load(Ordering::Acquire)).filter(|&g| g != u64::MAX)
     }
 
     /// The handle `step`'s `mem_budget` allocates through.
@@ -608,6 +633,14 @@ impl Ledger {
                 .host
                 .written
                 .map_or_else(|| "default".to_owned(), bytes)
+        );
+        let _ = writeln!(
+            out,
+            "heap, unbudgeted: {}",
+            self.heap_growth().map_or_else(
+                || "not measured (no execute yet, or no allocation record)".to_owned(),
+                |g| format!("the last execute's peak growth {}", bytes(g))
+            )
         );
         if let Some(slabs) = self.slabs.get() {
             for slab in slabs.iter().filter(|s| !s.steps.is_empty()) {

@@ -35,6 +35,10 @@ impl sealed::Sealed for Device {
         ScopedDeviceIndex::try_new(dev_idx)
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the old layer's arena: one block per worker and kind, at instantiation (docs/memory.md, \"The three kinds\")"
+    )]
     unsafe fn alloc(ptr: *mut *mut u8, bytes: usize) -> Result<(), String> {
         // SAFETY: the caller's pointer is valid for one write.
         alloc_result(unsafe { wwr_sys::wwr_malloc(ptr.cast::<*mut c_void>(), bytes) })
@@ -87,6 +91,10 @@ impl sealed::Sealed for Pinned {
         ScopedDeviceIndex::try_new(dev_idx)
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the old layer's arena: one block per worker and kind, at instantiation (docs/memory.md, \"The three kinds\")"
+    )]
     unsafe fn alloc(ptr: *mut *mut u8, bytes: usize) -> Result<(), String> {
         // SAFETY: the caller's pointer is valid for one write.
         alloc_result(unsafe { wwr_sys::wwr_host_alloc(ptr.cast(), bytes, HOST_ALLOC_PORTABLE) })

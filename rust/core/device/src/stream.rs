@@ -119,6 +119,10 @@ impl<H> Pending<'_, H> {
             host,
         } = self;
         if stream.synced.load(Ordering::SeqCst) <= ticket {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "the wrapper the lint names: a token's sync is the stream's, and its callers carry the allow"
+            )]
             stream.sync()?;
         }
         Ok(ManuallyDrop::into_inner(host))

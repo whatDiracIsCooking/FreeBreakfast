@@ -1,11 +1,19 @@
 //! What the steps' tests share: a config over a molecule of `tests/data`,
 //! and the check that the orthogonalizer, gpu0's lock holder, shares no
-//! scratch byte with a step the DAG leaves unordered with it.
+//! scratch byte with a step the DAG leaves unordered with it; and the
+//! allocation record, installed in every test binary of the steps, so the
+//! wrapper fails a step whose `run` makes one allocation past its threshold
+//! on the plain heap (`docs/memory.md`, "The budget").
 
 use std::path::Path;
 
 use fb_core_budget::{Kind, Ledger};
 use fb_steps::Config;
+
+/// The allocation record: every `run` the wrapper calls in this binary is
+/// watched.
+#[global_allocator]
+static RECORD: fb_core_budget::AllocationRecord = fb_core_budget::AllocationRecord;
 
 /// The config of `xyz` (a file of `tests/data`) in `basis`, with `[eri]`
 /// over `aux` when given, on device 0.

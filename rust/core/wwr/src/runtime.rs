@@ -216,6 +216,10 @@ pub mod tests {
         ///
         /// # Panics
         /// If the allocation fails.
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a test's own buffer, outside any plan: allocating is the budget's, and the test checks what is under it"
+        )]
         pub fn new(n: usize) -> Self {
             let mut p = std::ptr::null_mut();
             // SAFETY: writes one pointer through a valid local.

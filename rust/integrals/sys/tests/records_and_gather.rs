@@ -11,6 +11,11 @@
 //! two primitives and p of one, and their one pair, `(0, 1)`, two records;
 //! and a 3 × 3 matrix packed into two columns.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
+
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use fb_core_budget::{Backing, Budget, Caps, DeviceBuf, Ledger, PinnedBuf, Plain};

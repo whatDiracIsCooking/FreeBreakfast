@@ -3,6 +3,11 @@
 //! handle workspace allocated by the final node, and a round trip through
 //! them on a stream.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
+
 use fb_core_budget::{Backing, Caps, Kind, Layout, Ledger};
 use fb_core_device::{DeviceSlice, HANDLE_WORKSPACE_BYTES, Stream};
 

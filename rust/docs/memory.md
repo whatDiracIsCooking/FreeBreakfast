@@ -48,6 +48,29 @@ lazily, and an untouched slab would "succeed" and fail at first touch
 mid-run. The host cap is checked at the call, before the slab exists, so a
 slab past it is counted, sets the flag and is never touched.
 
+**Only a `Budget` allocates device, pinned and budgeted heap memory.**
+The raw `wwr-sys` allocators are called in `fb-core-budget` alone, which
+`clippy.toml` bans everywhere else, the old layer's arena blocks and a
+test's own buffers each an `allow` with its reason.
+
+**Small host scratch is a policy, not a kind.** A `Vec` or a `HashMap`
+that lives within a `run` is assumed small and is outside the budget: it
+stays within O(n_ao²), and large host data is a `HeapSlab` on the bus. Two
+checks hold it. In `fb-steps`, whose `clippy.toml` repeats the
+workspace's list, `vec!`, `Vec::with_capacity`, `reserve`, `reserve_exact`,
+`resize`, `extend_from_slice` and `String::with_capacity` are banned,
+each exception an `allow` with its reason: setup's counts, the config's
+defaults, a test's reference. And the allocation record,
+`fb_core_budget::AllocationRecord`, a `#[global_allocator]` over the
+system's that every test binary of the steps installs: the wrapper watches
+each `run`, and a step that made one allocation past
+`fb_core_budget::RECORD_THRESHOLD`, 1 MiB, on the thread running it fails
+the execute, named. The record records and never panics, since unwinding
+out of a global allocator is undefined behaviour; it sees Rust's heap
+alone, not a C library's `malloc`, and the thread running `run` alone, not
+a pool's or a fan-out's. The budget table prints an execute's peak heap
+growth, as the record saw it, as its unbudgeted row.
+
 **Host-visible bytes are plain data.** A pinned buffer, a heap slab and
 every tenant of a lease are read as a `Plain` type, sealed to the
 primitives every bit pattern of which is a value, so a NaN-filled or

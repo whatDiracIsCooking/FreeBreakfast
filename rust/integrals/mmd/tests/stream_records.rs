@@ -5,6 +5,11 @@
 //! compared **bitwise**. The two run the same kernel on the same inputs,
 //! one thread per record, so there is no tolerance to set.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
+
 mod common;
 
 use common::Class;

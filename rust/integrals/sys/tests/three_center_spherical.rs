@@ -12,6 +12,11 @@
 //!   refused before anything is enqueued, naming the kernel: the batch and
 //!   the device cells still hold the bytes they were filled with.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a test's own device buffers, outside any plan, and its read back on the host: the harness waits, not a task"
+)]
+
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 

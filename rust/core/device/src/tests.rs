@@ -1,6 +1,11 @@
 //! The crate's tests: the copies and the event on a card (tier 4), and the
 //! cuts' contracts on the host.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
+
 use std::sync::atomic::Ordering;
 
 use super::*;
@@ -13,6 +18,10 @@ pub(crate) struct DeviceBuf<T> {
 }
 
 impl<T> DeviceBuf<T> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test's own buffer, outside any plan: allocating is the budget's, and the test checks what is under it"
+    )]
     pub(crate) fn new(len: usize) -> DeviceBuf<T> {
         let _current = ScopedDevice::new(0);
         let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
@@ -61,6 +70,10 @@ pub(crate) struct Pinned<T> {
 }
 
 impl<T: Copy> Pinned<T> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test's own buffer, outside any plan: allocating is the budget's, and the test checks what is under it"
+    )]
     pub(crate) fn from(values: &[T]) -> Pinned<T> {
         let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
         let bytes = values.len().max(1) * size_of::<T>();

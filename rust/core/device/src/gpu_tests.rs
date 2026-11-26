@@ -3,6 +3,11 @@
 //! nothing enqueued, and the trsm and Cholesky recipes against host
 //! references.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
+
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use wwr_sys::{wwr_blas_diag_type, wwr_blas_fill_mode, wwr_blas_operation, wwr_blas_side_mode};
