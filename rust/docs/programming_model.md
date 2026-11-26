@@ -976,10 +976,19 @@ four, under `rust/integrals/`: `fb-integrals-s-overlap-host`,
 them, never by an edge of its own, and no member depends on any other pool
 crate but `fb-core-flow` on rustflow (below). Each needs the FMA target feature, which the workspace's
 `.cargo/config.toml` sets for every member, so a dependent built from
-`rust/` gets it. The rayon pool's threads are outside the plan's worker
-count until the steps that call these crates (`fb-steps`, "The MainBus and
-its steps") set its size from the config and admit it beside the CPU
-workers' budget; today they run it at rayon's default size.
+`rust/` gets it. The pool is one `HostPool` (in `fb-integrals-df-metric`,
+since only these crates may name rayon), which `fb-steps` ("The MainBus and
+its steps") starts in setup with `[resources] host_threads` threads: by
+default the host's `available_parallelism` less the executor's `threads`,
+floored at one, as `n_cpu` above, and 0 refused. Every host integral call
+from a step runs inside its `install`, so rayon's global pool is never
+built, and the pool's threads are joined when the bus drops. A run's
+threads are then the executor's and the pool's beside the main thread,
+which `steps/tests/steps_threads.rs` counts exactly after a device-free
+run and again after the plan drops. Each crate writes its triangle into a
+caller's slice (`overlap_into` and its kin), so a host step builds it in its
+pinned staging and its `run` allocates nothing of its size
+([`memory.md`](memory.md), "The budget").
 
 **The v0.0.4 layer's executor, and its fan-out.** The step DAG runs on
 rustflow's `Executor` ("Steps on rustflow"), not on the orchestrator's

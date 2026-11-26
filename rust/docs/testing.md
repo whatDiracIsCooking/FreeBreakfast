@@ -409,6 +409,11 @@ every case that calls it is named here, which `fb-doc-check`'s
   S^(-1/2), most of its time the solver library's first load in a fresh
   plan; `waters_x_matches_the_hosts_inverse_square_root_of_s` is its
   family's representative.
+- `fb-steps`' `gly10s_host_steps_pass_the_allocation_record`, the four
+  host steps of gly10 in cc-pVDZ / cc-pVDZ-JKFIT (734 AOs, 3606 fitting
+  functions) under the allocation record, most of its time the metric's
+  host build, twice; `benzenes_host_steps_pass_the_allocation_record` is
+  its family's representative.
 
 libtest has no skipped state, so a returned case counts as passed; the
 gate's line, not the count, is what says it did not run. `#[ignore]` is

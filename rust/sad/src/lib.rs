@@ -93,6 +93,7 @@
 mod atomic_scf;
 mod aufbau;
 
+use contracts::debug_requires;
 use fb_atom::Atom;
 use fb_basis::{BasisSet, Shell};
 use fb_core_error_handling::{Error, Result, Status};
@@ -137,13 +138,36 @@ pub fn sad_density(
     atoms: &[Atom],
     baked: Option<SadStampLookup>,
 ) -> Result<Vec<f64>> {
-    let mut sites = distinct_stamps(basis, atoms)?;
     let n = basis.nao_sphe() as usize;
     let mut density = vec![0.0; n * n];
-    for site in &mut sites {
-        stamp_and_place(site, basis, baked, n, &mut density)?;
-    }
+    sad_density_into(basis, atoms, baked, &mut density)?;
     Ok(density)
+}
+
+/// [`sad_density`] written into the caller's `density`, every value of it,
+/// so a step builds the guess in its staging and allocates nothing of its
+/// size. Its errors are [`sad_density`]'s, and on one `density` holds no
+/// guess.
+///
+/// # Errors
+/// [`sad_density`]'s.
+#[debug_requires(
+    density.len() == (basis.nao_sphe() as usize).pow(2),
+    "density is the n × n matrix"
+)]
+pub fn sad_density_into(
+    basis: &BasisSet,
+    atoms: &[Atom],
+    baked: Option<SadStampLookup>,
+    density: &mut [f64],
+) -> Status {
+    let mut sites = distinct_stamps(basis, atoms)?;
+    let n = basis.nao_sphe() as usize;
+    density.fill(0.0);
+    for site in &mut sites {
+        stamp_and_place(site, basis, baked, n, density)?;
+    }
+    Ok(())
 }
 
 /// Whether two atoms share an SCF, `same_shells`: their shells match exactly

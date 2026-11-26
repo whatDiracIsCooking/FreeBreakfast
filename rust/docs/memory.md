@@ -68,7 +68,10 @@ each `run`, and a step that made one allocation past
 the execute, named. The record records and never panics, since unwinding
 out of a global allocator is undefined behaviour; it sees Rust's heap
 alone, not a C library's `malloc`, and the thread running `run` alone, not
-a pool's or a fan-out's. The budget table prints an execute's peak heap
+a pool's or a fan-out's. So a library that returns an O(n_ao²) `Vec`
+is not called from a `run`: the host integrals and the SAD guess each have
+an `_into` form that writes into a caller's slice, and a host step hands
+them its pinned staging. The budget table prints an execute's peak heap
 growth, as the record saw it, as its unbudgeted row.
 
 **Host-visible bytes are plain data.** A pinned buffer, a heap slab and

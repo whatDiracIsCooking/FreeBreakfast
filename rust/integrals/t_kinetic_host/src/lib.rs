@@ -24,7 +24,8 @@
 //! it packed: `(μ, ν)`, `ν <= μ`, at [`lower_index`], `n (n + 1) / 2`
 //! values. Only the shell pairs `A >= B` are computed, one rayon task per
 //! center, whose rows are one contiguous slice of the triangle
-//! (`RAYON_NUM_THREADS` sets the thread count).
+//! (the pool it is called in sets the thread count: a step's
+//! `fb_integrals_df_metric::HostPool`, or rayon's global one by `RAYON_NUM_THREADS`).
 //!
 //! **Directly spherical.** [`kinetic`] never forms a Cartesian integral. A
 //! column of a shell's harmonic block is a harmonic polynomial `H` of
@@ -82,6 +83,7 @@ compile_error!(
 
 use std::f64::consts::PI;
 
+use contracts::debug_requires;
 use fb_basis::{BasisSet, Shell, cartesian_powers, solid_harmonic_block};
 use fb_core_primitives::{double_factorial_odd, lower_index};
 use rayon::prelude::*;
@@ -424,12 +426,27 @@ fn block<const OVERLAP: bool>(
 /// coefficients are used as `basis` holds them; place it
 /// `primitive_normalized()`.
 ///
-/// One rayon task per center. Its functions' rows are one contiguous slice
-/// of the packed triangle, so the tasks write disjoint `&mut` slices and
-/// share only what they read.
+/// A fresh triangle: [`kinetic_into`] into a `Vec` of its own, for a
+/// caller with no buffer to hand, a test or a reference.
 #[must_use]
 pub fn kinetic(basis: &BasisSet) -> Vec<f64> {
-    triangles::<false>(basis).1
+    let mut t = vec![0.0; lower_index(basis.nao_sphe() as usize, 0)];
+    kinetic_into(basis, &mut t);
+    t
+}
+
+/// [`kinetic`] written into the caller's `t`, every value of it, so a step
+/// builds the triangle in its staging and allocates nothing of its size.
+///
+/// One rayon task per center. Its functions' rows are one contiguous slice
+/// of the packed triangle, so the tasks write disjoint `&mut` slices and
+/// share only what they read; each zeroes its rows first.
+#[debug_requires(
+    t.len() == lower_index(basis.nao_sphe() as usize, 0),
+    "t is the n (n + 1) / 2 lower triangle"
+)]
+pub fn kinetic_into(basis: &BasisSet, t: &mut [f64]) {
+    triangles::<false>(basis, t, &mut []);
 }
 
 /// The lower triangles of the overlap `S` and of the kinetic energy `T`,
@@ -442,11 +459,15 @@ pub fn kinetic(basis: &BasisSet) -> Vec<f64> {
 /// route would keep.
 #[must_use]
 pub fn overlap_and_kinetic(basis: &BasisSet) -> (Vec<f64>, Vec<f64>) {
-    triangles::<true>(basis)
+    let packed = lower_index(basis.nao_sphe() as usize, 0);
+    let (mut s, mut t) = (vec![0.0; packed], vec![0.0; packed]);
+    triangles::<true>(basis, &mut t, &mut s);
+    (s, t)
 }
 
-/// [`overlap_and_kinetic`], with `S` left empty unless `OVERLAP`.
-fn triangles<const OVERLAP: bool>(basis: &BasisSet) -> (Vec<f64>, Vec<f64>) {
+/// [`overlap_and_kinetic`] into `t` and `s`, every value of each; `s` is
+/// not touched, and may be empty, unless `OVERLAP`.
+fn triangles<const OVERLAP: bool>(basis: &BasisSet, t: &mut [f64], s: &mut [f64]) {
     let n = basis.nao_sphe() as usize;
     let views = views(basis);
     let data: Vec<ShellData> = (0..basis.shells().len())
@@ -454,18 +475,9 @@ fn triangles<const OVERLAP: bool>(basis: &BasisSet) -> (Vec<f64>, Vec<f64>) {
         .collect();
     let centers = centers(&data, n);
     let bounds = || centers.iter().map(|c| c.rows.clone());
-    // `vec![0.0; ..]`, not a clone of `t`: zeroed pages from the allocator,
-    // touched first by the task that owns them, where a clone writes the
-    // whole triangle on one thread before any task starts.
-    let mut t = vec![0.0; lower_index(n, 0)];
-    let mut s = if OVERLAP {
-        vec![0.0; lower_index(n, 0)]
-    } else {
-        Vec::new()
-    };
-    let rows_t = split_rows(&mut t, bounds());
+    let rows_t = split_rows(t, bounds());
     let rows_s = if OVERLAP {
-        split_rows(&mut s, bounds())
+        split_rows(s, bounds())
     } else {
         bounds().map(|_| <&mut [f64]>::default()).collect()
     };
@@ -476,6 +488,10 @@ fn triangles<const OVERLAP: bool>(basis: &BasisSet) -> (Vec<f64>, Vec<f64>) {
         .zip(rows_s)
         .enumerate()
         .for_each(|(ca, (rows_t, rows_s))| {
+            // Each task zeroes its own rows, so a fresh buffer's pages are
+            // touched first by the thread that writes them.
+            rows_t.fill(0.0);
+            rows_s.fill(0.0);
             let mut scratch = Scratch::new(l_max);
             let center_a = &centers[ca];
             let start = lower_index(center_a.rows.start, 0);
@@ -513,7 +529,6 @@ fn triangles<const OVERLAP: bool>(basis: &BasisSet) -> (Vec<f64>, Vec<f64>) {
                 }
             }
         });
-    (s, t)
 }
 
 /// How many of `basis`'s shell pairs `A >= B` [`kinetic`] leaves zero as

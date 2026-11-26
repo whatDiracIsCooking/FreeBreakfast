@@ -713,6 +713,7 @@ dependencies = [
 name = "fb-integrals-s-overlap-host"
 version = "0.1.0"
 dependencies = [
+ "contracts",
  "fb-basis",
  "fb-core-primitives",
  "fb-io-basis",
@@ -765,6 +766,7 @@ dependencies = [
 name = "fb-integrals-t-kinetic-host"
 version = "0.1.0"
 dependencies = [
+ "contracts",
  "fb-basis",
  "fb-core-primitives",
  "fb-integrals-s-overlap-host",
@@ -778,6 +780,7 @@ dependencies = [
 name = "fb-integrals-v-potential-en-host"
 version = "0.1.0"
 dependencies = [
+ "contracts",
  "fb-basis",
  "fb-core-primitives",
  "fb-integrals-df-metric",
@@ -1153,6 +1156,7 @@ dependencies = [
 name = "fb-sad"
 version = "0.1.0"
 dependencies = [
+ "contracts",
  "fb-atom",
  "fb-basis",
  "fb-core-error-handling",
