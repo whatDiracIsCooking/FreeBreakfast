@@ -400,6 +400,11 @@ cargo run -p fb-steps --example run -- steps/examples/gly10.toml --budget-only
 energies (water, benzene, ethylene), at forced batches and rings of one, on
 two logical GPUs, on one worker and on eight, through a replay, and water's
 B to PySCF's (`steps/tests/data/b_reference.py`).
+`steps/tests/recorded_device.rs` holds the steps to the old Rust path's
+results, recorded once on an RTX 3080 and committed with their provenance
+(`steps/tests/data/old_path.json`, water's S, H and metric as
+`old_path_h2o_*.npy`), so `fb-steps` names no old-layer crate; their writer
+is `pipeline/scf/tests/steps_reference.rs`, `FB_BLESS=1` rewriting them.
 
 Allocating from a memory pool is tested in `core/wwr/tests/pool_allocation.rs`, a
 binary of its own. Under ROCm 7.2.4 on the gfx1200,

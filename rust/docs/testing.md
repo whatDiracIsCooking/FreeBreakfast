@@ -205,7 +205,7 @@ real GPUs is named `tier5_*` ("Selecting GPU tiers in cargo").
 | A ring of one | `[eri] ring = 1` | The rings' events and waits against the unoverlapped order |
 | Logical GPUs | `[resources] devices = [0, 0]`: two GPU indices on one device | Tier 4. The all-GPU paths without a second card: the device made current in each thread of a fan-out, the lock order across GPUs, the reduction onto gpu0, a ring per GPU. Real GPUs are tier 5 |
 | A negative control | A test-only switch that removes one ordering: the event before the fit (`#[cfg(test)]` in the build), the wrapper's step-end sync (`fb-core-flow`'s `test-support` feature) | That the test for the ordering can fail: under the NaN fill the run without it gives a wrong result, and the first run's with it restored. A control whose failure depends on a race is not kept |
-| The old path | `rust/`'s planner-and-arena layer as merged, a dev-dependency of `old_path_device.rs` alone | The steps' energies, S, H and the metric against the old layer's in one process, until its crates are deleted |
+| Recorded references | The old Rust path's results, run once and committed under `steps/tests/data/` with their writer, card and revision (`old_path.json`, `old_path_h2o_*.npy`, written by `pipeline/scf/tests/steps_reference.rs`) | The steps' energies, S, H and the metric against the old layer's (`recorded_device.rs`), with no old-layer crate in `fb-steps`' manifest |
 | A replay | `Run::replay` | The same energy from the carried orbitals, and the allocation count unchanged |
 | The executor's width | `[resources] threads` at 2 and at 8 | The same energy, and no starvation with workers waiting on locks |
 
@@ -455,7 +455,7 @@ every case that calls it is named here, which `fb-doc-check`'s
   its family's representative.
 - `fb-steps`' `benzenes_and_ethylenes_energies_match_the_old_paths`,
   benzene's and ethylene's DF-RHF from the steps against the old Rust
-  path's in the same process, two full SCF runs each;
+  path's recorded energies, a full SCF run each;
   `waters_energy_matches_the_old_paths` is its family's representative.
 - `fb-steps`' `the_default_threshold_keeps_benzenes_energy`
   (`tests/schwarz_device.rs`), benzene's DF-RHF at the default `[eri]
