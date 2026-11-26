@@ -218,7 +218,40 @@ impl Ledger {
     /// [`AllocationRecord`](crate::AllocationRecord) saw it, for the
     /// table's unbudgeted row: nothing when the binary does not install
     /// the record. Process wide, so another plan's execute meanwhile
-    /// counts too.
+    /// counts too; but its start does not reset this one's: an execute
+    /// that starts while this one runs leaves the peak it reads alone.
+    ///
+    /// ```
+    /// use std::sync::mpsc::channel;
+    /// use fb_core_budget::{Backing, Cap, Caps, Ledger};
+    ///
+    /// #[global_allocator]
+    /// static RECORD: fb_core_budget::AllocationRecord = fb_core_budget::AllocationRecord;
+    ///
+    /// let ledger = || {
+    ///     let cap = Cap { written: Some(1 << 30), used: 1 << 30 };
+    ///     Ledger::new(Caps { device: vec![cap], host: cap }, Backing::Host, vec![0], false)
+    /// };
+    /// let (first, second) = (ledger(), ledger());
+    /// let (freed, on_freed) = channel();
+    /// let (ended, on_ended) = channel();
+    /// std::thread::scope(|s| {
+    ///     let first = &first;
+    ///     s.spawn(move || {
+    ///         first.measure_execute(|| {
+    ///             drop(std::hint::black_box(vec![0u8; 512 << 10]));
+    ///             freed.send(()).unwrap();
+    ///             on_ended.recv().unwrap();
+    ///         })
+    ///     });
+    ///     // The second execute begins after the first's allocation is
+    ///     // freed, and ends before the first does.
+    ///     on_freed.recv().unwrap();
+    ///     second.measure_execute(|| ());
+    ///     ended.send(()).unwrap();
+    /// });
+    /// assert!(first.heap_growth().unwrap() >= 512 << 10);
+    /// ```
     pub fn measure_execute<R>(&self, execute: impl FnOnce() -> R) -> R {
         let (value, grown) = crate::record::growth(execute);
         if let Some(grown) = grown {

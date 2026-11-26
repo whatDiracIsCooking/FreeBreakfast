@@ -8,6 +8,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 /// One allocation inside a watched `run` past this many bytes, 1 MiB, is
 /// large host data, which belongs in a `HeapSlab` on the bus: small host
@@ -129,15 +130,39 @@ unsafe impl GlobalAlloc for AllocationRecord {
     }
 }
 
+/// How many [`growth`] measures are running. The first of a run of
+/// overlapping ones resets `PEAK`, under this lock, and no later one does
+/// until every one has ended, so no measure lowers the peak another is
+/// reading.
+static MEASURES: Mutex<usize> = Mutex::new(0);
+
 /// Run `f` and return its value with the peak growth of the heap the
 /// record saw during it, `None` without the record installed. Process
-/// wide: another thread's allocations meanwhile, a second plan's
-/// included, count too.
+/// wide: another thread's allocations and frees meanwhile, a second
+/// plan's included, count too. A measure overlapping another neither
+/// resets nor lowers the other's peak: each reads the peak since the
+/// first of the overlapping ones began, less its own start, so an
+/// allocation made during it is never missed for a concurrent execute.
 pub(crate) fn growth<R>(f: impl FnOnce() -> R) -> (R, Option<u64>) {
-    let base = LIVE.load(Ordering::Relaxed);
-    PEAK.store(base, Ordering::Relaxed);
+    /// Ends the measure, `f` returning or not.
+    struct End;
+    impl Drop for End {
+        fn drop(&mut self) {
+            *MEASURES.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+        }
+    }
+    let base = {
+        let mut running = MEASURES.lock().unwrap_or_else(PoisonError::into_inner);
+        if *running == 0 {
+            PEAK.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+        *running += 1;
+        LIVE.load(Ordering::Relaxed)
+    };
+    let end = End;
     let value = f();
     let peak = PEAK.load(Ordering::Relaxed);
+    drop(end);
     let grown = INSTALLED
         .load(Ordering::Relaxed)
         .then(|| peak.saturating_sub(base) as u64);
