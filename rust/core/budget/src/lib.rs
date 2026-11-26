@@ -45,13 +45,20 @@
 //! ```
 //!
 //! No step holds a `Budget` in execute mode: `run` is never given one, and
-//! the buffers' constructors are private to this crate.
+//! the buffers' constructors are private to this crate, the one crate
+//! that may call the raw `wwr-sys` allocators (`clippy.toml`'s ban). What
+//! a `run` takes from the plain heap is outside the budget, small host
+//! scratch by policy: the [`AllocationRecord`] a test binary installs
+//! holds it under [`RECORD_THRESHOLD`] per allocation, and the table
+//! prints an execute's peak heap growth as its unbudgeted row
+//! ([`Ledger::measure_execute`]).
 
 mod buffers;
 mod host;
 mod lease;
 mod ledger;
 mod raw;
+mod record;
 #[cfg(test)]
 mod tests;
 
@@ -59,6 +66,7 @@ pub use buffers::{DeviceBuf, HeapSlab, PinnedBuf, Plain};
 pub use host::host_available;
 pub use lease::{HostPart, Layout, Lease, ScratchBuf, Span};
 pub use ledger::{Budget, Ledger, RegionInfo, SlabInfo};
+pub use record::{AllocationRecord, RECORD_THRESHOLD};
 
 use contracts::debug_requires;
 use fb_core_error_handling::Result;

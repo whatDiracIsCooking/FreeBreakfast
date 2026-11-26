@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use fb_core_budget::Backing;
+use fb_core_budget::{AllocationRecord, Backing, RECORD_THRESHOLD, bytes};
 use fb_core_error_handling::{Error, Result, Status};
 use rustflow::prelude::{Executor, FlowBuilder, RunError, Task, Taskflow};
 
@@ -70,7 +70,10 @@ fn run_body<B: Bus, S: Step<B>>(bus: &B) -> Result<(Duration, Duration)> {
         step: PhantomData::<S>,
     };
     let start = Instant::now();
-    let ran = S::run(output, &view, &mut held, lane, &lease);
+    // Watched by the allocation record, when the binary installs it (the
+    // test tiers): one allocation past its threshold on the plain heap is
+    // large host data, which belongs in a `HeapSlab`.
+    let (ran, largest) = AllocationRecord::watch(|| S::run(output, &view, &mut held, lane, &lease));
     let run = start.elapsed();
     // The wrapper's sync, then the locks: a finished node is finished
     // device work, whether `run` failed or not.
@@ -78,6 +81,16 @@ fn run_body<B: Bus, S: Step<B>>(bus: &B) -> Result<(Duration, Duration)> {
     let left = release(lane, held);
     ran?;
     left?;
+    if let Some(largest) = largest {
+        return Err(Error::config(format!(
+            "step '{}' made one allocation of {} on the plain heap in its run, past the \
+             allocation record's {}: large host data is a HeapSlab its mem_budget makes \
+             (docs/memory.md, \"The budget\")",
+            S::NAME,
+            bytes(largest as u64),
+            bytes(RECORD_THRESHOLD as u64)
+        )));
+    }
     Ok((run, start.elapsed()))
 }
 
@@ -345,12 +358,17 @@ impl<B: Bus> Plan<B> {
     /// failed predecessor skipped and flagged failed in turn, so a failed
     /// step fails the steps that read it, directly or not, and nothing
     /// else. Allocates nothing budgeted. May be called again: a replay
-    /// writes into the same buffers and the same scratch regions.
+    /// writes into the same buffers and the same scratch regions. In a
+    /// binary that installs the [`AllocationRecord`], a step whose `run`
+    /// made one allocation past [`RECORD_THRESHOLD`] on the thread running
+    /// it fails, and the execute's peak heap growth is kept for the
+    /// ledger's table ([`fb_core_budget::Ledger::measure_execute`]).
     ///
     /// # Errors
     /// `InvalidConfig` if the plan was not budgeted and accepted with bytes
     /// behind it; otherwise the first failing step's error in topological
-    /// order, any other failure on its context.
+    /// order, any other failure on its context; `InvalidConfig` for a step
+    /// past the allocation record's threshold, naming it.
     pub fn execute(&self, executor: &Executor) -> Result<Vec<StepTime>> {
         let ledger = self.bus.ledger();
         if !ledger.sealed() || ledger.over() || ledger.backing() == Backing::Dry {
@@ -389,7 +407,9 @@ impl<B: Bus> Plan<B> {
                 }
             })
         });
-        wait(executor, &flow)?;
+        // The plain heap's peak growth over the execute: the budget
+        // table's unbudgeted row.
+        ledger.measure_execute(|| wait(executor, &flow))?;
         if let Some(error) = state.take_error(&self.rank) {
             return Err(error);
         }

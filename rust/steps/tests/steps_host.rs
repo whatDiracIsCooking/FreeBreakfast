@@ -1,14 +1,18 @@
 //! The MainBus and the steps' budget with no device (tier 3): setup's
 //! counts on gly10 in cc-pVDZ / cc-pVDZ-JKFIT against the v0.0.4 page's,
 //! the dry budget's exact bytes from them, the orthogonalizer's scratch
-//! apart from every step unordered with it, and the config's refusals.
+//! apart from every step unordered with it, the config's refusals, and the
+//! allocation record failing a step that allocates on the plain heap in its
+//! `run`.
 
 mod common;
 
-use fb_core_budget::{Backing, Kind, Layout};
+use std::sync::Arc;
+
+use fb_core_budget::{Backing, Budget, Cap, Caps, Kind, Layout, Lease, Ledger, RECORD_THRESHOLD};
 use fb_core_device::HANDLE_WORKSPACE_BYTES;
-use fb_core_error_handling::ErrorKind;
-use fb_core_flow::{Bus, Executor};
+use fb_core_error_handling::{ErrorKind, Result, Status};
+use fb_core_flow::{Bus, Dag, Executor, Held, Lane, Locks, Slot, Step, View};
 use fb_steps::{MainBus, plan};
 
 const ALIGN: u64 = 256;
@@ -84,4 +88,115 @@ fn a_run_of_no_gpu_and_a_table_of_no_step_here_are_refused() {
     let text = "[molecule]\nxyz = \"h2o.xyz\"\n[basis]\nname = \"cc-pvdz\"\n[scf]\n";
     let error = fb_steps::Config::parse(text, std::path::Path::new(".")).unwrap_err();
     assert_eq!(error.kind, ErrorKind::InvalidConfig, "{}", error.message);
+}
+
+/// A bus of one step that allocates `BYTES` on the plain heap in its `run`.
+struct HeapBus {
+    ledger: Ledger,
+    locks: Locks,
+    out: Slot<usize>,
+}
+
+impl Bus for HeapBus {
+    type Shared = ();
+    fn shared(&self) -> &() {
+        &()
+    }
+    fn ledger(&self) -> &Ledger {
+        &self.ledger
+    }
+    fn locks(&self) -> &Locks {
+        &self.locks
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Heap<const BYTES: usize>;
+
+impl<const BYTES: usize> Step<HeapBus> for Heap<BYTES> {
+    const NAME: &'static str = "heap_in_run";
+    type Output = usize;
+    type Reads = ();
+    fn slot(bus: &HeapBus) -> &Slot<usize> {
+        &bus.out
+    }
+    fn mem_budget(_: &(), _: &Budget<'_>) -> Result<usize> {
+        Ok(0)
+    }
+    #[allow(
+        clippy::disallowed_macros,
+        reason = "the record's own test: a run that allocates on the plain heap"
+    )]
+    fn run(
+        out: &mut usize,
+        _: &View<'_, HeapBus, Self>,
+        _: &mut Held<'_>,
+        _: &Lane,
+        _: &Lease<'_>,
+    ) -> Status {
+        *out = std::hint::black_box(vec![1u8; BYTES]).len();
+        Ok(())
+    }
+}
+
+/// `Heap<BYTES>` budgeted and executed once on a host-backed plan.
+#[allow(
+    clippy::disallowed_macros,
+    reason = "a test's ledger, one cap and one device, outside any step's run"
+)]
+fn execute_heap<const BYTES: usize>() -> (Result<()>, Arc<HeapBus>) {
+    let cap = Cap {
+        written: None,
+        used: 1 << 30,
+    };
+    let bus = Arc::new(HeapBus {
+        ledger: Ledger::new(
+            Caps {
+                device: vec![cap],
+                host: cap,
+            },
+            Backing::Host,
+            vec![0],
+            false,
+        ),
+        locks: Locks::new(&[]),
+        out: Slot::new(),
+    });
+    let mut dag = Dag::new();
+    dag.add(Heap::<BYTES>);
+    let plan = dag.build(Arc::clone(&bus)).unwrap();
+    let executor = Executor::new(2);
+    plan.budget(&executor).unwrap();
+    (plan.execute(&executor).map(drop), bus)
+}
+
+/// A step whose `run` makes one 2 MiB allocation on the plain heap fails
+/// the execute, named; one at the threshold itself, 1 MiB, runs, and the
+/// table's unbudgeted row then has the execute's peak heap growth, at
+/// least that allocation.
+#[test]
+fn a_step_allocating_2_mib_on_the_heap_in_run_fails_named() {
+    let (ran, _) = execute_heap::<{ 2 << 20 }>();
+    let error = ran.expect_err("a 2 MiB allocation in run");
+    assert_eq!(error.kind, ErrorKind::InvalidConfig);
+    assert!(
+        error.message.starts_with(
+            "step 'heap_in_run' made one allocation of 2.00 MiB on the plain heap in its run, \
+             past the allocation record's 1.00 MiB"
+        ),
+        "{}",
+        error.message
+    );
+
+    let (ran, bus) = execute_heap::<RECORD_THRESHOLD>();
+    ran.unwrap();
+    let grown = bus.ledger().heap_growth().expect("the record is installed");
+    assert!(grown >= RECORD_THRESHOLD as u64, "{grown}");
+    assert!(
+        bus.ledger()
+            .table()
+            .contains("heap, unbudgeted: the last execute's peak growth"),
+        "{}",
+        bus.ledger().table()
+    );
 }

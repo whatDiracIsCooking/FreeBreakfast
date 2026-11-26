@@ -1106,7 +1106,12 @@ impl Drop for GpuResources {
     /// the stream; each failure logged, none stopping the rest.
     fn drop(&mut self) {
         let location = Location::caller();
-        log_destroy("gpu resources drain", &self.stream.sync(), location);
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a destroy drains its stream before its handles go: a drop, not a task"
+        )]
+        let drained = self.stream.sync();
+        log_destroy("gpu resources drain", &drained, location);
         let current = ScopedDevice::try_new(self.stream.physical());
         log_destroy("gpu resources destroy", &current, location);
         // SAFETY: created in `new` and destroyed once, here, with nothing in

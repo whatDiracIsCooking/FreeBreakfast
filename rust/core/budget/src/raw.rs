@@ -50,6 +50,10 @@ impl RawBuf {
     /// the allocator refuses: the budget already accepted them, so a
     /// refusal here is the machine's, past the margin. Pinned memory is
     /// filled with `0xFF`, so the host never reads it uninitialised.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the one site of the raw allocators: a Budget's buffer, a slab or a workspace, made in budget mode (docs/memory.md, \"The budget\")"
+    )]
     #[track_caller]
     pub(crate) fn new(mem: Mem, bytes: usize) -> RawBuf {
         // INVARIANT: the ledger allocates only a charge of a byte or more.

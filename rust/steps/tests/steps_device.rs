@@ -16,6 +16,15 @@
 //! element, the issue's bar, holds over a decade of margin, Jacobi's own
 //! error, `ε κ₂`-sized too, inside it.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
+#![allow(
+    clippy::disallowed_macros,
+    reason = "a test's host reference, outside any step's run"
+)]
+
 mod common;
 
 use fb_core_budget::{Backing, Caps, Ledger};

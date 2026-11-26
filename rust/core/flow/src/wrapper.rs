@@ -146,6 +146,10 @@ pub(crate) fn make_lane<B: Bus>(
 /// # Errors
 /// A workspace bind, a fill or its sync failing; `InvalidConfig` for a
 /// declared GPU lock with no device behind it, on a host-backed plan.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the step wrapper's syncs: the lease's fill before `run`, and every stream after it, the v0.0.4 layer's edge (docs/programming_model.md, \"Steps on rustflow\")"
+)]
 pub(crate) fn acquire<'a, B: Bus>(
     bus: &'a B,
     step: &'static str,
@@ -207,6 +211,10 @@ pub(crate) fn acquire<'a, B: Bus>(
 /// and each held GPU's stream, so that a finished node is finished device
 /// work, and only then release the locks. The first failure, after every
 /// sync was tried.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the step wrapper's syncs: the lease's fill before `run`, and every stream after it, the v0.0.4 layer's edge (docs/programming_model.md, \"Steps on rustflow\")"
+)]
 pub(crate) fn release(lane: &Lane, held: Held<'_>) -> Status {
     let mut status = Ok(());
     let mut note = |synced: Status| {

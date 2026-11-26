@@ -186,9 +186,12 @@ multiple_unsafe_ops_per_block = "deny"
 # A check soundness rests on is an assert! named in # Panics
 # (docs/testing.md, "Contracts are part of the spec").
 missing_panics_doc = "deny"
-# Not disallowed_macros for debug_assert!: #[debug_requires] expands to one
-# at the caller's span, so clippy flags every contract. fb-doc-check's
-# tests/contracts.rs holds that rule instead.
+# fb-steps' clippy.toml bans vec!, the plain heap in a step's run
+# (docs/memory.md, "The budget"); no other list names a macro. Not
+# debug_assert!: #[debug_requires] expands to one at the caller's span, so
+# clippy flags every contract. fb-doc-check's tests/contracts.rs holds that
+# rule instead.
+disallowed_macros = "deny"
 
 # A release build aborts on a panic; dev and test unwind, which
 # #[should_panic] needs (docs/diagnostics.md, "Panics and profiles"). Cargo
