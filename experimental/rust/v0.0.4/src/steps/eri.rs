@@ -47,7 +47,7 @@ use crate::device::launch::{
     self, AUX_FIELDS, CELL_FIELDS, PairSource, RECORD_F64_FIELDS, RECORD_I32_FIELDS,
 };
 use crate::device::{
-    CHOLESKY_TILE, Event, GpuResources, OP_N, OP_T, Part, PartMut, part, part_mut,
+    CHOLESKY_TILE, DeviceSlice, Event, GpuResources, OP_N, OP_T, Part, PartMut, part, part_mut,
 };
 use crate::flow::{Placement, Slot, Step, View};
 use crate::steps::metric::MetricStep;
@@ -57,6 +57,17 @@ use crate::steps::{GPU0, fan_out};
 /// fraction of the cap, so a device-free budget is exact. A PLACEHOLDER
 /// for a measured value.
 pub const DEFAULT_MEM_PER_GPU: u64 = 2 << 30;
+
+/// The most one pinned staging buffer holds: a ring buffer's fitted batch
+/// on its way down, or the rows of B a J/K pass has on their way up. Page-
+/// locking costs about 0.9 s per GiB and the build's time is flat in the
+/// batch width well below this, so staging does not grow with the limit.
+pub const STAGING_BYTES: usize = 256 << 20;
+
+/// The rows of B one pinned staging buffer holds.
+fn staged_rows(d: &Dims) -> usize {
+    (STAGING_BYTES / (8 * d.n_col.max(1))).max(1)
+}
 
 /// The step.
 #[derive(Clone, Copy)]
@@ -83,6 +94,31 @@ struct EriState {
     gpus: Vec<GpuState>,
     passes: usize,
     uploaded: usize,
+}
+
+/// A density a J/K pass contracts.
+#[derive(Clone, Copy)]
+pub enum Density<'a> {
+    /// D itself, `n_ao²`.
+    Dense(Part<'a, f64>),
+    /// The occupied orbitals C of `D = 2 C Cᵀ`, `n_ao × n_occ` column-major,
+    /// and `n_occ`. K then costs `n_occ / n_ao` of what it does from D.
+    Occupied(Part<'a, f64>, usize),
+}
+
+impl<'a> Density<'a> {
+    fn matrix(self) -> Part<'a, f64> {
+        match self {
+            Density::Dense(m) | Density::Occupied(m, _) => m,
+        }
+    }
+
+    fn n_occ(self) -> Option<usize> {
+        match self {
+            Density::Dense(_) => None,
+            Density::Occupied(_, n_occ) => Some(n_occ),
+        }
+    }
 }
 
 /// The fitted integrals and what builds J and K from them. `eri`'s
@@ -173,7 +209,8 @@ impl EriManager {
     /// nothing of the caller's. It takes no lock: the GPU guards come in
     /// `held`, held by the wrapper, and so does the manager's.
     ///
-    /// v0.0.4 sizes for one density.
+    /// v0.0.4 sizes for one density. Given as its occupied orbitals, K
+    /// costs `n_occ / n_ao` of what it does from D.
     ///
     /// # Errors
     /// A launch's or the library's failure.
@@ -184,7 +221,7 @@ impl EriManager {
         &self,
         shared: &Shared,
         held: &mut Held<'_>,
-        d: &[Part<'_, f64>],
+        d: &[Density<'_>],
         j: &mut [PartMut<'_, f64>],
         k: &mut [PartMut<'_, f64>],
     ) -> Status {
@@ -208,23 +245,27 @@ impl EriManager {
             .map(|g| jk_layout(dims, self.jk_width, g.cache_rows))
             .collect();
 
-        // D for the other GPUs goes through the host, in gpu0's pinned
-        // staging; they only read it there.
+        // D, or its occupied factor, goes to the other GPUs through the
+        // host, in gpu0's pinned staging; they only read it there.
+        let (d0, n_occ) = (d[0].matrix(), d[0].n_occ());
+        assert!(
+            d0.len() == n_occ.map_or(n2, |o| dims.n_ao * o) && d0.len() <= n2,
+            "build_jk: the density is n_ao², or its factor n_ao × n_occ"
+        );
         let h_d: &[f64] = {
             let staged = state.gpus[GPU0].pinned.tenant(&layouts[GPU0].h_d);
             // SAFETY: the tenant is gpu0's pinned staging, which outlives
             // the pass; it is written once below, before the fan-out, and
             // only read by the passes.
-            unsafe { std::slice::from_raw_parts(staged.as_ptr(), staged.len()) }
+            unsafe { std::slice::from_raw_parts(staged.as_ptr(), d0.len()) }
         };
         if n_gpus > 1 {
             let gpu0 = &mut *gpus[GPU0];
             let _current = gpu0.current();
             let h_d = state.gpus[GPU0].pinned.tenant(&layouts[GPU0].h_d);
-            gpu0.stream().download(h_d, &d[0])?;
+            gpu0.stream().download(&mut h_d[..d0.len()], &d0)?;
             gpu0.stream().sync()?;
         }
-        let d0 = d[0];
         let (b, jk_width) = (&self.b[..], self.jk_width);
         let work: Vec<_> = gpus
             .iter_mut()
@@ -234,9 +275,9 @@ impl EriManager {
             .collect();
         let uploaded = fan_out(work, |(((gpu, st), l), share)| {
             let source = if gpu.gpu() == GPU0 {
-                Density::Here(d0)
+                Source::Here(d0)
             } else {
-                Density::Staged(h_d)
+                Source::Staged(h_d)
             };
             gpu_pass(
                 dims,
@@ -247,6 +288,7 @@ impl EriManager {
                 st,
                 l,
                 source,
+                n_occ,
                 n_gpus > 1,
             )
         })?;
@@ -289,17 +331,18 @@ impl EriManager {
     }
 }
 
-/// Where a GPU's pass reads D: the caller's, on gpu0, or the host copy it
-/// uploads.
+/// Where a GPU's pass reads D or its factor: the caller's, on gpu0, or the
+/// host copy it uploads.
 #[derive(Clone, Copy)]
-enum Density<'a> {
+enum Source<'a> {
     Here(Part<'a, f64>),
     Staged(&'a [f64]),
 }
 
-/// One GPU's J/K pass: its share of B's rows contracted with D into its
-/// fragments of J and K, on the GPU's stream throughout, in the order it
-/// is enqueued. Returns the rows it uploaded.
+/// One GPU's J/K pass: its share of B's rows contracted with D, or with
+/// the `n_occ` occupied orbitals of `D = 2 C Cᵀ`, into its fragments of J
+/// and K, on the GPU's stream throughout, in the order it is enqueued.
+/// Returns the rows it uploaded.
 #[allow(clippy::too_many_arguments, reason = "a manager's inner task")]
 fn gpu_pass(
     dims: &Dims,
@@ -309,7 +352,8 @@ fn gpu_pass(
     gpu: &mut GpuResources,
     st: &mut GpuState,
     l: &JkLayout,
-    d: Density<'_>,
+    d: Source<'_>,
+    n_occ: Option<usize>,
     download: bool,
 ) -> Result<usize> {
     let _current = gpu.current();
@@ -333,10 +377,10 @@ fn gpu_pass(
     let (mut staging, mut cache) = (st.buf.tenant(&l.staging), st.buf.tenant(&l.cache));
     let h_packed = st.pinned.tenant(&l.h_packed);
     let d = match d {
-        Density::Here(d) => d,
-        Density::Staged(h_d) => {
+        Source::Here(d) => d,
+        Source::Staged(h_d) => {
             gpu.stream().upload(&mut d_here, h_d)?;
-            part(&d_here, 0, n2)
+            part(&d_here, 0, h_d.len())
         }
     };
     gpu.stream().zero(&mut jj)?;
@@ -359,6 +403,46 @@ fn gpu_pass(
             &mut sq,
         )?;
         let r = rows as i32;
+        if let Some(n_occ) = n_occ {
+            // With D = 2 C Cᵀ: every B_Q C in one batched gemm, the blocks
+            // side by side as one n × (n_occ rows) matrix M. Then gamma_Q =
+            // B_Q · D = 2 (B_Q C) · C, J += Σ_Q gamma_Q B_Q, K += 2 M Mᵀ.
+            let (oi, no) = (n_occ as i32, (n * n_occ) as i32);
+            gpu.gemm_strided_batched(
+                ni,
+                oi,
+                ni,
+                1.0,
+                &sq,
+                ni,
+                i64::from(n2i),
+                &d,
+                ni,
+                0,
+                0.0,
+                &mut bd,
+                ni,
+                i64::from(no),
+                r,
+            )?;
+            gpu.gemv(OP_T, no, r, 2.0, &bd, no, &d, 0.0, &mut gamma)?;
+            gpu.gemv(OP_N, n2i, r, 1.0, &sq, n2i, &gamma, 1.0, &mut jj)?;
+            return gpu.gemm(
+                OP_N,
+                OP_T,
+                ni,
+                ni,
+                oi * r,
+                2.0,
+                &bd,
+                ni,
+                &bd,
+                ni,
+                1.0,
+                &mut kk,
+                ni,
+            );
+        }
         // gamma_Q = B_Q · D, then J += Σ_Q gamma_Q B_Q.
         gpu.gemv(OP_T, n2i, r, 1.0, &sq, n2i, &d, 0.0, &mut gamma)?;
         gpu.gemv(OP_N, n2i, r, 1.0, &sq, n2i, &gamma, 1.0, &mut jj)?;
@@ -400,19 +484,32 @@ fn gpu_pass(
 
     let cached = st.cache_rows.min(share.len());
     let mut uploaded = 0;
+    // `rows` rows of B from row `first`, through the pinned staging a
+    // buffer of it at a time, with a blocking sync per buffer: the pinned
+    // bytes are the next buffer's too.
+    let stage = h_packed.len() / n_col;
+    let upload = |gpu: &mut GpuResources,
+                  into: &mut PartMut<'_, f64>,
+                  h_packed: &mut [f64],
+                  first: usize,
+                  rows: usize|
+     -> Status {
+        for at in (0..rows).step_by(stage) {
+            let len = n_col * stage.min(rows - at);
+            let from = n_col * (first + at);
+            h_packed[..len].copy_from_slice(&b[from..from + len]);
+            let mut into = part_mut(into, at * n_col, len);
+            gpu.stream().upload(&mut into, &h_packed[..len])?;
+            gpu.stream().sync()?;
+        }
+        Ok(())
+    };
     // The first pass fills the cache, from the host copy: the build's pair
     // batches are the wrong index order to fill it.
     if !st.cache_filled {
-        for first in (0..cached).step_by(width) {
-            let rows = width.min(cached - first);
-            let from = n_col * (share.start + first);
-            h_packed[..rows * n_col].copy_from_slice(&b[from..from + rows * n_col]);
-            let mut into = part_mut(&mut cache, first * n_col, rows * n_col);
-            gpu.stream().upload(&mut into, &h_packed[..rows * n_col])?;
-            // The pinned bytes are the next batch's too.
-            gpu.stream().sync()?;
-            uploaded += rows;
-        }
+        let mut into = part_mut(&mut cache, 0, cached * n_col);
+        upload(gpu, &mut into, h_packed, share.start, cached)?;
+        uploaded += cached;
         st.cache_filled = true;
     }
     for first in (0..cached).step_by(width) {
@@ -420,16 +517,13 @@ fn gpu_pass(
         let packed = part(&cache, first * n_col, rows * n_col);
         contract(gpu, &packed, rows)?;
     }
-    // What is not cached is uploaded on every pass, one batch in flight
-    // with a blocking sync per batch.
+    // What is not cached is uploaded on every pass, one batch in flight.
     for first in (share.start + cached..share.end).step_by(width) {
         let rows = width.min(share.end - first);
-        h_packed[..rows * n_col].copy_from_slice(&b[n_col * first..n_col * (first + rows)]);
-        gpu.stream()
-            .upload(&mut staging, &h_packed[..rows * n_col])?;
+        let mut into = part_mut(&mut staging, 0, rows * n_col);
+        upload(gpu, &mut into, h_packed, first, rows)?;
         let packed = part(&staging, 0, rows * n_col);
         contract(gpu, &packed, rows)?;
-        gpu.stream().sync()?;
         uploaded += rows;
     }
     if download {
@@ -486,7 +580,7 @@ fn jk_layout(d: &Dims, p: usize, cached: usize) -> JkLayout {
         h_d: pin.span(n2),
         h_j: pin.span(n2),
         h_k: pin.span(n2),
-        h_packed: pin.span(p * n_col),
+        h_packed: pin.span(p.min(staged_rows(d)) * n_col),
         device_bytes: dev.bytes(),
         pinned_bytes: pin.bytes(),
     }
@@ -665,13 +759,22 @@ impl Columns {
     /// fastest, into B's columns from `first`: the transpose.
     fn scatter(&self, first: usize, columns: usize, batch: &[f64]) {
         assert!(first + columns <= self.n_col && batch.len() >= self.n_aux * columns);
-        for c in 0..columns {
-            for q in 0..self.n_aux {
-                // THE SECOND UNSAFE OF THE MEMORY MODEL. The invariant:
-                // the pair batches partition the pair columns, so columns
-                // `[first, first + columns)` are this batch's alone.
-                unsafe {
-                    *self.ptr.add(first + c + self.n_col * q) = batch[q + self.n_aux * c];
+        // In tiles, so both ends stay in cache: a plain double loop strides
+        // B by a whole row per element, and was 14 s of gly10's 17 s build.
+        const TILE: usize = 64;
+        for c0 in (0..columns).step_by(TILE) {
+            let c1 = (c0 + TILE).min(columns);
+            for q0 in (0..self.n_aux).step_by(TILE) {
+                for q in q0..(q0 + TILE).min(self.n_aux) {
+                    for c in c0..c1 {
+                        // THE SECOND UNSAFE OF THE MEMORY MODEL. The
+                        // invariant: the pair batches partition the pair
+                        // columns, so columns `[first, first + columns)`
+                        // are this batch's alone.
+                        unsafe {
+                            *self.ptr.add(first + c + self.n_col * q) = batch[q + self.n_aux * c];
+                        }
+                    }
                 }
             }
         }
@@ -706,7 +809,8 @@ impl Step<MainBus> for EriStep {
         });
         let n_gpus = budget.gpus();
 
-        // The pair batch width: the widest whose ring fits the limit.
+        // The pair batch width: the widest whose ring fits the limit, and
+        // whose fitted batch fits one pinned staging buffer.
         let least = d.classes.iter().map(|c| c.sph()).max().unwrap_or(1);
         let most = d
             .classes
@@ -715,6 +819,7 @@ impl Step<MainBus> for EriStep {
             .max()
             .unwrap_or(1)
             .min(i32::MAX as usize / q.max(1))
+            .min(STAGING_BYTES / (8 * q.max(1)))
             .max(least);
         let ring_at = |w: usize| ring_layout(d, w, depth).device_bytes as u64;
         let jk_at = |p: usize| jk_layout(d, p, 0).device_bytes as u64;

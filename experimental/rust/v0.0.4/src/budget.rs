@@ -91,6 +91,31 @@ impl Cap {
     }
 }
 
+/// Ask for huge pages under a fresh heap slab, before its pages are
+/// touched. At 4 KiB a page, touching gly10's 7.3 GiB B took 7.6 s, most of
+/// budget mode; touching it on sixteen threads took longer, 12.8 s. Advice
+/// only: where the kernel gives none the slab is touched a small page at a
+/// time, as before.
+fn huge_pages(ptr: *mut u8, bytes: usize) {
+    #[cfg(target_os = "linux")]
+    {
+        const HUGE: usize = 2 << 20;
+        const MADV_HUGEPAGE: i32 = 14;
+        unsafe extern "C" {
+            fn madvise(addr: *mut c_void, len: usize, advice: i32) -> i32;
+        }
+        let first = (ptr as usize).next_multiple_of(HUGE);
+        let end = (ptr as usize + bytes) / HUGE * HUGE;
+        if end > first {
+            // SAFETY: the range is whole pages inside the slab's allocation,
+            // and the advice changes nothing a program can read.
+            unsafe { madvise(first as *mut c_void, end - first, MADV_HUGEPAGE) };
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (ptr, bytes);
+}
+
 /// The device margin of a defaulted cap: the larger of 512 MiB and 5% of
 /// the gpu's total memory.
 pub fn device_margin(total: u64) -> u64 {
@@ -838,6 +863,7 @@ impl Budget<'_> {
         }
         let mut slab = vec![T::default(); len].into_boxed_slice();
         let stride = (4096 / size_of::<T>().max(1)).max(1);
+        huge_pages(slab.as_mut_ptr().cast(), size as usize);
         for i in (0..len).step_by(stride) {
             // SAFETY: `i` is in range; the write is of the value already
             // there, volatile so the page is really touched.

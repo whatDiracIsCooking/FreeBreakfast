@@ -127,7 +127,7 @@ Cargo workspace of its own, in no gate, never merged into <code>rust/</code>.</p
 </tr>
 <tr>
 <td><strong>inner task</strong></td>
-<td>A task inside a step's own graph (a subflow, a condition loop, a pipeline), built in <code>run</code>. Not a step</td>
+<td>A unit of a step's own work inside <code>run</code>: one GPU's thread of a fan-out, one turn of its loop. Plain code, not a rustflow task, and not a step</td>
 </tr>
 <tr>
 <td><strong>node</strong></td>
@@ -361,6 +361,10 @@ Cargo workspace of its own, in no gate, never merged into <code>rust/</code>.</p
 <tr>
 <td><strong>cache</strong></td>
 <td>The aux batches of B a GPU keeps in its ERI buffer across J/K passes</td>
+</tr>
+<tr>
+<td><strong>staging buffer</strong></td>
+<td>One pinned buffer of at most 256 MiB that B passes through between a GPU and the host: a fitted pair batch on its way down, rows of B on their way up</td>
 </tr>
 <tr>
 <td><strong>records</strong></td>
@@ -608,9 +612,15 @@ ring of buffers on every GPU, a cache. That state lives in one object,
 impl EriManager {
     /// J and K for each density, on gpu0. Every GPU contracts its own aux
     /// batches; the fragments are reduced onto gpu0.
-    pub fn build_jk(&amp;self, held: &amp;mut Held&lt;'_&gt;, d: &amp;[DeviceSlice&lt;'_, f64&gt;],
+    pub fn build_jk(&amp;self, held: &amp;mut Held&lt;'_&gt;, d: &amp;[Density&lt;'_&gt;],
                     j: &amp;mut [DeviceSliceMut&lt;'_, f64&gt;],
                     k: &amp;mut [DeviceSliceMut&lt;'_, f64&gt;]);
+}
+
+/// D itself, or the occupied orbitals C of D = 2 C Cᵀ.
+pub enum Density&lt;'a&gt; {
+    Dense(DeviceSlice&lt;'a, f64&gt;),
+    Occupied(DeviceSlice&lt;'a, f64&gt;, usize),
 }
 </code></pre>
 <p>A sketch, not a signature to hold anyone to. What is fixed:</p>
@@ -628,8 +638,13 @@ the wrapper takes it (<a href="#lock-order">lock order</a>). B and L are immutab
 reads the densities it is passed, and keeps nothing of the caller's. A
 caller's own state (its DIIS, its Fock matrix) stays in the caller's scratch.</li>
 <li><strong>It takes a slice of densities.</strong> DF-RHF passes one. UHF passes two, and a
-response solve, a Davidson or a state average pass many: a J/K pass is bound
-by streaming B, so n densities cost about one pass. v0.0.4 sizes for one.</li>
+response solve, a Davidson or a state average pass many. v0.0.4 sizes for
+one.</li>
+<li><strong>A density is D, or the occupied orbitals of D = 2 C Cᵀ.</strong> From D, K costs
+two n_aux × n_ao³ products; from C, two n_aux × n_ao² × n_occ ones, and J
+comes from the same half-transformed B. A caller that has the orbitals
+passes them: the SCF does on every pass but the guess's. Only the matrix
+given crosses to the other GPUs.</li>
 <li><strong>It never takes a lock.</strong> The GPU guards it uses are passed in, held by the
 wrapper; it has no path to a <code>Mutex</code>.</li>
 </ul>
@@ -659,8 +674,17 @@ another. B is pair-fastest, so one pair batch's columns are a strided run in
 every row of P, and two GPUs' batches interleave in memory: no slice cut parts
 them. Each batch is scattered through a raw pointer, the second <code>unsafe</code> of
 the memory model, with its invariant beside it: the pair batches partition
-the pair columns, so a batch owns its columns and no two write one. A J/K pass then runs over aux batches: each GPU contracts its own,
-and the fragments are summed onto gpu0 through the host.</p>
+the pair columns, so a batch owns its columns and no two write one. The
+scatter is a transpose, done in 64 × 64 tiles: element by element it strides B
+by a whole row per write. A J/K pass then runs over aux batches: each GPU
+contracts its own, and the fragments are summed onto gpu0 through the host.</p>
+<p><strong>Pinned staging does not grow with the limit.</strong> A fitted pair batch comes
+down, and rows of B go up, through staging buffers of at most 256 MiB. So a
+pair batch is never wider than one staging buffer holds, whatever
+<code>mem_per_gpu</code> is, and an aux batch wider than one is uploaded a buffer at a
+time, with a blocking sync per buffer. Page-locking costs about 0.9 s per GiB
+here, and the build's time is flat in the width well below that
+(<a href="#batched-only">batched only</a>).</p>
 <p><strong>The cache.</strong> A GPU's aux range is fixed: the aux functions are split across
 the GPUs once, in budget mode, so GPU g always contracts the same batches.
 The cache fills on the first J/K pass, from the host copy (the build's pair
@@ -800,8 +824,9 @@ exit to the final node makes the report the same every run too, complete and
 not whichever step crossed the line first.</li>
 <li><strong>Two moments of the device check:</strong> per step for <code>Output</code>s, once at the
 end for the packed scratch and the handle workspace. Each is its own row.</li>
-<li><strong>In parallel</strong> pays on the host, where touching the pages of a multi-GB
-slab is the slow part.</li>
+<li><strong>In parallel</strong> lets independent steps' slabs be touched at once. It does
+not speed up one slab: touching gly10's B on 8 or 16 threads took 13 s
+against 7.6 s on one (<a href="#what-it-showed">what it showed</a>).</li>
 </ul>
 <h3 id="what-is-budgeted-by-kind">What is budgeted, by kind</h3>
 <div class="table"><table>
@@ -854,6 +879,9 @@ slab is the slow part.</li>
 <li><strong>Touch the pages in <code>mem_budget</code>.</strong> Zeroed memory is handed out lazily on
 Linux; an untouched slab &quot;succeeds&quot; and fails at first touch mid-run, as a
 bare kill from the OOM killer.</li>
+<li><strong>Huge pages are asked for first</strong> (<code>madvise</code>, which is advice: a kernel
+that gives none changes nothing). A slab is then touched 2 MiB at a time
+where it would be 4 KiB.</li>
 <li><strong>The host is checked at every call</strong>, before the slab is allocated and
 touched, so a B larger than the host sets the flag and is never touched.
 The final node checks again with the packed pinned scratch added.</li>
@@ -1322,7 +1350,7 @@ case is the batched one with a single batch on a single GPU.</p>
 </tr>
 <tr>
 <td>The batch width</td>
-<td>The widest whose bytes fit the step limit; none fits: refuse, naming the step, its limit and its least bytes</td>
+<td>The widest whose bytes fit the step limit, and for a pair batch no wider than one staging buffer holds; none fits: refuse, naming the step, its limit and its least bytes</td>
 </tr>
 <tr>
 <td>The step limit</td>
@@ -1373,8 +1401,8 @@ allocates it says. gpu0's cap is the one that binds.</li>
 <li><strong>With one GPU, all is gpu0.</strong> Not a second path.</li>
 <li><strong>The current device.</strong> Launches and library calls run on the calling
 thread's current device. The wrapper makes the step's device current for the
-body, and every inner task that launches does the same with a
-<code>ScopedDeviceIndex</code>, since a stolen task runs on whatever thread is free.</li>
+body, and each GPU's thread of a fan-out does the same for its own GPU with
+a <code>ScopedDeviceIndex</code>.</li>
 <li><strong>Host steps relieve gpu0.</strong> The one-electron matrices and the metric are
 computed on the host on rayon's threads (<code>s_overlap_host</code>, <code>t_kinetic_host</code>,
 <code>v_potential_en_host</code>, <code>df_metric</code>: on gly10, tens of milliseconds) and
@@ -1402,7 +1430,8 @@ stealing, so the executor's width covers the GPU steps that can wait at once,
 plus the CPU work: a handful of threads.</li>
 <li><strong>Two thread pools.</strong> The host integrals run on rayon's threads, called from
 a step on a rustflow worker; each pool has its own thread count from the
-config.</li>
+config. An all-GPU step's fan-out adds one scoped thread per GPU for the
+length of the fan-out, each blocked on its device most of the time.</li>
 </ul>
 <h3 id="one-handle-set-per-gpu-under-its-lock">One handle set per GPU, under its lock</h3>
 <p>Each GPU's <code>GpuResources</code> is a <code>Mutex</code> around that GPU's stream, a BLAS handle
@@ -1656,7 +1685,7 @@ pinned at <code>f184bcab</code>.</p>
 <tbody>
 <tr>
 <td>A step</td>
-<td>A static task (<code>emplace</code>) whose body is the wrapper, or a subflow task when <code>run</code> builds an inner graph</td>
+<td>A static task (<code>emplace</code>) whose body is the wrapper</td>
 </tr>
 <tr>
 <td>A step reads another's <code>Output</code></td>
@@ -1668,7 +1697,7 @@ pinned at <code>f184bcab</code>.</p>
 </tr>
 <tr>
 <td>A step's inner work (integral batches, the SCF's iterations)</td>
-<td>Inside its node: a subflow (<code>emplace_subflow</code>) with condition loops built in it, or a <code>Pipeline</code>. A subflow joins before its node finishes</td>
+<td>Nothing: plain code inside the node's body. A loop on the host, and for a fan-out one scoped thread per GPU, joined before <code>run</code> returns</td>
 </tr>
 <tr>
 <td>A replayed chain</td>
@@ -1677,14 +1706,23 @@ pinned at <code>f184bcab</code>.</p>
 </tbody>
 </table></div>
 <ul>
-<li><strong>A loop needs no entry node.</strong> A multi-condition
+<li><strong>rustflow runs the outer graph and nothing inside a step.</strong> What a step
+does inside <code>run</code> gives a task graph nothing to schedule. The SCF's loop is
+serial. A fan-out is one thread per GPU, each waiting on its device. A
+library-using step holds its GPUs' locks for its whole <code>run</code>, so nothing
+inside it could overlap another step's library calls. What the outer graph
+buys is the host steps beside the GPU work, the edges from the declared
+reads, and the closure the scratch packing reads.</li>
+<li><strong>An inner graph enters when one is measured to pay</strong>, and not before.
+rustflow has what it would need: a subflow (<code>emplace_subflow</code>) whose
+condition loop runs and joins before its node finishes
+(<code>v0.0.2/tests/rustflow_pin.rs</code>, at <code>f184bcab</code>), and a <code>Pipeline</code>, whose
+back-pressure is host-side, so a streamed loop would still need device
+events.</li>
+<li><strong>A replay's loop needs no entry node.</strong> A multi-condition
 (<code>emplace_multi_condition</code>) names every source of the loop's body.</li>
-<li><strong>A condition loop inside a subflow</strong> runs and joins before its node
-finishes (<code>v0.0.2/tests/rustflow_pin.rs</code>, at <code>f184bcab</code>).</li>
 <li><strong>A module cannot be run by two tasks at once</strong>, so concurrent replays would
 be copies with buffers of their own. None is in scope.</li>
-<li><strong>A pipeline's back-pressure is host-side</strong>: a line is free when its batch is
-enqueued, not run. A streamed loop still needs device events.</li>
 <li><strong>Budget mode runs the same edges</strong>; the graph is one.</li>
 <li><strong>A serial mode</strong> is a one-worker executor, <code>Executor::new(1)</code>.</li>
 <li><strong><code>'static</code> bodies</strong> capture an <code>Arc&lt;MainBus&gt;</code>, which owns everything a body
@@ -2062,14 +2100,18 @@ function per kernel family the steps use.</p>
 </tbody>
 </table></div>
 <ul>
-<li><strong>The SCF's loop is inside its node</strong>: a condition loop in <code>ScfStep</code>'s
-subflow. One iteration is <code>build_jk</code> over the carried D, F, the energy, the
-residual, the DIIS step and the Roothaan step.</li>
+<li><strong>The SCF's loop is a plain loop inside <code>run</code>.</strong> One iteration is <code>build_jk</code>
+over the carried density, F, the energy, the residual, the DIIS step and the
+Roothaan step.</li>
 <li><strong><code>build_jk</code> runs over aux batches</strong>, each GPU contracting its own, the cached
 ones first, reduced onto gpu0 through the host, with a blocking sync per
-batch. The cache fills on the first J/K pass.</li>
-<li><strong>Crudest forms stay</strong>: K from D with no occupied factor, no screening, a
-neutral closed-shell molecule, built-in bases.</li>
+staging buffer uploaded. The cache fills on the first J/K pass.</li>
+<li><strong>K is built from the occupied orbitals.</strong> Every Roothaan step leaves the C
+of its D, so every pass is given C's occupied columns but the first of a
+fresh run, whose D is the guess and has no factor. A replay's first pass has
+the carried C.</li>
+<li><strong>Crudest forms stay</strong>: no screening, a neutral closed-shell molecule,
+built-in bases.</li>
 <li><strong>The replay reset</strong> is v0.0.2's reset mode; what carries over is the SCF's
 orbitals and nothing in scratch.</li>
 </ul>
@@ -2185,10 +2227,6 @@ which catches code that is right only for two.</p>
 <td>The table's cap against a reading taken by hand after setup</td>
 </tr>
 <tr>
-<td>The SCF is a condition loop inside its step's subflow</td>
-<td>The node after <code>scf</code> sees the loop done; the iteration counts against v0.0.2's</td>
-</tr>
-<tr>
 <td>The executor does not starve with workers waiting on locks</td>
 <td>The DF-RHF chain on two workers as well as eight</td>
 </tr>
@@ -2199,7 +2237,7 @@ the old path's planner block for the same run. One-off times are printed, not
 benchmarked; the question that matters is at gly10's size, which
 <a href="#what-it-showed">what it showed</a> has on 1, 2 and 4 GPUs.</p>
 <h3 id="what-it-showed">What it showed</h3>
-<p>RTX A6000 (CUDA), 2026-11-25, one run each, cc-pVDZ over cc-pVDZ-JKFIT.
+<p>RTX A6000 (CUDA), 2026-11-26, one run each, cc-pVDZ over cc-pVDZ-JKFIT.
 <code>|ΔE|</code> in hartree against the bar of 1e-9. The recorded energies are
 <code>../v0.0.2/README.md</code>'s, each within 1.2e-12 of PySCF's DF-RHF and of the old
 Rust path.</p>
@@ -2257,12 +2295,12 @@ Rust path.</p>
 </tr>
 </tbody>
 </table></div>
-<p>One-off times on water, release build: setup 0.96 s (the GPU's handles), budget
-mode 9 ms, execute mode 243 ms, of which <code>eri</code> 102 ms and the SCF's 11
-iterations 34 ms.</p>
+<p>One-off times on water, release build: setup 0.76 s (the GPU's handles), budget
+mode 8 ms, execute mode 249 ms, of which <code>eri</code> 101 ms and the SCF's 11
+iterations 40 ms.</p>
 <p><strong>The glycine chains on 1, 2 and 4 GPUs.</strong> 4× RTX A6000, release build, one
 run each, 19 iterations every time. PySCF is its DF-RHF over the same two
-sets, run for this table. The ERI buffer is <code>[eri] mem_per_gpu</code>: at 2 GiB a
+sets. The ERI buffer is <code>[eri] mem_per_gpu</code>: at 2 GiB a
 GPU's cache holds part of its share of gly10's B, at 16 GiB all of it.</p>
 <div class="table"><table>
 <thead>
@@ -2272,6 +2310,7 @@ GPU's cache holds part of its share of gly10's B, at 16 GiB all of it.</p>
 <th>GPUs</th>
 <th>E, hartree</th>
 <th>|E − PySCF|</th>
+<th>Budget mode</th>
 <th><code>eri</code></th>
 <th><code>scf</code></th>
 </tr>
@@ -2281,46 +2320,51 @@ GPU's cache holds part of its share of gly10's B, at 16 GiB all of it.</p>
 <td>gly5: 379 AOs, 1861 aux</td>
 <td>2 GiB</td>
 <td>1</td>
-<td>−1110.135779508227</td>
-<td>3.9e-11</td>
-<td>1.1 s</td>
-<td>15.4 s</td>
+<td>−1110.135779508224</td>
+<td>4.2e-11</td>
+<td>1.4 s</td>
+<td>1.2 s</td>
+<td>6.8 s</td>
 </tr>
 <tr>
 <td></td>
 <td>2 GiB</td>
 <td>2</td>
-<td>−1110.135779508228</td>
-<td>3.8e-11</td>
-<td>0.8 s</td>
-<td>8.9 s</td>
+<td>−1110.135779508225</td>
+<td>4.1e-11</td>
+<td>2.1 s</td>
+<td>0.7 s</td>
+<td>3.4 s</td>
 </tr>
 <tr>
 <td></td>
 <td>2 GiB</td>
 <td>4</td>
-<td>−1110.135779508228</td>
-<td>3.8e-11</td>
+<td>−1110.135779508225</td>
+<td>4.1e-11</td>
+<td>3.6 s</td>
 <td>0.6 s</td>
-<td>4.7 s</td>
+<td>1.9 s</td>
 </tr>
 <tr>
 <td>gly10: 734 AOs, 3606 aux</td>
 <td>2 GiB</td>
 <td>1</td>
-<td>−2144.284111689078</td>
-<td>5.4e-11</td>
-<td>17.5 s</td>
-<td>233.6 s</td>
+<td>−2144.284111689079</td>
+<td>5.3e-11</td>
+<td>6.5 s</td>
+<td>9.8 s</td>
+<td>63.8 s</td>
 </tr>
 <tr>
 <td></td>
 <td>2 GiB</td>
 <td>2</td>
-<td>−2144.284111689077</td>
-<td>5.5e-11</td>
-<td>10.5 s</td>
-<td>116.4 s</td>
+<td>−2144.284111689078</td>
+<td>5.4e-11</td>
+<td>7.5 s</td>
+<td>5.3 s</td>
+<td>32.1 s</td>
 </tr>
 <tr>
 <td></td>
@@ -2328,56 +2372,70 @@ GPU's cache holds part of its share of gly10's B, at 16 GiB all of it.</p>
 <td>4</td>
 <td>−2144.284111689077</td>
 <td>5.5e-11</td>
-<td>7.5 s</td>
-<td>57.7 s</td>
+<td>9.7 s</td>
+<td>2.9 s</td>
+<td>16.1 s</td>
 </tr>
 <tr>
 <td></td>
 <td>16 GiB</td>
 <td>1</td>
-<td>−2144.284111689079</td>
-<td>5.3e-11</td>
-<td>17.5 s</td>
-<td>217.8 s</td>
+<td>−2144.284111689077</td>
+<td>5.5e-11</td>
+<td>6.5 s</td>
+<td>10.0 s</td>
+<td>59.4 s</td>
 </tr>
 <tr>
 <td></td>
 <td>16 GiB</td>
 <td>2</td>
-<td>−2144.284111689077</td>
-<td>5.5e-11</td>
-<td>10.9 s</td>
-<td>109.1 s</td>
+<td>−2144.284111689075</td>
+<td>5.7e-11</td>
+<td>7.4 s</td>
+<td>5.3 s</td>
+<td>30.1 s</td>
 </tr>
 <tr>
 <td></td>
 <td>16 GiB</td>
 <td>4</td>
-<td>−2144.284111689077</td>
-<td>5.5e-11</td>
-<td>7.4 s</td>
-<td>55.3 s</td>
+<td>−2144.284111689075</td>
+<td>5.7e-11</td>
+<td>9.8 s</td>
+<td>2.9 s</td>
+<td>15.6 s</td>
 </tr>
 </tbody>
 </table></div>
 <ul>
-<li><strong>The energy does not depend on the GPU count or the buffer</strong>: 2e-12 across
-the nine runs, 5.5e-11 from PySCF, against the bar of 1e-9.</li>
-<li><strong>The SCF scales with the GPUs</strong>: 2.0× on two and 4.0× on four at gly10. The
-build of B scales less, 1.7× and 2.3×; where its time goes is not
-measured.</li>
-<li><strong>The cache buys little here</strong>: holding the whole share takes gly10's SCF
-from 234 s to 218 s. The time is the contraction, K from D with no
-occupied factor, not the uploads.</li>
-<li><strong>Budget mode is not free at this size</strong>: 10 s on one GPU at gly10 and 28 s
-on four at 16 GiB, touching the pages of B's slab and of each GPU's pinned
-staging.</li>
+<li><strong>The energy does not depend on the GPU count or the buffer</strong>: 4e-12 across
+gly10's six runs, 5.7e-11 from PySCF, against the bar of 1e-9.</li>
+<li><strong>K from the occupied orbitals is what the SCF's time was.</strong> gly10 has 155
+occupied orbitals of 734. From D, one GPU took 233.6 s for the 19 passes;
+from C it takes 63.8 s, of which the guess's pass, still from D, is about
+12 s.</li>
+<li><strong>The SCF still scales with the GPUs</strong>: 2.0× on two and 4.0× on four at
+gly10, as it did from D. The cheaper contraction did not expose the uploads
+or the per-buffer sync. At gly5, 2.0× and 3.5×.</li>
+<li><strong>The cache still buys little</strong>: holding the whole share takes gly10's SCF
+from 63.8 s to 59.4 s on one GPU.</li>
+<li><strong>The build of B was the host's scatter, and now scales</strong>: 1.8× on two and
+3.4× on four at gly10. Element by element the scatter was 14.2 s of the
+17.3 s build on one GPU, with the GPU idle behind it; in tiles it is 2.7 s,
+and the build waits on the device, whose time is the fit.</li>
+<li><strong>Budget mode is B's pages and the pinned staging.</strong> At gly10 on one GPU,
+touching B's 7.27 GiB takes 5.3 s with huge pages (7.6 s without) and
+page-locking a GPU's 1.03 GiB of staging 1.0 s. Before the staging bound, a
+16 GiB limit page-locked 4.98 GiB per GPU, and budget mode on four GPUs was
+28 s. <em>Open</em>: the 5.3 s. Touching one slab on several threads is slower,
+with or without huge pages.</li>
+<li><strong>Staged uploads ran only here.</strong> An aux batch wider than one staging
+buffer (gly10 at 16 GiB: 794 rows against 124) has no test; these runs'
+energies are its check.</li>
 </ul>
 <h3 id="where-the-code-departs-from-this-page">Where the code departs from this page</h3>
 <ul>
-<li><strong>The SCF's loop is a plain loop inside <code>run</code></strong>, not a condition loop in a
-subflow. A step's fan-out across GPUs is scoped threads, joined before <code>run</code>
-returns, not rustflow inner tasks.</li>
 <li><strong>The manager's lock is a <code>Mutex&lt;()&gt;</code> on the MainBus</strong>, taken by the wrapper
 in rank order; the state inside the <code>EriManager</code> sits behind a <code>Mutex</code> of its
 own that is only ever <code>try_lock</code>ed under it. <code>build_jk</code> takes the <code>Held</code>
@@ -2480,8 +2538,9 @@ on each.</li>
 run.</li>
 <li><strong>Scratch on HIP while a kernel runs</strong>, on ROCm 10, sampled during a large
 launch: the HIP share of the device margin.</li>
-<li><strong>Task granularity inside a step</strong>: how much of its inner graph is
-rustflow's and how much a plain loop on one stream.</li>
+<li><strong>An inner graph on rustflow</strong>: none is built. The case to measure is a
+step whose inner work has independent host-heavy parts, which no step of the
+DF-RHF chain has.</li>
 <li><strong>The <code>cells</code> work list as a kernel's own</strong>: a dense cross product a kernel
 could derive from two short lists (58,653 and 1,272 entries on gly10), a
 FelizJueves change. It lowers the ERI buffer a batch needs.</li>

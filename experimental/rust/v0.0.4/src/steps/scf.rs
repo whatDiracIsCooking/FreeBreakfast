@@ -15,8 +15,9 @@
 //! work buffer die with it: one region of gpu0's scratch, laid out by
 //! [`layout`].
 //!
-//! **Crudest form.** K is built from D itself, with no occupied factor.
-//! The loop is a plain loop inside `run`, not a condition loop in a
+//! **K from the occupied orbitals.** Every Roothaan step leaves the
+//! orbitals C of its `D = 2 C Cᵀ`, so every J/K pass but the guess's is
+//! given C's occupied columns. The loop is a plain loop inside `run`, not a condition loop in a
 //! subflow: README.md says so.
 //!
 //! **A replay** starts from the orbitals the last run left: D carries
@@ -30,7 +31,7 @@ use crate::device::{DeviceSlice, DeviceSliceMut, GpuResources, OP_N, OP_T, part,
 use crate::flow::{Placement, Slot, Step, View};
 use crate::steps::GPU0;
 use crate::steps::core_hamiltonian::CoreHamiltonianStep;
-use crate::steps::eri::EriStep;
+use crate::steps::eri::{Density, EriStep};
 use crate::steps::guess::GuessStep;
 use crate::steps::orthogonalizer::OrthogonalizerStep;
 use crate::steps::overlap::OverlapStep;
@@ -322,7 +323,8 @@ impl Step<MainBus> for ScfStep {
 
         // A fresh loop in the same buffers. The first run starts from the
         // guess; a replay from the D the last run left in the `Output`.
-        if !out.converged {
+        let fresh = !out.converged;
+        if fresh {
             let guess = view.read(GuessStep);
             held.gpu(GPU0).stream().copy_device(&mut out.d, guess.d())?;
         }
@@ -335,14 +337,23 @@ impl Step<MainBus> for ScfStep {
         };
         let mut last_energy = 0.0;
         let mut iteration = 0;
+        // Whether `out.c` holds the occupied orbitals of `out.d`: after any
+        // Roothaan step, so on a replay from the start, and never for the
+        // guess.
+        let mut factored = !fresh;
         loop {
             let (slot, held_pairs) = diis.advance();
             // J and K of the carried D: the manager's, into this step's
             // scratch.
+            let density = if factored {
+                Density::Occupied(part(&out.c, 0, n * n_occ), n_occ)
+            } else {
+                Density::Dense(part(&out.d, 0, n2))
+            };
             eri.build_jk(
                 shared,
                 held,
-                &[part(&out.d, 0, n2)],
+                &[density],
                 &mut [part_mut(&mut j, 0, n2)],
                 &mut [part_mut(&mut k, 0, n2)],
             )?;
@@ -434,6 +445,7 @@ impl Step<MainBus> for ScfStep {
                 &mut out.d,
             )?;
             gpu.stream().download(h_info, &info)?;
+            factored = true;
 
             // The decision reads E and ‖e‖ on the host: the step waits for
             // gpu0 here, once per iteration.
