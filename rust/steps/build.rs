@@ -1,4 +1,5 @@
-//! Point the link at `libfb_recipes_kernels.so` and WarpWraps' C ABI
+//! Point the link at `libfb_recipes_kernels.so`, the integrals' and the
+//! localization's, and WarpWraps' C ABI
 //! libraries beside `libwwr_capi_runtime_api.so` (`rust/kernel_lib.rs`):
 //! fb-recipes-sys's and wwr-sys's rpaths reach their own targets only, so
 //! this crate's tests and its example carry their own. Under
@@ -10,4 +11,5 @@ include!("../kernel_lib.rs");
 fn main() {
     link_kernel_lib("recipes");
     link_kernel_lib("integrals");
+    link_kernel_lib("localization");
 }

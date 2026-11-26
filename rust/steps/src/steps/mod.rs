@@ -5,6 +5,7 @@
 pub mod core_hamiltonian;
 pub mod eri;
 pub mod guess;
+pub mod localization;
 pub mod metric;
 pub mod orthogonalizer;
 pub mod overlap;

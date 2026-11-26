@@ -4,7 +4,8 @@
 //! apart from every step unordered with it, the config's refusals (an
 //! unknown key and an impossible multiplicity naming the file and the
 //! line), an open shell set up and its SCF's budget exact, a closed-shell
-//! ion's budget the neutral's, the allocation record failing a step that allocates on the plain heap in its
+//! ion's budget the neutral's, a localization's budget exact in the
+//! occupied block, the allocation record failing a step that allocates on the plain heap in its
 //! `run`, and the four host steps passing it: each builds its triangle in
 //! its pinned staging, so no `run` allocates one of its own
 //! (`docs/memory.md`, "The budget"), past 1 MiB from about 360 AOs.
@@ -328,6 +329,102 @@ fn a_closed_shell_ions_dry_budget_is_the_neutrals() {
     };
     assert_eq!(occupied_as_the_neutral, neutral);
     assert_eq!(ion_table, neutral_table);
+}
+
+/// The localization's scratch at `n` AOs, `n_atom` atoms and a block of
+/// `m` orbitals, `(device, pinned)` bytes: the input, `S C`, the
+/// population tensor and its pong, U and its pong, the angles, the
+/// offsets, the schedule, `diag(ε) U`, `[L, G]` and `C U` on the device;
+/// the input, the offsets, the schedule, `[L, G]`, `C U` and the order
+/// pinned.
+fn localization_scratch(n: usize, n_atom: usize, m: usize) -> (u64, u64) {
+    let (mut dev, mut pin) = (Layout::new(), Layout::new());
+    let (nm, m2, tensor) = (n * m, m * m, n_atom * m * m);
+    let pad = m + m % 2;
+    let schedule = (pad - 1) * pad;
+    let _ = (dev.span::<f64>(nm + m), pin.span::<f64>(nm + m));
+    let _ = (
+        dev.span::<f64>(nm),
+        dev.span::<f64>(tensor),
+        dev.span::<f64>(tensor),
+    );
+    let _ = (dev.span::<f64>(m2), dev.span::<f64>(m2));
+    let _ = (dev.span::<f64>(m), dev.span::<f64>(m), dev.span::<i32>(m));
+    let _ = (dev.span::<i32>(n_atom + 1), dev.span::<i32>(schedule));
+    let _ = (
+        dev.span::<f64>(m2),
+        dev.span::<f64>(1 + m2),
+        dev.span::<f64>(nm),
+    );
+    let _ = (pin.span::<i32>(n_atom + 1), pin.span::<i32>(schedule));
+    let _ = (
+        pin.span::<f64>(1 + m2),
+        pin.span::<f64>(nm),
+        pin.span::<i32>(m),
+    );
+    (aligned(dev.bytes()), aligned(pin.bytes()))
+}
+
+/// A `"localization"` run's dry budget is exact, its arrays sized by the
+/// occupied block: water's five doubly occupied orbitals and its
+/// dication's four, each step's scratch the formula's, `C_local`
+/// `n_ao × n_occ` on gpu0 and the host; and every other step's region
+/// the same for the two, since only the localization's budget reads more
+/// of the occupations than whether the shell is open
+/// (`docs/programming_model.md`, "The MainBus and its steps"). An open
+/// shell is refused `Unsupported` in budget mode, naming the step.
+#[test]
+fn a_localizations_dry_budget_is_exact_in_the_occupied_block() {
+    let budget = |charge: i32, multiplicity: i32| {
+        let text = format!(
+            "[molecule]\nxyz = \"h2o.xyz\"\ncharge = {charge}\nmultiplicity = {multiplicity}\n\
+             [basis]\nname = \"cc-pvdz\"\n[eri]\naux_basis = \"cc-pvdz-jkfit\"\n[scf]\n\
+             [localization]\n"
+        );
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+        let config = fb_steps::Config::parse(&text, &dir).unwrap();
+        let plan = plan(MainBus::setup(config, Backing::Dry).unwrap()).unwrap();
+        let budgeted = plan.budget(&Executor::new(2));
+        (plan, budgeted)
+    };
+    let mut regions = Vec::new();
+    let mut heap = Vec::new();
+    for (charge, m) in [(0, 5), (2, 4)] {
+        let (plan, budgeted) = budget(charge, 1);
+        budgeted.unwrap();
+        let dims = plan.bus().shared().dims.clone();
+        assert_eq!((dims.n_atom, dims.n_occ), (3, m), "charge {charge}");
+        let ledger = plan.bus().ledger();
+        let region = |kind: Kind| {
+            ledger
+                .regions()
+                .iter()
+                .find(|r| r.gpu == 0 && r.kind == kind && r.step == "localization")
+                .map(|r| r.bytes)
+        };
+        let (device, pinned) = localization_scratch(dims.n_ao, dims.n_atom, m);
+        assert_eq!(region(Kind::Device), Some(device), "charge {charge}");
+        assert_eq!(region(Kind::Pinned), Some(pinned), "charge {charge}");
+        assert_eq!(ledger.allocations(), 0, "a dry budget allocates nothing");
+        assert!(ledger.table().starts_with("memory budget: accepted"));
+        let mut others: Vec<(&str, Kind, u64)> = ledger
+            .regions()
+            .iter()
+            .filter(|r| r.step != "localization")
+            .map(|r| (r.step, r.kind, r.bytes))
+            .collect();
+        others.sort_by_key(|r| (r.0, r.2));
+        regions.push(others);
+        heap.push((ledger.heap_total(), dims.n_ao));
+    }
+    assert_eq!(regions[0], regions[1], "the other steps' scratch");
+    // C_local's host copy, n_ao × n_occ, the one heap difference.
+    assert_eq!(heap[0].0 - heap[1].0, (heap[0].1 * 8) as u64);
+
+    let (_, budgeted) = budget(1, 2);
+    let error = budgeted.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Unsupported, "{error}");
+    assert!(error.message.contains("open shell"), "{error}");
 }
 
 /// A bus of one step that allocates `BYTES` on the plain heap in its `run`.

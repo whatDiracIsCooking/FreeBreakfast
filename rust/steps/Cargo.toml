@@ -32,6 +32,8 @@ fb-recipes-sys.workspace = true
 # The ERI step's launches: the records, the three-centre integrals and the
 # gather, each with its index tables handed in on the host.
 fb-integrals-sys.workspace = true
+# The localization step's launches: the populations, the sweep, L.
+fb-localization-sys.workspace = true
 # The ERI step's warning of a batch width of one.
 log.workspace = true
 # The host steps' integrals, on rayon's threads: the only way to rayon

@@ -23,6 +23,7 @@ use serde::Deserialize;
 use crate::steps::core_hamiltonian::CoreHamiltonianOutput;
 use crate::steps::eri::EriManager;
 use crate::steps::guess::GuessOutput;
+use crate::steps::localization::LocalizationOutput;
 use crate::steps::metric::MetricOutput;
 use crate::steps::orthogonalizer::OrthogonalizerOutput;
 use crate::steps::overlap::OverlapOutput;
@@ -52,6 +53,9 @@ pub struct Config {
     pub eri: Option<EriTable>,
     /// The RHF loop, ROHF for an open shell; absent, no `scf` step.
     pub scf: Option<ScfTable>,
+    /// The occupied orbitals' localization; absent, no `localization`
+    /// step.
+    pub localization: Option<LocalizationTable>,
     /// GPUs, threads and caps.
     #[serde(default)]
     pub resources: ResourcesTable,
@@ -235,6 +239,98 @@ impl ScfTable {
     }
 }
 
+/// `[localization]`: Pipek-Mezey localization of the SCF's occupied
+/// orbitals, every key at its default when absent.
+///
+/// ```
+/// use std::path::Path;
+/// use fb_steps::{Config, LocalizationMode};
+///
+/// let text = "[molecule]\nxyz = \"h2o.xyz\"\n[basis]\nname = \"cc-pvdz\"\n\
+///             [localization]\nexponent = 4\n";
+/// let table = Config::parse(text, Path::new(".")).unwrap().localization.unwrap();
+/// assert_eq!((table.mode, table.exponent, table.max_sweeps), (LocalizationMode::PipekMezey, 4, 64));
+/// assert!(table.check().is_ok());
+/// ```
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LocalizationTable {
+    /// The localization: `"pipek_mezey"`, the default, over Mulliken
+    /// populations; `"ibo"` is read and refused `Unsupported` by
+    /// [`LocalizationTable::check`].
+    pub mode: LocalizationMode,
+    /// The power `p` of `L_p = Σ_i Σ_A (Q^A_ii)^p`: 2, Pipek and Mezey's,
+    /// or 4, Knizia's IBO exponent. Default 2.
+    pub exponent: i32,
+    /// Sweeps before the step fails with `MaxIterationsExceeded`, each
+    /// visiting every orbital pair once; at least 1. Default 64.
+    pub max_sweeps: usize,
+    /// Converged when a sweep moves `L` by less than this, in units of
+    /// `L` (a sum of squared or fourth-power populations); non-negative.
+    /// Default 1e-10.
+    pub functional_tolerance: f64,
+    /// A pair whose gain in `L` does not exceed this is left alone, in
+    /// units of `L`; non-negative. Default 1e-14.
+    pub rotation_gain_threshold: f64,
+}
+
+impl Default for LocalizationTable {
+    fn default() -> Self {
+        LocalizationTable {
+            mode: LocalizationMode::PipekMezey,
+            exponent: 2,
+            max_sweeps: 64,
+            functional_tolerance: 1e-10,
+            rotation_gain_threshold: 1e-14,
+        }
+    }
+}
+
+impl LocalizationTable {
+    /// Refuse a value out of range.
+    ///
+    /// # Errors
+    /// `Unsupported` for `mode = "ibo"`; `InvalidConfig`, naming the key,
+    /// for an exponent other than 2 or 4, a `max_sweeps` of 0, or a
+    /// tolerance that is negative or NaN.
+    pub fn check(&self) -> Result<()> {
+        if self.mode == LocalizationMode::Ibo {
+            return Err(Error::unsupported(
+                "[localization] mode = \"ibo\": IBO needs the intrinsic atomic orbitals, not \
+                 ported; \"pipek_mezey\" is the mode there is",
+            ));
+        }
+        if self.exponent != 2 && self.exponent != 4 {
+            return Err(Error::config(format!(
+                "[localization] exponent is {}, not 2 or 4",
+                self.exponent
+            )));
+        }
+        if self.max_sweeps == 0 {
+            return Err(Error::config("[localization] max_sweeps is at least 1"));
+        }
+        let refused = |t: f64| t.is_nan() || t < 0.0;
+        if refused(self.functional_tolerance) || refused(self.rotation_gain_threshold) {
+            return Err(Error::config(
+                "[localization] functional_tolerance and rotation_gain_threshold are \
+                 non-negative",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// `[localization] mode`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalizationMode {
+    /// `"pipek_mezey"`: Pipek-Mezey over Mulliken populations.
+    #[default]
+    PipekMezey,
+    /// `"ibo"`: intrinsic bond orbitals. Not ported, refused.
+    Ibo,
+}
+
 /// `[resources]`.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -362,6 +458,8 @@ fn n_sph_of(l: i32) -> usize {
 /// built by none of it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dims {
+    /// Atoms.
+    pub n_atom: usize,
     /// Spherical AOs.
     pub n_ao: usize,
     /// Doubly occupied orbitals, `n_beta`.
@@ -418,6 +516,7 @@ impl Dims {
             |b: &BasisSet| -> usize { b.shells().iter().map(|s| s.nprimitives() as usize).sum() };
         let n_shell = basis.nshells() as usize;
         Dims {
+            n_atom: basis.natoms() as usize,
             n_ao: basis.nao_sphe() as usize,
             n_occ: n_beta,
             n_alpha,
@@ -545,6 +644,10 @@ pub struct MainBus {
     pub(crate) guess: Slot<GuessOutput>,
     pub(crate) orthogonalizer: Slot<OrthogonalizerOutput>,
     pub(crate) scf: Slot<ScfOutput>,
+    pub(crate) localization: Slot<LocalizationOutput>,
+    /// The localization's tests' probe of its sweep body.
+    #[cfg(test)]
+    pub(crate) localization_probe: Slot<crate::steps::localization::tests::ProbeOutput>,
 }
 
 impl MainBus {
@@ -566,7 +669,8 @@ impl MainBus {
     /// with no GPU, no thread or no
     /// host thread, or a device the runtime does not see
     /// (`InvalidConfig`); the host integrals' threads not starting (`Io`);
-    /// the recipes library's mismatch; a cap's reading.
+    /// the recipes library's mismatch, and the integrals' and the
+    /// localization's with their tables; a cap's reading.
     pub fn setup(config: Config, backing: Backing) -> Result<Arc<MainBus>> {
         fb_core_device::single_thread_host_blas();
         let spin = &config.molecule;
@@ -608,6 +712,9 @@ impl MainBus {
             fb_recipes_sys::check_library().map_err(Error::gpu)?;
             if config.eri.is_some() {
                 fb_integrals_sys::check_library().map_err(Error::gpu)?;
+            }
+            if config.localization.is_some() {
+                fb_localization_sys::check_library().map_err(Error::gpu)?;
             }
             let seen = fb_core_device::device_count()?;
             if let Some(d) = res.devices.iter().find(|&&d| d < 0 || d >= seen) {
@@ -651,6 +758,9 @@ impl MainBus {
             guess: Slot::new(),
             orthogonalizer: Slot::new(),
             scf: Slot::new(),
+            localization: Slot::new(),
+            #[cfg(test)]
+            localization_probe: Slot::new(),
         }))
     }
 }

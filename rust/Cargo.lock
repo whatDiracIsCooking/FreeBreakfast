@@ -868,6 +868,7 @@ version = "0.1.0"
 dependencies = [
  "contracts",
  "fb-core-arena",
+ "fb-core-device",
  "fb-core-error-handling",
  "fb-core-log",
  "fb-core-planner",
@@ -1196,6 +1197,7 @@ dependencies = [
  "fb-io-npy",
  "fb-io-sad",
  "fb-io-xyz",
+ "fb-localization-sys",
  "fb-molecule",
  "fb-molecule-nuclei",
  "fb-pipeline-eri",

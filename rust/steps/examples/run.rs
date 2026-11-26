@@ -19,7 +19,8 @@
 //! `--output DIR` (default `fbf_output`, the old binary's) is where
 //! [`fb_steps::Run::write`] puts the run's record, `budget.txt` (the table
 //! printed here) and `timing.json`, and, unless `--budget-only`, its
-//! products: `scf.json`, `c.npy` and `d.npy` with `[scf]`.
+//! products: `scf.json`, `c.npy` and `d.npy` with `[scf]`, and
+//! `localization.json` and `c_local.npy` with `[localization]`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -27,7 +28,7 @@ use std::process::ExitCode;
 use fb_core_budget::Backing;
 use fb_core_error_handling::Result;
 use fb_core_flow::Bus;
-use fb_steps::{Config, EriStep, ScfStep, run};
+use fb_steps::{Config, EriStep, LocalizationStep, ScfStep, run};
 
 /// The command line.
 #[derive(Default)]
@@ -87,6 +88,7 @@ fn go(args: &Args) -> Result<()> {
         Backing::Real
     };
     let (has_eri, has_scf) = (config.eri.is_some(), config.scf.is_some());
+    let has_localization = config.localization.is_some();
     let run = run(config, backing)?;
     let output = args
         .output
@@ -157,6 +159,15 @@ fn go(args: &Args) -> Result<()> {
             meter.wall / builds,
             meter.syncs,
             meter.blocked
+        );
+    }
+    if has_localization {
+        let local = run.plan.output(LocalizationStep);
+        println!(
+            "localization: L = {:.12} from {:.12} in {} sweeps",
+            local.functional_after(),
+            local.functional_before(),
+            local.sweeps()
         );
     }
     Ok(())

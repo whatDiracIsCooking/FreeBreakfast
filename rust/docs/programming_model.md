@@ -113,7 +113,8 @@ stays in its module's crate.
 
 - **The config is one table per step family.** `[molecule]` and `[basis]`
   bring the overlap, the core Hamiltonian, the guess and the orthogonalizer;
-  `[eri]` the metric and the ERI; `[scf]` the SCF; `[resources]` the GPUs,
+  `[eri]` the metric and the ERI; `[scf]` the SCF; `[localization]` the
+  localization of the SCF's occupied orbitals; `[resources]` the GPUs,
   the executor's width and the caps. A step whose table is absent is not in
   the DAG, and a step that reads one the config leaves out is refused.
 - **`[molecule]` sets the charge and the multiplicity, and setup counts
@@ -123,10 +124,13 @@ stays in its module's crate.
   electron count cannot have is refused `InvalidConfig`, naming the key,
   the file and the line ([`documentation.md`](documentation.md),
   "Configuration: the reference is emitted from the type"); an open
-  shell, `n_alpha > n_beta`, runs ROHF in the SCF. A `mem_budget` reads
-  the occupations only for whether the shell is open (the SCF's open-shell
-  scratch, the J/K pass's second density), so a closed-shell ion's budget
-  is the neutral's.
+  shell, `n_alpha > n_beta`, runs ROHF in the SCF. A `mem_budget` over
+  the AO space reads the occupations only for whether the shell is open
+  (the SCF's open-shell scratch, the J/K pass's second density), so its
+  budget for a closed-shell ion is the neutral's. A step whose arrays span
+  the occupied space, the localization, sizes them by its blocks of C's
+  columns, `[0, n_beta)` and `[n_beta, n_alpha)`: an n_ao bound would cost
+  it `(n_ao / n_occ)²`, 22 times at gly10, in its population tensor.
 - **Setup is the unbudgeted host phase, and it counts.**
   `MainBus::setup` reads the geometry and both bases, fills `Dims` by a
   walk over the shells that builds no array (`for_each_pair`), makes each
@@ -167,6 +171,15 @@ stays in its module's crate.
   is setup, budget mode and execute mode over the run's one executor, and
   `Run::replay` execute mode again in the same buffers: the SCF's orbitals
   carry over in its `Output`, nothing in scratch does.
+- **The localization is a gpu0 step under gpu0's lock whose sweep loop
+  is plain code in `run`.** It reads the overlap's S and the SCF's C and
+  orbital energies, and rotates each block of occupied columns by
+  Pipek-Mezey sweeps on the population tensor; each turn reads `L`, the
+  turn's orbitals `C U` and the sort key `diag(Uᵀ diag(ε) U)`, each
+  column's `⟨i|F|i⟩`, through their downloads' token, the loop's turn
+  read. The converged turn's columns are stably sorted by the key, on the
+  host copy and on the device. An open shell is refused `Unsupported`
+  until its two blocks are run.
 
 ### The EriManager
 
