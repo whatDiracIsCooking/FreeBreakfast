@@ -50,7 +50,7 @@ pub struct Config {
     pub basis: BasisTable,
     /// The density-fitted integrals; absent, no `metric` step.
     pub eri: Option<EriTable>,
-    /// The RHF loop; absent, no `scf` step.
+    /// The RHF loop, ROHF for an open shell; absent, no `scf` step.
     pub scf: Option<ScfTable>,
     /// GPUs, threads and caps.
     #[serde(default)]
@@ -82,8 +82,7 @@ pub struct MoleculeTable {
     /// The spin multiplicity `2S + 1`: at least 1, at most the electron
     /// count plus one, and of the count's parity plus one, or the run is
     /// refused (`InvalidConfig`, [`MoleculeTable::occupations`]). Above 1,
-    /// an open shell, it is refused `Unsupported` in setup: the steps run
-    /// a closed shell. Default 1.
+    /// an open shell, the SCF runs ROHF. Default 1.
     #[serde(default = "default_multiplicity")]
     pub multiplicity: i32,
     /// Where the spin was set, `<file>:<line>`: `multiplicity`'s line,
@@ -563,9 +562,8 @@ impl MainBus {
     /// solver work buffer counted as zero.
     ///
     /// # Errors
-    /// The readers' refusals; [`MoleculeTable::occupations`]'s; an open
-    /// shell, `[molecule] multiplicity` above 1 (`Unsupported`, naming the
-    /// key, until the ROHF step); a config with no GPU, no thread or no
+    /// The readers' refusals; [`MoleculeTable::occupations`]'s; a config
+    /// with no GPU, no thread or no
     /// host thread, or a device the runtime does not see
     /// (`InvalidConfig`); the host integrals' threads not starting (`Io`);
     /// the recipes library's mismatch; a cap's reading.
@@ -574,14 +572,6 @@ impl MainBus {
         let spin = &config.molecule;
         let molecule = fb_io_xyz::read_xyz(&spin.xyz, spin.charge, spin.multiplicity)?;
         let occupations = spin.occupations(molecule.electron_count())?;
-        // The closed shell's one refusal: removed with the ROHF step.
-        if occupations.0 != occupations.1 {
-            return Err(Error::unsupported(format!(
-                "{}: [molecule] multiplicity = {} is an open shell, and the steps run a closed \
-                 shell only",
-                spin.at, spin.multiplicity
-            )));
-        }
         let basis = fb_io_basis::resolve_basis(&config.basis.name)?
             .primitive_normalized()
             .place(&molecule)?;
