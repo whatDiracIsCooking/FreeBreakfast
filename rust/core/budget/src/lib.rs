@@ -59,6 +59,7 @@ mod lease;
 mod ledger;
 mod raw;
 mod record;
+mod tenant;
 #[cfg(test)]
 mod tests;
 
@@ -67,6 +68,7 @@ pub use host::host_available;
 pub use lease::{HostPart, Layout, Lease, ScratchBuf, Span};
 pub use ledger::{Budget, Ledger, RegionInfo, SlabInfo};
 pub use record::{AllocationRecord, RECORD_THRESHOLD};
+pub use tenant::{DeviceTenant, PinnedTenant};
 
 use contracts::debug_requires;
 use fb_core_error_handling::Result;

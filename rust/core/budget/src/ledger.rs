@@ -3,7 +3,6 @@
 //! a step's `mem_budget` allocates through.
 
 use std::fmt::Write as _;
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -414,10 +413,9 @@ impl Ledger {
             }
             for gpu in 0..self.gpus() {
                 // A host-backed plan has no handle to give a workspace.
-                workspaces.push((self.backing == Backing::Real).then(|| DeviceBuf {
-                    raw: Some(self.take(self.mem(gpu, Kind::Device), WORKSPACE as usize)),
-                    len: WORKSPACE as usize,
-                    of: PhantomData,
+                workspaces.push((self.backing == Backing::Real).then(|| {
+                    let raw = self.take(self.mem(gpu, Kind::Device), WORKSPACE as usize);
+                    DeviceBuf::new(Some(raw), WORKSPACE as usize)
                 }));
             }
         }
@@ -730,11 +728,7 @@ impl Budget<'_> {
             .ledger
             .charge(self.step, Column::Device(gpu), size as u64)
             .then(|| self.ledger.take(self.ledger.mem(gpu, Kind::Device), size));
-        DeviceBuf {
-            raw,
-            len,
-            of: PhantomData,
-        }
+        DeviceBuf::new(raw, len)
     }
 
     /// `len` elements of page-locked host memory an `Output` owns, staged
@@ -755,11 +749,7 @@ impl Budget<'_> {
             .ledger
             .charge(self.step, Column::Pinned(gpu), size as u64)
             .then(|| self.ledger.take(self.ledger.mem(gpu, Kind::Pinned), size));
-        PinnedBuf {
-            raw,
-            len,
-            of: PhantomData,
-        }
+        PinnedBuf::new(raw, len)
     }
 
     /// `len` elements of host heap that cannot grow, huge pages asked for
