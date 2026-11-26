@@ -1,0 +1,14 @@
+# eigh-bench over OpenBLAS's LAPACK: Dockerfile.faer plus Debian's LP64
+# OpenBLAS, the pthreads build (DYNAMIC_ARCH, so it picks its Zen kernels
+# at run time). Build with this directory as the context (run.sh does).
+FROM rust:1.99.1-slim-trixie
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libopenblas-pthread-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /bench
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY src ./src
+RUN cargo build --release --locked --features lapack \
+    && cp target/release/eigh-bench /usr/local/bin/ \
+    && rm -rf target
+ENTRYPOINT ["eigh-bench"]
