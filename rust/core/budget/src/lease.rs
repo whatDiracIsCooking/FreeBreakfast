@@ -19,8 +19,8 @@ use crate::ledger::{Ledger, locked};
 /// `Copy` nor `Clone`, so a tenant is carved once.
 #[derive(Debug)]
 pub struct Span<T> {
-    offset: usize,
-    len: usize,
+    pub(crate) offset: usize,
+    pub(crate) len: usize,
     of: PhantomData<T>,
 }
 
@@ -39,7 +39,7 @@ impl<T> Span<T> {
 
     /// The byte past the tenant's last: no overflow, since its layout
     /// checked it.
-    fn end(&self) -> usize {
+    pub(crate) fn end(&self) -> usize {
         self.offset + self.len * size_of::<T>()
     }
 }

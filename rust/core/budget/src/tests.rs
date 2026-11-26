@@ -415,3 +415,120 @@ fn a_dry_budget_counts_and_allocates_nothing() {
     );
     assert!(ledger.table().contains("default"), "{}", ledger.table());
 }
+
+/// The message and the line of the panic `f` raises on this thread.
+fn panic_at(f: impl FnOnce()) -> (String, u32) {
+    use std::cell::Cell;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    thread_local!(static LINE: Cell<u32> = const { Cell::new(0) });
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            LINE.set(info.location().map_or(0, std::panic::Location::line));
+            previous(info);
+        }));
+    });
+    let payload = catch_unwind(AssertUnwindSafe(f)).expect_err("the call panics");
+    let message = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .unwrap_or_default();
+    (message, LINE.get())
+}
+
+/// One `Output` of 256 pinned bytes and 256 device bytes, host-backed.
+fn tenanted(ledger: &Ledger) -> (PinnedBuf<u8>, DeviceBuf<u8>) {
+    let budget = ledger.budget("a");
+    (budget.pinned(0, 256), budget.device(0, 256))
+}
+
+#[test]
+fn two_live_tenants_over_one_byte_panic_at_the_callers_line() {
+    let ledger = ledger(ROOMY, ROOMY);
+    let (mut pinned, mut device) = tenanted(&ledger);
+    let (mut first, mut second) = (Layout::new(), Layout::new());
+    let (a, b) = (first.span::<f64>(3), second.span::<i32>(2));
+    let _a = pinned.tenant(&a);
+    let line = line!() + 1;
+    let (message, at) = panic_at(|| drop(pinned.tenant(&b)));
+    assert_eq!(at, line, "the panic is at the caller's line: {message}");
+    assert!(
+        message.contains(
+            "a tenant of a pinned buffer carves bytes 0..8, which meet the tenant carved at 0..24"
+        ),
+        "{message}"
+    );
+    let _a = device.tenant(&a);
+    let line = line!() + 1;
+    let (message, at) = panic_at(|| drop(device.tenant(&b)));
+    assert_eq!(at, line, "the panic is at the caller's line: {message}");
+    assert!(
+        message.contains("a tenant of a device buffer carves bytes 0..8"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_tenant_dropped_is_carved_again_and_apart_ones_live_together() {
+    let ledger = ledger(ROOMY, ROOMY);
+    let (mut pinned, mut device) = tenanted(&ledger);
+    let mut layout = Layout::new();
+    let (f, i) = (layout.span::<f64>(3), layout.span::<i32>(5));
+    for turn in 0..2 {
+        let mut a = pinned.tenant(&f);
+        let mut b = pinned.tenant(&i);
+        a.fill(f64::from(turn));
+        b.fill(-turn);
+        assert_eq!(
+            (&a[..], &b[..]),
+            (&[f64::from(turn); 3][..], &[-turn; 5][..])
+        );
+        let (x, y) = (device.tenant(&f), device.tenant(&i));
+        assert_eq!(
+            (
+                fb_core_device::DeviceSlice::len(&x),
+                fb_core_device::DeviceSlice::len(&y)
+            ),
+            (3, 5)
+        );
+    }
+    // Every tenant dropped: the whole is reached again, holding the bytes
+    // the tenants wrote.
+    assert_eq!(pinned[0..8], 1.0f64.to_ne_bytes());
+    assert!(device.host().is_some());
+}
+
+#[test]
+fn a_leaked_tenant_keeps_its_record_and_the_whole_is_not_reached() {
+    let ledger = ledger(ROOMY, ROOMY);
+    let (mut pinned, _) = tenanted(&ledger);
+    let mut layout = Layout::new();
+    let span = layout.span::<f64>(4);
+    // What a copy's token dropped unsynced does to its host end.
+    std::mem::forget(pinned.tenant(&span));
+    let (message, _) = panic_at(|| drop(pinned.tenant(&span)));
+    assert!(
+        message.contains(
+            "a tenant of a pinned buffer carves bytes 0..32, which meet the tenant carved at 0..32"
+        ),
+        "{message}"
+    );
+    let (message, _) = panic_at(|| {
+        let _ = pinned.len();
+    });
+    assert!(
+        message.contains("a pinned buffer is reached whole while its bytes 0..32 are a tenant's"),
+        "{message}"
+    );
+}
+
+#[test]
+#[should_panic(expected = "a device buffer is reached whole while its bytes 0..8 are a tenant's")]
+fn a_device_buffer_with_a_live_tenant_is_not_reached_whole() {
+    let ledger = ledger(ROOMY, ROOMY);
+    let (_, mut device) = tenanted(&ledger);
+    let _tenant = device.tenant(&Layout::new().span::<f64>(1));
+    let _ = fb_core_device::DeviceSlice::as_ptr(&device);
+}

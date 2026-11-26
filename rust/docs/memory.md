@@ -158,6 +158,31 @@ ledger's `nan_fill`, the wrapper fills each lease's host regions with
 it is written, and its device regions on the step's stream
 (`Lease::fill_device`).
 
+## Tenants of an Output's buffers
+
+A manager reuses its own buffers: its rings carve the same pinned staging
+and the same device buffer on every turn, typed pieces of one `Output`'s
+bytes, as `run` carves its lease. `PinnedBuf::tenant` and
+`DeviceBuf::tenant` take a `Span` of a `Layout` over the buffer's bytes
+and return a `PinnedTenant` (a host slice, and the host end of a copy) or
+a `DeviceTenant` (a device slice), several live at once.
+
+**Each carve is recorded in the buffer, always on, and a tenant's drop
+clears it.** A carve that meets a live tenant panics at the caller's
+line, so two tenants never share a byte, and the same span is carved again
+once its tenant is dropped. A pinned tenant moves into its copy's token
+and comes back by the token's sync; a token dropped unsynced leaks it, its
+record stays, and a carve that meets those bytes panics while the copy
+may still read them.
+
+**A tenant shares the allocation, and the whole is not reached beside
+it.** A tenant holds the buffer's allocation alive, so a leaked one leaks
+the memory rather than freeing bytes a copy may use. The carve takes the
+buffer by `&mut`, so no slice of the whole is alive at it (a
+`compile_fail,E0502` doctest), and while a carve is recorded, live or
+leaked, every reach of the whole (the pinned slice, the device pointer a
+call takes) panics.
+
 ## The final node
 
 `Ledger::finish` is the budget DAG's last node, over the steps and what
