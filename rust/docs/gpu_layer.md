@@ -719,7 +719,17 @@ and fills a stream enqueues, device slices, and each GPU's
   that slot's copies alone and never a GPU's stream or the device, and it
   joins its streams before `run` (or a method such as `build_jk`, called
   from a reader's `run`) returns (`fb_steps::EriManager`, its build's ring
-  and a J/K pass's). Each such call carries an `allow` naming it.
+  and a J/K pass's). Each such call carries an `allow` naming it. A loop
+  inside `run` that decides on the host is the third: once per turn,
+  after the turn's last enqueue, it reads that turn's scalars through
+  their download's token (`Pending::sync`), which waits for the turn it
+  reads and for no part of a turn still to come, and enqueues nothing
+  more before it has read them (`fb_steps::ScfStep`'s convergence read:
+  its energy, residual norm, DIIS flag and syevd flag). `[scf]
+  stage_sync`, a measurement off by default, syncs gpu0's stream at the
+  three ends where an iteration would end a step were it three. Each
+  such call carries an `allow` naming it; the SCF's read of its converged
+  orbitals after its last enqueue is the solver-flag site.
 - **One handle set per GPU, under its lock.** `GpuResources` is a GPU's
   stream, a BLAS and a dense-solver handle made on that stream, and the
   handle workspace; `GpuResources::new` returns it inside a `Mutex`, so
@@ -740,7 +750,8 @@ and fills a stream enqueues, device slices, and each GPU's
   `work` puts hipSOLVER's handle in library-managed mode.
 - **The recipes take the guard.** `GpuResources::inverse_sqrt` is the
   recipes' kernel (each element `1 / sqrt(x)`, 0 at or below a floor) on
-  the guard's stream. `GpuResources::trsm` is the tree's
+  the guard's stream, and `GpuResources::diis_solve` the recipes' bordered
+  DIIS solve there. `GpuResources::trsm` is the tree's
   blocked triangular solve, as `fb_recipes_launch::trsm` is above, and
   `GpuResources::cholesky` the blocked Cholesky in place of a vendor
   `potrf` (rocSOLVER's raced across processes, #410); their diagonal

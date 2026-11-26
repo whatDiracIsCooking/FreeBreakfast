@@ -801,6 +801,65 @@ impl GpuResources {
         launched("fb_inverse_sqrt", status)
     }
 
+    /// The `m` DIIS extrapolation coefficients into `coeff` on the GPU's
+    /// stream: the recipes' `fb_diis_solve`, one block solving the bordered
+    /// system
+    ///
+    /// ```text
+    /// [ <e_i|e_j>  -1 ] [ c ]   [ 0  ]
+    /// [   -1^T      0 ] [ l ] = [ -1 ]
+    /// ```
+    ///
+    /// over the residual Gram `gram` at leading dimension `ld`, of which
+    /// the upper triangle of the first `m` columns is read. A pivot below
+    /// `1e-14` makes the subspace singular: `coeff` is then the unit
+    /// selector at `newest` and `singular[0]` 1; otherwise 0, on the device.
+    ///
+    /// # Errors
+    /// The launch's failure; the launcher's refusal (`m` of 0, `ld` under
+    /// `m` or at the kernel's largest order, `newest` outside the subspace)
+    /// as an error, before anything is read. A fault inside the kernel
+    /// surfaces at the next sync.
+    #[requires(le!(extent(m as i32, m as i32, ld as i32), gram.len() as u64), "gram holds the m × m Gram at ld")]
+    #[requires(le!(m, coeff.len()), "coeff holds the m coefficients")]
+    #[requires(le!(1, singular.len()), "singular holds the flag")]
+    #[track_caller]
+    pub fn diis_solve(
+        &mut self,
+        m: usize,
+        ld: usize,
+        newest: usize,
+        gram: &impl DeviceSlice<f64>,
+        coeff: &mut impl DeviceSliceMut<f64>,
+        singular: &mut impl DeviceSliceMut<i32>,
+    ) -> Status {
+        // Past the system's largest order the launcher refuses before
+        // reading anything; clamped so each fits the C ABI's i32, and so
+        // the extent the contract checked is the one the kernel reads.
+        let bound = fb_recipes_sys::FB_DIIS_SOLVE_MAX_DIM as usize;
+        let (m, ld, newest) = (m.min(bound), ld.min(bound), newest.min(bound));
+        let _current = self.current();
+        let (coeff, singular) = (coeff.as_mut_ptr(), singular.as_mut_ptr());
+        // SAFETY: the guard's stream is live; gram covers the m × m Gram at
+        // ld, coeff m doubles and singular one flag, by the contracts, each
+        // until the enqueued work finishes and the two written ones their
+        // memory's only users (DeviceSliceMut's promise); m, ld and newest
+        // are at most the bound, an i32, and the launcher refuses any the
+        // kernel cannot take before it reads a pointer.
+        let status = unsafe {
+            fb_recipes_sys::fb_diis_solve(
+                self.stream.raw(),
+                m as i32,
+                ld as i32,
+                newest as i32,
+                gram.as_ptr(),
+                coeff,
+                singular,
+            )
+        };
+        launched("fb_diis_solve", status)
+    }
+
     /// BLAS's triangular solve on the GPU's stream, the tree's own and never
     /// the library's (`docs/gpu_layer.md`, "Layering"): `B ← alpha
     /// op(A)⁻¹ B` (`side` `WWR_BLAS_SIDE_LEFT`) or `B ← alpha B op(A)⁻¹`

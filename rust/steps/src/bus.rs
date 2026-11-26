@@ -26,6 +26,7 @@ use crate::steps::guess::GuessOutput;
 use crate::steps::metric::MetricOutput;
 use crate::steps::orthogonalizer::OrthogonalizerOutput;
 use crate::steps::overlap::OverlapOutput;
+use crate::steps::scf::{DIIS_HISTORY_MAX, ScfOutput};
 
 /// The config file: one table per step family, plus the run's resources.
 /// A step whose table is absent is not in the DAG.
@@ -49,6 +50,8 @@ pub struct Config {
     pub basis: BasisTable,
     /// The density-fitted integrals; absent, no `metric` step.
     pub eri: Option<EriTable>,
+    /// The RHF loop; absent, no `scf` step.
+    pub scf: Option<ScfTable>,
     /// GPUs, threads and caps.
     #[serde(default)]
     pub resources: ResourcesTable,
@@ -91,6 +94,74 @@ pub struct EriTable {
 /// `[eri] ring`'s default.
 fn default_ring() -> usize {
     2
+}
+
+/// `[scf]`: every key at its default when absent.
+///
+/// ```
+/// use std::path::Path;
+/// use fb_steps::Config;
+///
+/// let text = "[molecule]\nxyz = \"h2o.xyz\"\n[basis]\nname = \"cc-pvdz\"\n[scf]\n";
+/// let scf = Config::parse(text, Path::new(".")).unwrap().scf.unwrap();
+/// assert_eq!((scf.max_iterations, scf.diis_history), (100, 8));
+/// assert!(!scf.stage_sync);
+/// ```
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ScfTable {
+    /// The most Fock builds, at least 1; past them the step fails with
+    /// `MaxIterationsExceeded`. Default 100.
+    pub max_iterations: usize,
+    /// `|ΔE|` between two builds under which the energy has converged,
+    /// hartree, positive. Default 1e-10.
+    pub energy_tolerance: f64,
+    /// `‖Xᵀ (F D S - S D F) X‖_F` under which the density has converged,
+    /// positive. Default 1e-7.
+    pub commutator_tolerance: f64,
+    /// The DIIS subspace's size, 1 to 64 pairs. Default 8.
+    pub diis_history: usize,
+    /// A measurement, off by default: synchronize gpu0's stream where an
+    /// iteration would end a step were it three (after the J/K build,
+    /// after F with its energy and residual, after the DIIS step), as the
+    /// wrapper does at a step's end.
+    pub stage_sync: bool,
+}
+
+impl Default for ScfTable {
+    fn default() -> Self {
+        ScfTable {
+            max_iterations: 100,
+            energy_tolerance: 1e-10,
+            commutator_tolerance: 1e-7,
+            diis_history: 8,
+            stage_sync: false,
+        }
+    }
+}
+
+impl ScfTable {
+    /// Refuse a value out of range.
+    ///
+    /// # Errors
+    /// `InvalidConfig`, naming the key.
+    pub fn check(&self) -> Result<()> {
+        if self.max_iterations == 0 {
+            return Err(Error::config("[scf] max_iterations is at least 1"));
+        }
+        if !(self.energy_tolerance > 0.0 && self.commutator_tolerance > 0.0) {
+            return Err(Error::config(
+                "[scf] energy_tolerance and commutator_tolerance are positive",
+            ));
+        }
+        if !(1..=DIIS_HISTORY_MAX).contains(&self.diis_history) {
+            return Err(Error::config(format!(
+                "[scf] diis_history is {}, outside 1..={DIIS_HISTORY_MAX}",
+                self.diis_history
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// `[resources]`.
@@ -361,6 +432,7 @@ pub struct MainBus {
     pub(crate) probe: Slot<crate::steps::eri::tests::ProbeOutput>,
     pub(crate) guess: Slot<GuessOutput>,
     pub(crate) orthogonalizer: Slot<OrthogonalizerOutput>,
+    pub(crate) scf: Slot<ScfOutput>,
 }
 
 impl MainBus {
@@ -466,6 +538,7 @@ impl MainBus {
             probe: Slot::new(),
             guess: Slot::new(),
             orthogonalizer: Slot::new(),
+            scf: Slot::new(),
         }))
     }
 }

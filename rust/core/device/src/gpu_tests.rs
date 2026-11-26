@@ -435,3 +435,39 @@ fn inverse_sqrt_matches_the_host() {
         );
     }
 }
+
+/// `diis_solve` on two residuals of squared norms 1 and 4, orthogonal: the
+/// coefficients minimising `|c_0 e_0 + c_1 e_1|` on `c_0 + c_1 = 1` are
+/// proportional to the inverse norms squared, 0.8 and 0.2, within a few
+/// ulps of an order-3 elimination (1e-14); a zero Gram is singular and gives
+/// the unit selector at `newest`.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn diis_solve_weighs_residuals_by_their_inverse_norms() {
+    let gpu = gpu0();
+    let mut held = gpu.lock().unwrap();
+    // The Gram at leading dimension 3, of which two columns are read.
+    let gram = device(held.stream(), &[1.0, 0.0, 0.0, 0.0, 4.0, 0.0]);
+    let mut coeff = device(held.stream(), &[f64::NAN; 2]);
+    let mut flag = DeviceBuf::<i32>::new(1);
+    held.diis_solve(2, 3, 1, &gram, &mut coeff, &mut flag)
+        .unwrap();
+    let (c, singular) = (
+        host(held.stream(), &coeff, 2),
+        host(held.stream(), &flag, 1),
+    );
+    assert_eq!(singular, [0]);
+    assert!(
+        (c[0] - 0.8).abs() < 1e-14 && (c[1] - 0.2).abs() < 1e-14,
+        "{c:?}"
+    );
+
+    let zero = device(held.stream(), &[0.0; 6]);
+    held.diis_solve(2, 3, 1, &zero, &mut coeff, &mut flag)
+        .unwrap();
+    let (c, singular) = (
+        host(held.stream(), &coeff, 2),
+        host(held.stream(), &flag, 1),
+    );
+    assert_eq!((c, singular), (vec![0.0, 1.0], vec![1]));
+}
