@@ -96,6 +96,13 @@ fn run_body<B: Bus, S: Step<B>>(bus: &B) -> Result<Ran> {
     let start = Instant::now();
     let (locks, waited, held_at) = (held.taken().to_vec(), held.waited, held.held_at);
     let (left, released) = release(lane, held);
+    // The control with the sync skipped, in NaN mode: the step's host
+    // scratch refilled at once, as the next holder of those bytes would
+    // fill it, while its copies may still be queued behind the delay.
+    #[cfg(feature = "test-support")]
+    if crate::controls::skipping() && bus.ledger().nan_fill() {
+        lease.fill_host();
+    }
     ran?;
     left?;
     if let Some(largest) = largest {

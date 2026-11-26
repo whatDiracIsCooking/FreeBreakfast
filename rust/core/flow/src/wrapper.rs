@@ -225,6 +225,12 @@ pub(crate) fn acquire<'a, B: Bus>(
             }
         }
     }
+    // A host step, the one kind that takes no lock: the delay control's
+    // copies ahead of its uploads, when a test set it.
+    #[cfg(feature = "test-support")]
+    if held.taken.is_empty() {
+        controls::delay(lane)?;
+    }
     Ok(held)
 }
 
@@ -259,17 +265,50 @@ pub(crate) fn release(lane: &Lane, held: Held<'_>) -> (Status, Instant) {
     (status, released)
 }
 
-/// The negative control of the step-end sync: a switch, for a dependent's
-/// tests alone (feature `test-support`), that makes the wrapper skip every
-/// sync and release the locks with the step's work still in flight. A run
-/// with it set must fail under the NaN fill, which is what shows the sync
-/// is load-bearing. Without the feature the switch does not exist and
-/// the wrapper always syncs.
+/// The negative control of the step-end sync, for a dependent's tests
+/// alone (feature `test-support`): two switches. One makes the wrapper
+/// skip every sync and release the locks with the step's work still in
+/// flight; the other enqueues a long device-side delay on a host step's
+/// first stream on each GPU before its `run`, ahead of its uploads, so
+/// that with the sync skipped the next step always runs before those
+/// copies, and with it kept always after. With the sync skipped in the
+/// ledger's NaN mode the wrapper also refills a step's host scratch with
+/// NaN as soon as it releases, as the next holder of those bytes would,
+/// so a host step's delayed upload carries NaN. A run with both set must
+/// fail under the NaN fill, which is what shows the sync is load-bearing.
+/// Without the feature neither exists and the wrapper always syncs.
 #[cfg(feature = "test-support")]
 pub mod controls {
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Mutex, PoisonError};
+
+    use fb_core_budget::{Backing, Cap, Caps, DeviceBuf, Ledger};
+    use fb_core_error_handling::Status;
+
+    use crate::Lane;
 
     static SKIP: AtomicBool = AtomicBool::new(false);
+
+    /// The bytes of each of the delay's two buffers.
+    const DELAY_BYTES: usize = 64 << 20;
+
+    /// The device copies of [`DELAY_BYTES`] each delay enqueues: on an RTX
+    /// 3080 at about 700 GB/s, 400 copies of 64 MiB read and write 51 GB,
+    /// some 75 ms, against the microseconds between a step's release and
+    /// the next step's NaN fill.
+    const DELAY_COPIES: usize = 400;
+
+    /// One device's delay buffers, and the ledger of the control's own
+    /// that made them.
+    struct Buffers {
+        physical: i32,
+        to: DeviceBuf<u8>,
+        from: DeviceBuf<u8>,
+        _ledger: Ledger,
+    }
+
+    /// Each device's delay buffers, kept until the delay is turned off.
+    static DELAY: Mutex<Vec<Buffers>> = Mutex::new(Vec::new());
 
     /// Skip the step-end sync in every execute of the process from now on
     /// (`true`), or sync again (`false`).
@@ -279,6 +318,54 @@ pub mod controls {
 
     pub(crate) fn skipping() -> bool {
         SKIP.load(Ordering::SeqCst)
+    }
+
+    /// Delay every host step's uploads on the devices `physical` from now
+    /// on, its two buffers made on each of them here; `&[]` turns the delay
+    /// off and frees them. Call it between executes, never during one.
+    #[track_caller]
+    pub fn delay_host_steps(physical: &[i32]) {
+        let mut delay = DELAY.lock().unwrap_or_else(PoisonError::into_inner);
+        delay.clear();
+        let cap = Cap {
+            written: None,
+            used: u64::MAX,
+        };
+        for &p in physical {
+            let caps = Caps {
+                device: vec![cap],
+                host: cap,
+            };
+            let ledger = Ledger::new(caps, Backing::Real, vec![p], false);
+            let budget = ledger.budget("delay");
+            let (to, from) = (
+                budget.device::<u8>(0, DELAY_BYTES),
+                budget.device::<u8>(0, DELAY_BYTES),
+            );
+            delay.push(Buffers {
+                physical: p,
+                to,
+                from,
+                _ledger: ledger,
+            });
+        }
+    }
+
+    /// The delay on `lane`'s first stream on each GPU whose device has
+    /// buffers.
+    pub(crate) fn delay(lane: &Lane) -> Status {
+        let mut delay = DELAY.lock().unwrap_or_else(PoisonError::into_inner);
+        for gpu in &lane.gpus {
+            let Some(stream) = gpu.streams.first() else {
+                continue;
+            };
+            if let Some(d) = delay.iter_mut().find(|d| d.physical == stream.physical()) {
+                for _ in 0..DELAY_COPIES {
+                    stream.copy_device(&mut d.to, &d.from)?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
