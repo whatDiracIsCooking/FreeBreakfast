@@ -13,6 +13,7 @@
 //! | `idivup` | nothing: `usize::div_ceil` |
 //! | `sqrt`, `exp`, `log`, `pow`, ..., `isnan`, `fma`, the element-wise rest | nothing: `f64` / `f32` methods |
 //! | `rsqrt` | not ported yet: nothing above calls it |
+//! | nothing: the C++ host modules pack no triangle | [`lower_index`], the host integral crates' packed lower triangle |
 //!
 //! There is no `math` module: the C++ namespace exists only because
 //! `free_breakfast::log` is the logging facade's and a function cannot share
@@ -28,7 +29,7 @@
 //! C++ templates do: `a.div_ceil(b)` and `a.next_multiple_of(b)`. They panic
 //! on `b == 0`, where the C++ is undefined.
 //!
-//! The three functions here are `const fn`, as the C++ ones are
+//! The three combinatorics here are `const fn`, as the C++ ones are
 //! `constexpr`, and run the same loops, so each result is the same double.
 
 #![forbid(unsafe_code)]
@@ -80,6 +81,21 @@ pub const fn binomial(n: i32, k: i32) -> f64 {
         i += 1;
     }
     result
+}
+
+/// Where `(p, q)`, `q <= p`, sits in the packed lower triangle: rows one
+/// after another, row `p` holding its `p + 1` entries. A triangle of side
+/// `n` holds `lower_index(n, 0)` entries.
+///
+/// ```
+/// use fb_core_primitives::lower_index;
+///
+/// assert_eq!([lower_index(0, 0), lower_index(1, 0), lower_index(1, 1)], [0, 1, 2]);
+/// assert_eq!(lower_index(2, 0), 3);
+/// ```
+#[must_use]
+pub const fn lower_index(p: usize, q: usize) -> usize {
+    p * (p + 1) / 2 + q
 }
 
 #[cfg(test)]

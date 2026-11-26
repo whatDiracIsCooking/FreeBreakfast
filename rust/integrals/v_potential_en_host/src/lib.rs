@@ -92,7 +92,7 @@ compile_error!(
 use std::f64::consts::PI;
 
 use fb_basis::{BasisSet, Shell, cartesian_powers, solid_harmonic_block};
-use fb_core_primitives::double_factorial_odd;
+use fb_core_primitives::{double_factorial_odd, lower_index};
 use fb_integrals_df_metric::{BOYS_MAX_ORDER, boys};
 use rayon::prelude::*;
 
@@ -117,20 +117,6 @@ pub fn point_charges(molecule: &fb_molecule::Molecule) -> Vec<PointCharge> {
             charge: f64::from(fb_molecule::nuclear_charge(atom)),
         })
         .collect()
-}
-
-/// Where `(μ, ν)`, `ν <= μ`, sits in the packed lower triangle: rows one
-/// after another, row `μ` holding its `μ + 1` entries.
-///
-/// ```
-/// use fb_integrals_v_potential_en_host::lower_index;
-///
-/// assert_eq!([lower_index(0, 0), lower_index(1, 0), lower_index(1, 1)], [0, 1, 2]);
-/// assert_eq!(lower_index(2, 0), 3);
-/// ```
-#[must_use]
-pub const fn lower_index(p: usize, q: usize) -> usize {
-    p * (p + 1) / 2 + q
 }
 
 /// The squared length of `r`.

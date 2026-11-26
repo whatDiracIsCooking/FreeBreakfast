@@ -20,6 +20,8 @@ fb-recipes-matrix-ao.workspace = true
 fb-recipes-symmetrize.workspace = true
 
 [dev-dependencies]
+# tests/host.rs's packed-triangle index.
+fb-core-primitives.workspace = true
 # tests/host.rs: the host build of the same matrix, held to this crate's.
 fb-integrals-df-metric.workspace = true
 fb-io-basis.workspace = true

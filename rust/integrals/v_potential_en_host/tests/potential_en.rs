@@ -7,8 +7,9 @@
 
 use std::path::PathBuf;
 
+use fb_core_primitives::lower_index;
 use fb_integrals_v_potential_en_host::{
-    PointCharge, lower_index, point_charges, potential_en, potential_en_via_cartesian,
+    PointCharge, point_charges, potential_en, potential_en_via_cartesian,
 };
 
 /// The bar, relative to `max |V_ref|`.

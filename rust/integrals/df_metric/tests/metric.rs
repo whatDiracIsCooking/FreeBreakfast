@@ -8,7 +8,8 @@
 
 use std::path::PathBuf;
 
-use fb_integrals_df_metric::{lower_index, metric, metric_via_cartesian};
+use fb_core_primitives::lower_index;
+use fb_integrals_df_metric::{metric, metric_via_cartesian};
 
 /// The bar, relative to `max |M_ref|`.
 const BAR: f64 = 1e-12;

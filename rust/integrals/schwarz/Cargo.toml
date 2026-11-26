@@ -8,9 +8,12 @@ publish.workspace = true
 [lints]
 workspace = true
 
+# Device-free: the basis, and the host DF metric's Boys function. None
+# links wwr.
 [dependencies]
 contracts.workspace = true
 fb-basis.workspace = true
+fb-integrals-df-metric.workspace = true
 
 [dev-dependencies]
 fb-io-basis.workspace = true

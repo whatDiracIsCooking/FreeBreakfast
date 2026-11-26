@@ -18,9 +18,10 @@ use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 
+use fb_core_primitives::lower_index;
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_kinetic::add_kinetic;
-use fb_integrals_t_kinetic_host::{kinetic, lower_index};
+use fb_integrals_t_kinetic_host::kinetic;
 
 /// The bar, relative to `max |T_gpu|`.
 const BAR: f64 = 1e-12;

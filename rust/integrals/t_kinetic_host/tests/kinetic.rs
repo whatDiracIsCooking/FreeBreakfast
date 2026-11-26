@@ -12,9 +12,8 @@
 
 use std::path::{Path, PathBuf};
 
-use fb_integrals_t_kinetic_host::{
-    kinetic, kinetic_via_cartesian, lower_index, overlap_and_kinetic,
-};
+use fb_core_primitives::lower_index;
+use fb_integrals_t_kinetic_host::{kinetic, kinetic_via_cartesian, overlap_and_kinetic};
 
 /// The bar, relative to `max |T_ref|`.
 const BAR: f64 = 1e-12;
