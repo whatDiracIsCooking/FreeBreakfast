@@ -19,14 +19,16 @@ extern "C" {
 #endif
 
 /// The largest momentum of an orbital shell m or n
-/// fb_three_center_packed_class has a kernel for, f: the la and lb extents of
-/// the speri3 table tools/emit/packed_three_center_kernels.py writes, which
+/// fb_three_center_packed_class and fb_three_center_spherical_class have a
+/// kernel for, f: the la and lb extents of the speri3 and ssperi3 tables
+/// tools/emit/packed_three_center_kernels.py writes, which
 /// three_center_launch.cu static_asserts against it and against the orbital
 /// basis's limit.
 #define FB_THREE_CENTER_MAX_MOMENTUM ((int32_t)3)
 
 /// The largest momentum of an auxiliary shell P fb_three_center_packed_class
-/// has a kernel for, i: the lP extent of the speri3 table, as
+/// and fb_three_center_spherical_class have a kernel for, i: the lP extent of
+/// the speri3 and ssperi3 tables, as
 /// FB_METRIC_MAX_MOMENTUM is the metric's. It is above the orbital limit on
 /// purpose.
 #define FB_THREE_CENTER_AUX_MAX_MOMENTUM ((int32_t)6)
@@ -78,6 +80,22 @@ fb_launch_status fb_three_center_packed_class(wwr_stream stream,
                                               int32_t n_aux_rec, const double *aux, int32_t n_cell,
                                               const int32_t *cells, int32_t n_col, int32_t n_aux,
                                               double *eri3);
+
+/// Writes class (cls->la, cls->lb, lp) of the (mu nu|Q) into the packed eri3,
+/// all three indices real solid harmonics, on stream: the generated
+/// ssperi3<la, lb, lp> (FelizJueves#745), fb_three_center_packed_class's
+/// arguments, cells, limits, refusals and stores with the bra transformed in
+/// the kernel too, so a cell's block is (2 la + 1)(2 lb + 1)(2 lp + 1)
+/// elements, element (mu, nu, q) at dst + n_aux (mu (2 lb + 1) + nu) + q, mu
+/// the bra shell's solid harmonic and nu the ket's, each in the order
+/// m = -l ..= l. n_col counts spherical bra columns, so a pair whose block
+/// opens at spherical column c, crossed with an aux shell whose first
+/// spherical function is off_p, has dst = c n_aux + off_p.
+fb_launch_status fb_three_center_spherical_class(wwr_stream stream,
+                                                 const fb_primitive_pair_class_view *cls,
+                                                 int32_t lp, int32_t n_aux_rec, const double *aux,
+                                                 int32_t n_cell, const int32_t *cells,
+                                                 int32_t n_col, int32_t n_aux, double *eri3);
 
 #ifdef __cplusplus
 }

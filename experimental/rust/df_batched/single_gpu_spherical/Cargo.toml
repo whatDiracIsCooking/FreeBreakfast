@@ -9,6 +9,13 @@ description = "Batched DF factor B on one GPU over FelizJueves's fully spherical
 name = "df-batched-spherical"
 path = "src/main.rs"
 
+# One class of (μν|P) on water, with its inputs, as .npy: the reference
+# rust/integrals/sys/tests/three_center_spherical.rs holds rust/'s
+# fb_three_center_spherical_class to (that test's data README has the run).
+[[bin]]
+name = "ssperi3-class-golden"
+path = "src/class_golden.rs"
+
 # rust/'s crates, by path. The build loop is forked in src/ssperi3.rs (the
 # kernels and the cells change, and the transform goes); rust/'s
 # add_packed_b is linked too, as the baseline the driver checks B against
@@ -27,6 +34,7 @@ fb-integrals-eri-density-fitting-three-center = { path = "../../../../rust/integ
 fb-integrals-mmd = { path = "../../../../rust/integrals/mmd" }
 fb-integrals-schwarz = { path = "../../../../rust/integrals/schwarz" }
 fb-integrals-sys = { path = "../../../../rust/integrals/sys" }
+fb-io-npy = { path = "../../../../rust/io/npy" }
 fb-io-basis = { path = "../../../../rust/io/basis" }
 fb-io-xyz = { path = "../../../../rust/io/xyz" }
 fb-recipes-cholesky = { path = "../../../../rust/recipes/cholesky" }

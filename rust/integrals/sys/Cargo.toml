@@ -12,6 +12,9 @@ workspace = true
 [dependencies]
 contracts.workspace = true
 fb-core-arena.workspace = true
+# The v0.0.4 layer's stream and slices, which the fully spherical
+# three-center call takes (docs/gpu_layer.md, "The v0.0.4 runtime").
+fb-core-device.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-log.workspace = true
 fb-core-planner.workspace = true
