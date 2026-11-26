@@ -92,8 +92,9 @@ impl Cap {
 }
 
 /// Ask for huge pages under a fresh heap slab, before its pages are
-/// touched. At 4 KiB a page, touching gly10's 7.3 GiB B took 7.6 s, most of
-/// budget mode; touching it on sixteen threads took longer, 12.8 s. Advice
+/// touched. On the VM the glycine runs used, touching gly10's 7.3 GiB B took
+/// 7.6 s at 4 KiB a page and 5.3 s with huge pages; on bare metal it takes
+/// 2.7 s and 0.5 s (`examples/touch_probe.rs`). Advice
 /// only: where the kernel gives none the slab is touched a small page at a
 /// time, as before.
 fn huge_pages(ptr: *mut u8, bytes: usize) {
