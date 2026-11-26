@@ -12,8 +12,8 @@ Usage (from the checkout root; PySCF is in the `tools` dependency group):
 The cases are water (`h2o.xyz`, five occupied orbitals, an odd count, so
 the schedule's padding runs) and borane (`bh3.xyz`, four, an even count),
 both in cc-pVDZ, read from the BSE JSON document the binary compiles in and
-the coordinates converted to bohr by CODATA 2018, through the three-center
-crate's reference.py, as every reference of the rebuild is. For each it
+the coordinates converted to bohr by CODATA 2018, through `molecule.py`
+beside this script, as every reference of the rebuild is. For each it
 writes beside this script, every array float64 in Fortran order:
 
 - `pm_<case>_s.npy`: S, n x n.
@@ -47,21 +47,16 @@ import pyscf
 from pyscf import lo, scf
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[3]
-THREE_CENTER = (
-    ROOT / "rust/integrals/eri/density_fitting/three_center/tests/data/reference.py"
-)
+MOLECULE = HERE / "molecule.py"
 CASES = ["h2o", "bh3"]
 EXPONENTS = (2, 4)
 # Kernel-then-stability rounds before giving up.
 MAX_ROUNDS = 20
 
 
-def three_center_reference():
-    """The three-center crate's reference.py, as a module."""
-    spec = importlib.util.spec_from_file_location(
-        "three_center_reference", THREE_CENTER
-    )
+def molecule_reference():
+    """`molecule.py`, beside this script, as a module."""
+    spec = importlib.util.spec_from_file_location("molecule_reference", MOLECULE)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -102,7 +97,7 @@ def save(name: str, a: np.ndarray) -> None:
 
 
 def main() -> None:
-    ref = three_center_reference()
+    ref = molecule_reference()
     print(f"PySCF {pyscf.__version__}")
     for case in CASES:
         mol, _, _, _ = ref.named(HERE / f"{case}.xyz", "cc-pvdz", "cc-pvdz-jkfit")

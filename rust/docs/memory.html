@@ -91,16 +91,15 @@ svg .fh{fill:currentColor}
 </head>
 <body>
 <div class="wrap">
-<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#the-budget">The budget</a></li><li class="l3"><a href="#caps-and-margins">Caps and margins</a></li><li class="l2"><a href="#step-scratch">Step scratch</a></li><li class="l2"><a href="#the-final-node">The final node</a></li><li class="l2"><a href="#the-table">The table</a></li><li class="l2"><a href="#lifetimes">Lifetimes</a></li><li class="l2"><a href="#admission">Admission</a></li><li class="l2"><a href="#adaptive-widths-one-planner-routine">Adaptive widths: one planner routine</a></li><li class="l2"><a href="#sizes-the-dimensions-do-not-fix">Sizes the dimensions do not fix</a></li><li class="l2"><a href="#nested-plans">Nested plans</a></li><li class="l2"><a href="#the-three-kinds">The three kinds</a></li><li class="l3"><a href="#the-rust-shape">The Rust shape</a></li><li class="l2"><a href="#what-is-checked">What is checked</a></li><li class="l2"><a href="#open-questions">Open questions</a></li></ol><div class="sib"><div class="kicker">See also</div><ol><li><a href="programming_model.html">programming model</a></li></ol></div></nav>
+<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#the-budget">The budget</a></li><li class="l3"><a href="#caps-and-margins">Caps and margins</a></li><li class="l2"><a href="#step-scratch">Step scratch</a></li><li class="l2"><a href="#tenants-of-an-outputs-buffers">Tenants of an Output's buffers</a></li><li class="l2"><a href="#the-final-node">The final node</a></li><li class="l2"><a href="#batched-only">Batched only</a></li><li class="l2"><a href="#what-the-budget-measured">What the budget measured</a></li><li class="l2"><a href="#the-table">The table</a></li><li class="l2"><a href="#lifetimes">Lifetimes</a></li><li class="l2"><a href="#admission">Admission</a></li><li class="l2"><a href="#adaptive-widths-one-planner-routine">Adaptive widths: one planner routine</a></li><li class="l2"><a href="#sizes-the-dimensions-do-not-fix">Sizes the dimensions do not fix</a></li><li class="l2"><a href="#nested-plans">Nested plans</a></li><li class="l2"><a href="#the-three-kinds">The three kinds</a></li><li class="l3"><a href="#the-rust-shape">The Rust shape</a></li><li class="l2"><a href="#what-is-checked">What is checked</a></li><li class="l2"><a href="#open-questions">Open questions</a></li></ol><div class="sib"><div class="kicker">See also</div><ol><li><a href="programming_model.html">programming model</a></li></ol></div></nav>
 <main>
 <h1><span class="pre">Rust rebuild</span>Memory</h1>
 <p>Two layers are in the tree, and this document describes both until the old
 one is deleted. <strong>The v0.0.4 layer</strong> (<code>fb_core_budget</code>, over <code>fb_core_pack</code>
 and <code>fb_core_device</code>) counts what each step allocates, as it allocates it,
 against a cap per kind, and packs the steps' scratch by the DAG: &quot;The
-budget&quot;, &quot;Step scratch&quot; and &quot;The final node&quot; below, ported from the
-prototype's design (<code>../experimental/rust/v0.0.4/README.md</code>, &quot;The memory
-budget&quot;, &quot;Step scratch&quot;). <strong>The old layer</strong> (<code>fb_core_arena</code> and
+budget&quot;, &quot;Step scratch&quot;, &quot;The final node&quot; and &quot;Batched only&quot; below, the
+design the v0.0.4 prototype was built to try. <strong>The old layer</strong> (<code>fb_core_arena</code> and
 <code>fb_core_planner</code>) lays every buffer out as a row of a table and admits
 the table's block: every section from &quot;The table&quot; on, which stays as the
 old layer's until its crates are deleted
@@ -158,6 +157,12 @@ the buffer is empty: length 0, nothing promised.</li>
 <td>A <code>DeviceBuf&lt;u8&gt;</code> the gpu's <code>GpuResources</code> takes (<code>Ledger::take_workspace</code>) and binds its handle to once</td>
 <td>Allocated by the final node</td>
 </tr>
+<tr>
+<td>ERI buffer</td>
+<td>The device and pinned sums, per gpu</td>
+<td>A <code>DeviceBuf&lt;u8&gt;</code> and a <code>PinnedBuf&lt;u8&gt;</code> the <code>EriManager</code> owns, carved into tenants (&quot;Tenants of an Output's buffers&quot;)</td>
+<td>Within <code>[eri] mem_per_gpu</code> (2 GiB by default, a constant so a dry budget is exact), charged at what the build's ring or a J/K pass's uses, whichever is larger; the batch widths are the widest that fit, a pinned ring buffer at most 64 MiB (build) or 128 MiB (pass); under the least that holds one batch the plan is refused, naming the key, its value and the bytes needed. B is the manager's <code>HeapSlab</code>, at the unscreened bound; the pair batches partition its pair columns, checked when the list is made, and each GPU takes a contiguous run of them, so it writes its own columns of every row through slices <code>split_at_mut</code> cut, beside the other GPUs, with no shared pointer</td>
+</tr>
 </tbody>
 </table></div>
 <p><strong>The total is a sum and so order-independent.</strong> The steps budget in
@@ -172,6 +177,35 @@ advice only), then every page is touched: zeroed memory is handed out
 lazily, and an untouched slab would &quot;succeed&quot; and fail at first touch
 mid-run. The host cap is checked at the call, before the slab exists, so a
 slab past it is counted, sets the flag and is never touched.</p>
+<p><strong>Only a <code>Budget</code> allocates device, pinned and budgeted heap memory.</strong>
+The raw <code>wwr-sys</code> allocators are called in <code>fb-core-budget</code> alone, which
+<code>clippy.toml</code> bans everywhere else, the old layer's arena blocks and a
+test's own buffers each an <code>allow</code> with its reason.</p>
+<p><strong>Small host scratch is a policy, not a kind.</strong> A <code>Vec</code> or a <code>HashMap</code>
+that lives within a <code>run</code> is assumed small and is outside the budget: it
+stays within O(n_ao²), and large host data is a <code>HeapSlab</code> on the bus. Two
+checks hold it. In <code>fb-steps</code>, whose <code>clippy.toml</code> repeats the
+workspace's list, <code>vec!</code>, <code>Vec::with_capacity</code>, <code>reserve</code>, <code>reserve_exact</code>,
+<code>resize</code>, <code>extend_from_slice</code> and <code>String::with_capacity</code> are banned,
+each exception an <code>allow</code> with its reason: setup's counts, the config's
+defaults, a test's reference. And the allocation record,
+<code>fb_core_budget::AllocationRecord</code>, a <code>#[global_allocator]</code> over the
+system's that every test binary of the steps, and <code>fb-core-flow</code>'s
+<code>tests/flow_device.rs</code>, installs: the wrapper watches
+each <code>run</code>, and a step that made one allocation past
+<code>fb_core_budget::RECORD_THRESHOLD</code>, 1 MiB, on the thread running it fails
+the execute, named. The record records and never panics, since unwinding
+out of a global allocator is undefined behaviour; it sees Rust's heap
+alone, not a C library's <code>malloc</code>, and the thread running <code>run</code> alone, not
+a pool's or a fan-out's. So a library that returns an O(n_ao²) <code>Vec</code>
+is not called from a <code>run</code>: the host integrals and the SAD guess each have
+an <code>_into</code> form that writes into a caller's slice, and a host step hands
+them its pinned staging. The budget table prints an execute's peak heap
+growth, as the record saw it, as its unbudgeted row. The growth is the
+process's, so another thread's allocations and frees meanwhile move it,
+but a second execute's start does not reset it: an execute that starts
+during another leaves the peak the other reads alone, so several executes
+may share one binary.</p>
 <p><strong>Host-visible bytes are plain data.</strong> A pinned buffer, a heap slab and
 every tenant of a lease are read as a <code>Plain</code> type, sealed to the
 primitives every bit pattern of which is a value, so a NaN-filled or
@@ -188,25 +222,64 @@ the bytes meanwhile. A token dropped unsynced leaks its host end: a
 sync, and an owned buffer is never freed.</p>
 <h3 id="caps-and-margins">Caps and margins</h3>
 <ul>
-<li><strong>A defaulted device cap</strong> is the gpu's free memory, read once after its
+<li>
+<p><strong>A defaulted device cap</strong> is the gpu's free memory, read once after its
 handles exist, less the larger of 512 MiB and 5% of its total
-(<code>device_margin</code>); gpus sharing one device split both evenly.</li>
-<li><strong>A defaulted host cap</strong> is the host's available memory, read once in
+(<code>device_margin</code>); gpus sharing one device split both evenly.</p>
+</li>
+<li>
+<p><strong>A defaulted host cap</strong> is the host's available memory, read once in
 setup, less the larger of 1 GiB and 5% (<code>host_margin</code>). The reading is
 the layer's own, <code>host_available</code>, and names nothing of the arena's:
 <code>MemAvailable</code>, lowered by every cgroup v2 from the process's own to the
 mount whose <code>memory.max</code> less <code>memory.current</code> is smaller. Heap and
-pinned bytes are one counter against it.</li>
-<li><strong>Every cap is clamped to the reading.</strong> An explicit cap is used as
+pinned bytes are one counter against it.</p>
+</li>
+<li>
+<p><strong>Every cap is clamped to the reading.</strong> An explicit cap is used as
 written, the user owning the margin, unless it is past the machine; then
 it is the reading itself, no margin taken. The table prints each cap as
 written beside the value used (<code>Cap::resolve</code>, <code>Caps::read</code>). Without the
 clamp an impossible cap ends in an abort at whichever allocation fails
-first, or in the OOM killer.</li>
-<li><strong>The margins are judgment, not measurement.</strong> They cover what the
+first, or in the OOM killer.</p>
+</li>
+<li>
+<p><strong>The margins are judgment, not measurement.</strong> They cover what the
 budget leaves out: the device context, the handles' own memory, loaded
 modules, the kernels' stack and small host allocations such as the
-geometry and the basis. An explicit cap leaves those to the user.</li>
+geometry and the basis. An explicit cap leaves those to the user.</p>
+</li>
+<li>
+<p><strong>A kernel's scratch is per queue and per card, kept, and bounded by
+launch order.</strong> The runtime sizes a launch's scratch (its stack) at the
+kernel's bytes per lane times every lane the card can keep resident,
+not at the dispatch, and keeps it. On ROCm each hardware queue, so each
+ring stream, holds its own, and a launch needing more than the queue
+holds takes a new allocation without giving the old one back; past
+ROCm's single-allocation ceiling, 140 MiB, a launch is sized to its
+dispatch instead, and the next launch under the ceiling takes a new
+allocation again. CUDA holds one per context, sized for the largest
+kernel run. So the eri step launches its largest class first on each
+ring stream (<code>scratch_rank</code>, by <code>(la + lb, la)</code> and then the aux
+momentum, both descending; B is bitwise the same in either order). On
+the gfx1200 (32,768 resident lanes; <code>ssperi3</code>'s scratch per lane from 0
+to 13,072 bytes, <code>&lt;3, 3, 6&gt;</code>), one run each:</p>
+<ul>
+<li>Water's chain in cc-pVDZ / cc-pVDZ-JKFIT took 492.6 MiB past its
+budget in its first execute in the classes' order; largest first it
+takes 141.2 MiB. Each stream takes one allocation, its largest
+class's, so the bound is the ring depth times <code>ssperi3&lt;2, 2, 3&gt;</code>'s
+125 MiB, with the code objects and the libraries' first calls
+(<code>steps/tests/chain_vram.rs</code>): 266 MiB, under the 512 MiB floor of
+<code>device_margin</code>, which is left as it is.</li>
+<li>All 70 classes on one stream: 3.7 GiB in the classes' order, 950 MiB
+largest first. A batch's launches past the ceiling come first, so
+the largest of those is taken once, and each class's first launch
+under the ceiling can take one allocation of at most 140 MiB.</li>
+</ul>
+<p>Neither figure is in the budget: the card's resident lanes and a
+kernel's scratch per lane are not read at planning.</p>
+</li>
 </ul>
 <h2 id="step-scratch">Step scratch</h2>
 <p>Memory a step needs during its <code>run</code> and nothing reads afterwards: a
@@ -245,7 +318,29 @@ twice; a step holds one lease at a time.</p>
 region on every run, and what is in it on entry is undefined. With the
 ledger's <code>nan_fill</code>, the wrapper fills each lease's host regions with
 <code>0xFF</code> before <code>run</code> (<code>Lease::fill_host</code>), a NaN to every <code>f64</code> read before
-it is written, and its device regions on the step's stream.</p>
+it is written, and its device regions on the step's stream
+(<code>Lease::fill_device</code>).</p>
+<h2 id="tenants-of-an-outputs-buffers">Tenants of an Output's buffers</h2>
+<p>A manager reuses its own buffers: its rings carve the same pinned staging
+and the same device buffer on every turn, typed pieces of one <code>Output</code>'s
+bytes, as <code>run</code> carves its lease. <code>PinnedBuf::tenant</code> and
+<code>DeviceBuf::tenant</code> take a <code>Span</code> of a <code>Layout</code> over the buffer's bytes
+and return a <code>PinnedTenant</code> (a host slice, and the host end of a copy) or
+a <code>DeviceTenant</code> (a device slice), several live at once.</p>
+<p><strong>Each carve is recorded in the buffer, always on, and a tenant's drop
+clears it.</strong> A carve that meets a live tenant panics at the caller's
+line, so two tenants never share a byte, and the same span is carved again
+once its tenant is dropped. A pinned tenant moves into its copy's token
+and comes back by the token's sync; a token dropped unsynced leaks it, its
+record stays, and a carve that meets those bytes panics while the copy
+may still read them.</p>
+<p><strong>A tenant shares the allocation, and the whole is not reached beside
+it.</strong> A tenant holds the buffer's allocation alive, so a leaked one leaks
+the memory rather than freeing bytes a copy may use. The carve takes the
+buffer by <code>&amp;mut</code>, so no slice of the whole is alive at it (a
+<code>compile_fail,E0502</code> doctest), and while a carve is recorded, live or
+leaked, every reach of the whole (the pinned slice, the device pointer a
+call takes) panics.</p>
 <h2 id="the-final-node">The final node</h2>
 <p><code>Ledger::finish</code> is the budget DAG's last node, over the steps and what
 each reads:</p>
@@ -276,9 +371,198 @@ under any budget order.</p>
 (<code>Budget::locks</code>), each a <code>LockId</code>: every manager first, then the gpus by
 index, <code>Ord</code> derived in that order. <code>Ledger::locks_of</code> hands a step's set
 back in that order, for the wrapper to take ascending.</p>
+<h2 id="batched-only">Batched only</h2>
+<p>Every step over an O(N³) tensor has a batched path and no other. The
+unbatched case is the batched one with a single batch on a single GPU.</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>What a step holds</th>
+<th>Rule</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Everything O(N²): the n_ao² matrices, the metric and its factor, the records</td>
+<td>Resident whole on the GPUs it needs. It fits or the plan is refused: a dense eigensolve at n_ao cannot be batched</td>
+</tr>
+<tr>
+<td>The O(N³) tensors: (μν|P), B, a derivative of B</td>
+<td>Never resident whole. Built or contracted a batch at a time; B itself on the host heap</td>
+</tr>
+<tr>
+<td>The batch width</td>
+<td>The widest whose bytes fit the step limit, and no wider than its staging buffer holds; none fits: refuse, naming the step's key, its value and its least bytes</td>
+</tr>
+<tr>
+<td>The step limit</td>
+<td>Covers the batches and their rings, not the O(N²) residents, which the cap admits or refuses. A fixed constant by default; the config overrides it, which is also how a test forces many batches on a small molecule. For <code>eri</code>, <code>[eri] mem_per_gpu</code></td>
+</tr>
+<tr>
+<td>What is charged</td>
+<td>What is used, never the limit. Limits need not sum to the cap</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Every GPU step is built batched and for every GPU, or not built.</strong> A
+feature is not added until it runs on a single node's GPUs, one GPU
+being the case of one.</li>
+<li><strong>Width stops mattering early.</strong> In the prototype's single-GPU build
+(<code>experimental/rust/df_batched</code>) the time is flat past about 20
+batches, and a width of one costs 5.6× to 11.6×.</li>
+<li><strong>No &quot;what is left&quot;.</strong> A width is a function of the step's own limit,
+so <code>mem_budget</code> stays local and order-free.</li>
+<li><strong>A width of one is logged at <code>warn</code></strong>; the user raises the limit.</li>
+<li><strong>A size fixed only by an earlier step's run is allocated at the bound
+<code>Dims</code> gives</strong>: a screened pair count, the orbital count after dropping
+linear dependencies. B's pair count is the count in the tree's own pair
+layout (270,497 pair columns on gly10, where n_ao(n_ao+1)/2 gives
+269,745). On a large sparse molecule that wastes host memory, and a
+replay can never outgrow its buffers.</li>
+<li><strong>A size a step chooses at run time is allocated at a bound set in
+setup.</strong> No such step is built; the rule is for the first. AVAS's
+active space is bounded by its labels: at most twice the MINAO
+functions they name, capped by <code>avas_max_ncas</code>, as
+<code>src/pipeline/shape</code>'s <code>largest_active_space</code> does, and the CI is sized
+at the largest determinant count at or under that bound. A run that
+selects past the bound fails, as a <code>Result</code> naming the count it wanted;
+it never truncates, which would change the chemistry unannounced. A
+bound too large is refused in budget mode, before anything runs.</li>
+</ul>
+<p>What can still be refused: a plan whose O(N²) data does not fit its GPUs,
+whose B does not fit the host, whose step limit holds no batch, or whose
+<code>Output</code>s, each fitting alone, do not fit summed down a chain. The last
+is the sum's price; the remedy is a narrower batch in the step concerned,
+and past that <code>Output</code>s packed by the closure, built when a chain is
+first refused.</p>
+<h2 id="what-the-budget-measured">What the budget measured</h2>
+<p>The prototype's numbers, of the design <code>fb-core-budget</code> and <code>fb-steps</code>
+port: RTX A6000 (CUDA), 2026-11-26, a release build, one run each, cc-pVDZ
+over cc-pVDZ-JKFIT; the chain's times are
+<a href="programming_model.html"><code>programming_model.md</code></a>'s, &quot;What the chain
+measured&quot;.</p>
+<p><strong>The budget against the planner's block.</strong> One GPU, the same runs through
+the old Rust path (<code>rust/</code>'s <code>free-breakfast</code>, <code>schwarz_threshold = 0</code>, its
+blocks as <code>admit_plan</code> logs them) and through the steps, at the default step
+limit of 2 GiB and at the least <code>mem_per_gpu</code> each molecule accepts (budget
+mode alone, the solver work buffers added from the default run).</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Molecule</th>
+<th>Old path: device block</th>
+<th>pinned block</th>
+<th>heap block</th>
+<th>The steps at 2 GiB: device</th>
+<th>pinned</th>
+<th>heap</th>
+<th>The steps at the least limit: device</th>
+<th>pinned</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Water</td>
+<td>33.35 MiB</td>
+<td>322.00 KiB</td>
+<td>292.02 KiB</td>
+<td>130.73 MiB</td>
+<td>721.06 KiB</td>
+<td>301.00 KiB</td>
+<td>129.21 MiB</td>
+<td>213.34 KiB</td>
+</tr>
+<tr>
+<td>Ethylene</td>
+<td>37.44 MiB</td>
+<td>1.19 MiB</td>
+<td>2.16 MiB</td>
+<td>143.09 MiB</td>
+<td>4.85 MiB</td>
+<td>2.19 MiB</td>
+<td>130.74 MiB</td>
+<td>663.62 KiB</td>
+</tr>
+<tr>
+<td>Benzene</td>
+<td>62.26 MiB</td>
+<td>6.90 MiB</td>
+<td>28.39 MiB</td>
+<td>307.19 MiB</td>
+<td>59.86 MiB</td>
+<td>28.59 MiB</td>
+<td>140.05 MiB</td>
+<td>3.36 MiB</td>
+</tr>
+<tr>
+<td>gly5</td>
+<td>906.52 MiB</td>
+<td>263.87 MiB</td>
+<td>1.00 GiB</td>
+<td>1009.41 MiB</td>
+<td>293.24 MiB</td>
+<td>1.01 GiB</td>
+<td>251.22 MiB</td>
+<td>37.37 MiB</td>
+</tr>
+<tr>
+<td>gly10</td>
+<td>3.01 GiB</td>
+<td>989.67 MiB</td>
+<td>7.27 GiB</td>
+<td>1.31 GiB</td>
+<td>383.90 MiB</td>
+<td>7.28 GiB</td>
+<td>585.07 MiB</td>
+<td>140.30 MiB</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>The heap is the same</strong>: B, packed, on the host in both.</li>
+<li><strong>The device total is the batch widths, not the sum.</strong> the steps' is the BLAS
+workspace (128 MiB against the old path's 32 MiB) and the ERI buffer, whose
+batches the staging bounds: 792 MiB at gly5, 881 MiB at gly10. The old
+block is its planner's adaptive widths.</li>
+<li><strong>What the sum can cost is what lies outside those two</strong>: the other
+<code>Output</code>s and the packed scratch, 89 MiB at gly5 and 329 MiB at gly10. A
+fold over lifetimes could recover part of that and no more.</li>
+<li><strong>At the least limit the sum is under the fold's block</strong> on the glycine
+chains, 3.6× and 5.3×. Less each path's workspace it is on the small ones
+too: 1.21 MiB against 1.35 MiB on water, 12.05 MiB against 30.26 MiB on
+benzene.</li>
+</ul>
+<p><strong>Budget mode and the staging</strong>, at gly10 (734 AOs, 3606 aux), where B
+is 7.27 GiB:</p>
+<ul>
+<li><strong>Budget mode is B's pages.</strong> At gly10, 5.7 s on one GPU and 6.5 s on
+four. Touching B's 7.27 GiB takes 5.3 s with huge pages (7.6 s without),
+about 1.4 GiB/s. The rest is page-locking each GPU's 272 MiB of staging,
+about 0.3 s a GPU.</li>
+<li><strong>That touch is the VM's, not the rule's.</strong> The same touch of a fresh
+7.27 GiB slab on bare metal (a Ryzen 9 5900X, kernel 6.8,
+the prototype's <code>examples/touch_probe.rs</code>) takes 0.52 s with huge pages, 14 GiB/s, and
+2.67 s without. More threads help there: 0.39 s on sixteen at 4 KiB,
+where on the VM sixteen took 12.8 s against 7.6 s on one. A 10× gap that
+threads widen points at the hypervisor backing guest memory on its first
+touch. On bare metal, budget mode at gly10 would be about 1 s. Whether a
+second slab in the same process on the VM touches at bare-metal speed is
+open (&quot;Open questions&quot;, below).</li>
+<li><strong>Staging is bounded: 64 MiB a buffer of the build's ring, 128 MiB a
+buffer of the pass's.</strong> A GPU page-locks two of each, and the larger pair
+is what its pinned buffer holds. The build's time does not move with its
+bound.</li>
+<li><strong>Page-locking does not overlap.</strong> With each GPU's staging page-locked on
+a thread of its own while another touched B, the locks finished one after
+another and the touch slowed beside them: 6.8 s on four GPUs against the
+6.5 s of taking them in turn. They are taken in turn.</li>
+</ul>
 <hr />
 <p><em>The sections from here to the end describe the old layer, the arena and
-the planner, and go when they do.</em></p>
+the planner, and go when they do. The old binary that planned and admitted
+over them, <code>fb-pipeline-config</code>, is deleted (#1873): the names of its items
+below are its history.</em></p>
 <p>The programming model fixes the principles: a task's layout is its
 footprint, the arena is a table and a block, the block is the plan's peak,
 and a run allocates nothing (<a href="programming_model.html"><code>programming_model.md</code></a>,
@@ -695,19 +979,19 @@ and the stack.</p>
 start, after the devices' handles exist and before any block, each worker
 reads its device's free memory against its total; the difference is that
 device's reserve, and the C++ <code>kDeviceReserve</code> of 256 MiB
-(<code>fb_pipeline_config::DEVICE_RESERVE</code>) is the least it may be taken as. A card
+(the old binary's <code>DEVICE_RESERVE</code>) is the least it may be taken as. A card
 another process holds part of shows up here, as a smaller cap, rather than at
 the first allocation. The binary makes the reading at planning, once per
 worker, the first time planning (for a worker holding an adaptive part) or
 admission (for a worker with a device block) asks for it, with that worker's
 stream and handles made for it (the run's own are made with its backend,
 after the blocks); it is the one reading of the card
-(<code>fb_pipeline_config::Card</code>), so the card's bound below, the reserve and the
+(the old binary's <code>Card</code>), so the card's bound below, the reserve and the
 room the adaptive widths are bisected in (&quot;Adaptive widths: one planner
 routine&quot;) agree.</p>
 <p><strong>The stack is what it can still take.</strong> The C++ <code>Device::stack_growth</code>: what
 the kernels' stack can still take for a kernel of <code>kKernelStackBytes</code> per
-thread (<code>fb_pipeline_config::KERNEL_STACK_BYTES</code>, the C++ tree's largest,
+thread (the old binary's <code>KERNEL_STACK_BYTES</code>, the C++ tree's largest,
 which bounds the Rust forks of its kernels and the rust-only conventional
 ERI units, at most 3,856 bytes in their low-stack form), 0 once a kernel that large has
 run, and 0 under HIP, whose scratch is sized per dispatch. wwr's C ABI has no
@@ -732,7 +1016,7 @@ another process holds part of, still refuses the plan before the first
 launch. The binary admits every worker's device and
 pinned table and the heap table after planning and before it makes the
 blocks, the node's caps before them and its blocks after
-(<code>fb_pipeline_config::admit_plan</code>).</p>
+(the old binary's <code>admit_plan</code>).</p>
 <p><strong>Admission is a search over order.</strong> The orchestrator's first job on one
 GPU is an order whose peak fits (<a href="programming_model.html"><code>programming_model.md</code></a>,
 &quot;The pipeline is already an instance&quot;). The search is: the plan order from
@@ -906,8 +1190,8 @@ room is what admission holds its device block to, the smaller of
 <code>[memory] max_device_mem_per_gpu</code> and the card's total, less the reserve and
 the stack, all from the worker's one reading of its card (&quot;Admission&quot;); its
 pinned room is <code>max_pinned_mem_per_gpu</code>, what admission holds its pinned
-block to (<code>fb_pipeline_config::Card::room</code>). The binary's planning path,
-<code>fb_pipeline_config::plan</code>, hands those rooms to <code>Dag::plan_within</code>, and
+block to (the old binary's <code>Card::room</code>). The old binary's planning path,
+<code>plan</code>, hands those rooms to <code>Dag::plan_within</code>, and
 <code>admit_plan</code> takes the same reading, so a plan built inside its rooms is
 admitted, and planning and admission cannot disagree about a card whose
 other tenants moved between two readings. The pinned room is counted, not
@@ -1375,6 +1659,26 @@ destination rows; a reduce from <code>w</code> cards is <code>w - 1</code> parti
 join. Both grow with the width the planner chooses, so they are part of the
 admission search, and the search described above has not been written with
 them in it.</li>
+</ul>
+<p><strong>The v0.0.4 layer's:</strong></p>
+<ul>
+<li><strong>Packing <code>Output</code>s too</strong>, by the same closure from producer to last
+reader: deferred until a chain is refused for its sum
+(<a href="programming_model.html"><code>programming_model.md</code></a>, &quot;What the model
+covers&quot;).</li>
+<li><strong>The default step limit for <code>eri</code></strong>: the measured value in place of the
+2 GiB placeholder.</li>
+<li><strong>Packing quality</strong> on real configs: the table's lower-bound row answers
+it on each.</li>
+<li><strong>First touch on a VM</strong>: whether the 1.4 GiB/s of B's touch (&quot;What the
+budget measured&quot;, above) is paid once per process or by every slab. The
+prototype's <code>examples/touch_probe.rs</code> touches the same size twice in one
+process: if the second is fast, the host was backing guest memory, and a
+replay or a long-lived process pays it once. If both are slow, the cost
+is the guest's own zeroing. Either way, it is not a reason to stop
+touching the pages up front.</li>
+<li><strong>Pinned pages and NUMA</strong>: a pinned buffer is touched by whichever
+worker runs its step's <code>mem_budget</code>.</li>
 </ul>
 </main>
 </div>

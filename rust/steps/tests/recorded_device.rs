@@ -1,9 +1,10 @@
 //! The steps against the old Rust path's recorded results (tier 4, device
 //! 0): `rust/`'s planner-and-arena layer, run once and its output
 //! committed under `tests/data/` with its provenance, so this binary needs
-//! none of its crates. The writer is `pipeline/scf/tests/steps_reference.rs`,
-//! whose doc says how to rerun it; `tests/data/old_path.json` names the card
-//! and the revision it ran on.
+//! none of its crates. The writer was the old `pipeline/scf`'s
+//! `tests/steps_reference.rs`, deleted with that crate (#1873);
+//! `tests/data/old_path.json` names it, the card and the revision it ran
+//! on, where it can still be read and rerun.
 //!
 //! - The DF-RHF energy of water, benzene and ethylene in cc-pVDZ over
 //!   cc-pVDZ-JKFIT, `fb_steps::run` against `old_path.json`'s, both with

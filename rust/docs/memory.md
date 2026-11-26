@@ -357,7 +357,9 @@ is 7.27 GiB:
 ---
 
 *The sections from here to the end describe the old layer, the arena and
-the planner, and go when they do.*
+the planner, and go when they do. The old binary that planned and admitted
+over them, `fb-pipeline-config`, is deleted (#1873): the names of its items
+below are its history.*
 
 The programming model fixes the principles: a task's layout is its
 footprint, the arena is a table and a block, the block is the plan's peak,
@@ -651,20 +653,20 @@ and the stack.
 start, after the devices' handles exist and before any block, each worker
 reads its device's free memory against its total; the difference is that
 device's reserve, and the C++ `kDeviceReserve` of 256 MiB
-(`fb_pipeline_config::DEVICE_RESERVE`) is the least it may be taken as. A card
+(the old binary's `DEVICE_RESERVE`) is the least it may be taken as. A card
 another process holds part of shows up here, as a smaller cap, rather than at
 the first allocation. The binary makes the reading at planning, once per
 worker, the first time planning (for a worker holding an adaptive part) or
 admission (for a worker with a device block) asks for it, with that worker's
 stream and handles made for it (the run's own are made with its backend,
 after the blocks); it is the one reading of the card
-(`fb_pipeline_config::Card`), so the card's bound below, the reserve and the
+(the old binary's `Card`), so the card's bound below, the reserve and the
 room the adaptive widths are bisected in ("Adaptive widths: one planner
 routine") agree.
 
 **The stack is what it can still take.** The C++ `Device::stack_growth`: what
 the kernels' stack can still take for a kernel of `kKernelStackBytes` per
-thread (`fb_pipeline_config::KERNEL_STACK_BYTES`, the C++ tree's largest,
+thread (the old binary's `KERNEL_STACK_BYTES`, the C++ tree's largest,
 which bounds the Rust forks of its kernels and the rust-only conventional
 ERI units, at most 3,856 bytes in their low-stack form), 0 once a kernel that large has
 run, and 0 under HIP, whose scratch is sized per dispatch. wwr's C ABI has no
@@ -691,7 +693,7 @@ another process holds part of, still refuses the plan before the first
 launch. The binary admits every worker's device and
 pinned table and the heap table after planning and before it makes the
 blocks, the node's caps before them and its blocks after
-(`fb_pipeline_config::admit_plan`).
+(the old binary's `admit_plan`).
 
 **Admission is a search over order.** The orchestrator's first job on one
 GPU is an order whose peak fits ([`programming_model.md`](programming_model.md),
@@ -790,8 +792,8 @@ room is what admission holds its device block to, the smaller of
 `[memory] max_device_mem_per_gpu` and the card's total, less the reserve and
 the stack, all from the worker's one reading of its card ("Admission"); its
 pinned room is `max_pinned_mem_per_gpu`, what admission holds its pinned
-block to (`fb_pipeline_config::Card::room`). The binary's planning path,
-`fb_pipeline_config::plan`, hands those rooms to `Dag::plan_within`, and
+block to (the old binary's `Card::room`). The old binary's planning path,
+`plan`, hands those rooms to `Dag::plan_within`, and
 `admit_plan` takes the same reading, so a plan built inside its rooms is
 admitted, and planning and admission cannot disagree about a card whose
 other tenants moved between two readings. The pinned room is counted, not
