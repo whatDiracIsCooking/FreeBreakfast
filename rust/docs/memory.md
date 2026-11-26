@@ -294,6 +294,66 @@ is the sum's price; the remedy is a narrower batch in the step concerned,
 and past that `Output`s packed by the closure, built when a chain is
 first refused.
 
+## What the budget measured
+
+The prototype's numbers, of the design `fb-core-budget` and `fb-steps`
+port: RTX A6000 (CUDA), 2026-11-26, a release build, one run each, cc-pVDZ
+over cc-pVDZ-JKFIT; the chain's times are
+[`programming_model.md`](programming_model.md)'s, "What the chain
+measured".
+
+**The budget against the planner's block.** One GPU, the same runs through
+the old Rust path (`rust/`'s `free-breakfast`, `schwarz_threshold = 0`, its
+blocks as `admit_plan` logs them) and through the steps, at the default step
+limit of 2 GiB and at the least `mem_per_gpu` each molecule accepts (budget
+mode alone, the solver work buffers added from the default run).
+
+| Molecule | Old path: device block | pinned block | heap block | The steps at 2 GiB: device | pinned | heap | The steps at the least limit: device | pinned |
+|---|---|---|---|---|---|---|---|---|
+| Water | 33.35 MiB | 322.00 KiB | 292.02 KiB | 130.73 MiB | 721.06 KiB | 301.00 KiB | 129.21 MiB | 213.34 KiB |
+| Ethylene | 37.44 MiB | 1.19 MiB | 2.16 MiB | 143.09 MiB | 4.85 MiB | 2.19 MiB | 130.74 MiB | 663.62 KiB |
+| Benzene | 62.26 MiB | 6.90 MiB | 28.39 MiB | 307.19 MiB | 59.86 MiB | 28.59 MiB | 140.05 MiB | 3.36 MiB |
+| gly5 | 906.52 MiB | 263.87 MiB | 1.00 GiB | 1009.41 MiB | 293.24 MiB | 1.01 GiB | 251.22 MiB | 37.37 MiB |
+| gly10 | 3.01 GiB | 989.67 MiB | 7.27 GiB | 1.31 GiB | 383.90 MiB | 7.28 GiB | 585.07 MiB | 140.30 MiB |
+
+- **The heap is the same**: B, packed, on the host in both.
+- **The device total is the batch widths, not the sum.** the steps' is the BLAS
+  workspace (128 MiB against the old path's 32 MiB) and the ERI buffer, whose
+  batches the staging bounds: 792 MiB at gly5, 881 MiB at gly10. The old
+  block is its planner's adaptive widths.
+- **What the sum can cost is what lies outside those two**: the other
+  `Output`s and the packed scratch, 89 MiB at gly5 and 329 MiB at gly10. A
+  fold over lifetimes could recover part of that and no more.
+- **At the least limit the sum is under the fold's block** on the glycine
+  chains, 3.6× and 5.3×. Less each path's workspace it is on the small ones
+  too: 1.21 MiB against 1.35 MiB on water, 12.05 MiB against 30.26 MiB on
+  benzene.
+
+**Budget mode and the staging**, at gly10 (734 AOs, 3606 aux), where B
+is 7.27 GiB:
+
+- **Budget mode is B's pages.** At gly10, 5.7 s on one GPU and 6.5 s on
+  four. Touching B's 7.27 GiB takes 5.3 s with huge pages (7.6 s without),
+  about 1.4 GiB/s. The rest is page-locking each GPU's 272 MiB of staging,
+  about 0.3 s a GPU.
+- **That touch is the VM's, not the rule's.** The same touch of a fresh
+  7.27 GiB slab on bare metal (a Ryzen 9 5900X, kernel 6.8,
+  the prototype's `examples/touch_probe.rs`) takes 0.52 s with huge pages, 14 GiB/s, and
+  2.67 s without. More threads help there: 0.39 s on sixteen at 4 KiB,
+  where on the VM sixteen took 12.8 s against 7.6 s on one. A 10× gap that
+  threads widen points at the hypervisor backing guest memory on its first
+  touch. On bare metal, budget mode at gly10 would be about 1 s. Whether a
+  second slab in the same process on the VM touches at bare-metal speed is
+  open ("Open questions", below).
+- **Staging is bounded: 64 MiB a buffer of the build's ring, 128 MiB a
+  buffer of the pass's.** A GPU page-locks two of each, and the larger pair
+  is what its pinned buffer holds. The build's time does not move with its
+  bound.
+- **Page-locking does not overlap.** With each GPU's staging page-locked on
+  a thread of its own while another touched B, the locks finished one after
+  another and the touch slowed beside them: 6.8 s on four GPUs against the
+  6.5 s of taking them in turn. They are taken in turn.
+
 ---
 
 *The sections from here to the end describe the old layer, the arena and
@@ -1079,3 +1139,23 @@ against.
   join. Both grow with the width the planner chooses, so they are part of the
   admission search, and the search described above has not been written with
   them in it.
+
+**The v0.0.4 layer's:**
+
+- **Packing `Output`s too**, by the same closure from producer to last
+  reader: deferred until a chain is refused for its sum
+  ([`programming_model.md`](programming_model.md), "What the model
+  covers").
+- **The default step limit for `eri`**: the measured value in place of the
+  2 GiB placeholder.
+- **Packing quality** on real configs: the table's lower-bound row answers
+  it on each.
+- **First touch on a VM**: whether the 1.4 GiB/s of B's touch ("What the
+  budget measured", above) is paid once per process or by every slab. The
+  prototype's `examples/touch_probe.rs` touches the same size twice in one
+  process: if the second is fast, the host was backing guest memory, and a
+  replay or a long-lived process pays it once. If both are slow, the cost
+  is the guest's own zeroing. Either way, it is not a reason to stop
+  touching the pages up front.
+- **Pinned pages and NUMA**: a pinned buffer is touched by whichever
+  worker runs its step's `mem_budget`.

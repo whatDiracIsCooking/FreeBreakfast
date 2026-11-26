@@ -3,7 +3,8 @@
 //! at forced batches (`[eri] mem_per_gpu` twice the least that holds a
 //! batch, so several pair batches go through each ring).
 //!
-//! The bar, 1e-10 of B's largest element, is the v0.0.4 page's: the same
+//! The bar is 1e-10 of B's largest element (`docs/testing.md`, "The
+//! steps' tests"): the same
 //! kernels and fits in a different order and at different batch widths,
 //! the blocked triangular solve's blocking changing with the width, its
 //! forward error a modest multiple of `ε κ(L)` on a metric whose

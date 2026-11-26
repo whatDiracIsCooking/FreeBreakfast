@@ -13,7 +13,74 @@ The design leans on the programming model's terms
 ([`programming_model.md`](programming_model.md)): a *task*, the unit the
 orchestrator admits, times, tests and retries; a *worker*, which is a thread, a
 stream, a GPU or a node; and the DAG's *sync points*, which the orchestrator
-derives.
+derives. Those are the old layer's terms. In the v0.0.4 layer the unit is a
+*step* and the one function around its `run` is the *wrapper*
+([`programming_model.md`](programming_model.md), "Steps on rustflow"):
+"What a step says", next, is that layer's timing, logging and failure, and
+the sections after it are the old layer's where they speak of tasks, the
+orchestrator and the record, until its crates are deleted. Logging's
+levels, the error kinds, the one boundary and the panic hook hold for
+both.
+
+## What a step says
+
+A step says nothing about itself by default, as a task does not: the
+wrapper and the plan do it.
+
+**Time.** `Plan::execute` returns one `StepTime` per step: the time inside
+`run`, the time inside the wrapper's sync and release, when the node
+began and ended from the execute's start, the locks the wrapper took in
+the order it took them, whether it found one held and so waited, and when
+it held them all and when it began to release them. Two holders of one
+lock therefore show disjoint held spans, and a step that waited on a GPU
+says so. `fb_steps::Run` keeps them beside the wall time of setup, of
+budget mode and of execute mode. These are host times: a step's `run`
+enqueues, so its `run` time is its enqueueing and whatever host waits it
+makes, and the device's share shows in the wrapper's sync. A step whose
+loop decides on the host carries its own meter in its `Output` (the SCF's
+`LoopMeter`: the loop's wall time, its host syncs and the time blocked in
+them, read from `Stream::sync_meter`). There is no stream scope and no
+`timing.json` in this layer yet; the first binary on it settles the
+record's form.
+
+**Memory.** The budget table is the memory diagnostic
+([`memory.md`](memory.md), "The final node"): logged at `info` on every
+accepted plan, and the whole of a refusal's message. After an execute it
+carries the plain heap's peak growth as its unbudgeted row.
+
+**Logging.** A step's line names the step (`step 'eri': ...`,
+`scf: ...`), by hand:
+no step context is set on the thread, since a step's fan-out and the
+host integrals' pool run on threads the wrapper does not own. The levels
+are the table's below: a result and each SCF iteration at `info`, a batch
+width of one at `warn`, a skipped step at `debug`.
+
+**Failure.**
+
+- **A plan over budget is a refusal, not a panic.** The final node
+  returns an `Allocation` error whose message is the table, and nothing
+  more is allocated ("Allocation is a planning-time error", below). Bytes
+  the budget accepted and the machine refused abort at the failing call,
+  as every create does.
+- **A config whose steps do not close is refused when the DAG is built**,
+  naming the step and the one it reads, before anything is budgeted.
+- **A step's failure is a `Result`**, with `step '<name>'` pushed on its
+  context (`step '<name>', mem_budget` in budget mode). The wrapper keeps
+  a failed flag per node: a step that reads a failed one is skipped and
+  flagged in turn, and nothing else is. The plan returns the first failure
+  in its topological order, any other on that error's context, so the
+  report is the same at every executor width ("One worker fails", below).
+- **A step that failed is still synced.** The wrapper synchronizes every
+  stream the step has and each held GPU's stream whether `run` returned
+  an error or not, then releases the locks, so a failed step leaves no
+  device work behind its guard.
+- **A panic inside a step is the run's error** where the build unwinds:
+  rustflow reports it from the wait, and the plan returns it as an error
+  naming the panic's message. A release build aborts at the panic
+  ("Panics and profiles", below).
+- **Determinism.** Results are those of the edges. Accept or refuse, the
+  scratch offsets and the table are the same every run; the order the
+  steps were budgeted in is not.
 
 ## Timing and profiling
 

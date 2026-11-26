@@ -1,5 +1,5 @@
 //! The MainBus and the steps' budget with no device (tier 3): setup's
-//! counts on gly10 in cc-pVDZ / cc-pVDZ-JKFIT against the v0.0.4 page's,
+//! counts on gly10 in cc-pVDZ / cc-pVDZ-JKFIT against the prototype's,
 //! the dry budget's exact bytes from them, the orthogonalizer's scratch
 //! apart from every step unordered with it, the config's refusals, the
 //! allocation record failing a step that allocates on the plain heap in its
@@ -58,7 +58,8 @@ fn a_dry_budget_of_gly10_is_exact() {
     let config = common::config("gly10.xyz", "cc-pvdz", Some("cc-pvdz-jkfit"));
     let plan = plan(MainBus::setup(config, Backing::Dry).unwrap()).unwrap();
     let dims = plan.bus().shared().dims.clone();
-    // The v0.0.4 page's gly10 ("What it showed", "Batched only").
+    // gly10 as measured (`docs/programming_model.md`, "What the chain
+    // measured"; `docs/memory.md`, "Batched only").
     assert_eq!((dims.n_ao, dims.n_aux), (734, 3606));
     assert_eq!(dims.n_col, 270_497);
     assert_eq!(dims.n_shell_pair, dims.n_shell * (dims.n_shell + 1) / 2);

@@ -10,18 +10,24 @@ answer live in six documents of their own, cited rather than restated:
 
 | Document | Owns |
 |---|---|
-| [`programming_model.md`](programming_model.md) | What a task and an edge declare, what the orchestrator derives, layouts and arenas, workers, plan-once-run-many |
-| [`memory.md`](memory.md) | The arena's table and its rows' owners, lifetimes and aliasing, admission, adaptive widths, nested plans, the device and pinned blocks |
-| [`gpu_layer.md`](gpu_layer.md) | The C ABI between Rust and the kernels: the launch wrapper, the workspace query, statuses, shared types, the build |
+| [`programming_model.md`](programming_model.md) | Steps, the MainBus and the step DAG on rustflow, the `EriManager`, the vocabulary; and the old layer: what a task and an edge declare, what the orchestrator derives, layouts and arenas, workers, plan-once-run-many |
+| [`memory.md`](memory.md) | The budget, caps and margins, step scratch, the final node, batching; and the old layer: the arena's table and its rows' owners, lifetimes and aliasing, admission, adaptive widths, nested plans, the device and pinned blocks |
+| [`gpu_layer.md`](gpu_layer.md) | The C ABI between Rust and the kernels: the launch wrapper, the workspace query, statuses, shared types, the build; the v0.0.4 runtime: streams, events, copies and their tokens, a GPU's handles under its lock |
 | [`testing.md`](testing.md) | Contracts, tiers and levels, what runs when, selection, redundancy, regression, fuzzing, sanitizers |
 | [`diagnostics.md`](diagnostics.md) | Timing, logging, errors, panics |
 | [`documentation.md`](documentation.md) | rustdoc, the C header's comments, equations, references, the config reference, the book, diagrams, publishing |
 | [`rules.md`](rules.md) | The register: every rule these documents state, where it is stated, and what checks it, or that nothing does |
 
-A feature is a DAG of tasks ([`programming_model.md`](programming_model.md),
-"Three owners"), so most questions are asked per task and a few per DAG.
-Porting a C++ module is a feature whose answers the C++ counterpart mostly
-fixes; the last section says what differs.
+Two layers are in the tree ([`programming_model.md`](programming_model.md),
+"Steps on rustflow"). **A new feature is a step of the v0.0.4 layer**, or
+part of one, and "A step's design" below is each question as a step
+answers it. The sections after it give each question at length, in the old
+layer's terms where the two differ: there a feature is a DAG of tasks
+([`programming_model.md`](programming_model.md), "Three owners"), most
+questions are asked per task and a few per DAG, and those answers stand
+until the old crates are deleted. Porting a C++ module is a feature whose
+answers the C++ counterpart mostly fixes; the last section says what
+differs.
 
 ## Where a design lives
 
@@ -37,6 +43,37 @@ design document beside a module, because rustdoc renders the doc comment and
 a second copy would drift ([`documentation.md`](documentation.md), "Code:
 rustdoc"). The PR's description says which answers changed from the issue
 and why.
+
+## A step's design
+
+A step is one config table, one slot, `mem_budget` and `run`
+([`programming_model.md`](programming_model.md), "Steps on rustflow", "The
+MainBus and its steps"). The first question is whether the feature is a
+step at all: it is one only if another step reads its `Output`, its
+`Output` carries over a replay, or it has a config table of its own.
+Otherwise it is code inside the step that needs it, in that step's
+module's crate, and the questions below are asked of that step.
+
+| Question | A step answers | Recorded | Checked by |
+|---|---|---|---|
+| What it computes | Its `Output`, the `Output`s it reads, and nothing else it touches; the reference computing the same approximation, and the bar, fixed by analysis | `Step::Reads`, the tuple the DAG's edges are made from, and the `Output` type | `View::read` builds only for a declared read; one run against the reference at the bar ([`testing.md`](testing.md), "The steps' tests", "Correctness") |
+| Where it runs | The host (it builds on rayon's threads and uploads, taking no lock), gpu0 alone, or every GPU; whether it calls a library, and so takes a GPU's lock; how many streams of its own it has per GPU | `Step::placement`, `Step::STREAMS`, and `Budget::locks` in `mem_budget` | A declared lock the step does not run on is refused in budget mode; `run` reaches a handle only through a guard the wrapper took |
+| What it holds | Per kind, device, pinned and heap: what its `Output` owns, and its scratch, each a function of `Dims`, its options and the caps. A solver's work buffer is scratch, sized by its query. A length setup must count is added to `Dims` | `mem_budget`, which allocates the `Output` through the `Budget` and declares scratch as one `Layout`; `run` carves the same layout from its `Lease` ([`memory.md`](memory.md), "The budget", "Step scratch") | Only a `Budget` allocates; a carve past the declaration panics; the allocation record fails a `run` that takes 1 MiB from the plain heap; a dry budget of gly10 pins the lengths |
+| Whether it splits | Every step over an O(N³) tensor is batched and spans every GPU, with no other path: the batch axis, the step limit that picks the width, the least bytes that hold one batch, and how the GPUs' fragments are reduced onto gpu0 ([`memory.md`](memory.md), "Batched only") | The step's limit, a config key with a constant default; the width in `mem_budget` | The limit a byte under the least refused; forced batches, a ring of one, and two GPUs against one, each at the bar |
+| What it depends on, and what depends on it | Which `Output`s it reads and which steps will read its own, which decides `Output` against scratch. A product with state of its own that several steps call into is a manager, with a lock its callers declare ([`programming_model.md`](programming_model.md), "The EriManager"). In the workspace: the method code stays in its module's crate, and `fb-steps` holds the step | `Step::Reads`; the lock's `LockId`; `Cargo.toml` | `Dag::build` refuses a read of a step the config left out, a step added twice and a cycle; the workspace-graph test |
+| What already exists | As below, "What already exists": a library call bound on `GpuResources`, a recipe that takes the guard, a kernel's binding in its `-sys` crate, a host integral's `_into` form | `Cargo.toml` | Review |
+| What it says about itself | Usually nothing: the wrapper times it, records its locks, and names it on any error ([`diagnostics.md`](diagnostics.md), "What a step says"). A width of one, slow convergence, at `warn`; its result at `info` | The log lines in `mem_budget` and `run`, each naming the step | A test that expects a failure asserts on the `Error` value |
+| What it writes | Nothing yet: no step writes a product. The first one settles whether a write is a host step that reads the `Output` or the tail of its producer | | |
+| What it documents | As below, "What it documents": the equations, the config keys of its table, each with default and unit | The step's module doc and its options type | `missing_docs`, the doctests |
+
+**A step's contract with the wrapper** is the part no table row holds.
+`run` enqueues and the wrapper syncs, so a step makes no host sync of its
+own but at the three sites [`gpu_layer.md`](gpu_layer.md) ("The v0.0.4
+runtime") names: a solver's flag after its last enqueue, a ring's wait on
+one slot's copy, and a loop's read of its turn's scalars. A step that fans
+out across GPUs, or has streams of its own, joins them before `run`
+returns. It relies on nothing its scratch held on entry, which the NaN
+fill tests, and on nothing a replay did not carry in an `Output`.
 
 ## What it computes
 
