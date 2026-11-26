@@ -24,7 +24,7 @@ whole C++ toolchain lives in the CUDA image.
 | Runner | `ctest` via `devtools/test.py pr` | `pytest` |
 | Tests | the library's own units, including CUDA kernels | the Python-side suite — `test/pytest/`, marker and harness coverage plus the live BSE download test |
 | Needs | the CUDA image (clang-23, CMake 4.2, nvcc) | a venv |
-| Gated by | the push gate's smoke (`devtools/test.py push`); `test.py pr` by hand | the push gate and CI |
+| Gated by | nothing by default: `src/` is frozen, so it runs only with `--cpp` (`test.py push --cpp`, `pr --cpp`) and in the nightly | the push gate and CI |
 
 **Which one a change needs is not negotiable by convenience.** A change under
 `src/`, `deps/`, `cmake/` or `CMakeLists.txt` is verified by the C++ tier and by
@@ -54,7 +54,8 @@ lister cannot list (a wrong marker, no `metrics` branch), push says
 `push --all` is that smoke on purpose.
 
 ```bash
-devtools/test.py pr                        # configure + build + ctest + pytest, `auto` preset
+devtools/test.py pr                        # cargo half (if rust/ changed) + pytest; NO C++ (src/ is frozen)
+devtools/test.py pr --cpp                  # + configure + build + ctest, `auto` preset
 devtools/test.py pr --preset default       # pin the CUDA card
 devtools/test.py pr --preset hip           # pin the HIP card
 devtools/test.py pr --preset debug         # switches the ctest preset too
@@ -69,7 +70,8 @@ devtools/test.py pr --all                  # the whole fast set, not only repres
 devtools/test.py pr -- -R Constants        # everything after -- goes to ctest
 devtools/test.py pr --all -- -R MemoryBuffer  # a suite's whole fast set
 devtools/test.py push --dry-run            # which halves a push would run
-devtools/test.py push --all                # the GPU smoke's whole fast set
+devtools/test.py push --cpp               # add the C++ smoke to the push gate
+devtools/test.py push --all                # the GPU smoke's whole fast set (implies --cpp)
 ```
 
 **`test.py` always skips the reference-grade/end-to-end validation cases**

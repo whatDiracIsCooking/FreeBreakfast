@@ -4,9 +4,9 @@
 #           passes staged files to a hook, so a tree with pre-existing findings
 #           does not block every commit -- only files you touch are checked.
 #   push:   one test gate, devtools/test.py push. It reads the pushed range
-#           itself and runs the fast Python tier when a .py changed, the
-#           C++ smoke when C++ or a build file did, and the cargo half when
-#           a path under rust/ did (docs/testing.md "Gates").
+#           itself and runs the fast Python tier when a .py changed and the
+#           cargo half when a path under rust/ did. src/ is frozen, so the
+#           C++ smoke runs only with --cpp (docs/testing.md "Gates").
 #
 # No hook REWRITES a file. A formatter run as a hook rewrites whole files
 # behind your back and buries the real diff in restyling. The format is still
@@ -17,7 +17,7 @@
 # cmake-format is not part of it -- cmake-lint covers CMake. docs/style.md has
 # the parts of the style no tool checks.
 #
-# The C++ half of the push gate is a SMOKE gate, not the PR gate, and that
+# The C++ half of the push gate (--cpp) is a SMOKE gate, not the PR gate, and that
 # distinction is the whole point. A full C++23 named-module build plus every
 # reference test costs minutes even warm, and a gate that costs minutes is one
 # people bypass with --no-verify -- worse than no gate. So `test.py push` does

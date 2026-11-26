@@ -36,8 +36,8 @@ A gate is named by **when it runs**, not by what it contains.
 
 | Gate | When | Runs | Budget |
 | --- | --- | --- | --- |
-| `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++ outside `experimental/` and `test/experimental/`, the Python half when it touches `.py`, the cargo half when it touches `rust/` (and then neither of the others for those paths). C++: the host binaries' fast set, and of the GPU binaries each family's representative, as `pr` (#1126; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates (clippy and rustdoc, then their tests on the card) | under 5 min on a busy card |
-| `pr` | by hand before opening a PR; `milestone-run` requires it | C++: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates (clippy and rustdoc, then their tests on the test preset's card; `--all`, every crate's), when `origin/main...HEAD` or the uncommitted tree touches `rust/` (`--only cargo` alone) | under 5 min on a busy card |
+| `push` | `git push`, by pre-commit's pre-push stage | the Python half when the push touches `.py`, the cargo half when it touches `rust/` (and then not the Python half for those paths); the C++ half only with `--cpp` (the C++ tree is frozen, below). C++: the host binaries' fast set, and of the GPU binaries each family's representative, as `pr` (#1126; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates (clippy and rustdoc, then their tests on the card) | under 5 min on a busy card |
+| `pr` | by hand before opening a PR; `milestone-run` requires it | C++, only with `--cpp` or `--only cpp`: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates (clippy and rustdoc, then their tests on the test preset's card; `--all`, every crate's), when `origin/main...HEAD` or the uncommitted tree touches `rust/` (`--only cargo` alone) | under 5 min on a busy card |
 | `nightly` | a timer on this box | everything, unskipped: the C++ and Python halves, and the cargo half as `pr --only cargo --all` with its slow cases (#1459), plus the cross-backend compile check | none; it has the night |
 
 **The single-backend rule holds for all three.** A gate runs on one card, and
@@ -47,12 +47,23 @@ unattended HIP run on the gfx1200 can wedge the card (#477). It covers HIP with
 `devtools/cross-backend-check.sh`: a seconds-long compile of every `.cu` through
 clang `-x hip`, which is the one portability hole a single-backend run cannot see.
 
-**C++ under `experimental/` or `test/experimental/` fires no C++ half.** The
-smoke builds the `default` preset, which never configures either one: they
-sit behind `FREE_BREAKFAST_BUILD_EXPERIMENTAL`. A cold build there would check
-nothing in the push. Build the `experimental` preset by hand instead. The root
-`CMakeLists.txt` line that adds them is outside both, so it still fires the
-half (`NOT_IN_CPP_SMOKE` in `devtools/test.py`).
+**The C++ tree is frozen, so neither gate builds it unless asked.** `src/`
+is no longer developed: the work is the Rust rebuild under `rust/`. So
+`push` and `pr` leave the C++ half out, and a diff that touches C++ or a
+build file gets one line saying it went untested
+(`push: the diff touches the C++ tree, which the gates no longer test …`).
+`--cpp` adds the half to either gate; on `pr`, so do `--only cpp` and the
+options that act on the build alone (`--fresh`, `--clean`, `--no-test`,
+`--tidy`, `--record`), and on `push`, `--all`. The nightly still runs every
+C++ case, so a regression in the frozen tree (a submodule bump, a toolchain
+change) still surfaces within a day.
+
+**C++ under `experimental/` or `test/experimental/` never counts as
+touching the C++ tree.** The C++ half builds the `default` preset, which
+never configures either one: they sit behind
+`FREE_BREAKFAST_BUILD_EXPERIMENTAL`. Build the `experimental` preset by hand
+instead. The root `CMakeLists.txt` line that adds them is outside both, so
+it still does (`NOT_IN_CPP_SMOKE` in `devtools/test.py`).
 
 **A path under `rust/` fires the cargo half and nothing else**, whatever it
 is: Rust, a `.cu`, its own CMake project, a doc, its one `.py` (a by-hand doc
@@ -231,13 +242,14 @@ concept expresses is `static_assert(!Concept<…>)`).
 replaced the three gate scripts, and `devtools/test.py nightly` (#985), which
 replaced the two full-run scripts.
 
-`pr` runs each family's representative of the C++ cases (#989; `--all`, the
-whole fast set): "Test selection" below. `push` runs the same set on its GPU
-binaries (#1126; `--all`, every fast case of them).
+With `--cpp`, `pr` runs each family's representative of the C++ cases
+(#989; `--all`, the whole fast set): "Test selection" below. `push --cpp`
+runs the same set on its GPU binaries (#1126; `--all`, every fast case of
+them). Without it neither builds the C++ tree ("Gates" above).
 
 ```bash
-devtools/test.py push       # what the pre-push hook calls; --all for the old smoke
-devtools/test.py pr         # before a PR; --all for the whole fast set
+devtools/test.py push       # what the pre-push hook calls; --cpp adds the C++ smoke
+devtools/test.py pr         # before a PR; --cpp adds the C++ half
 devtools/test.py nightly    # what the timer calls (#985)
 ```
 
@@ -248,7 +260,7 @@ devtools/test.py push --dry-run              # which halves this push would run
 devtools/test.py nightly --dry-run           # the night's phases, nothing run
 devtools/test.py pr --preset hip             # pin a card; the test preset follows
 devtools/test.py pr --only cpp -- -R Exch    # one half; after -- goes to ctest
-devtools/test.py pr --no-test                # configure + build only
+devtools/test.py pr --no-test                # configure + build the C++ tree only
 devtools/test.py pr --record                 # and append it to `metrics`
 ```
 
@@ -257,12 +269,12 @@ devtools/test.py pr --record                 # and append it to `metrics`
   `origin/main...HEAD` and, when the tree is dirty, its staged, unstaged and
   untracked non-ignored files, with a line saying so (#1502); a submodule is
   its own path, never the files in it), runs the Python half when a `.py`
-  changed and the C++ half when a source, a header, a `CMakeLists.txt`,
-  `CMakePresets.json` or a `.cmake` did, and runs nothing for a docs-only
-  push. The hook in
+  changed, says the C++ tree went untested when a source, a header, a
+  `CMakeLists.txt`, `CMakePresets.json` or a `.cmake` did (the C++ half
+  runs only with `--cpp`), and runs nothing for a docs-only push. The hook in
   `.pre-commit-config.yaml` is `always_run` with no `files:` filter, so the
   dispatch is written down once, in `test.py`. A push of a whole history
-  carries no range, and runs both; so does a range git cannot read under the
+  carries no range, and runs the Python and cargo halves; so does a range git cannot read under the
   hook (a shallow clone), with a line saying so. By hand, a range it cannot
   read (no `origin/main`) exits 2 and names the fetch that fixes it.
 - **The C++ half of `push` skips itself**, exit 0, where `cmake` or `ninja` is
@@ -285,9 +297,10 @@ devtools/test.py pr --record                 # and append it to `metrics`
   the build dir. It says `push: cannot select the representatives: <why>` and
   `push: the GPU smoke runs the whole fast set`, and goes on. A push must stay
   usable everywhere `test.py` runs; `pr` is where a wrong marker is fixed.
-- **`pr` runs both languages:** configure, build, ctest and the GPU batches,
-  then the fast pytest set (`FAST_TEST_ARGS` over `PREPUSH_PATHS`, the same set
-  `push` runs). It logs to `.slow-tier-reports/pr-<stamp>-<rev>-<preset>.log`
+- **`pr` runs the fast pytest set** (`FAST_TEST_ARGS` over
+  `PREPUSH_PATHS`, the same set `push` runs), after the cargo half when the
+  branch touches `rust/`, and with `--cpp` after configure, build, ctest
+  and the GPU batches. It logs to `.slow-tier-reports/pr-<stamp>-<rev>-<preset>.log`
   and appends its result line, `test.py pr PASS  rev=…  preset=…  stamp=…`, to
   `summary.log`. `push`'s C++ half logs to `push-<stamp>-<rev>-<preset>.log`.
   `rev` is `+dirty` when tracked files differ from HEAD (lib.sh `tree_rev`).

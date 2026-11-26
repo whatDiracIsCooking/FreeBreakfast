@@ -33,7 +33,7 @@ Interactive, and the one to develop in:
 
 ```sh
 devtools/devcontainer.sh rebuild
-devtools/devcontainer.sh shell -c 'devtools/test.py pr' # configure + build + ctest + pytest
+devtools/devcontainer.sh shell -c 'devtools/test.py pr --cpp' # configure + build + ctest + pytest
 devtools/devcontainer.sh shell                           # or just live in it
 ```
 
@@ -215,7 +215,7 @@ or all three with a log and a PASS/FAIL line, then the fast pytest set, which
 is the PR gate ([`docs/testing.md`](docs/testing.md)):
 
 ```sh
-devtools/test.py pr [--preset NAME] [--fresh] [--clean] [--no-test] [--tidy] [--only cpp|python] [-j N]
+devtools/test.py pr [--cpp] [--preset NAME] [--fresh] [--clean] [--no-test] [--tidy] [--only cpp|python|cargo] [-j N]
 ```
 
 | Preset | What it is for |
@@ -360,7 +360,9 @@ cannot run, so a skip is never mistaken for a pass.
 ### What is gated where
 
 `git push` runs `devtools/test.py push`: the fast pytest tier when the push
-touches a `.py`, and the C++ smoke gate when it touches C++. Per PR, CI
+touches a `.py`, and the cargo half when it touches `rust/`. `src/` is
+frozen, so the C++ smoke runs only with `--cpp` (`test.py pr --cpp` the
+same), and the nightly runs every C++ case. Per PR, CI
 runs `lint` and the fast pytest tier (`test`, on the oldest and newest
 supported Python); the `slow` job runs the slow pytest tier nightly and on a
 manual dispatch, never on a PR.

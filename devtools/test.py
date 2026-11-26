@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """The test gates, one subcommand per gate (docs/testing.md "Gates").
 
-  devtools/test.py push [--preset NAME] [--all] [-j N] [--dry-run]
-  devtools/test.py pr   [--preset NAME] [--fresh] [--clean] [--no-test]
-                        [--all] [--tidy] [--only cpp|python|cargo] [-j N]
+  devtools/test.py push [--cpp] [--preset NAME] [--all] [-j N] [--dry-run]
+  devtools/test.py pr   [--cpp] [--preset NAME] [--fresh] [--clean]
+                        [--no-test] [--all] [--tidy]
+                        [--only cpp|python|cargo] [-j N]
                         [--report DIR] [--record] [-- <ctest args>]
   devtools/test.py nightly [--mode auto|nightly|weekly] [--rev REF]
                         [--preset NAME] [-j N] [--report DIR]
@@ -13,9 +14,12 @@
 push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   pushed range (PRE_COMMIT_FROM_REF...PRE_COMMIT_TO_REF, which pre-commit
   exports; by hand, origin/main...HEAD) and runs the Python half when a .py
-  changed, the C++ half when C++ or a build file did, and the cargo half when
-  a path under rust/ did (and then neither of the others for it). Python: the fast
-  pytest set (FAST_TEST_ARGS over PREPUSH_PATHS). C++: an incremental build,
+  changed, and the cargo half when a path under rust/ did (and then not the
+  Python half for it). The C++ tree (src/ and what builds and tests it) is
+  frozen, so neither gate runs the C++ half unless asked: --cpp runs it, and
+  a diff that touches C++ or a build file gets a line saying it went
+  untested. The nightly still runs all of it. Python: the fast
+  pytest set (FAST_TEST_ARGS over PREPUSH_PATHS). C++ (--cpp): an incremental build,
   the host binaries, then each GPU binary as one process under the card lock,
   running only pr's representative set (below) as a GTEST_FILTER; where the
   lister cannot give it, the whole fast set, with a line saying so.
@@ -23,7 +27,8 @@ push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   Under CMAKE_PRESET=auto it prefers a preset whose tree is already built:
   where only some are, the least-loaded live card among those, so a worktree
   whose `pr` gate built one backend never cold-builds the other on push.
-  --all runs every fast case of the GPU binaries, the old smoke.
+  --all runs every fast case of the GPU binaries, the old smoke, and
+  implies --cpp.
   --dry-run prints the changed files, which halves would run, and the
   crates the cargo half's tier 4 would test.
   Cargo: tiers 1 to 3 of the Rust rebuild, `cargo test --no-default-features`
@@ -48,20 +53,24 @@ push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   Every cargo call but `cargo fmt` passes --locked: a manifest change that
   did not update rust/Cargo.lock fails the gate.
 
-pr: the gate before opening a PR (milestone-run requires it). Configure,
-  build, ctest, then the fast pytest set. Of the C++ cases only each family's
-  representative runs, as devtools/test_families.py lists them (an exempt
-  family runs nothing, a flagged one runs whole); the nightly runs the rest.
-  The cargo half too, when origin/main...HEAD touches rust/ (or cannot be read);
-  its tier 4 on the test preset's card, over every crate with --all.
+pr: the gate before opening a PR (milestone-run requires it). The cargo
+  half when origin/main...HEAD touches rust/ (or cannot be read), its tier 4
+  on the test preset's card, over every crate with --all; then the fast
+  pytest set. The C++ half only when asked for, as push's: by --cpp, --only
+  cpp, or an option that acts on the build alone (--fresh, --clean,
+  --no-test, --tidy, --record): configure, build, ctest. Of the C++ cases
+  only each family's representative runs, as devtools/test_families.py
+  lists them (an exempt family runs nothing, a flagged one runs whole); the
+  nightly runs the rest.
   The GPU entries that can share a process run as one gtest process per GPU
   binary; ctest runs the rest. Logged to <report>/pr-<stamp>-<rev>-<preset>.log,
   and its result line appended to <report>/summary.log.
+    --cpp          add the C++ half (src/ is frozen: off by default)
     --preset NAME  configure/build preset; the test preset follows it
                    (default: CMAKE_PRESET, `auto`, the least-loaded live card)
     --fresh        wipe the CMake cache first
     --clean        rebuild every object, keeping the cache
-    --no-test      configure and build only
+    --no-test      configure and build the C++ tree only
     --all          run the whole fast set, not only the representatives
     --tidy         advisory clang-tidy over src/*.cpp after the build
     --only HALF    run only the cpp, the python or the cargo half
@@ -179,6 +188,12 @@ EXCLUDED = re.compile(r"^(vendor/|third_party/|deps/WarpWraps/|deps/FelizJueves/
 # change there fires no C++ half -- building the tree would check none of it.
 # The root CMakeLists.txt line that adds them is outside, and still fires it.
 NOT_IN_CPP_SMOKE = re.compile(r"^(experimental/|test/experimental/)")
+# src/ is no longer developed, so the gates leave the C++ half out unless
+# asked; the nightly still runs it. What they say when a diff touches it.
+CPP_FROZEN = (
+    "the diff touches the C++ tree, which the gates no longer test (src/ is"
+    " frozen) -- --cpp runs the C++ half; the nightly runs all of it"
+)
 # The Rust rebuild fires the cargo half and nothing else: whatever the path --
 # Rust, a .cu, its own CMake project, docs, its by-hand docs/md2html.py --
 # nothing under rust/ is C++ the tree builds or Python the tree tests.
@@ -1937,13 +1952,16 @@ def cmd_push(args: argparse.Namespace, cfg: dict[str, str]) -> int:
     except DiffError as e:
         say(f"push: {e}", err=True)
         return 2
-    cpp, py, cargo = halves(files)
+    touched, py, cargo = halves(files)
+    cpp = args.cpp or args.all
     what = "the whole history" if files is None else f"{len(files)} changed file(s)"
     say(
         f"push: {what} -> C++ half: {'yes' if cpp else 'no'},"
         f" Python half: {'yes' if py else 'no'},"
         f" cargo half: {'yes' if cargo else 'no'}"
     )
+    if touched and not cpp and files is not None:
+        say(f"push: {CPP_FROZEN}")
     if args.dry_run:
         for f in files or []:
             say(f"push:   {f}")
@@ -2259,7 +2277,10 @@ def cmd_pr(
     if test_preset == "auto":
         test_preset = preset
     jobs = args.jobs or cfg["BUILD_JOBS"]
-    do_cpp = args.only in (None, "cpp")
+    # The C++ tree is frozen: its half runs when asked for, by --cpp or by
+    # an option that acts on the build alone.
+    asked = args.cpp or args.fresh or args.clean or args.no_test or args.tidy
+    do_cpp = args.only == "cpp" or (args.only is None and (asked or args.record))
     do_py = args.only in (None, "python") and not args.no_test
     do_cargo = args.only in (None, "cargo") and not args.no_test
     changed: list[list[str] | None] = []
@@ -2274,9 +2295,12 @@ def cmd_pr(
                 changed.append(None)
         return changed[0]
 
-    if do_cargo and args.only is None:
+    if args.only is None:
         # push's dispatch, over origin/main...HEAD and a dirty tree.
-        do_cargo = halves(pr_files())[2]
+        touched, _, fires = halves(pr_files())
+        do_cargo = do_cargo and fires
+        if touched and not do_cpp and pr_files() is not None:
+            say(f"pr: {CPP_FROZEN}")
 
     if (
         do_cpp
@@ -3000,6 +3024,11 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     )
     for p in (push, pr):
         p.add_argument(
+            "--cpp",
+            action="store_true",
+            help="add the C++ half (src/ is frozen, so it is off by default)",
+        )
+        p.add_argument(
             "--preset", help="configure/build preset (default: CMAKE_PRESET)"
         )
     nightly.add_argument(
@@ -3021,7 +3050,9 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     pr.add_argument(
         "--clean", action="store_true", help="rebuild every object, keeping the cache"
     )
-    pr.add_argument("--no-test", action="store_true", help="configure and build only")
+    pr.add_argument(
+        "--no-test", action="store_true", help="configure and build the C++ tree only"
+    )
     for p in (push, pr):
         p.add_argument(
             "--all",
