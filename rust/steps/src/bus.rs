@@ -164,11 +164,22 @@ pub struct EriTable {
     /// The depth of the build's ring and of a J/K pass's: 2, or 1.
     #[serde(default = "default_ring")]
     pub ring: usize,
+    /// The Schwarz screen's threshold: a shell pair whose bound, the sum of
+    /// its records' dressed Schwarz bounds, is under it is skipped in B's
+    /// build, its columns left zero. At least 0, and 0 screens nothing.
+    /// Default 1e-12, the old path's.
+    #[serde(default = "default_schwarz_threshold")]
+    pub schwarz_threshold: f64,
 }
 
 /// `[eri] ring`'s default.
 fn default_ring() -> usize {
     2
+}
+
+/// `[eri] schwarz_threshold`'s default.
+fn default_schwarz_threshold() -> f64 {
+    1e-12
 }
 
 /// `[scf]`: every key at its default when absent.

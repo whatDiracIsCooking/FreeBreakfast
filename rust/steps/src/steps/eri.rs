@@ -21,6 +21,15 @@
 //! Each GPU forms (μν|P) in its ring, `ssperi3<la, lb, lP>`, spherical in
 //! all three indices, fits it against its own L, and downloads it.
 //!
+//! **The screen.** At a positive `[eri] schwarz_threshold`, each class's
+//! records' dressed Schwarz bounds are formed on the GPU
+//! ([`record_bound`]), read on the host, and summed per shell pair: a pair
+//! whose sum is under the threshold has no cells, and its columns of B are
+//! zero. The sum is at least `sqrt((mn|mn))` for every Cartesian `m`, `n`
+//! of the pair, so a dropped column's fit is that small. B keeps every
+//! pair's columns, at the unscreened bound `Dims` gives, so the budget does
+//! not depend on the threshold.
+//!
 //! **The build's ring.** `[eri] ring` pair batches in flight per GPU, two
 //! or one, each ring buffer on a stream of its own carrying its batch's
 //! cells, its three-centre kernels and its download. The fit, a blocked
@@ -70,7 +79,7 @@ use fb_core_flow::{GpuLane, Held, Lane, Placement, Slot, Step, View, fan_out};
 use fb_core_log::{eq, le};
 use fb_integrals_sys::{
     FB_THREE_CENTER_AUX_FIELDS, FB_THREE_CENTER_PACKED_CELL_FIELDS, RECORD_F64_FIELDS,
-    RECORD_I32_FIELDS, mmd_records, packed_gather, three_center_spherical_class,
+    RECORD_I32_FIELDS, mmd_records, packed_gather, record_bound, three_center_spherical_class,
 };
 
 use crate::bus::{ClassDim, Dims, MainBus, Shared, for_each_pair};
@@ -104,6 +113,18 @@ const K_BY_SYRK: bool = matches!(env!("FB_KERNELS_BACKEND").as_bytes(), b"CUDA")
 /// The fields of one aux record and of one cell, as the kernel reads them.
 const AUX_FIELDS: usize = FB_THREE_CENTER_AUX_FIELDS as usize;
 const CELL_FIELDS: usize = FB_THREE_CENTER_PACKED_CELL_FIELDS as usize;
+
+/// The reason the screen's one host wait carries.
+macro_rules! screen_wait {
+    ($e:expr) => {{
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the eri build's screen reads its record bounds through their download's token, on the first ring stream, before its first batch (docs/gpu_layer.md, \"The v0.0.4 runtime\")"
+        )]
+        let host = $e.sync();
+        host
+    }};
+}
 
 /// The reason every host wait in the rings carries.
 macro_rules! ring_wait {
@@ -179,6 +200,8 @@ pub struct EriManager {
     /// The J/K passes made since B was built: zeroed by `eri`'s run,
     /// counted by [`Self::build_jk`] under the manager's lock.
     passes: AtomicUsize,
+    /// The shell pairs the screen dropped in the last build.
+    dropped: usize,
 }
 
 impl EriManager {
@@ -222,6 +245,13 @@ impl EriManager {
     #[must_use]
     pub fn jk_width(&self) -> usize {
         self.jk_width
+    }
+
+    /// The shell pairs `[eri] schwarz_threshold` dropped from B's build:
+    /// their columns are zero.
+    #[must_use]
+    pub fn dropped_pairs(&self) -> usize {
+        self.dropped
     }
 
     /// The J/K passes [`Self::build_jk`] has finished since B was last
@@ -493,8 +523,10 @@ fn jk_layout(d: &Dims, w: usize, depth: usize) -> JkLayout {
 }
 
 /// The step's scratch on one GPU, laid out: the shell table, the aux
-/// records, each class's records tables and records, the pair prefixes
-/// the cells read, the Cholesky tile and flag, and the gather weights.
+/// records, each class's records tables, records and record bounds, the
+/// pair prefixes the cells read, the Cholesky tile and flag, and the
+/// gather weights. The bounds are laid out at every threshold, so the
+/// budget does not depend on it.
 struct ScratchLayout {
     device: Layout,
     pinned: Layout,
@@ -506,6 +538,8 @@ struct ScratchLayout {
     h_tables: Vec<Span<i32>>,
     rec_f: Vec<Span<f64>>,
     rec_i: Vec<Span<i32>>,
+    bounds: Vec<Span<f64>>,
+    h_bounds: Vec<Span<f64>>,
     h_prefix: Span<i32>,
     h_diagonal: Span<i32>,
     tile: Span<f64>,
@@ -543,6 +577,8 @@ fn scratch_layout(d: &Dims) -> ScratchLayout {
             .iter()
             .map(|c| dev.span(RECORD_I32_FIELDS * c.n_rec))
             .collect(),
+        bounds: d.classes.iter().map(|c| dev.span(c.n_rec)).collect(),
+        h_bounds: d.classes.iter().map(|c| pin.span(c.n_rec)).collect(),
         h_prefix: pin.span(d.n_shell_pair + d.classes.len()),
         h_diagonal: pin.span(d.n_shell_pair),
         tile: dev.span(CHOLESKY_TILE * CHOLESKY_TILE),
@@ -692,6 +728,12 @@ impl Step<MainBus> for EriStep {
                 "[eri] ring = {depth}, which is neither 1 nor 2"
             )));
         }
+        let threshold = table.schwarz_threshold;
+        if !(threshold >= 0.0 && threshold.is_finite()) {
+            return Err(Error::config(format!(
+                "[eri] schwarz_threshold = {threshold}, which is not a finite number at least 0"
+            )));
+        }
         let limit = table.mem_per_gpu.unwrap_or(DEFAULT_MEM_PER_GPU);
         let needs = EriStep::least_mem_per_gpu(d, depth);
         if needs > limit {
@@ -762,6 +804,7 @@ impl Step<MainBus> for EriStep {
             b: budget.heap(d.n_col * q),
             state: Mutex::new(gpus),
             passes: AtomicUsize::new(0),
+            dropped: 0,
         })
     }
 
@@ -809,7 +852,7 @@ impl Step<MainBus> for EriStep {
             .collect();
         // Whoever fans out, joins: every GPU's batches are in B, and its
         // streams joined, before this returns.
-        fan_out(work, |(((((gpu, lane), st), l), rows), run)| {
+        let dropped = fan_out(work, |(((((gpu, lane), st), l), rows), run)| {
             let mine = &all[run.clone()];
             let first = col_of(run.start);
             gpu_build(
@@ -825,6 +868,15 @@ impl Step<MainBus> for EriStep {
                 (rows, first),
             )
         })?;
+        // Every GPU screens every pair alike; gpu0's count is the build's.
+        out.dropped = dropped[GPU0];
+        if out.dropped > 0 {
+            log::info!(
+                "step 'eri': [eri] schwarz_threshold drops {} of {} shell pairs",
+                out.dropped,
+                d.n_shell_pair
+            );
+        }
         Ok(())
     }
 }
@@ -852,9 +904,10 @@ fn scatter(rows: &mut [&mut [f64]], first: usize, cols: usize, fitted: &[f64]) {
     }
 }
 
-/// One GPU's part of the build: its records, its factor, its pair batches
-/// through the ring into its columns of B, and the gather weights a J/K
-/// pass reads.
+/// One GPU's part of the build: its records, its screen, its factor, its
+/// pair batches through the ring into its columns of B, and the gather
+/// weights a J/K pass reads. Returns the shell pairs the screen dropped,
+/// of all of them.
 #[allow(
     clippy::too_many_arguments,
     reason = "a step's inner task, spelled out"
@@ -870,7 +923,7 @@ fn gpu_build(
     (width, depth): (usize, usize),
     mine: &[Batch],
     (mut rows, first_col): (Vec<&mut [f64]>, usize),
-) -> Status {
+) -> Result<usize> {
     let g = lane.gpu();
     let d = &shared.dims;
     let basis = &shared.basis;
@@ -1015,6 +1068,39 @@ fn gpu_build(
             i,
         )?);
     }
+    // The screen: each record's bound on the first stream, after its
+    // records, read on the host and summed per shell pair, before any
+    // batch's cells are written. At 0 nothing is formed or read.
+    let threshold = shared
+        .config
+        .eri
+        .as_ref()
+        .map_or(0.0, |t| t.schwarz_threshold);
+    #[allow(
+        clippy::disallowed_macros,
+        reason = "small scratch: one flag per shell pair, a byte each, the size of the records' tables beside it"
+    )]
+    let mut kept = vec![true; d.n_shell_pair];
+    if threshold > 0.0 {
+        let mut downs = Vec::new();
+        for (c, (span, h_span)) in sl.bounds.into_iter().zip(sl.h_bounds).enumerate() {
+            let class = &d.classes[c];
+            let mut bound = scratch.device(g, span);
+            record_bound(s0, (class.la, class.lb), class.n_rec, &rec_f[c], &mut bound)?;
+            downs.push(s0.download(scratch.pinned(g, h_span), &bound)?);
+        }
+        for (c, down) in downs.into_iter().enumerate() {
+            let bound = screen_wait!(down)?;
+            let base = first_pair[c] + c;
+            for k in 0..d.classes[c].n_pair {
+                let (r0, r1) = (prefix[base + k] as usize, prefix[base + k + 1] as usize);
+                let sum: f64 = bound[r0..r1].iter().sum();
+                // A NaN bound keeps its pair.
+                kept[first_pair[c] + k] = sum.is_nan() || sum >= threshold;
+            }
+        }
+    }
+    let dropped = kept.iter().filter(|&&k| !k).count();
     let ready = &st.events[2 * depth];
     ready.record(s0)?;
     for s in streams.iter().take(depth).skip(1) {
@@ -1089,21 +1175,30 @@ fn gpu_build(
         let pairs = &prefix[base..base + class.n_pair + 1];
         let diag = &diagonal[first_pair[batch.class]..first_pair[batch.class] + class.n_pair];
         let (cells, tensor) = &mut slot_dev[s];
-        // The cells: this batch's pairs crossed with every aux shell of
-        // one momentum, each destination relative to the batch, written
+        // The batch's pairs the screen keeps. A dropped pair has no cells,
+        // so its block is not written: the batch is zeroed first, on the
+        // buffer's stream after its last download.
+        let mine: Vec<usize> = (0..batch.n_pair)
+            .filter(|&i| kept[first_pair[batch.class] + batch.first_pair + i])
+            .collect();
+        if mine.len() < batch.n_pair {
+            stream.zero(&mut part_mut(tensor, 0, q * cols))?;
+        }
+        // The cells: this batch's kept pairs crossed with every aux shell
+        // of one momentum, each destination relative to the batch, written
         // into an exact-length tenant of that momentum's pinned region.
         let mut uploads = Vec::new();
         for (lp, shells_l) in aux_of_l.iter().enumerate().rev() {
-            if shells_l.is_empty() {
+            let n_cell = mine.len() * shells_l.len();
+            if n_cell == 0 {
                 continue;
             }
-            let n_cell = batch.n_pair * shells_l.len();
             let span = ring
                 .p
                 .span::<i32>(ring.slots[s].h_cells[lp], CELL_FIELDS * n_cell);
             let mut h = st.pinned.tenant(&span);
             let mut k = 0;
-            for i in 0..batch.n_pair {
+            for &i in &mine {
                 let p = batch.first_pair + i;
                 for &sh in shells_l {
                     let fields = [
@@ -1195,7 +1290,7 @@ fn gpu_build(
             h_flag[0]
         )));
     }
-    Ok(())
+    Ok(dropped)
 }
 
 /// Every pair column of B in order: `f(column, row m, column n, weight)`,

@@ -457,6 +457,12 @@ every case that calls it is named here, which `fb-doc-check`'s
   benzene's and ethylene's DF-RHF from the steps against the old Rust
   path's in the same process, two full SCF runs each;
   `waters_energy_matches_the_old_paths` is its family's representative.
+- `fb-steps`' `the_default_threshold_keeps_benzenes_energy`
+  (`tests/schwarz_device.rs`), benzene's DF-RHF at the default `[eri]
+  schwarz_threshold` against 0 on the v0.0.4 layer, two full SCF runs;
+  `eri_device.rs`'s
+  `the_screen_zeroes_only_columns_under_the_threshold_on_benzene` is its
+  family's representative.
 
 libtest has no skipped state, so a returned case counts as passed; the
 gate's line, not the count, is what says it did not run. `#[ignore]` is

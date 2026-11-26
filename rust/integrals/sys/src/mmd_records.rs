@@ -1,6 +1,7 @@
 //! The primitive-pair records on the v0.0.4 layer: one class's records
 //! through [`fb_mmd_records`] over `fb-core-device`'s stream and slices
-//! ([`mmd_records`]).
+//! ([`mmd_records`]), and each record's dressed Schwarz bound through
+//! [`fb_ordered_pair_bound`] ([`record_bound`]).
 //!
 //! The kernel follows indices it reads from device memory: each shell's
 //! primitive range, each pair's two shells and each pair's record range.
@@ -18,10 +19,13 @@ use contracts::requires;
 use fb_core_device::{
     DeviceSlice, DeviceSliceMut, HostSlice, Pending, ScopedDevice, Stream, part_mut,
 };
-use fb_core_error_handling::Result;
+use fb_core_error_handling::{Result, Status};
 use fb_core_log::{eq, fits_i32, le};
 
-use crate::{fb_mmd_records, fb_primitive_pair_records, fb_primitive_pair_source, launched};
+use crate::{
+    FB_RECORD_BOUND_MAX_MOMENTUM, fb_mmd_records, fb_ordered_pair_bound,
+    fb_primitive_pair_class_view, fb_primitive_pair_records, fb_primitive_pair_source, launched,
+};
 
 /// The double fields of one record [`mmd_records`] writes, in their order:
 /// zeta, P (x, y, z), P - A, P - B, s, alpha and beta.
@@ -180,6 +184,87 @@ pub fn mmd_records<'s, H: HostSlice<i32>>(
     let status = unsafe { fb_mmd_records(stream.raw(), n_rec as i32, &src, &out) };
     launched(KERNEL, &[], status)?;
     Ok(uploaded)
+}
+
+/// The record fields [`fb_ordered_pair_bound`] reads, the first eleven
+/// [`mmd_records`] writes: zeta, P, P - A, P - B and s (P itself unread).
+const BOUND_FIELDS: usize = 11;
+
+/// Each of class `(la, lb)`'s `n_rec` records' dressed Schwarz bound into
+/// `bound` on `stream`, one [`fb_ordered_pair_bound`] launch:
+/// `max_{i ∈ a} Σ_{k ∈ b} Σ_p |s E^{a_i b_k}_p| I_p(ζ)`, the max over the
+/// bra shell's Cartesians, `I_p` the Hermite Gaussian's Coulomb self-norm.
+/// By the triangle inequality the sum of a shell pair's record bounds is
+/// at least `sqrt((mn|mn))` for every Cartesian `m` of its bra and `n` of
+/// its ket. `records` is the class's records as [`mmd_records`] writes
+/// them, field `k` of record `r` at `k n_rec + r`.
+///
+/// # Errors
+/// The launch's failure, as [`fb_kernel_abi::launch_status`] maps it.
+#[requires(
+    le!(1, n_rec) && fits_i32!(n_rec),
+    "fb_ordered_pair_bound: n_rec is a positive i32"
+)]
+#[requires(
+    le!(BOUND_FIELDS * n_rec, records.len()),
+    "fb_ordered_pair_bound: records holds 11 fields of n_rec"
+)]
+#[requires(
+    le!(n_rec, bound.len()),
+    "fb_ordered_pair_bound: bound holds n_rec"
+)]
+// RELEASE: the launcher refuses a class outside its table as
+// FB_LAUNCH_UNSUPPORTED, enqueueing nothing.
+#[debug_requires(
+    0 <= la && la <= lb && lb <= FB_RECORD_BOUND_MAX_MOMENTUM,
+    "the class has a kernel"
+)]
+#[track_caller]
+pub fn record_bound(
+    stream: &Stream,
+    (la, lb): (i32, i32),
+    n_rec: usize,
+    records: &impl DeviceSlice<f64>,
+    bound: &mut impl DeviceSliceMut<f64>,
+) -> Status {
+    let rec = records.as_ptr();
+    let field = |k: usize| rec.wrapping_add(k * n_rec);
+    let null = std::ptr::null();
+    let view = fb_primitive_pair_class_view {
+        la,
+        lb,
+        n_rec: n_rec as i32,
+        zeta: field(0),
+        p_x: field(1),
+        p_y: field(2),
+        p_z: field(3),
+        pa_x: field(4),
+        pa_y: field(5),
+        pa_z: field(6),
+        pb_x: field(7),
+        pb_y: field(8),
+        pb_z: field(9),
+        s: field(10),
+        ea: null,
+        eb: null,
+        bound: null,
+        bound_ab: null,
+        bound_ba: null,
+        off_a: std::ptr::null(),
+        off_b: std::ptr::null(),
+        rank_a: std::ptr::null(),
+        rank_b: std::ptr::null(),
+    };
+    let _current = ScopedDevice::new(stream.physical());
+    // SAFETY: the view's eleven fields are runs of n_rec doubles inside
+    // records, of which the kernel reads zeta, P - A, P - B and s, and
+    // bound holds n_rec doubles (the contracts, n_rec a positive i32, so
+    // the cast is exact); the kernel is one thread per record and follows
+    // no index; bound has no other user until the enqueued work finishes
+    // (DeviceSliceMut's promise); the view is a host value read before the
+    // call returns, which only enqueues.
+    let status = unsafe { fb_ordered_pair_bound(stream.raw(), &view, bound.as_mut_ptr()) };
+    launched("fb_ordered_pair_bound", &[la, lb], status)
 }
 
 /// Asserts that `tables`, laid out as [`mmd_records`] takes them, holds a

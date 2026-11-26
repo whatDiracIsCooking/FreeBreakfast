@@ -722,7 +722,14 @@ and fills a stream enqueues, device slices, and each GPU's
   and a J/K pass's). Between a slot's stream and the GPU's the order is an
   event, never a sync: the build's fit waits on the event its slot's
   stream recorded after the batch's kernels, and the slot's download on
-  the one the GPU's stream recorded after the fit. Each such call carries an `allow` naming it. A loop
+  the one the GPU's stream recorded after the fit. Each such call carries an `allow` naming it.
+  The eri build's screen is another: once per build, before its first
+  batch, each GPU reads its records' Schwarz bounds through their
+  download's token on its first ring stream, which waits for the records
+  and their bounds alone, never the GPU's stream, and decides on the host
+  which shell pairs get cells (`fb_steps::EriManager`, `[eri]
+  schwarz_threshold`); at a threshold of 0 it reads nothing. The call
+  carries an `allow` naming it. A loop
   inside `run` that decides on the host is the third: once per turn,
   after the turn's last enqueue, it reads that turn's scalars through
   their download's token (`Pending::sync`), which waits for the turn it

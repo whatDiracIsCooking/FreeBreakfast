@@ -1,7 +1,9 @@
 //! The ERI step's budget with no device (tier 3): `[eri] mem_per_gpu` one
 //! byte under the least that holds a batch is refused, naming the key, its
 //! value and the bytes needed, and the least itself is accepted; a ring
-//! of neither 1 nor 2 is refused.
+//! of neither 1 nor 2 is refused; the budget at the default `[eri]
+//! schwarz_threshold` is the budget at 0, and a threshold under 0 or not a
+//! number is refused.
 
 #[allow(
     dead_code,
@@ -56,4 +58,51 @@ fn a_ring_of_neither_one_nor_two_is_refused() {
         "{}",
         error.message
     );
+}
+
+/// Benzene's dry budget at the default `[eri] schwarz_threshold` is its
+/// budget at 0, row for row of the table (its caps' rows aside): B and the build's ring stay at the
+/// unscreened bound `Dims` gives (`docs/memory.md`, "Batched only").
+#[test]
+fn the_dry_budget_is_the_same_at_the_default_threshold_and_at_0() {
+    let table = |threshold: Option<f64>| {
+        let mut config = common::config("benzene.xyz", "cc-pvdz", Some("cc-pvdz-jkfit"));
+        let eri = config.eri.as_mut().unwrap();
+        assert_eq!(eri.schwarz_threshold, 1e-12, "the default");
+        if let Some(t) = threshold {
+            eri.schwarz_threshold = t;
+        }
+        let plan = plan(MainBus::setup(config, Backing::Dry).unwrap()).unwrap();
+        plan.budget(&Executor::new(2)).unwrap();
+        let ledger = plan.bus().ledger();
+        // Every row of the table but its caps', which read the machine's
+        // free memory as it is now.
+        let rows: Vec<String> = ledger
+            .table()
+            .lines()
+            .filter(|l| !l.contains(" against "))
+            .map(str::to_owned)
+            .collect();
+        (rows, ledger.device_total(0), ledger.heap_total())
+    };
+    assert_eq!(table(None), table(Some(0.0)));
+}
+
+/// A threshold under 0, or not a number, is refused, naming the key.
+#[test]
+fn a_negative_or_nan_threshold_is_refused() {
+    for t in [-1e-12, f64::NAN] {
+        let mut config = common::config("h2o.xyz", "cc-pvdz", Some("cc-pvdz-jkfit"));
+        config.eri.as_mut().unwrap().schwarz_threshold = t;
+        let error = plan(MainBus::setup(config, Backing::Dry).unwrap())
+            .unwrap()
+            .budget(&Executor::new(2))
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidConfig, "{}", error.message);
+        assert!(
+            error.message.contains("[eri] schwarz_threshold"),
+            "{}",
+            error.message
+        );
+    }
 }
