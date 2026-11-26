@@ -240,9 +240,15 @@ too, not just its text:
 - **The code's name is the vendor's own** (`cudaErrorMemoryAllocation`,
   `hipErrorOutOfMemory`), so a message can be searched for in the vendor docs.
 - **The numeric code and the backend are kept**, so a caller can branch on them.
-- **Codes are mapped to `ErrorKind`.** Out-of-memory from either vendor becomes
-  `Allocation`, not `GpuRuntime`, and an unsupported configuration the
-  backend refuses becomes `Unsupported`. The kinds are what the exit code and
+- **Codes are mapped to `ErrorKind`.** A runtime code that fails becomes
+  `GpuRuntime`, out-of-memory from either vendor included, in both layers:
+  fb-core-wwr's `gpu_status` and fb-core-device's statuses. Memory is
+  taken at admission, and admission's refusal is the one `Allocation` value
+  ("Allocation is a planning-time error", below); a create that fails
+  aborts, and an out-of-memory code met after admission is a runtime fault
+  like any other.
+  An unsupported configuration the backend refuses is to become
+  `Unsupported`; no wrapper maps one yet. The kinds are what the exit code and
   the boundary's message are read from, so a reader learns what went wrong
   without the vendor's table.
 - **Exit codes are the C++ ones**, which `ErrorKind::exit_code` already pins.

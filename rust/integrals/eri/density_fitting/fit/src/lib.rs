@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! M = L Lᵀ             (fb-recipes-cholesky, lower)
-//! B = L⁻¹ (P|mn)       (fb-recipes-sys's trsm: left, lower, no transpose)
+//! B = L⁻¹ (P|mn)       (fb-recipes-launch's trsm: left, lower, no transpose)
 //! ```
 //!
 //! so that `(mn|ls) ≈ Σ_Q B_Q,mn B_Q,ls = (mn|P) M⁻¹ (P|ls)`, and J and K
