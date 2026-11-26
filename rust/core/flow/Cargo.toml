@@ -8,6 +8,11 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# The step-end sync's negative control (`controls::skip_step_end_sync`),
+# for a dependent's tests alone: fb-steps' dev-dependency turns it on.
+test-support = []
+
 [dependencies]
 contracts.workspace = true
 # The ledger each mode runs against, the lease a run is lent, the lock rank.

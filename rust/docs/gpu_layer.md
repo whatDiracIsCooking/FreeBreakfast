@@ -719,7 +719,10 @@ and fills a stream enqueues, device slices, and each GPU's
   that slot's copies alone and never a GPU's stream or the device, and it
   joins its streams before `run` (or a method such as `build_jk`, called
   from a reader's `run`) returns (`fb_steps::EriManager`, its build's ring
-  and a J/K pass's). Each such call carries an `allow` naming it. A loop
+  and a J/K pass's). Between a slot's stream and the GPU's the order is an
+  event, never a sync: the build's fit waits on the event its slot's
+  stream recorded after the batch's kernels, and the slot's download on
+  the one the GPU's stream recorded after the fit. Each such call carries an `allow` naming it. A loop
   inside `run` that decides on the host is the third: once per turn,
   after the turn's last enqueue, it reads that turn's scalars through
   their download's token (`Pending::sync`), which waits for the turn it

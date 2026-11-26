@@ -119,6 +119,9 @@ pub use fan_out::fan_out;
 /// member but this one names rustflow (`docs/programming_model.md`, "CPU
 /// workers").
 pub use rustflow::Executor;
+/// The step-end sync's negative control, for a dependent's tests alone.
+#[cfg(feature = "test-support")]
+pub use wrapper::controls;
 pub use wrapper::{GpuLane, Held, Lane};
 
 /// `m`'s guard, poisoned or not: a step that panicked fails the run

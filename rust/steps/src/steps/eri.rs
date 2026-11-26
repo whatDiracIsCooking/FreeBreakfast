@@ -1088,8 +1088,15 @@ fn gpu_build(
         let (kernels, fit) = (&st.events[2 * s], &st.events[2 * s + 1]);
         kernels.record(stream)?;
         // The fit, in place, on the GPU's stream: B ← L⁻¹ B, the tree's
-        // own blocked solve, after this batch's kernels.
-        gpu.stream().wait(kernels)?;
+        // own blocked solve, after this batch's kernels. A unit test's
+        // negative control alone removes the wait.
+        #[cfg(test)]
+        let keep = !tests::DROP_THE_FIT_EVENT.load(std::sync::atomic::Ordering::SeqCst);
+        #[cfg(not(test))]
+        let keep = true;
+        if keep {
+            gpu.stream().wait(kernels)?;
+        }
         let mut fitted = part_mut(tensor, 0, q * cols);
         gpu.trsm(
             wwr_blas_side_mode::WWR_BLAS_SIDE_LEFT,
@@ -1395,10 +1402,22 @@ pub(crate) mod tests {
     )]
 
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use fb_core_budget::{Backing, Caps, Ledger};
     use fb_core_flow::{Bus, Dag, Executor};
 
     use crate::bus::Config;
+
+    /// The negative control of the event before the fit: set, the fit no
+    /// longer waits for its batch's kernels on the ring buffer's stream.
+    /// Only [`removing_the_event_before_the_fit_fails_under_the_nan_fill`]
+    /// sets it, under [`CONTROL`].
+    pub(crate) static DROP_THE_FIT_EVENT: AtomicBool = AtomicBool::new(false);
+
+    /// Held by every device case of this module, so the control's switch
+    /// is never set while another builds B.
+    static CONTROL: Mutex<()> = Mutex::new(());
 
     fn water(eri: &str) -> Config {
         let text = format!(
@@ -1534,6 +1553,9 @@ pub(crate) mod tests {
     /// holds a batch, so several pair batches and aux batches go through
     /// each ring).
     fn jk_on(devices: &str) -> Vec<Vec<f64>> {
+        let _turn = CONTROL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dims = MainBus::setup(water(""), Backing::Dry)
             .unwrap()
             .shared()
@@ -1617,5 +1639,59 @@ pub(crate) mod tests {
         {
             within(&format!("{what}, two GPUs against one"), &two[i], &one[i]);
         }
+    }
+
+    /// Water's B at forced batches (the least `mem_per_gpu` of the ring of
+    /// two: many pair batches through each ring buffer), NaN-filled, on
+    /// the card: with the event before each fit, without it, and with it
+    /// restored. Without it the fit reads its tensor while the kernels on
+    /// the ring buffer's stream are still writing it, NaN from the fill or
+    /// the last batch's integrals, so B is wrong; restored, B is the first
+    /// run's to the bar on B, 1e-10 of its largest element. The control
+    /// asserts the failure.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn removing_the_event_before_the_fit_fails_under_the_nan_fill() {
+        let _turn = CONTROL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let least = EriStep::least_mem_per_gpu(
+            &MainBus::setup(water(""), Backing::Dry)
+                .unwrap()
+                .shared()
+                .dims,
+            2,
+        );
+        let b = |drop_the_event: bool| {
+            let mut config = water(&format!("mem_per_gpu = {least}\n"));
+            config.resources.nan_fill = true;
+            DROP_THE_FIT_EVENT.store(drop_the_event, Ordering::SeqCst);
+            let run = crate::run(config, Backing::Real);
+            DROP_THE_FIT_EVENT.store(false, Ordering::SeqCst);
+            let run = run.unwrap();
+            let eri = run.plan.output(EriStep);
+            assert!(eri.batches() > 6, "the build is batched");
+            eri.b().to_vec()
+        };
+        let first = b(false);
+        let largest = first.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let off = |other: &[f64]| {
+            other.iter().zip(&first).fold(0.0f64, |m, (a, b)| {
+                if (a - b).is_nan() {
+                    f64::INFINITY
+                } else {
+                    m.max((a - b).abs())
+                }
+            })
+        };
+        let (without, restored) = (off(&b(true)), off(&b(false)));
+        println!(
+            "B: max |B| = {largest:.6}; without the event max |ΔB| = {without:.1e}, restored \
+             {restored:.1e} (bar {:.1e})",
+            1e-10 * largest
+        );
+        assert!(largest > 0.1);
+        assert!(without > 1e-10 * largest, "B is right without the event");
+        assert!(restored <= 1e-10 * largest, "B is wrong with it restored");
     }
 }

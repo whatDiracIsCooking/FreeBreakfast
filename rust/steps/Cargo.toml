@@ -54,3 +54,20 @@ harness = false
 fb-io-npy.workspace = true
 # chain_vram's per-process VRAM reading on an AMD card.
 fb-test-support.workspace = true
+# The step-end sync's negative control (`controls_device.rs`).
+fb-core-flow = { workspace = true, features = ["test-support"] }
+# The old Rust path, in the same process as the steps (`old_path_device.rs`):
+# its DF-RHF run, and S, H and the metric from its tasks on the GPU. Only
+# here, under [dev-dependencies]: the steps name nothing of the wrapper and
+# task layers.
+fb-core-arena.workspace = true
+fb-core-planner.workspace = true
+fb-core-wwr.workspace = true
+fb-integrals-eri-density-fitting-metric.workspace = true
+fb-integrals-mmd.workspace = true
+fb-integrals-one-electron-core-hamiltonian.workspace = true
+fb-integrals-one-electron-overlap.workspace = true
+fb-molecule-nuclei.workspace = true
+fb-pipeline-eri.workspace = true
+fb-pipeline-scf.workspace = true
+fb-recipes-diagonalize.workspace = true

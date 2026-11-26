@@ -27,7 +27,7 @@
 
 mod common;
 
-use fb_core_budget::{Backing, Caps, Ledger};
+use fb_core_budget::{Backing, Caps, Ledger, device_margin};
 use fb_core_device::Stream;
 use fb_core_flow::{Bus, Executor};
 use fb_steps::{EIGENVALUE_FLOOR, MainBus, OrthogonalizerStep, plan};
@@ -245,4 +245,32 @@ fn the_metric_reaches_two_gpus_of_one_card() {
 #[ignore = "tier 5: needs two GPUs"]
 fn tier5_the_metric_reaches_two_devices() {
     the_metric_reaches_every_gpu("[0, 1]");
+}
+
+/// The most the card's free memory may move between setup's reading and
+/// the test's, through other processes alone: the RTX 3080's display
+/// clients move it (#1573, #1589), and nothing of this process allocates
+/// between the two reads.
+const DRIFT: u64 = 2 << 20;
+
+/// The default device cap is read after the handles exist: water set up
+/// with no cap written, device 0's free memory then read by hand, the cap
+/// is that reading less the margin, up to what other processes took
+/// between the two reads.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn the_default_device_cap_is_the_free_memory_after_setup_less_the_margin() {
+    let bus = MainBus::setup(common::config("h2o.xyz", "cc-pvdz", None), Backing::Real).unwrap();
+    let (free, total) = fb_core_device::memory(0).unwrap();
+    let cap = &bus.ledger().caps().device[0];
+    let want = free.saturating_sub(device_margin(total));
+    println!(
+        "free after setup {free} B of {total} B, margin {} B: cap {} B, by hand {want} B, \
+         |Δ| = {} B",
+        device_margin(total),
+        cap.used,
+        cap.used.abs_diff(want)
+    );
+    assert_eq!(cap.written, None);
+    assert!(cap.used.abs_diff(want) <= DRIFT);
 }

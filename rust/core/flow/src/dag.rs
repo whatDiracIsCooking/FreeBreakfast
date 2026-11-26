@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use fb_core_budget::{AllocationRecord, Backing, RECORD_THRESHOLD, bytes};
+use fb_core_budget::{AllocationRecord, Backing, LockId, RECORD_THRESHOLD, bytes};
 use fb_core_error_handling::{Error, Result, Status};
 use rustflow::prelude::{Executor, FlowBuilder, RunError, Task, Taskflow};
 
@@ -15,7 +15,23 @@ use crate::wrapper::{acquire, make_lane, release};
 use crate::{Bus, Read, ReadSet, Step, View, locked};
 
 type BudgetFn<B> = Arc<dyn Fn(&B) -> Status + Send + Sync>;
-type RunFn<B> = Arc<dyn Fn(&B) -> Result<(Duration, Duration)> + Send + Sync>;
+type RunFn<B> = Arc<dyn Fn(&B) -> Result<Ran> + Send + Sync>;
+
+/// What one `run` inside the wrapper leaves for the execute's record.
+struct Ran {
+    /// The time inside `run`.
+    run: Duration,
+    /// The time inside the wrapper's sync and release.
+    sync: Duration,
+    /// The locks taken, in the order taken.
+    locks: Vec<LockId>,
+    /// Whether one of them was held by another step when asked for.
+    waited: bool,
+    /// When the last was taken.
+    held: Instant,
+    /// When their release began.
+    released: Instant,
+}
 
 struct Node<B> {
     name: &'static str,
@@ -45,13 +61,13 @@ fn budget_body<B: Bus, S: Step<B>>(bus: &B) -> Status {
     Ok(())
 }
 
-/// Execute mode's body of `S`: its `run` inside the wrapper, and the time
-/// inside `run` and inside the wrapper's sync and release.
+/// Execute mode's body of `S`: its `run` inside the wrapper, the time
+/// inside `run` and inside the wrapper's sync and release, and the locks.
 ///
 /// # Panics
 /// If the step was not budgeted, which [`Plan::execute`]'s check of an
 /// accepted budget rules out.
-fn run_body<B: Bus, S: Step<B>>(bus: &B) -> Result<(Duration, Duration)> {
+fn run_body<B: Bus, S: Step<B>>(bus: &B) -> Result<Ran> {
     let slot = S::slot(bus);
     let lane = locked(&slot.lane);
     let lane = lane
@@ -78,7 +94,8 @@ fn run_body<B: Bus, S: Step<B>>(bus: &B) -> Result<(Duration, Duration)> {
     // The wrapper's sync, then the locks: a finished node is finished
     // device work, whether `run` failed or not.
     let start = Instant::now();
-    let left = release(lane, held);
+    let (locks, waited, held_at) = (held.taken().to_vec(), held.waited, held.held_at);
+    let (left, released) = release(lane, held);
     ran?;
     left?;
     if let Some(largest) = largest {
@@ -91,7 +108,14 @@ fn run_body<B: Bus, S: Step<B>>(bus: &B) -> Result<(Duration, Duration)> {
             bytes(RECORD_THRESHOLD as u64)
         )));
     }
-    Ok((run, start.elapsed()))
+    Ok(Ran {
+        run,
+        sync: start.elapsed(),
+        locks,
+        waited,
+        held: held_at,
+        released,
+    })
 }
 
 impl<B: Bus> Dag<B> {
@@ -204,6 +228,17 @@ pub struct StepTime {
     pub began: Duration,
     /// When the wrapper's release returned.
     pub ended: Duration,
+    /// The locks the wrapper took, in the order it took them: the rank.
+    pub locks: Vec<LockId>,
+    /// Whether the wrapper found one of them held by another step, and so
+    /// waited for it.
+    pub waited: bool,
+    /// When the wrapper held every one of them, from the start of the
+    /// execute.
+    pub held: Duration,
+    /// When it began to release them, after the step-end sync: two holders
+    /// of one lock hold it over disjoint `held..released` spans.
+    pub released: Duration,
 }
 
 /// What one mode's run of the graph leaves behind: a failed flag per node,
@@ -224,6 +259,10 @@ impl RunState {
                 sync: Duration::ZERO,
                 began: Duration::ZERO,
                 ended: Duration::ZERO,
+                locks: Vec::new(),
+                waited: false,
+                held: Duration::ZERO,
+                released: Duration::ZERO,
             })
             .collect();
         Arc::new(RunState {
@@ -396,12 +435,21 @@ impl<B: Bus> Plan<B> {
                 }
                 let began = state.start.elapsed();
                 match (nodes[i].run)(&bus) {
-                    Ok((run, sync)) => {
+                    Ok(ran) => {
+                        let ended = state.start.elapsed();
+                        let since = |at: Instant| at.saturating_duration_since(state.start);
                         let mut times = locked(&state.times);
-                        times[i].began = began;
-                        times[i].ended = state.start.elapsed();
-                        times[i].run = run;
-                        times[i].sync = sync;
+                        times[i] = StepTime {
+                            name,
+                            run: ran.run,
+                            sync: ran.sync,
+                            began,
+                            ended,
+                            held: since(ran.held),
+                            released: since(ran.released),
+                            locks: ran.locks,
+                            waited: ran.waited,
+                        };
                     }
                     Err(e) => state.fail(i, e.with_context(format!("step '{name}'"))),
                 }
