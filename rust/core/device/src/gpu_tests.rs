@@ -35,17 +35,16 @@ const BAR: f64 = 1e-12;
 /// `values` on the device, through `stream`, synced.
 fn device(stream: &Stream, values: &[f64]) -> DeviceBuf<f64> {
     let mut buf = DeviceBuf::new(values.len());
-    stream.upload(&mut buf, &Pinned::from(values)).unwrap();
-    stream.sync().unwrap();
+    let staged = stream.upload(&mut buf, Pinned::from(values)).unwrap();
+    drop(staged.sync().unwrap());
     buf
 }
 
 /// The first `len` elements of `buf`, read after `stream` drains.
 fn host<E: Copy + Default>(stream: &Stream, buf: &DeviceBuf<E>, len: usize) -> Vec<E> {
-    let mut out = Pinned::from(&vec![E::default(); len]);
-    stream.download(&mut out, buf).unwrap();
-    stream.sync().unwrap();
-    out.read()
+    let out = Pinned::from(&vec![E::default(); len]);
+    let out = stream.download(out, &part(buf, 0, len)).unwrap();
+    out.sync().unwrap().read()
 }
 
 /// Uniform in [-1, 1): splitmix64, so each case's numbers are its own.

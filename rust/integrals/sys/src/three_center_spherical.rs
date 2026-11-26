@@ -12,8 +12,10 @@
 //! launch.
 
 use contracts::requires;
-use fb_core_device::{DeviceSlice, DeviceSliceMut, HostSlice, ScopedDevice, Stream};
-use fb_core_error_handling::Status;
+use fb_core_device::{
+    DeviceSlice, DeviceSliceMut, HostSlice, Pending, ScopedDevice, Stream, part_mut,
+};
+use fb_core_error_handling::Result;
 use fb_core_log::{eq, fits_i32, le};
 
 use crate::{
@@ -34,7 +36,8 @@ const KERNEL: &str = "fb_three_center_spherical_class";
 
 /// Class `(la, lb, lp)` of the fully spherical packed `(μν|Q)` into `eri3`
 /// on `stream`: `cells` uploaded into the head of `cells_dev`, then one
-/// [`fb_three_center_spherical_class`] launch.
+/// [`fb_three_center_spherical_class`] launch. The upload's token comes
+/// back, holding `cells` until a sync of `stream` has covered it.
 ///
 /// - `records` is the class's records, field-major, field `k` of record `r`
 ///   at `k n_rec + r`, as `fb_mmd_records` writes them; the first eleven
@@ -56,7 +59,8 @@ const KERNEL: &str = "fb_three_center_spherical_class";
 ///
 /// # Errors
 /// The upload's failure, or the launch's, as
-/// [`fb_kernel_abi::launch_status`] maps it.
+/// [`fb_kernel_abi::launch_status`] maps it; after a failed launch the
+/// cells are leaked with the upload's token.
 ///
 /// # Panics
 /// If a cell's bra record range is not inside `[0, n_rec]`, its aux record
@@ -111,27 +115,28 @@ const KERNEL: &str = "fb_three_center_spherical_class";
     "the aux momentum has a kernel"
 )]
 #[track_caller]
-pub fn three_center_spherical_class(
-    stream: &Stream,
+pub fn three_center_spherical_class<'s, H: HostSlice<i32>>(
+    stream: &'s Stream,
     (la, lb, lp): (i32, i32, i32),
     n_rec: usize,
     records: &impl DeviceSlice<f64>,
     n_aux_rec: usize,
     aux: &impl DeviceSlice<f64>,
     n_cell: usize,
-    cells: &impl HostSlice<i32>,
+    cells: H,
     cells_dev: &mut impl DeviceSliceMut<i32>,
     (n_col, n_aux): (usize, usize),
     eri3: &mut impl DeviceSliceMut<f64>,
-) -> Status {
+) -> Result<Pending<'s, H>> {
     check_cells(
-        cells,
+        &cells,
         n_cell,
         (n_rec, n_aux_rec),
         block_span((la, lb, lp), n_aux),
         n_col * n_aux,
     );
-    stream.upload(cells_dev, cells)?;
+    let len = cells.len();
+    let uploaded = stream.upload(&mut part_mut(cells_dev, 0, len), cells)?;
     let rec = records.as_ptr();
     let field = |k: usize| rec.wrapping_add(k * n_rec);
     let null = std::ptr::null();
@@ -164,10 +169,11 @@ pub fn three_center_spherical_class(
     // SAFETY: the view's eleven fields are runs of n_rec doubles inside
     // records, the aux records' five of n_aux_rec inside aux, and eri3 holds
     // n_col n_aux doubles (the contracts, each count a positive i32, so the
-    // casts are exact); every cell, uploaded just before on this stream from
-    // host memory nothing writes until the work finishes (HostSlice's
-    // promise), has its record ranges inside those runs and its whole block
-    // inside eri3 (check_cells), the only indices the kernel follows; eri3
+    // casts are exact); every cell, checked here and then uploaded just
+    // before on this stream from host memory the upload's token holds
+    // unwritten until a sync covers the copy, has its record ranges inside
+    // those runs and its whole block inside eri3 (check_cells), the only
+    // indices the kernel follows; eri3
     // and cells_dev have no other user until the enqueued work finishes
     // (DeviceSliceMut's promise); the view is a host value read before the
     // call returns, which only enqueues.
@@ -185,7 +191,8 @@ pub fn three_center_spherical_class(
             eri3.as_mut_ptr(),
         )
     };
-    launched(KERNEL, &[la, lb, lp], status)
+    launched(KERNEL, &[la, lb, lp], status)?;
+    Ok(uploaded)
 }
 
 /// The elements a cell's block spans past its `dst`, one more than its last
@@ -209,8 +216,8 @@ fn check_cells(
     span: i64,
     len: usize,
 ) {
-    // SAFETY: `len()` elements of host memory nothing writes while `cells`
-    // is borrowed (HostSlice's promise).
+    // SAFETY: `len()` elements of host memory reached only through `cells`
+    // (HostSlice's promise), borrowed shared here.
     let cells = unsafe { std::slice::from_raw_parts(cells.as_ptr(), cells.len()) };
     let field = |f: usize, k: usize| i64::from(cells[f * n_cell + k]);
     let inside = |lo: i64, hi: i64, end: usize| 0 <= lo && lo <= hi && hi <= end as i64;

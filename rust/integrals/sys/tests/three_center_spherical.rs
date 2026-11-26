@@ -71,12 +71,11 @@ unsafe impl<T> DeviceSliceMut<T> for Dev<T> {
     }
 }
 
-/// Host memory a test owns and does not touch while a copy of it is in
-/// flight: it syncs the stream before reading or dropping it.
+/// Host memory a test owns, handed to a copy by value.
 struct Host<T>(Vec<T>);
 
-// SAFETY: the vector's elements, which the test leaves alone until the
-// stream that copies them is synced.
+// SAFETY: the vector's elements, live while the value is and reached only
+// through it; one never dropped is never freed.
 unsafe impl<T> HostSlice<T> for Host<T> {
     fn as_ptr(&self) -> *const T {
         self.0.as_ptr()
@@ -130,17 +129,17 @@ fn reference() -> Reference {
     }
 }
 
-fn upload<T: Copy>(stream: &Stream, host: &Host<T>) -> Dev<T> {
-    let mut dev = Dev::new(host.0.len());
-    stream.upload(&mut dev, host).expect("the upload");
+fn upload<T: Copy>(stream: &Stream, host: Vec<T>) -> Dev<T> {
+    let mut dev = Dev::new(host.len());
+    let uploaded = stream.upload(&mut dev, Host(host)).expect("the upload");
+    drop(uploaded.sync().expect("the sync"));
     dev
 }
 
 fn download<T: Copy + Default>(stream: &Stream, dev: &Dev<T>) -> Vec<T> {
-    let mut host = Host(vec![T::default(); dev.len]);
-    stream.download(&mut host, dev).expect("the download");
-    stream.sync().expect("the sync");
-    host.0
+    let host = Host(vec![T::default(); dev.len]);
+    let host = stream.download(host, dev).expect("the download");
+    host.sync().expect("the sync").0
 }
 
 #[test]
@@ -149,15 +148,13 @@ fn equals_the_experiments_output_on_water() {
     check_library().expect("the library is the bindings'");
     let r = reference();
     let stream = Stream::new(0);
-    let records = Host(r.records.clone());
-    let aux = Host(r.aux.clone());
+    let d_records = upload(&stream, r.records.clone());
+    let d_aux = upload(&stream, r.aux.clone());
     let cells = Host(r.cells.clone());
-    let d_records = upload(&stream, &records);
-    let d_aux = upload(&stream, &aux);
     let mut d_cells = Dev::new(cells.0.len());
     let mut eri3 = Dev::<f64>::new(r.n_col * r.n_aux);
     stream.zero(&mut eri3).expect("the zero");
-    three_center_spherical_class(
+    let cells = three_center_spherical_class(
         &stream,
         CLASS,
         r.records.len() / 11,
@@ -165,12 +162,14 @@ fn equals_the_experiments_output_on_water() {
         r.aux.len() / 5,
         &d_aux,
         r.cells.len() / 6,
-        &cells,
+        cells,
         &mut d_cells,
         (r.n_col, r.n_aux),
         &mut eri3,
     )
     .expect("the launch");
+    let cells = cells.sync().expect("the sync");
+    assert_eq!(cells.0, r.cells, "the cells come back as they went");
     let got = download(&stream, &eri3);
     let max = r.eri3.iter().fold(0.0f64, |m, v| m.max(v.abs()));
     let worst = got
@@ -202,11 +201,11 @@ fn a_short_slice_or_a_stray_cell_is_refused_before_anything_is_enqueued() {
     let (n_rec, n_aux_rec, n_cell) = (r.records.len() / 11, r.aux.len() / 5, r.cells.len() / 6);
     let (n_col, n_aux) = (r.n_col, r.n_aux);
     let stream = Stream::new(0);
-    let records = upload(&stream, &Host(r.records.clone()));
-    let short_records = upload(&stream, &Host(r.records[1..].to_vec()));
-    let aux = upload(&stream, &Host(r.aux.clone()));
-    let short_aux = upload(&stream, &Host(r.aux[1..].to_vec()));
-    let cells = Host(r.cells.clone());
+    let records = upload(&stream, r.records.clone());
+    let short_records = upload(&stream, r.records[1..].to_vec());
+    let aux = upload(&stream, r.aux.clone());
+    let short_aux = upload(&stream, r.aux[1..].to_vec());
+    let cells = || Host(r.cells.clone());
     let short_cells = Host(r.cells[1..].to_vec());
     // The last cell's destination one element further than the batch.
     let mut stray = r.cells.clone();
@@ -233,7 +232,7 @@ fn a_short_slice_or_a_stray_cell_is_refused_before_anything_is_enqueued() {
             n_aux_rec,
             &aux,
             n_cell,
-            &cells,
+            cells(),
             &mut d_cells,
             (n_col, n_aux),
             &mut eri3,
@@ -248,7 +247,7 @@ fn a_short_slice_or_a_stray_cell_is_refused_before_anything_is_enqueued() {
             n_aux_rec,
             &short_aux,
             n_cell,
-            &cells,
+            cells(),
             &mut d_cells,
             (n_col, n_aux),
             &mut eri3,
@@ -263,7 +262,7 @@ fn a_short_slice_or_a_stray_cell_is_refused_before_anything_is_enqueued() {
             n_aux_rec,
             &aux,
             n_cell,
-            &short_cells,
+            short_cells,
             &mut d_cells,
             (n_col, n_aux),
             &mut eri3,
@@ -278,7 +277,7 @@ fn a_short_slice_or_a_stray_cell_is_refused_before_anything_is_enqueued() {
             n_aux_rec,
             &aux,
             n_cell,
-            &cells,
+            cells(),
             &mut short_d_cells,
             (n_col, n_aux),
             &mut eri3,
@@ -293,7 +292,7 @@ fn a_short_slice_or_a_stray_cell_is_refused_before_anything_is_enqueued() {
             n_aux_rec,
             &aux,
             n_cell,
-            &cells,
+            cells(),
             &mut d_cells,
             (n_col, n_aux),
             &mut short_eri3,
@@ -308,7 +307,7 @@ fn a_short_slice_or_a_stray_cell_is_refused_before_anything_is_enqueued() {
             n_aux_rec,
             &aux,
             n_cell,
-            &stray,
+            stray,
             &mut d_cells,
             (n_col, n_aux),
             &mut eri3,

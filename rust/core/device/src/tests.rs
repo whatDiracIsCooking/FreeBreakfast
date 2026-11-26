@@ -1,6 +1,8 @@
 //! The crate's tests: the copies and the event on a card (tier 4), and the
 //! cuts' contracts on the host.
 
+use std::sync::atomic::Ordering;
+
 use super::*;
 
 /// Device memory from `wwr_malloc`, freed on drop: a test's buffer, since
@@ -74,6 +76,13 @@ impl<T: Copy> Pinned<T> {
         }
     }
 
+    /// The last element, read once the copies into it have run.
+    pub(crate) fn last(&self) -> T {
+        // SAFETY: `len` initialized elements; the test synced first.
+        let all = unsafe { std::slice::from_raw_parts(self.ptr, self.len) };
+        all[self.len - 1]
+    }
+
     /// The elements, read once the copies into them have run.
     pub(crate) fn read(&self) -> Vec<T> {
         // SAFETY: `len` initialized elements; the test synced first.
@@ -90,8 +99,8 @@ impl<T> Drop for Pinned<T> {
     }
 }
 
-// SAFETY: `len` elements of host memory, live until the drop; a test
-// touches it only through `read`, after syncing the stream that copied.
+// SAFETY: `len` elements of host memory, live until the drop and reached
+// only through the value (`read`); a leaked one is never freed.
 unsafe impl<T> HostSlice<T> for Pinned<T> {
     fn as_ptr(&self) -> *const T {
         self.ptr.cast_const()
@@ -130,45 +139,81 @@ fn bits(v: &[f64]) -> Vec<u64> {
 }
 
 /// Needs a GPU. Host to device to device to host is the identity on the
-/// bits (exact: a copy). The upload writes the head of a longer slice and
-/// leaves its tail's bytes; the device copy reads a part of it; a sync is
-/// counted.
+/// bits (exact: a copy). The upload reads the head of a longer host end;
+/// the download writes the head of a longer one and leaves its tail; the
+/// device copy reads a part; one sync is counted, and it covers every
+/// token of the copies before it.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn a_round_trip_through_each_copy_is_bitwise() {
     let n = 4099;
     let values = awkward(n);
     let stream = Stream::new(0);
-    let src = Pinned::from(&values);
-    let mut a = DeviceBuf::<f64>::new(n + 3);
+    let mut longer = values.clone();
+    longer.extend([1.0, 2.0, 3.0]);
+    let src = Pinned::from(&longer);
+    let mut a = DeviceBuf::<f64>::new(n);
     let mut b = DeviceBuf::<f64>::new(n);
-    let mut whole = Pinned::from(&vec![0.0; n + 3]);
-    let mut back = Pinned::from(&vec![0.0; n]);
+    let whole = Pinned::from(&vec![7.0; n + 3]);
+    let back = Pinned::from(&vec![0.0; n]);
 
-    stream.fill(&mut a, 0xAB).unwrap();
-    stream.upload(&mut a, &src).unwrap();
-    stream.download(&mut whole, &a).unwrap();
+    let src = stream.upload(&mut a, src).unwrap();
+    let whole = stream.download(whole, &a).unwrap();
     stream.copy_device(&mut b, &part(&a, 0, n)).unwrap();
-    stream.download(&mut back, &b).unwrap();
+    let back = stream.download(back, &b).unwrap();
     let (syncs, _) = sync_meter();
     stream.sync().unwrap();
     assert!(sync_meter().0 > syncs);
+    let (src, whole, back) = (
+        src.sync().unwrap(),
+        whole.sync().unwrap(),
+        back.sync().unwrap(),
+    );
+    // The stream's own count: the meter is the process's.
+    assert_eq!(
+        stream.tickets.load(Ordering::SeqCst),
+        1,
+        "one sync covers the three tokens"
+    );
 
     let whole = whole.read();
     assert_eq!(bits(&whole[..n]), bits(&values));
-    assert!(
-        whole[n..]
-            .iter()
-            .all(|x| x.to_bits() == 0xABAB_ABAB_ABAB_ABAB)
-    );
+    assert_eq!(whole[n..], [7.0; 3]);
     assert_eq!(bits(&back.read()), bits(&values));
+    assert_eq!(
+        bits(&src.read()),
+        bits(&longer),
+        "the host end comes back as it went"
+    );
 
-    // Nothing is enqueued for an empty pair.
+    // Nothing is enqueued for an empty pair, and its token syncs.
     let mut empty = DeviceBuf::<f64>::new(0);
-    stream
-        .upload(&mut empty, &Pinned::<f64>::from(&[]))
-        .unwrap();
-    stream.sync().unwrap();
+    let empty = stream.upload(&mut empty, Pinned::<f64>::from(&[])).unwrap();
+    assert!(empty.sync().unwrap().read().is_empty());
+}
+
+/// Needs a GPU. A token's sync waits for its copy: a 64 MiB download,
+/// queued behind 200 device copies of the same size, synced through its
+/// token alone with no sync of the stream, hands back every element
+/// (exact), its last read first. Without the token's sync the host reads
+/// the `-1.0` the buffer was made with.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn a_tokens_sync_waits_for_its_copy() {
+    let n = 8 << 20;
+    let stream = Stream::new(0);
+    let mut a = DeviceBuf::<f64>::new(n);
+    let mut b = DeviceBuf::<f64>::new(n);
+    // Made first: a pinned allocation may wait for the device.
+    let back = Pinned::from(&vec![-1.0; n]);
+    stream.fill(&mut a, 0x3F).unwrap();
+    for _ in 0..200 {
+        stream.copy_device(&mut b, &a).unwrap();
+    }
+    let back = stream.download(back, &b).unwrap().sync().unwrap();
+    let filled = 0x3F3F_3F3F_3F3F_3F3F;
+    assert_eq!(back.last().to_bits(), filled, "the copy had not run");
+    assert!(back.read().iter().all(|x| x.to_bits() == filled));
 }
 
 /// Needs a GPU. An event recorded after an upload on one stream orders a
@@ -186,18 +231,17 @@ fn an_event_orders_a_second_streams_read() {
     let src = Pinned::from(&values);
     let mut a = DeviceBuf::<f64>::new(n);
     let mut b = DeviceBuf::<f64>::new(n);
-    let mut back = Pinned::from(&vec![-1.0; n]);
+    let back = Pinned::from(&vec![-1.0; n]);
     first.zero(&mut a).unwrap();
     first.sync().unwrap();
 
-    first.upload(&mut a, &src).unwrap();
+    let src = first.upload(&mut a, src).unwrap();
     uploaded.record(&first).unwrap();
     second.wait(&uploaded).unwrap();
     second.copy_device(&mut b, &a).unwrap();
-    second.download(&mut back, &b).unwrap();
-    second.sync().unwrap();
+    let back = second.download(back, &b).unwrap().sync().unwrap();
     uploaded.sync().unwrap();
-    first.sync().unwrap();
+    drop(src.sync().unwrap());
 
     assert!(
         back.read() == values,
@@ -215,15 +259,15 @@ fn the_card_and_its_memory_are_read() {
     assert!(0 < free && free <= total, "{free} of {total}");
 }
 
-/// Needs a GPU. An upload longer than its device end panics before
-/// anything is enqueued.
+/// Needs a GPU. An upload past its host end panics before anything is
+/// enqueued.
 #[test]
 #[ignore = "tier 4: needs a GPU"]
-#[should_panic(expected = "Pre-condition of upload violated: the device end holds the host end")]
-fn an_upload_past_the_device_end_panics() {
+#[should_panic(expected = "Pre-condition of upload violated: the host end holds the device end")]
+fn an_upload_past_the_host_end_panics() {
     let stream = Stream::new(0);
-    let mut a = DeviceBuf::<f64>::new(3);
-    let _ = stream.upload(&mut a, &Pinned::from(&[0.0; 4]));
+    let mut a = DeviceBuf::<f64>::new(4);
+    let _ = stream.upload(&mut a, Pinned::from(&[0.0; 3]));
 }
 
 /// Host memory standing in for device memory: only the pointers and

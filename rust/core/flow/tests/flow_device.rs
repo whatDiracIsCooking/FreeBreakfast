@@ -75,11 +75,10 @@ impl Step<Card> for X {
         out.taken = held.taken().to_vec();
         let (_, device, staged) = layout();
         let mut device = scratch.device(0, device);
-        let mut host = scratch.pinned(0, staged);
+        let host = scratch.pinned(0, staged);
         let stream = &lane.gpus()[0].streams()[0];
-        stream.download(&mut host, &device)?;
-        // A test reading back: the wrapper's sync would come after `run`.
-        stream.sync()?;
+        // A test reading back: the token's sync, before the wrapper's.
+        let host = stream.download(host, &device)?.sync()?;
         out.found.push(host[0]);
         out.found.push(host[N - 1]);
         // Something of its own for the next run to find under the fill,

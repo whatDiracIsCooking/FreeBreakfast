@@ -84,11 +84,38 @@ unsafe impl<T> DeviceSliceMut<T> for DeviceBuf<T> {
 /// filled with `0xFF` when made. Read and written as a slice, and the host
 /// end of a copy ([`HostSlice`]). Empty under a dry or refused budget.
 ///
-/// The copy's promise, that the host does not touch the bytes until the
-/// copy has run, is the layer's rule and not this type's: a step's copies
-/// are done at its step-end sync, and within a step the host waits on the
-/// copy's event before it touches the bytes again
-/// (`../experimental/rust/v0.0.4/README.md`, "Step scratch").
+/// A copy takes it by value and holds it in its token until a sync of the
+/// stream has covered the copy, so the host cannot touch the bytes while
+/// the copy may still run:
+///
+/// ```compile_fail,E0382
+/// use fb_core_budget::{DeviceBuf, PinnedBuf};
+/// use fb_core_device::Stream;
+///
+/// fn rewrite(stream: &Stream, dst: &mut DeviceBuf<f64>, mut staged: PinnedBuf<f64>) {
+///     let upload = stream.upload(dst, staged).unwrap();
+///     staged[0] = 1.0; // the upload's token holds it
+///     let _ = upload.sync();
+/// }
+/// ```
+///
+/// The token's sync hands it back:
+///
+/// ```no_run
+/// use fb_core_budget::{DeviceBuf, PinnedBuf};
+/// use fb_core_device::Stream;
+/// use fb_core_error_handling::Result;
+///
+/// fn rewrite(
+///     stream: &Stream,
+///     dst: &mut DeviceBuf<f64>,
+///     staged: PinnedBuf<f64>,
+/// ) -> Result<PinnedBuf<f64>> {
+///     let mut staged = stream.upload(dst, staged)?.sync()?;
+///     staged[0] = 1.0;
+///     Ok(staged)
+/// }
+/// ```
 pub struct PinnedBuf<T> {
     pub(crate) raw: Option<RawBuf>,
     pub(crate) len: usize,
@@ -125,9 +152,9 @@ impl<T: Plain> DerefMut for PinnedBuf<T> {
     }
 }
 
-// SAFETY: `len()` elements of host memory, live while `self` is. That the
-// host leaves them alone until an enqueued copy has run is the layer's
-// sync rule (the type's doc), not the borrow's.
+// SAFETY: `len()` elements of host memory, live while `self` is and
+// reached only through it (`Deref` borrows it); one never dropped is never
+// freed.
 unsafe impl<T: Plain> HostSlice<T> for PinnedBuf<T> {
     fn as_ptr(&self) -> *const T {
         self.deref().as_ptr()
@@ -147,7 +174,7 @@ unsafe impl<T: Plain> HostSliceMut<T> for PinnedBuf<T> {
 /// Budgeted host heap: a boxed slice, so it has no `push`, `reserve` or
 /// `extend`, and every page was touched when it was made. Only a
 /// [`Budget`](crate::Budget) makes one. It is the host end of a copy too,
-/// under [`PinnedBuf`]'s rule.
+/// taken by value as a [`PinnedBuf`] is.
 pub struct HeapSlab<T>(pub(crate) Box<[T]>);
 
 impl<T> Deref for HeapSlab<T> {
@@ -163,9 +190,8 @@ impl<T> DerefMut for HeapSlab<T> {
     }
 }
 
-// SAFETY: the slice's elements, live while `self` is; pageable memory, and
-// the host leaves it alone until an enqueued copy has run, under
-// `PinnedBuf`'s rule.
+// SAFETY: the slice's elements, pageable memory, live while `self` is and
+// reached only through it; one never dropped is never freed.
 unsafe impl<T> HostSlice<T> for HeapSlab<T> {
     fn as_ptr(&self) -> *const T {
         self.0.as_ptr()

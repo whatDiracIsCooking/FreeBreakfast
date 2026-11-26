@@ -658,23 +658,38 @@ and fills a stream enqueues, device slices, and each GPU's
   `DeviceSliceMut` carry the same promise; `part`, `part_mut` and
   `split_at_mut` cut runs (`Part`, `PartMut`) from them, each cut an
   always-on contract at the caller's line, as "The safe wrapper" has it.
-  The copies' lengths are always-on contracts too: `upload` and
-  `copy_device` write the head of a longer destination, `download` reads
-  the head of a longer source.
-- **The host end of a copy is a `HostSlice`, not `[T]`.** A copy from or
-  into pinned memory runs after the call returns, and a borrow that ends
-  with the call says nothing about a copy that has not started, the
-  argument the arena's `memcpy_*` make for naming a pinned row. So the
-  host end carries the promise a device slice does, made once by the
-  memory's owner (the budget's pinned and heap buffers) in an
-  `unsafe impl`: valid, and not touched by the host, until the work
-  enqueued during the borrow has finished.
+  The copies' lengths are always-on contracts too: the device end sets a
+  copy's length, so `upload` reads the head of a longer host end,
+  `download` writes the head of a longer one, and `copy_device` writes the
+  head of a longer destination.
+- **The host end of a copy is a `HostSlice`, handed over by value, and
+  the copy's token holds it until a sync.** A copy from or into pinned
+  memory runs after the call returns, and a borrow that ends with the call
+  says nothing about a copy that has not run, the argument the arena's
+  `memcpy_*` make for naming a pinned row. So `upload` and `download` take
+  the host end by value and return a `Pending`, which holds it until a
+  sync of the stream has covered the copy: `Pending::sync` hands it back,
+  without blocking again when an earlier sync of the stream already
+  covered the copy (a ticket the stream's syncs count), so a step's several
+  copies and its one sync cost that one sync. Safe code cannot touch the
+  bytes mid-copy: the value is the token's (a `compile_fail,E0382` doctest
+  on `PinnedBuf`). A token dropped unsynced leaks its host end, never
+  freeing memory a copy may use, which for a lease's tenant costs nothing,
+  its bytes the step's until the step-end sync; `mem::forget` leaks it the
+  same way. A reference is no host end, since its borrow ends when it is
+  dropped or forgotten: the memory's owner (the budget's pinned and heap
+  buffers, a lease's pinned tenant) promises in an `unsafe impl` that only
+  the value reaches the bytes, and that a leaked one leaves them valid and
+  unreached until the work enqueued while it lived has finished. A ring
+  that rewrites a buffer's host end once the copy that read it has run
+  gives each buffer a stream of its own, so the token's sync waits for
+  that buffer's copies and no other's.
 - **`Stream::sync` counts and times itself.** `sync_meter` reads the syncs
   made so far and the time blocked in them, a difference over a span
   being one step's. In this layer a host sync is the step wrapper's, after
-  `run`, and a host's wait on an event before it rewrites pinned bytes
-  (`Event::sync`); each call into the runtime's sync carries an `allow` of
-  `disallowed_methods` naming that.
+  `run`, a copy token's (`Pending::sync`), and a host's wait on one point
+  of a stream (`Event::sync`); each call into the runtime's sync carries an
+  `allow` of `disallowed_methods` naming that.
 - **One handle set per GPU, under its lock.** `GpuResources` is a GPU's
   stream, a BLAS and a dense-solver handle made on that stream, and the
   handle workspace; `GpuResources::new` returns it inside a `Mutex`, so
@@ -706,9 +721,10 @@ and fills a stream enqueues, device slices, and each GPU's
   of the fully spherical (μν|P) (`ssperi3<la, lb, lP>`) over a `Stream`
   and device slices, each length an always-on contract naming the kernel.
   The cells, the only indices the kernel follows, are handed in on the host
-  (a `HostSlice`), each checked inside the slices it indexes, and uploaded
-  by the call before it launches, as "The safe wrapper" asks of indices
-  the safe layer forms.
+  (a `HostSlice`, by value), each checked inside the slices it indexes, and
+  uploaded by the call before it launches, as "The safe wrapper" asks of
+  indices the safe layer forms; the upload's token comes back, so nothing
+  rewrites a checked cell before the copy has run.
 
 ## Build
 
