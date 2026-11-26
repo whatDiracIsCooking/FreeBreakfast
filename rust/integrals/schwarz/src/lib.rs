@@ -27,10 +27,11 @@
 //! exponent sums, the Hermite coefficients `E` by Eqs. 9.5.6 and 9.5.7 from
 //! `E^{00}_0 = exp(-μ X_AB²)` per axis, and the Hermite integrals `R` by
 //! Eqs. 9.9.18 to 9.9.20 from the Boys function through order
-//! `4 l_max = 12` at f (Eq. 9.8.12, the series, and its downward
-//! recursion). Only the diagonal is formed, `ncart_a · ncart_b` per pair,
-//! each primitive quartet and its swap once (they are the same integral),
-//! and nothing is transformed to the spherical harmonics.
+//! `4 l_max = 12` at f (the host DF metric's
+//! [`fb_integrals_df_metric::boys`]). Only the diagonal is formed,
+//! `ncart_a · ncart_b` per pair, each primitive quartet and its swap once
+//! (they are the same integral), and nothing is transformed to the
+//! spherical harmonics.
 //!
 //! **The normalisation is the device kernels'.** A Cartesian function is
 //! `x^a y^b z^c` times the shell's contraction, its coefficients as the
@@ -55,12 +56,11 @@
 
 #![forbid(unsafe_code)]
 
-mod boys;
-
 use std::f64::consts::PI;
 
 use contracts::debug_requires;
 use fb_basis::{BasisSet, MAX_ANGULAR_MOMENTUM, Shell, cartesian_powers};
+use fb_integrals_df_metric::boys;
 
 /// The Cartesian Schwarz diagonal of `basis` over `pairs`: for each pair
 /// `(a, b)` of shell indices, in the order given, the block
@@ -164,7 +164,7 @@ fn pair_diagonal(sa: &Shell, sb: &Shell, out: &mut Vec<f64>) {
             let alpha = p * q / (p + q);
             let pq: [f64; 3] = std::array::from_fn(|x| bra.centre[x] - ket.centre[x]);
             let t = alpha * (pq[0] * pq[0] + pq[1] * pq[1] + pq[2] * pq[2]);
-            boys::boys(t, &mut f);
+            boys(t, &mut f);
             hermite_integrals(l_tot, alpha, pq, &f, &mut r, &mut scratch);
 
             for (x, gx) in g.iter_mut().enumerate() {

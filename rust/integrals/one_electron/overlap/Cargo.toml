@@ -27,6 +27,8 @@ fb-recipes-symmetrize.workspace = true
 wwr-sys = { workspace = true, features = ["blas"] }
 
 [dev-dependencies]
+# tests/host.rs's packed-triangle index.
+fb-core-primitives.workspace = true
 # tests/host.rs: the host build of the same matrix, held to this crate's.
 fb-integrals-s-overlap-host.workspace = true
 fb-test-support.workspace = true

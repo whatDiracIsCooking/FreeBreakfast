@@ -83,7 +83,7 @@ compile_error!(
 use std::f64::consts::PI;
 
 use fb_basis::{BasisSet, Shell, cartesian_powers, solid_harmonic_block};
-use fb_core_primitives::double_factorial_odd;
+use fb_core_primitives::{double_factorial_odd, lower_index};
 use rayon::prelude::*;
 
 /// One shell's momentum as the integral loops read it: its Cartesian
@@ -157,20 +157,6 @@ fn views(basis: &BasisSet) -> Vec<ShellView> {
         .max()
         .unwrap_or(0);
     (0..=l_max).map(ShellView::new).collect()
-}
-
-/// Where `(μ, ν)`, `ν <= μ`, sits in the packed lower triangle: rows one
-/// after another, row `μ` holding its `μ + 1` entries.
-///
-/// ```
-/// use fb_integrals_t_kinetic_host::lower_index;
-///
-/// assert_eq!([lower_index(0, 0), lower_index(1, 0), lower_index(1, 1)], [0, 1, 2]);
-/// assert_eq!(lower_index(2, 0), 3);
-/// ```
-#[must_use]
-pub const fn lower_index(p: usize, q: usize) -> usize {
-    p * (p + 1) / 2 + q
 }
 
 /// The packed triangle `t` cut into the rows each of `bounds` owns, the

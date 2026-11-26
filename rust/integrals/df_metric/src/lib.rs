@@ -89,7 +89,7 @@ use contracts::debug_requires;
 use std::f64::consts::PI;
 
 use fb_basis::{BasisSet, Shell, cartesian_powers, solid_harmonic_block};
-use fb_core_primitives::double_factorial_odd;
+use fb_core_primitives::{double_factorial_odd, lower_index};
 use rayon::prelude::*;
 
 /// The highest order [`boys`] reaches: two shells of `l = 10`.
@@ -657,20 +657,6 @@ fn near_block(
     }
     let sign = if b.l.is_multiple_of(2) { 1.0 } else { -1.0 };
     harmonic_sum(va, vb, sign * TWO_PI_POW_5_2, |t, u| top[t * d + u], out);
-}
-
-/// Where `(P, Q)`, `Q <= P`, sits in the packed lower triangle: rows one
-/// after another, row `P` holding its `P + 1` entries.
-///
-/// ```
-/// use fb_integrals_df_metric::lower_index;
-///
-/// assert_eq!([lower_index(0, 0), lower_index(1, 0), lower_index(1, 1)], [0, 1, 2]);
-/// assert_eq!(lower_index(2, 0), 3);
-/// ```
-#[must_use]
-pub const fn lower_index(p: usize, q: usize) -> usize {
-    p * (p + 1) / 2 + q
 }
 
 /// The views of every momentum `aux` holds, by `l`.

@@ -18,9 +18,10 @@ use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 
+use fb_core_primitives::lower_index;
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_potential_en::add_nuclear_attraction;
-use fb_integrals_v_potential_en_host::{lower_index, point_charges, potential_en};
+use fb_integrals_v_potential_en_host::{point_charges, potential_en};
 use fb_molecule_nuclei::add_nuclei;
 
 /// The bar, relative to `max |V_gpu|`.

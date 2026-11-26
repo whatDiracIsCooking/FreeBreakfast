@@ -12,8 +12,9 @@
 
 use std::path::PathBuf;
 
+use fb_core_primitives::lower_index;
 use fb_integrals_one_electron_overlap::Run;
-use fb_integrals_s_overlap_host::{lower_index, overlap};
+use fb_integrals_s_overlap_host::overlap;
 
 /// The bar, relative to `max |S_gpu|`.
 const BAR: f64 = 1e-12;

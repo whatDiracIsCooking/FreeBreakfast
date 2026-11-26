@@ -9,7 +9,8 @@
 
 use std::path::PathBuf;
 
-use fb_integrals_s_overlap_host::{lower_index, overlap, overlap_via_cartesian};
+use fb_core_primitives::lower_index;
+use fb_integrals_s_overlap_host::{overlap, overlap_via_cartesian};
 
 /// The bar, relative to `max |S_ref|`.
 const BAR: f64 = 1e-12;

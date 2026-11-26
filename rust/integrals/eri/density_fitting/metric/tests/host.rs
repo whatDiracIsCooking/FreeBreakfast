@@ -18,7 +18,8 @@ use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 
-use fb_integrals_df_metric::{lower_index, metric};
+use fb_core_primitives::lower_index;
+use fb_integrals_df_metric::metric;
 use fb_integrals_eri_density_fitting_metric::add_metric;
 
 /// The bar, relative to `max |M_gpu|`.
