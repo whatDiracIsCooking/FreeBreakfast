@@ -67,6 +67,8 @@ def test_nightly_defaults() -> None:
     assert args.gate == "nightly" and args.mode == "auto"
     assert args.rev == "origin/main" and args.preset is None
     assert not args.in_checkout and rest == []
+    # src/ is frozen: the C++ tree is the nightly's only when asked for.
+    assert not args.cpp and gates.parse(["nightly", "--cpp"])[0].cpp
 
 
 def test_nightly_passes_ctest_args_through() -> None:

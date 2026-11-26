@@ -251,7 +251,7 @@ check in `test/io/sad_host.cpp` fails until you do. The commands are in
 | Tests | `test/core/` (the `src/core` tests) and `test/gtest/` (the rest), each a host/GPU binary pair, and `test/atom/` (the `src/atom` tests), `test/basis/` (the host-only `src/basis` tests), `test/io/` (the host-only `src/io` tests), `test/sad/` (the `src/sad` tests, a GPU-free module) and `test/pipeline/` (the `src/pipeline` tests that need no device), each a host binary, `test/recipes/` (the `src/recipes` tests), a host/GPU binary pair, `test/compile/` (TUs of `static_assert`s alone, built even under `FREE_BREAKFAST_COMPILE_TIME_ONLY`; no ctest entry), and `test/examples/` (`examples/` configs through the `free-breakfast` binary), run by ctest | `test/pytest/`, run by pytest |
 | Driver | `devtools/test.py push` / `pr` / `nightly` | `devtools/test.py push` / `pr` / `nightly`, `pytest` |
 | Lint | `cmake-lint`, `clang-format --check` (commit hook + CI); `clang-tidy` via `--tidy` | `ruff check`, `ruff format --check` (commit hook + CI) |
-| Gated by | `cmake-lint` + format check at commit; **no gate builds or tests it** (frozen; `test.py push --cpp` / `pr --cpp` by hand, the nightly runs it); on the server **format + cmake-lint only** | `test.py push`'s Python half + CI |
+| Gated by | `cmake-lint` + format check at commit; **no gate builds or tests it** (frozen; `test.py push --cpp` / `pr --cpp` / `nightly --cpp` by hand); on the server **format + cmake-lint only** | `test.py push`'s Python half + CI |
 
 **A change under `src/` is verified by the C++ tier and by nothing else.** A
 green pytest run on it means the Python that would have exercised the *old*
@@ -269,8 +269,9 @@ There are two gates, both `devtools/test.py` (`docs/testing.md` "Gates").
 **neither gate builds or tests the C++ tree unless asked**: `--cpp` adds
 the C++ half to either (on `pr`, so do `--only cpp` and the build-only
 options `--fresh`, `--clean`, `--no-test`, `--tidy`, `--record`), a diff
-touching C++ gets a line saying it went untested, and the nightly still
-runs every C++ case.
+touching C++ gets a line saying it went untested, and the nightly leaves
+it out too (`nightly --cpp` puts back its build, cases, cross-backend
+check and slow-test report).
 `git push` runs `test.py push`, by pre-commit's pre-push stage: the fast pytest
 tier when the push touches a `.py`, and with `--cpp` the C++ smoke (an
 incremental build, the host binaries, each GPU binary as one process running

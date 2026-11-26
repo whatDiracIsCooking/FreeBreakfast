@@ -1223,6 +1223,23 @@ def test_nightly_dry_run_lists_a_cargo_half_without_the_fast_switch(
     assert "FREE_BREAKFAST_FAST_TESTS=1" not in out
 
 
+@pytest.mark.parametrize("cpp", [False, True])
+def test_nightly_dry_run_leaves_the_frozen_cpp_tree_out(
+    cpp: bool, capsys: pytest.CaptureFixture[str]
+) -> None:
+    flags = ["--cpp"] if cpp else []
+    assert gates.main(["nightly", "--dry-run", "--preset", "hip", *flags]) == 0
+    out = capsys.readouterr().out
+    cpp_lines = [
+        line
+        for line in out.splitlines()
+        if "1. build:" in line or "2. C++:" in line or "cross-backend" in line
+    ]
+    assert len(cpp_lines) == 3
+    assert all(("not run" in line) != cpp for line in cpp_lines)
+    assert ("slow-test report" in out) == cpp
+
+
 def test_testing_md_the_nightly_names_the_cargo_half() -> None:
     text = (_ROOT / "docs" / "testing.md").read_text()
     night = text.split("\n## The nightly\n", 1)[1].split("\n### ", 1)[0]

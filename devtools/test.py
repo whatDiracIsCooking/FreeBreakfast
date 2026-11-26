@@ -6,7 +6,7 @@
                         [--no-test] [--all] [--tidy]
                         [--only cpp|python|cargo] [-j N]
                         [--report DIR] [--record] [-- <ctest args>]
-  devtools/test.py nightly [--mode auto|nightly|weekly] [--rev REF]
+  devtools/test.py nightly [--cpp] [--mode auto|nightly|weekly] [--rev REF]
                         [--preset NAME] [-j N] [--report DIR]
                         [--issue-title TITLE] [--dry-run] [-- <ctest args>]
   devtools/test.py cargo-lint
@@ -18,7 +18,7 @@ push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   Python half for it). The C++ tree (src/ and what builds and tests it) is
   frozen, so neither gate runs the C++ half unless asked: --cpp runs it, and
   a diff that touches C++ or a build file gets a line saying it went
-  untested. The nightly still runs all of it. Python: the fast
+  untested. So does the nightly (`nightly --cpp`). Python: the fast
   pytest set (FAST_TEST_ARGS over PREPUSH_PATHS). C++ (--cpp): an incremental build,
   the host binaries, then each GPU binary as one process under the card lock,
   running only pr's representative set (below) as a GTEST_FILTER; where the
@@ -82,25 +82,31 @@ pr: the gate before opening a PR (milestone-run requires it). The cargo
 
 nightly: what the timer runs (docs/testing.md "The nightly"). Fetch origin,
   check REF (default origin/main) out clean in NIGHTLY_WORKTREE, and run that
-  checkout's own test.py there: a build (warm; on NIGHTLY_WEEKLY_DAY, or with
+  checkout's own test.py there: the whole pytest suite, then the cargo half
+  as `pr --only cargo --all` runs it but with the slow cases (no
+  FREE_BREAKFAST_FAST_TESTS; tier 4 under the card lock), and a `nightly` or
+  `weekly` record appended to `metrics`. The C++ tree is frozen, so like the
+  gates the nightly leaves it out unless asked: with --cpp (or ctest
+  arguments after `--`) first a build (warm; on NIGHTLY_WEEKLY_DAY, or with
   --mode weekly, clean with the compiler launcher off), then under the card
-  lock every C++ case unskipped, then (the card released) the whole pytest
-  suite, then the cargo half as `pr --only cargo --all` runs it but with the
-  slow cases (no FREE_BREAKFAST_FAST_TESTS; tier 4 under the card lock again),
-  and cross-backend-check.sh, and a `nightly` or `weekly` record appended to
-  `metrics`, then the slow-test report over it (devtools/slow_rule.py).
-  Build and GPU run never overlap. CUDA (--preset default) by design.
+  lock every C++ case unskipped, before pytest; cross-backend-check.sh after
+  the cargo half; and the slow-test report over the record
+  (devtools/slow_rule.py). Build and GPU run never overlap. CUDA (--preset
+  default) by design.
   Logged to <report>/<mode>-<stamp>-<rev>-<preset>.log under the primary
   checkout. A failed night of origin/main opens a GitHub issue labelled
   `nightly`, or comments on the open one with its title; a green one after
   it comments that it recovered and closes it (devtools/nightly_issue.py).
+    --cpp          add the C++ tree: its build, every C++ case, the
+                   cross-backend check and the slow-test report
     --issue-title TITLE  file under this title (default: "Nightly fails on
                    origin/main" for origin/main; another rev files nothing)
     --dry-run      print the night's phases and what each runs; nothing
                    is fetched, built or run
-    -- <args>      a reduced run: passed to ctest, and they select the GPU
-                   batches; no pytest, no cargo half, no slow-test report,
-                   and the record is `manual`, kept out of the timing series
+    -- <args>      a reduced run (implies --cpp): passed to ctest, and they
+                   select the GPU batches; no pytest, no cargo half, no
+                   slow-test report, and the record is `manual`, kept out of
+                   the timing series
 
 cargo-lint: what the commit hook runs for a commit touching rust/, and CI's
   lint job: `cargo fmt --check`, and `cargo clippy --all-targets -D warnings`
@@ -189,10 +195,10 @@ EXCLUDED = re.compile(r"^(vendor/|third_party/|deps/WarpWraps/|deps/FelizJueves/
 # The root CMakeLists.txt line that adds them is outside, and still fires it.
 NOT_IN_CPP_SMOKE = re.compile(r"^(experimental/|test/experimental/)")
 # src/ is no longer developed, so the gates leave the C++ half out unless
-# asked; the nightly still runs it. What they say when a diff touches it.
+# asked, and so does the nightly. What they say when a diff touches it.
 CPP_FROZEN = (
     "the diff touches the C++ tree, which the gates no longer test (src/ is"
-    " frozen) -- --cpp runs the C++ half; the nightly runs all of it"
+    " frozen) -- --cpp runs the C++ half"
 )
 # The Rust rebuild fires the cargo half and nothing else: whatever the path --
 # Rust, a .cu, its own CMake project, docs, its by-hand docs/md2html.py --
@@ -2675,6 +2681,8 @@ def cmd_nightly(
         cmd += ["--preset", args.preset]
     if args.jobs:
         cmd += ["--jobs", args.jobs]
+    if args.cpp:
+        cmd += ["--cpp"]
     if title is not None:
         cmd += ["--issue-title", title]
     if passthrough:
@@ -2747,20 +2755,25 @@ def nightly_plan(args: argparse.Namespace, cfg: dict[str, str]) -> list[str]:
     preset = args.preset or "default"
     backend = backend_of_preset(preset, cfg)
     clean = "clean, launcher off" if mode == "weekly" else "warm"
+    cpp = args.cpp
+    off = " (not run: the C++ tree is frozen; --cpp runs it)"
     return [
         f"{args.rev} checked out clean in {cfg['NIGHTLY_WORKTREE']}, then its"
         " own test.py",
         f"mode={mode}  preset={preset}  card={backend}",
         "every case, unskipped (no FREE_BREAKFAST_FAST_TESTS)",
-        f"1. build: cmake --preset {preset} ({clean})",
-        f"2. C++: ctest and the GPU batches, under the {backend} card lock",
+        f"1. build: cmake --preset {preset} ({clean})" + ("" if cpp else off),
+        f"2. C++: ctest and the GPU batches, under the {backend} card lock"
+        + ("" if cpp else off),
         "3. pytest: the whole suite, slow included, the card released",
         "4. cargo half: tiers 1 to 3 (cargo test --no-default-features over the"
         " link-free crates, cargo doc), then tier 4 of every crate (clippy,"
         f" rustdoc, then the tests under the {backend} card lock); slow cases"
         " included",
-        "5. cross-backend-check.sh",
-        "6. the metrics record, the slow-test report, the night's issue",
+        "5. cross-backend-check.sh" + ("" if cpp else off),
+        "6. the metrics record, "
+        + ("the slow-test report, " if cpp else "")
+        + "the night's issue",
     ]
 
 
@@ -2779,6 +2792,9 @@ def nightly_run(
     mode = args.mode if args.mode != "auto" else "nightly"
     tag = mode
     reduced = bool(passthrough)
+    # The C++ tree is frozen: its build, cases, cross-backend check and
+    # slow-test report run only when asked for. A reduced run is ctest's.
+    cpp = args.cpp or reduced
     failed: list[str] = []
     cargo: CargoNight | None = None
     preset = args.preset or "default"
@@ -2804,33 +2820,42 @@ def nightly_run(
     clean = mode == "weekly"
 
     # 1. The build, alone.
-    since = metrics.ninja_offset(build_dir / ".ninja_log")
-    build_start = time.monotonic()
-    say(
-        f"{tag}: building ({'clean, launcher off' if clean else 'warm'},"
-        f" preset={preset}, -j {jobs or 'auto'}) ...",
-        log=log,
-    )
-    rc = cpp_build(
-        preset,
-        False,
-        clean,
-        jobs,
-        log,
-        quiet=False,
-        configure_args=LAUNCHER_OFF if clean else LAUNCHER_ON,
-    )
-    build = {
-        "mode": "clean" if clean else "warm",
-        "launcher": metrics.launcher_on(build_dir),
-        "jobs": int(jobs) if jobs else os.cpu_count() or 0,
-        "seconds": time.monotonic() - build_start,
-    }
-    if clean and (build_dir / ".ninja_log").is_file():
-        build["files"] = metrics.ninja_files(build_dir / ".ninja_log", since)
-    if rc != 0:
-        say(f"{tag}: BUILD FAILED (rc={rc}) -- no tests run", err=True, log=log)
-        failed.append(f"build (rc={rc})")
+    rc = 0
+    build: dict | None = None
+    if not cpp:
+        say(
+            f"{tag}: the C++ tree is frozen -- no build, no C++ case, no"
+            " cross-backend check (--cpp runs them)",
+            log=log,
+        )
+    else:
+        since = metrics.ninja_offset(build_dir / ".ninja_log")
+        build_start = time.monotonic()
+        say(
+            f"{tag}: building ({'clean, launcher off' if clean else 'warm'},"
+            f" preset={preset}, -j {jobs or 'auto'}) ...",
+            log=log,
+        )
+        rc = cpp_build(
+            preset,
+            False,
+            clean,
+            jobs,
+            log,
+            quiet=False,
+            configure_args=LAUNCHER_OFF if clean else LAUNCHER_ON,
+        )
+        build = {
+            "mode": "clean" if clean else "warm",
+            "launcher": metrics.launcher_on(build_dir),
+            "jobs": int(jobs) if jobs else os.cpu_count() or 0,
+            "seconds": time.monotonic() - build_start,
+        }
+        if clean and (build_dir / ".ninja_log").is_file():
+            build["files"] = metrics.ninja_files(build_dir / ".ninja_log", since)
+        if rc != 0:
+            say(f"{tag}: BUILD FAILED (rc={rc}) -- no tests run", err=True, log=log)
+            failed.append(f"build (rc={rc})")
 
     # 2. Everything, unskipped: the C++ tier under the card (a held card is
     # waited for), then pytest outside it.
@@ -2843,10 +2868,19 @@ def nightly_run(
         os.environ.pop("FREE_BREAKFAST_FAST_TESTS", None)
         if reduced:
             say(f"{tag}: a reduced run: ctest {shlex.join(passthrough)}", log=log)
-        with Card(backend, cfg):
-            crc = tier_tests(
-                run_cfg, preset, build_dir, passthrough, log, results, tag=tag, env=env
-            )
+        crc = 0
+        if cpp:
+            with Card(backend, cfg):
+                crc = tier_tests(
+                    run_cfg,
+                    preset,
+                    build_dir,
+                    passthrough,
+                    log,
+                    results,
+                    tag=tag,
+                    env=env,
+                )
         # pytest uses no GPU (the `gpu` marker's one case only checks the
         # marker is registered), so the card is released before it: the
         # unskipped suite is long, and held it for an hour of idle card (#1275).
@@ -2873,11 +2907,15 @@ def nightly_run(
             failed.append(f"cargo half (rc={grc})")
 
         # 3. The HIP cover: a compile of every .cu through clang -x hip.
-        xrc = run_phase(
-            "cross-backend-check",
-            [str(REPO_ROOT / "devtools" / "cross-backend-check.sh")]
-            + (["-j", jobs] if jobs else []),
-            log,
+        xrc = (
+            run_phase(
+                "cross-backend-check",
+                [str(REPO_ROOT / "devtools" / "cross-backend-check.sh")]
+                + (["-j", jobs] if jobs else []),
+                log,
+            )
+            if cpp
+            else 0
         )
         if xrc == 2:
             say(
@@ -2911,7 +2949,7 @@ def nightly_run(
             preset=preset,
             gpu=gpu,
             toolchain=tools,
-            build=metrics.build_info(**build),
+            build=metrics.build_info(**build) if build else None,
             cases=run_cases(metrics, results) + (cargo.cases if cargo else []),
             result="pass" if rc == 0 else "fail",
         )
@@ -2935,7 +2973,8 @@ def nightly_run(
     # 5. The slow-test rule (#987), over the record just appended and the
     # series before it: a report, never a failure of the tests. Its findings
     # go to <results>/slow-rule.json, which is what #986's issue takes.
-    if recorded and record["cases"] and not reduced:
+    # Its families are the C++ tree's, so it runs only beside the C++ cases.
+    if recorded and record["cases"] and not reduced and cpp:
         try:
             findings = slow_rule_report(build_dir, record["host"], results, log, tag)
             summary += "  " + load_slow_rule().summary_field(findings)
@@ -3033,6 +3072,12 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         )
     nightly.add_argument(
         "--preset", help="configure/build preset (default: default, the CUDA card)"
+    )
+    nightly.add_argument(
+        "--cpp",
+        action="store_true",
+        help="add the C++ tree: its build, every case, the cross-backend check"
+        " and the slow-test report (src/ is frozen, so it is off by default)",
     )
     for p in (push, pr, nightly):
         p.add_argument("-j", "--jobs", help="compile jobs (default: BUILD_JOBS)")
