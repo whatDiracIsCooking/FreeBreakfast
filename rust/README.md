@@ -64,6 +64,7 @@ tree, not inputs to its build.
 | `fb_core_types` | `src/core/types`, what the host modules name | `Double3`, `Vec<double, 3>`: `#[repr(C)]` with the backend's `double3` layout. The fixed-width integers and `make_vec` are the language's |
 | `fb_core_primitives` | `src/core/primitives`, what the host modules name | `double_factorial_odd`, `factorial`, `binomial` as `const fn`, bitwise the C++ loops. `idivup` / `align_up` are `div_ceil` / `next_multiple_of`, and the element-wise functions `f64`'s methods |
 | `fb_core_constants` | `src/core/constants`, what the host modules name | `BOHR_PER_ANGSTROM`, `kBohrPerAngstrom<double>`, asserted against the C++ double's bit pattern |
+| `fb_core_pack` | nothing: the C++ steps allocate as they go; the v0.0.4 prototype's `src/pack.rs` | Step scratch packed by the DAG (`docs/memory.md`, "Step scratch"): `closure` (the transitive closure, a `Reach` bitset of successors per step), `ordered`, `pack` (first fit, largest first and then by step name, each `Region` at the lowest offset clear of every unordered region placed) into a `Packed` with its peak, plain sum and `lower_bound`, the heaviest antichain and the regions that make it. Device-free |
 | `fb_atom` | `src/atom` | `Element` (`#[repr(u8)]`, Z as the discriminant, `Sentinel` = 0), `z` / `from_z`, `symbol` / `from_symbol` (case-insensitive, `Sentinel` for none), and `Atom`, a `Double3` position in bohr and an `Element` |
 | `fb_molecule` | `src/molecule`, its host half | `Molecule` as host data (atoms, charge, multiplicity; no atoms aborts), `distance`, `nuclear_charge`, `electron_count`, and the nuclear repulsion energy, gradient and Hessian. The nuclei on the device (`view`, `NucleiView`, `molecule_footprint`) are `fb_molecule_nuclei`'s upload task |
 | `fb_basis` | `src/basis` | `Shell` and `Primitive`, the counts (`function_count_cart` / `function_count_sphe`) and `MAX_ANGULAR_MOMENTUM` (3, the C++ `kMaxAngularMomentum`), `cartesian_powers` and `Ao`, `solid_harmonic_block`, `BasisSet` (its Cartesian and spherical AO layouts, the per-atom shell grouping, the name) and `spherical_transform_matrix(basis, u)`, U written into a slice the caller hands it (a pinned row, in `fb_recipes_matrix_ao`), `ShellStamp` with `primitive_normalized` and `place`, and `BasisStamp` with `place` onto a `Molecule`. Contractions are not renormalized, as in the C++ |
@@ -266,7 +267,8 @@ cargo test -p fb-core-log -p fb-core-error-handling -p fb-doc-check \
   -p fb-core-types -p fb-core-primitives -p fb-core-constants \
   -p fb-atom -p fb-molecule -p fb-basis -p fb-device-check \
   -p fb-io-xyz -p fb-io-basis -p fb-kernel-abi -p fb-sad \
-  -p fb-io-npy -p fb-io-sad -p fb-tools-sad --no-default-features
+  -p fb-io-npy -p fb-io-sad -p fb-tools-sad -p fb-core-pack \
+  --no-default-features
 ```
 
 `CMakeLists.txt` here is a CMake project of its own, which the root
@@ -329,7 +331,7 @@ tests (the fake handle kind, error codes and contracts) need no GPU, and
 `fb-core-log`, `fb-core-error-handling`, `fb-core-types`,
 `fb-core-primitives`, `fb-core-constants`, `fb-atom`, `fb-molecule`,
 `fb-basis`, `fb-io-xyz`, `fb-io-basis`, `fb-test-support`, `fb-doc-check`,
-`fb-kernel-abi`, `fb-device-check`, `fb-sad`, `fb-io-npy`, `fb-io-sad` and `fb-tools-sad` do not link the library at all: they build and pass
+`fb-kernel-abi`, `fb-device-check`, `fb-sad`, `fb-io-npy`, `fb-io-sad`, `fb-tools-sad` and `fb-core-pack` do not link the library at all: they build and pass
 with it missing.
 `fb-core-arena`, `fb-core-thread-pool` and `fb-core-planner` link it
 through their `device` feature, which is on by default: without it
