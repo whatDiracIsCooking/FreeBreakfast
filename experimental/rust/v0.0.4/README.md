@@ -253,14 +253,13 @@ by a whole row per write. A J/K pass then runs over aux batches: each GPU
 contracts its own, and the fragments are summed onto gpu0 through the host.
 
 **Pinned staging does not grow with the limit.** A fitted pair batch comes
-down through a staging buffer of at most 64 MiB, and rows of B go up through
-one of at most 256 MiB. So a pair batch is never wider than one staging
-buffer holds, whatever `mem_per_gpu` is, and an aux batch wider than one is
-uploaded a buffer at a time, with a blocking sync per buffer. Page-locking
-costs about 0.9 s per GiB here, and the ring page-locks a buffer for each of
-its depth: the build's time is flat in the width well below 64 MiB
-([batched only](#batched-only)). The upload's bound is the larger because an
-aux batch that goes up in several buffers pays a blocking sync for each
+down through a staging buffer of at most 64 MiB, and an aux batch of B's rows
+goes up through one of at most 256 MiB. Neither batch is ever wider than its
+staging buffer holds, whatever `mem_per_gpu` is: a batch is one copy. Page-
+locking costs about 0.9 s per GiB here, and the ring page-locks a buffer for
+each of its depth: the build's time is flat in the width well below 64 MiB
+([batched only](#batched-only)). The upload's bound is the larger because it
+bounds the aux batch, and the SCF's time is not flat in that width at 64 MiB
 ([what it showed](#what-it-showed)).
 
 **The cache.** A GPU's aux range is fixed: the aux functions are split across
@@ -552,7 +551,7 @@ case is the batched one with a single batch on a single GPU.
 |---|---|
 | Everything O(N²): the n_ao² matrices, the metric and its factor, the records | Resident whole on the GPUs it needs. It fits or the plan is refused: a dense eigensolve at n_ao cannot be batched |
 | The O(N³) tensors: (μν\|P), B, a derivative of B | Never resident whole. Built or contracted a batch at a time; B itself on the host heap |
-| The batch width | The widest whose bytes fit the step limit, and for a pair batch no wider than one staging buffer holds; none fits: refuse, naming the step, its limit and its least bytes |
+| The batch width | The widest whose bytes fit the step limit, and no wider than its staging buffer holds; none fits: refuse, naming the step, its limit and its least bytes |
 | The step limit | Covers the batch, the ring and the cache, not the O(N²) residents, which the cap admits or refuses. A fixed constant by default; the config overrides it, which is also how a test forces many batches on a small molecule |
 | What is charged | What is used, never the limit. Limits need not sum to the cap |
 
@@ -985,7 +984,7 @@ guess ──────────────────────┘
   Roothaan step.
 - **`build_jk` runs over aux batches**, each GPU contracting its own, the cached
   ones first, reduced onto gpu0 through the host, with a blocking sync per
-  staging buffer uploaded. The cache fills on the first J/K pass.
+  aux batch uploaded. The cache fills on the first J/K pass.
 - **K is built from the occupied orbitals.** Every Roothaan step leaves the C
   of its D, so every pass is given C's occupied columns but the first of a
   fresh run, whose D is the guess and has no factor. A replay's first pass has
@@ -1079,7 +1078,7 @@ GPU's cache holds part of its share of gly10's B, at 16 GiB all of it.
 | gly10: 734 AOs, 3606 aux | 2 GiB | 1 | −2144.284111689079 | 5.3e-11 | 5.7 s | 10.2 s | 63.2 s |
 | | 2 GiB | 2 | −2144.284111689078 | 5.4e-11 | 5.9 s | 5.2 s | 31.8 s |
 | | 2 GiB | 4 | −2144.284111689077 | 5.5e-11 | 6.6 s | 2.8 s | 16.1 s |
-| | 16 GiB | 1 | −2144.284111689077 | 5.5e-11 | 6.5 s | 10.0 s | 59.4 s |
+| | 16 GiB | 1 | −2144.284111689076 | 5.6e-11 | 5.8 s | 10.0 s | 59.1 s |
 | | 16 GiB | 2 | −2144.284111689075 | 5.7e-11 | 7.4 s | 5.3 s | 30.1 s |
 | | 16 GiB | 4 | −2144.284111689075 | 5.7e-11 | 9.8 s | 2.9 s | 15.6 s |
 
@@ -1093,7 +1092,7 @@ GPU's cache holds part of its share of gly10's B, at 16 GiB all of it.
   gly10, as it did from D. The cheaper contraction did not expose the uploads
   or the per-buffer sync. At gly5, 2.0× and 3.5×.
 - **The cache still buys little**: holding the whole share takes gly10's SCF
-  from 63.2 s to 59.4 s on one GPU.
+  from 63.2 s to 59.1 s on one GPU.
 - **The build of B was the host's scatter, and now scales**: 1.9× on two and
   3.7× on four at gly10. Element by element the scatter was 14.2 s of the
   17.3 s build on one GPU, with the GPU idle behind it; in tiles it is 2.7 s,
@@ -1106,17 +1105,18 @@ GPU's cache holds part of its share of gly10's B, at 16 GiB all of it.
 - **The ring's staging is bounded at 64 MiB, the upload's at 256 MiB.** With
   both at 256 MiB a GPU page-locked 1.03 GiB, and budget mode on four GPUs
   was 9.8 s; the build's time did not move with the bound. With both at
-  64 MiB, gly10's aux batch of 97 rows went up in four buffers with a
-  blocking sync each, and the SCF on one GPU took 70.0 s. The budget-mode
-  times of the gly5 rows and the 16 GiB rows above are from before the
-  ring's bound.
+  64 MiB, gly10's rows went up 31 at a time for 97, a blocking sync each,
+  and the SCF on one GPU took 70.0 s. The gly5 rows, and the 16 GiB rows on
+  2 and 4 GPUs, are from before both bounds.
 - **Page-locking does not overlap.** With each GPU's staging page-locked on
   a thread of its own while another touched B, the locks finished one after
   another and the touch slowed beside them: 6.8 s on four GPUs against the
   6.5 s of taking them in turn. They are taken in turn.
-- **Staged uploads ran only here.** An aux batch wider than one staging
-  buffer (gly10 at 16 GiB: 794 rows against 124) has no test; these runs'
-  energies are its check.
+- **An aux batch is one upload.** Its width is capped at what the staging
+  buffer holds, so no batch is split across buffers. At 16 GiB gly10's
+  batch is 124 rows where the limit alone would give 794, and the SCF takes
+  59.1 s; at a width of 794 it took 59.4 s. The ERI buffer then uses
+  8.63 GiB of the 16.
 
 **The budget against the planner's block.** One GPU, the same runs through
 the old Rust path (`rust/`'s `free-breakfast`, `schwarz_threshold = 0`, its
