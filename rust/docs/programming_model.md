@@ -141,8 +141,9 @@ and the MainBus").
   the solver's flag on the host after its last enqueue
   ([`gpu_layer.md`](gpu_layer.md), "The v0.0.4 runtime").
 - **The SCF is one all-GPU step whose loop is plain code in `run`.** Each
-  iteration is the `EriManager`'s `build_jk` over the carried density (its
-  occupied orbitals on every pass but a fresh run's first), F, the energy,
+  iteration is the `EriManager`'s `build_jk` over a factor of the carried
+  density (its occupied orbitals, or on a fresh run's first pass the
+  guess's eigen-factor above a floor), F, the energy,
   the residual, the DIIS step and the Roothaan step, on gpu0's guarded
   stream in its scratch; the turn's scalars are read on the host through
   their download's token once, after the turn's last enqueue. `fb_steps::run`

@@ -19,9 +19,19 @@
 //! work buffer die with it: one region of gpu0's scratch, laid out by
 //! [`layout`], and the host's reads one region of its pinned scratch.
 //!
-//! **K from the occupied orbitals.** Every Roothaan step leaves the
+//! **K from a factor, every pass.** Every Roothaan step leaves the
 //! orbitals C of its `D = 2 C Cᵀ`, so every J/K pass is given C's occupied
-//! columns but a fresh run's first, whose D is the guess.
+//! columns but a fresh run's first, whose D is the guess. That one is given
+//! the guess's factor: `D = U diag(w) Uᵀ` by syevd on gpu0, and
+//! `Y = U diag((w/2)^(1/2))` over the eigenvalues above [`GUESS_FLOOR`] of
+//! the largest, so `D = 2 Y Yᵀ` less the dropped eigenvalues, and the pass
+//! costs `rank / n_ao` of one from D. The rank, the width of that pass's
+//! GEMMs, is read on the host once, before the loop's first turn, through
+//! the eigenvalues' download: the loop's turn read, its turn the factor's
+//! (`docs/gpu_layer.md`, "The v0.0.4 runtime"). The SAD guess is a sum of
+//! atomic densities, so its rank is about its molecule's minimal basis:
+//! gly10's is 237 of 734 AOs, beside 155 occupied orbitals. The energy is
+//! still `tr(D (H + F))/2` of the guess's D.
 //!
 //! **A replay** starts from the orbitals the last run left: C and D carry
 //! over in the `Output`, and nothing in scratch does (v0.0.2's reset mode).
@@ -33,6 +43,7 @@ use std::time::{Duration, Instant};
 use fb_core_budget::{Budget, DeviceBuf, HeapSlab, Kind, Layout, Lease, LockId, ManagerId, Span};
 use fb_core_device::{
     DeviceSlice, DeviceSliceMut, GpuResources, part, part_mut, sync_meter, wwr_blas_operation,
+    wwr_blas_side_mode,
 };
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_flow::{Held, Lane, Placement, Slot, Step, View};
@@ -48,6 +59,20 @@ use crate::steps::overlap::OverlapStep;
 
 const OP_N: wwr_blas_operation = wwr_blas_operation::WWR_BLAS_OP_N;
 const OP_T: wwr_blas_operation = wwr_blas_operation::WWR_BLAS_OP_T;
+const LEFT: wwr_blas_side_mode = wwr_blas_side_mode::WWR_BLAS_SIDE_LEFT;
+const RIGHT: wwr_blas_side_mode = wwr_blas_side_mode::WWR_BLAS_SIDE_RIGHT;
+
+/// The guess's factor keeps the eigenvalues of D above this fraction of
+/// the largest: the old path's and the C++ floor. The SAD density's
+/// eigenvalues are its atoms' natural occupations, of order 1e-2 and up,
+/// and round-off, under 1e-14 of the largest; the floor parts the two by
+/// orders on either side, so the dropped eigenvalues are round-off and the
+/// first pass's D is the guess's to round-off. Bounded however: at most
+/// `n_ao` of them, each at most 1e-12 of the largest (2 for a closed-shell
+/// atom), so at most `2e-12 n_ao` of the trace in all, 1.5e-9 at gly10,
+/// a change in the first build's F and never in the converged energy,
+/// which is the guess's fixed point to the loop's tolerance.
+const GUESS_FLOOR: f64 = 1e-12;
 
 /// The turn's read: the scalars' download token synced, after the turn's
 /// last enqueue.
@@ -97,6 +122,7 @@ pub struct ScfOutput {
     residual: f64,
     iterations: usize,
     converged: bool,
+    guess_rank: usize,
     meter: LoopMeter,
     c: DeviceBuf<f64>,
     epsilon: DeviceBuf<f64>,
@@ -124,6 +150,13 @@ impl ScfOutput {
     #[must_use]
     pub fn iterations(&self) -> usize {
         self.iterations
+    }
+
+    /// The rank of the guess's factor, the columns of the first J/K pass of
+    /// the last run that started from the guess; a replay leaves it.
+    #[must_use]
+    pub fn guess_rank(&self) -> usize {
+        self.guess_rank
     }
 
     /// Whether the last run converged.
@@ -190,6 +223,7 @@ struct ScfLayout {
     h_c: Span<f64>,
     h_epsilon: Span<f64>,
     h_d: Span<f64>,
+    h_w: Span<f64>,
 }
 
 fn layout(n: usize, cap: usize, lwork: usize) -> ScfLayout {
@@ -218,6 +252,7 @@ fn layout(n: usize, cap: usize, lwork: usize) -> ScfLayout {
         h_c: pin.span(n2),
         h_epsilon: pin.span(n),
         h_d: pin.span(n2),
+        h_w: pin.span(n),
         device_bytes: dev.bytes(),
         pinned_bytes: pin.bytes(),
     }
@@ -360,6 +395,7 @@ impl Step<MainBus> for ScfStep {
             residual: 0.0,
             iterations: 0,
             converged: false,
+            guess_rank: 0,
             meter: LoopMeter::default(),
             c: budget.device(GPU0, n * n),
             epsilon: budget.device(GPU0, n),
@@ -422,11 +458,72 @@ impl Step<MainBus> for ScfStep {
         let mut h_singular = scratch.pinned(GPU0, l.h_singular);
 
         // A fresh loop in the same buffers. The first run starts from the
-        // guess; a replay from the C and D the last run left.
+        // guess and its factor; a replay from the C and D the last run left.
         let fresh = !out.converged;
+        // The columns of `out.c` the next pass is given: the occupied
+        // orbitals of `out.d` after any Roothaan step, so on a replay from
+        // the start, and the guess's factor's rank on a fresh run's first.
+        let mut cols = n_occ;
         if fresh {
             let guess = view.read(GuessStep);
-            held.gpu(GPU0).stream().copy_device(&mut out.d, guess.d())?;
+            let gpu = held.gpu(GPU0);
+            // D = U diag(w) Uᵀ: U over t1, w into the orbital energies,
+            // which the first Roothaan step overwrites.
+            gpu.stream().copy_device(&mut out.d, guess.d())?;
+            gpu.stream().copy_device(&mut t1, guess.d())?;
+            gpu.syevd(n, &mut t1, &mut out.epsilon, &mut work, &mut info)?;
+            let on = gpu.stream();
+            let (read_w, read_info) = (
+                on.download(scratch.pinned(GPU0, l.h_w), &out.epsilon)?,
+                on.download(h_info, &info)?,
+            );
+            let h_w = turn_read!(read_w)?;
+            h_info = turn_read!(read_info)?;
+            if h_info[0] != 0 {
+                return Err(Error::numerical(format!(
+                    "scf: the guess's syevd: info = {}",
+                    h_info[0]
+                )));
+            }
+            // Ascending, so the kept eigenvalues are the last `rank`.
+            let floor = GUESS_FLOOR * h_w.last().copied().unwrap_or(0.0).max(0.0);
+            let rank = h_w.iter().filter(|&&w| w > floor).count();
+            if rank == 0 {
+                return Err(Error::numerical(
+                    "scf: the guess density has no positive eigenvalue",
+                ));
+            }
+            let first = n - rank;
+            let dropped: f64 = h_w[..first].iter().map(|w| w.abs()).sum();
+            log::info!(
+                "scf: the guess's factor: rank {rank} of {n}, the dropped eigenvalues' |w| \
+                 summing to {dropped:.1e}"
+            );
+            // In range: rank ≤ n, and n² fits an i32.
+            let ri = rank as i32;
+            // (w/2)^(1/2) as (w/2) (w/2)^(-1/2), over the kept tail, in F's
+            // and t2's heads, then into ε's head; Y = U_tail diag of it,
+            // into C's first `rank` columns.
+            let tail = part(&out.epsilon, first, rank);
+            let (mut half, mut root) = (part_mut(&mut t2, 0, rank), part_mut(&mut f, 0, rank));
+            gpu.geam(
+                OP_N, OP_N, ri, 1, 0.5, &tail, ri, 0.0, &tail, ri, &mut half, ri,
+            )?;
+            gpu.stream().copy_device(&mut root, &half)?;
+            gpu.inverse_sqrt(&mut root, 0.5 * floor)?;
+            let mut weights = part_mut(&mut out.epsilon, 0, rank);
+            gpu.dgmm(LEFT, ri, 1, &half, ri, &root, &mut weights, ri)?;
+            gpu.dgmm(
+                RIGHT,
+                ni,
+                ri,
+                &part(&t1, first * n, n * rank),
+                ni,
+                &part(&out.epsilon, 0, rank),
+                &mut part_mut(&mut out.c, 0, n * rank),
+                ni,
+            )?;
+            (cols, out.guess_rank) = (rank, rank);
         }
         out.converged = false;
         let mut diis = Diis {
@@ -437,24 +534,15 @@ impl Step<MainBus> for ScfStep {
         };
         let mut last_energy = 0.0;
         let mut iteration = 0;
-        // Whether `out.c` holds the occupied orbitals of `out.d`: after any
-        // Roothaan step, so on a replay from the start, and never for the
-        // guess.
-        let mut factored = !fresh;
         let (start, (syncs, blocked)) = (Instant::now(), sync_meter());
         loop {
             let (slot, held_pairs) = diis.advance();
-            // J and K of the carried D: the manager's, into this step's
-            // scratch.
-            let density = if factored {
-                Density::Occupied(part(&out.c, 0, n * n_occ), n_occ)
-            } else {
-                Density::Dense(part(&out.d, 0, n2))
-            };
+            // J and K of the carried D, from its factor: the manager's, into
+            // this step's scratch.
             eri.build_jk(
                 shared,
                 held,
-                &[density],
+                &[Density::Occupied(part(&out.c, 0, n * cols), cols)],
                 &mut [part_mut(&mut j, 0, n2)],
                 &mut [part_mut(&mut k, 0, n2)],
             )?;
@@ -582,7 +670,7 @@ impl Step<MainBus> for ScfStep {
                     d: &mut out.d,
                 },
             )?;
-            factored = true;
+            cols = n_occ;
 
             // The turn's read, after its last enqueue: E, ‖e‖² and the two
             // flags, under one sync (the later tokens are covered by it).
