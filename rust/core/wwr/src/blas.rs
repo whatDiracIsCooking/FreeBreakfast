@@ -19,7 +19,7 @@
 //! | `trsv<T>` and `scal<T>` over `wwrblas{S,D,C,Z}trsv` and `…scal` | [`BlasScalar`]'s `trsv_raw` and `scal_raw` |
 //! | the same `trsv<T>` and `scal<T>`, called with raw pointers | [`trsv`] and [`scal`], over [`DeviceSlice`]s they check; the stride at least 1 |
 //! | `gemm<T>` with B and C blocks of rows of one matrix, as `src/recipes/trsm`'s update calls it | [`gemm_rows`], the two blocks checked apart |
-//! | `trsm<T>` over `wwrblas{S,D,C,Z}trsm` | not bound: the library's trsm takes workspace that grows with the right-hand sides on ROCm, so the tree's own is `fb_recipes_sys::trsm`, over [`gemm`], [`gemm_rows`], [`trsv`] and [`scal`] |
+//! | `trsm<T>` over `wwrblas{S,D,C,Z}trsm` | not bound: the library's trsm takes workspace that grows with the right-hand sides on ROCm, so the tree's own is `fb_recipes_launch::trsm`, over [`gemm`], [`gemm_rows`], [`trsv`] and [`scal`] |
 //! | `geam<T>` over `wwrblas{S,D,C,Z}geam` | [`BlasScalar`]'s `geam_raw` |
 //! | the same `geam<T>`, called with raw pointers | [`geam`], over [`DeviceSlice`]s it checks; C never A or B (no in-place call) |
 //! | `kOne<T>`, `kZero<T>` (`core/constants`), the BLAS scalars one and zero by address | [`BlasScalar::ONE`] and [`BlasScalar::ZERO`], by value |
@@ -1095,7 +1095,7 @@ pub fn dgmm<T: BlasScalar>(
 /// one column-major matrix `b` of n columns at leading dimension `ldb`,
 /// the k rows from `src` read and the m rows from `dst` written, `op_a(A)`
 /// m × k. The update between the diagonal blocks of a left-sided blocked
-/// triangular solve (`fb_recipes_sys::trsm`), where the rows solved and the rows
+/// triangular solve (`fb_recipes_launch::trsm`), where the rows solved and the rows
 /// still to come lie in the same columns, so no cut of `b` parts them
 /// ([`split_at_mut`](crate::device_slice::split_at_mut)); here the two
 /// blocks are checked apart instead.

@@ -5,12 +5,12 @@
 //! Two calls a task makes inside its `run`, on its stream, as it calls
 //! `fb_core_wwr::blas::gemm`; neither is a task of its own. Each is one launch
 //! of the kernels forked into `recipes/kernels/symmetrize/`, through
-//! `fb-recipes-sys`'s safe wrappers, which hold the `unsafe` and check every
+//! [`fb_recipes_launch`]'s safe calls, which hold the `unsafe` and check every
 //! extent the launch trusts; this crate holds none.
 //!
 //! | C++ | Here |
 //! |---|---|
-//! | `symmetrize(res, n, a, lda)`, `A ← (A + Aᵀ) / 2` | [`symmetrize`]`(stream, n, a, lda)`, `fb_recipes_sys`'s, re-exported |
+//! | `symmetrize(res, n, a, lda)`, `A ← (A + Aᵀ) / 2` | [`symmetrize`]`(stream, n, a, lda)`, [`fb_recipes_launch`]'s, re-exported |
 //! | `symmetrize(res, fill, n, a, lda)`, the triangle opposite `fill` ← the transpose of `fill`'s | [`symmetrize_from`]`(stream, fill, n, a, lda)`: one name per call, since Rust has no overloads |
 //! | `DeviceResources &res`, its stream and device | a [`Stream`], whose device the caller's worker has current |
 //! | `double *a`, `n` and `lda` trusted | a [`DeviceSliceMut`], asserted to hold the block in every build |
