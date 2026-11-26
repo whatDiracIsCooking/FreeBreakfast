@@ -18,6 +18,7 @@ members = [
     "molecule",
     "basis",
     "kernel_abi",
+    "recipes/launch",
     "recipes/sys",
     "recipes/blas",
     "integrals/sys",
@@ -87,6 +88,7 @@ fb-molecule = { path = "molecule" }
 fb-basis = { path = "basis" }
 fb-kernel-abi = { path = "kernel_abi" }
 fb-recipes-sys = { path = "recipes/sys" }
+fb-recipes-launch = { path = "recipes/launch" }
 fb-recipes-blas = { path = "recipes/blas" }
 fb-io-xyz = { path = "io/xyz" }
 fb-io-basis = { path = "io/basis" }

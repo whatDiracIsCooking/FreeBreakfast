@@ -399,6 +399,11 @@ every case that calls it is named here, which `fb-doc-check`'s
   `M_K`) on one to four cards against PySCF's exact RHF;
   `water_dense_converges_to_pyscf` and `tier5_water_dense_across_cards`
   are its family's representatives.
+- `fb-core-device`'s `trsm_matches_a_host_solve`, the guard's triangular
+  solve at order 512 in four side, triangle and operation cases against
+  substitution on the host, most of its time the library's first load of
+  each gemm; `cholesky_matches_a_host_factor`, whose panels are the right,
+  transposed case, is its family's representative.
 
 libtest has no skipped state, so a returned case counts as passed; the
 gate's line, not the count, is what says it did not run. `#[ignore]` is

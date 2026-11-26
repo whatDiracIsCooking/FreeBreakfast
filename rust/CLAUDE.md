@@ -53,7 +53,7 @@ forbids it. Each block holds one operation under a `// SAFETY:` comment
 `fb_core_arena::memcpy_*` (between `split_at_mut` parts of one row,
 `fb_core_wwr::copy::d2d`), BLAS through `fb_core_wwr::blas`, a device
 zero through `fb_core_wwr::memset::zero`, a kernel launch through its
-binding crate's safe API (`fb_recipes_sys::inverse_sqrt`, …), and a test's
+binding crate's safe API (`fb_recipes_launch::inverse_sqrt`, …), and a test's
 device buffer through `fb_core_wwr::runtime::tests::DeviceBytes`.
 
 **A new rule joins the register.** `docs/rules.md` lists every rule these

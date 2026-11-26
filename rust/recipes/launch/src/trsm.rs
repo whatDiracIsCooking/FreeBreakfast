@@ -118,7 +118,7 @@ fn order(side: wwr_blas_side_mode, m: i32, n: i32) -> i32 {
 /// use fb_core_wwr::blas::BlasHandle;
 /// use fb_core_wwr::device_slice::{DeviceSlice, DeviceSliceMut};
 /// use fb_core_wwr::runtime::Stream;
-/// use fb_recipes_sys::trsm;
+/// use fb_recipes_launch::trsm;
 /// use wwr_sys::{
 ///     wwr_blas_diag_type, wwr_blas_fill_mode, wwr_blas_operation, wwr_blas_side_mode,
 /// };

@@ -29,7 +29,7 @@ fb-pipeline-guess.workspace = true
 fb-recipes-diagonalize.workspace = true
 fb-recipes-diis.workspace = true
 fb-recipes-orthogonalize.workspace = true
-fb-recipes-sys.workspace = true
+fb-recipes-launch.workspace = true
 log.workspace = true
 serde.workspace = true
 # BLAS for the ops the iteration's geams, gemms and gemvs take.

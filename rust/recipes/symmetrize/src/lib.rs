@@ -32,7 +32,7 @@
 use fb_core_error_handling::Status;
 use fb_core_wwr::device_slice::DeviceSliceMut;
 use fb_core_wwr::runtime::Stream;
-pub use fb_recipes_sys::symmetrize;
+pub use fb_recipes_launch::symmetrize;
 use wwr_sys::wwr_blas_fill_mode;
 
 /// Overwrites the strict triangle opposite `fill` of the column-major
@@ -45,7 +45,7 @@ use wwr_sys::wwr_blas_fill_mode;
 /// the opposite triangle reaches the result, so it may hold anything, NaN
 /// included. Rows past `n` are neither read nor written, and an `n` of 0
 /// enqueues nothing. One launch, without synchronizing:
-/// [`fb_recipes_sys::mirror_triangle`].
+/// [`fb_recipes_launch::mirror_triangle`].
 ///
 /// # Errors
 /// The launch's failure, as `fb_kernel_abi::launch_status` maps it. A fault
@@ -63,5 +63,5 @@ pub fn symmetrize_from(
     lda: usize,
 ) -> Status {
     let from_lower = fill == wwr_blas_fill_mode::WWR_BLAS_FILL_MODE_LOWER;
-    fb_recipes_sys::mirror_triangle(stream, from_lower, n, a, lda)
+    fb_recipes_launch::mirror_triangle(stream, from_lower, n, a, lda)
 }

@@ -1,6 +1,6 @@
 [package]
 name = "fb-recipes-sys"
-description = "recipes' launch wrappers: FFI bindings over libfb_recipes_kernels.so, the safe calls over them, and the blocked triangular solve"
+description = "recipes' launch wrappers: FFI bindings over libfb_recipes_kernels.so, its tile constants and its load check, linking no safe layer"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -10,14 +10,7 @@ links = "fb_recipes_kernels"
 workspace = true
 
 [dependencies]
-contracts.workspace = true
-fb-core-error-handling.workspace = true
-fb-core-log.workspace = true
-# The safe calls' slices, stream and status mapping.
-fb-core-wwr.workspace = true
+# The shared launch vocabulary the bindings re-export, and the load check.
 fb-kernel-abi.workspace = true
-# BLAS for the triangular solve's side, fill, operation and diagonal enums.
-wwr-sys = { workspace = true, features = ["blas"] }
-
-[dev-dependencies]
-fb-core-wwr = { workspace = true, features = ["test-support"] }
+# The stream type the bindings take.
+wwr-sys.workspace = true

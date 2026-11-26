@@ -575,7 +575,7 @@ fn library_triangular_solves(path: &str, source: &str) -> Vec<String> {
         .map(|(i, w)| {
             format!(
                 "{path}:{}: {w} is a library triangular solve, whose workspace grows with \
-                 its right-hand sides on ROCm; call fb_recipes_sys::trsm",
+                 its right-hand sides on ROCm; call fb_recipes_launch::trsm or GpuResources::trsm",
                 line_of(source, i)
             )
         })
@@ -604,7 +604,7 @@ fn a_library_triangular_solve_is_found_by_its_name() {
     assert_eq!(f.len(), 3, "{f:#?}");
     assert!(f[0].starts_with("a.rs:2: wwr_blas_dtrsm"), "{f:#?}");
     // The tree's own, a comment and a literal are not one.
-    let good = "use fb_recipes_sys::trsm;\n// wwr_blas_dtrsm\nconst S: &str = \"wwr_blas_dtrsm\";\n\
+    let good = "use fb_recipes_launch::trsm;\n// wwr_blas_dtrsm\nconst S: &str = \"wwr_blas_dtrsm\";\n\
                 fn g() {\n    trsm();\n    wwr_blas_dtrsv();\n}\n";
     assert!(library_triangular_solves("a.rs", good).is_empty());
 }

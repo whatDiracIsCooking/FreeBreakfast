@@ -24,7 +24,7 @@ use std::sync::Arc;
 use fb_core_wwr::blas::BlasHandle;
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::runtime::tests::DeviceBytes;
-use fb_recipes_sys::{TrsmScalar, trsm};
+use fb_recipes_launch::{TrsmScalar, trsm};
 use wwr_sys::{
     wwr_blas_diag_type::{self, WWR_BLAS_DIAG_NON_UNIT as NON_UNIT, WWR_BLAS_DIAG_UNIT as UNIT},
     wwr_blas_fill_mode::{

@@ -10,7 +10,7 @@
 //!   as it was.
 //! - **`inverse root`**, on the worker's stream: w copied into a scratch
 //!   row Λ, mapped in place to `Λ^(-1/2)` by `libfb_recipes_kernels.so`'s
-//!   kernel through [`fb_recipes_sys::inverse_sqrt`] (an eigenvalue at or
+//!   kernel through [`fb_recipes_launch::inverse_sqrt`] (an eigenvalue at or
 //!   below the floor becomes 0, which drops its mode), then
 //!   `X = U diag(Λ^(-1/2)) Uᵀ` into the output row X by
 //!   [`gmmwich`]`::<T, f64>` on the worker's handle: a `dgmm` writes
@@ -46,7 +46,7 @@ use fb_core_planner::{Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
 use fb_recipes_blas::{T, gmmwich};
 use fb_recipes_diagonalize::add_diagonalize;
-use fb_recipes_sys::inverse_sqrt;
+use fb_recipes_launch::inverse_sqrt;
 
 /// The default eigenvalue floor, the C++ `kOrthogonalizeEigenvalueFloor`: an
 /// eigenvalue at or below it contributes 0 to X rather than `λ^(-1/2)`.

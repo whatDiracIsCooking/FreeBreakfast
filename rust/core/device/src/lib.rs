@@ -14,6 +14,11 @@
 //!   which every call here takes in place of a pointer, and [`Part`] and
 //!   [`PartMut`], runs of one ([`part`], [`part_mut`], [`split_at_mut`]).
 //!   [`HostSlice`] and [`HostSliceMut`] are the host end of a copy.
+//! - [`GpuResources`]: one GPU's stream with a BLAS and a dense-solver
+//!   handle made on it and the handle workspace, made inside a `Mutex` and
+//!   reached only through its guard; its checked BLAS and solver calls, and
+//!   the tree's [`GpuResources::trsm`] and [`GpuResources::cholesky`]
+//!   recipes over them, on the guard's one stream.
 //!
 //! **Each call makes its stream's device current.** A stream and an event
 //! remember their device, and every method holds a [`ScopedDevice`] on it
@@ -21,13 +26,16 @@
 //! on the right one.
 //!
 //! **A create aborts; everything else is a value.** Making a stream, an
-//! event or a device current aborts at the caller's line when the runtime
+//! event, a GPU's handles or a device current aborts at the caller's line when the runtime
 //! refuses, the C++ tree's rule for a create (`docs/diagnostics.md`,
 //! "Allocation is a planning-time error"); an enqueue, a sync and a query
 //! return the runtime's failure as a [`Status`] or a
 //! [`Result`]. A failed destroy is logged at
 //! error (`docs/diagnostics.md`, "`Drop` cannot fail").
 
+mod gpu;
+#[cfg(test)]
+mod gpu_tests;
 mod slice;
 mod stream;
 #[cfg(test)]
@@ -40,6 +48,7 @@ use fb_core_error_handling::{Error, Result, Status, check_or_abort};
 use fb_core_log::{self as log, LogLevel};
 use wwr_sys::wwr_status;
 
+pub use gpu::{CHOLESKY_TILE, GpuResources, HANDLE_WORKSPACE_BYTES};
 pub use slice::{
     DeviceSlice, DeviceSliceMut, HostSlice, HostSliceMut, Part, PartMut, part, part_mut,
     split_at_mut,

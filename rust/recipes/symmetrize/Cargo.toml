@@ -11,10 +11,11 @@ workspace = true
 [dependencies]
 fb-core-error-handling.workspace = true
 fb-core-wwr.workspace = true
-fb-recipes-sys.workspace = true
+fb-recipes-launch.workspace = true
 # BLAS for the fill mode, so a syrk's passes straight through.
 wwr-sys = { workspace = true, features = ["blas"] }
 
 [dev-dependencies]
 fb-core-wwr = { workspace = true, features = ["test-support"] }
 fb-io-npy.workspace = true
+fb-recipes-sys.workspace = true
