@@ -16,7 +16,7 @@ reference has it), `sens_l`, `sens_q` and `conv_q`, below.
 
 The SCF is redone here as the reference's emitter ran it (PySCF's DF-ROHF
 over the same documents and geometry, `conv_tol` 1e-12, `conv_tol_grad`
-1e-9), each space localized by the Pipek-Mezey crate's `localize` (PySCF's
+1e-9), each space localized by `pm_reference.py`'s `localize` (PySCF's
 kernel at `conv_tol` 1e-12 alternated with its Jacobi stability check), and
 each space's L checked against the reference's to 1e-9: the reproduction
 the analysis is made about. L and the populations are invariant under any
@@ -68,11 +68,8 @@ import scipy.linalg
 from pyscf import gto, lib, scf
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[3]
-THREE_CENTER = (
-    ROOT / "rust/integrals/eri/density_fitting/three_center/tests/data/reference.py"
-)
-PIPEK_MEZEY = ROOT / "rust/localization/pipek_mezey/tests/data/reference.py"
+MOLECULE = HERE / "molecule.py"
+PM = HERE / "pm_reference.py"
 REFERENCE = HERE / "localization_rohf.json"
 OUT = HERE / "localization_rohf_bars.json"
 COMMAND = (
@@ -321,8 +318,8 @@ def exponent_bars(pm, ctx: dict, record: dict) -> dict:
 
 def main() -> None:
     lib.num_threads(1)
-    ref = module("three_center_reference", THREE_CENTER)
-    pm = module("pipek_mezey_reference", PIPEK_MEZEY)
+    ref = module("molecule_reference", MOLECULE)
+    pm = module("pm_reference", PM)
     doc = json.loads(REFERENCE.read_text())
     cases = []
     for case in doc["cases"]:

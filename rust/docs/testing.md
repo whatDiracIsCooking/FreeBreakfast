@@ -205,7 +205,7 @@ real GPUs is named `tier5_*` ("Selecting GPU tiers in cargo").
 | A ring of one | `[eri] ring = 1` | The rings' events and waits against the unoverlapped order |
 | Logical GPUs | `[resources] devices = [0, 0]`: two GPU indices on one device | Tier 4. The all-GPU paths without a second card: the device made current in each thread of a fan-out, the lock order across GPUs, the reduction onto gpu0, a ring per GPU. Real GPUs are tier 5 |
 | A negative control | A test-only switch that removes one ordering: the event before the fit (`#[cfg(test)]` in the build), the wrapper's step-end sync (`fb-core-flow`'s `test-support` feature) | That the test for the ordering can fail: under the NaN fill the run without it gives a wrong result, and the first run's with it restored. A control whose failure depends on a race is not kept |
-| Recorded references | The old Rust path's results, run once and committed under `steps/tests/data/` with their writer, card and revision (`old_path.json`, `old_path_h2o_*.npy`, written by `pipeline/scf/tests/steps_reference.rs`) | The steps' energies, S, H and the metric against the old layer's (`recorded_device.rs`), with no old-layer crate in `fb-steps`' manifest |
+| Recorded references | The old Rust path's results, run once and committed under `steps/tests/data/` with their writer, card and revision (`old_path.json`, `old_path_h2o_*.npy`; the writer, the old `pipeline/scf`'s `tests/steps_reference.rs`, went with that crate, #1873, and `old_path.json` names it and its revision) | The steps' energies, S, H and the metric against the old layer's (`recorded_device.rs`), with no old-layer crate in `fb-steps`' manifest |
 | A replay | `Run::replay` | The same energy from the carried orbitals, and the allocation count unchanged |
 | The executor's width | `[resources] threads` at 2 and at 8 | The same energy, and no starvation with workers waiting on locks |
 
@@ -415,29 +415,11 @@ every case that calls it is named here, which `fb-doc-check`'s
   `high_aux_matches_pyscf_through_ff_i`, all 70 three-center classes
   through (ff|i) against PySCF; `water_matches_pyscf_and_is_exactly_symmetric`
   is its family's representative.
-- `fb-pipeline-scf`'s `benzene_converges_to_pyscf`, the DF-RHF loop for
-  benzene in cc-pVDZ / cc-pVDZ-JKFIT against PySCF;
-  `water_converges_to_pyscf` is its family's representative.
-- `fb-pipeline-config`'s `the_default_threshold_keeps_benzenes_energy`,
-  benzene's DF-RHF at the default `[eri] schwarz_threshold` against 0, two
-  full SCF runs; `schwarz_threshold_is_optional` (plan-level) stands in for
-  it at the gates.
-- `fb-pipeline-config`'s `the_default_threshold_keeps_gly5s_energy`, the
-  same comparison for five glycines, where the default drops a sizeable
-  share of the shell pairs; `schwarz_threshold_is_optional` stands in for
-  it at the gates.
 - `fb-core-planner`'s `tier5_every_split_is_bitwise_one_workers`, the
   partitioned product on one, two and four workers against one another,
   a clique made per run;
   `tier5_a_partitioned_product_in_a_loop_across_devices` is its family's
   representative.
-- `fb-pipeline-scf`'s `gly5_sto3g_on_one_card`,
-  `tier5_gly5_631g_on_two_cards`, `tier5_gly5_sto3g_across_cards` and
-  `tier5_gly10_sto3g_across_cards`, the RHF over the dense conventional
-  ERI for glycine chains of 122 to 237 AOs (3.5 to 50 GB of `M_J` and
-  `M_K`) on one to four cards against PySCF's exact RHF;
-  `water_dense_converges_to_pyscf` and `tier5_water_dense_across_cards`
-  are its family's representatives.
 - `fb-core-device`'s `trsm_matches_a_host_solve`, the guard's triangular
   solve at order 512 in four side, triangle and operation cases against
   substitution on the host, most of its time the library's first load of

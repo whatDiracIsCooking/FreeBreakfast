@@ -1,7 +1,7 @@
-"""PySCF's fitted tensor B = L^-1 (P|mn), for fb-steps' chain test: the
-three-center crate's reference.py (`named`) over an orbital set and a
-fitting set, so the molecule, both BSE documents, the CODATA 2018 bohr and
-the contraction norms D are the ones free_breakfast reads.
+"""PySCF's fitted tensor B = L^-1 (P|mn), for fb-steps' chain test:
+`molecule.py`'s `named` over an orbital set and a fitting set, so the
+molecule, both BSE documents, the CODATA 2018 bohr and the contraction
+norms D are the ones free_breakfast reads.
 
 Usage (from the checkout root; PySCF is in the `tools` dependency group):
 
@@ -33,17 +33,13 @@ import numpy as np
 import scipy.linalg
 from pyscf import df
 
-ROOT = Path(__file__).resolve().parents[4]
-THREE_CENTER = (
-    ROOT / "rust/integrals/eri/density_fitting/three_center/tests/data/reference.py"
-)
+HERE = Path(__file__).resolve().parent
+MOLECULE = HERE / "molecule.py"
 
 
-def three_center_reference():
-    """The three-center crate's reference.py, as a module."""
-    spec = importlib.util.spec_from_file_location(
-        "three_center_reference", THREE_CENTER
-    )
+def molecule_reference():
+    """`molecule.py`, beside this script, as a module."""
+    spec = importlib.util.spec_from_file_location("molecule_reference", MOLECULE)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -52,7 +48,7 @@ def three_center_reference():
 def main() -> None:
     if len(sys.argv) != 5:
         raise SystemExit(__doc__)
-    ref = three_center_reference()
+    ref = molecule_reference()
     orb, aux, d, d_aux = ref.named(Path(sys.argv[1]), sys.argv[2], sys.argv[3])
     j3c = df.incore.aux_e2(orb, aux, intor="int3c2e", aosym="s1")
     j3c = j3c * d[:, None, None] * d[None, :, None] * d_aux[None, None, :]

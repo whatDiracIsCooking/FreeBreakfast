@@ -34,15 +34,12 @@ members = [
     "recipes/matrix_ao",
     "io/sad",
     "integrals/one_electron/kinetic",
-    "pipeline/guess",
     "molecule/nuclei",
     "integrals/one_electron/potential_en",
     "integrals/one_electron/core_hamiltonian",
-    "pipeline/config",
     "tools/sad",
     "recipes/diagonalize",
     "recipes/orthogonalize",
-    "pipeline/scf",
     "recipes/symmetrize",
     "recipes/cholesky",
     "recipes/diis",
@@ -51,9 +48,7 @@ members = [
     "integrals/eri/density_fitting/jk",
     "integrals/eri/density_fitting/three_center",
     "integrals/eri/conventional",
-    "pipeline/eri",
     "localization/sys",
-    "localization/pipek_mezey",
     "integrals/eri/density_fitting/pair_map",
     "integrals/schwarz",
     "integrals/eri/density_fitting/transform",
@@ -104,15 +99,12 @@ fb-io-npy = { path = "io/npy" }
 fb-recipes-matrix-ao = { path = "recipes/matrix_ao" }
 fb-io-sad = { path = "io/sad" }
 fb-integrals-one-electron-kinetic = { path = "integrals/one_electron/kinetic" }
-fb-pipeline-guess = { path = "pipeline/guess" }
 fb-molecule-nuclei = { path = "molecule/nuclei" }
 fb-integrals-one-electron-potential-en = { path = "integrals/one_electron/potential_en" }
 fb-integrals-one-electron-core-hamiltonian = { path = "integrals/one_electron/core_hamiltonian" }
-fb-pipeline-config = { path = "pipeline/config" }
 fb-tools-sad = { path = "tools/sad" }
 fb-recipes-diagonalize = { path = "recipes/diagonalize" }
 fb-recipes-orthogonalize = { path = "recipes/orthogonalize" }
-fb-pipeline-scf = { path = "pipeline/scf" }
 fb-recipes-symmetrize = { path = "recipes/symmetrize" }
 fb-recipes-cholesky = { path = "recipes/cholesky" }
 fb-recipes-diis = { path = "recipes/diis" }
@@ -121,9 +113,7 @@ fb-integrals-eri-density-fitting-fit = { path = "integrals/eri/density_fitting/f
 fb-integrals-eri-density-fitting-jk = { path = "integrals/eri/density_fitting/jk" }
 fb-integrals-eri-density-fitting-three-center = { path = "integrals/eri/density_fitting/three_center" }
 fb-integrals-eri-conventional = { path = "integrals/eri/conventional" }
-fb-pipeline-eri = { path = "pipeline/eri" }
 fb-localization-sys = { path = "localization/sys" }
-fb-localization-pipek-mezey = { path = "localization/pipek_mezey" }
 fb-integrals-eri-density-fitting-pair-map = { path = "integrals/eri/density_fitting/pair_map" }
 fb-integrals-schwarz = { path = "integrals/schwarz" }
 fb-integrals-eri-density-fitting-transform = { path = "integrals/eri/density_fitting/transform" }
@@ -162,7 +152,7 @@ proptest = "1"
 serde_json = "1"
 # core::thread_pool: the timing record as timing.json.
 serde = { version = "1", features = ["derive"] }
-# pipeline/config: the binary's config file.
+# steps: the binary's config file.
 toml = "1"
 # runtime_api alone: a binary NEEDs libwwr_capi_runtime_api.so and nothing
 # else of wwr's.

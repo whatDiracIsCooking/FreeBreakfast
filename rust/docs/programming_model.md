@@ -615,8 +615,7 @@ In the crates the orchestrator has two halves: the planner,
 `fb_core_planner`, which lays a `Dag` out and places it as a `Plan`
 (`Dag::plan`), and the executor, `fb_core_thread_pool`, which runs the
 `TaskGraph` that plan's `Instance` builds. "The planner" names
-`fb_core_planner` alone: the config-driven assembly in `fb_pipeline_config`,
-which reads a config and calls the builders, is not the planner.
+`fb_core_planner` alone.
 
 ### A builder adds tasks
 
@@ -643,9 +642,9 @@ nucleus, adds one GPU task, hands that task's row to
 It is a convention a source scan holds, not a trait. A trait could not
 stop a free function taking a `&mut Dag` beside it, since `Dag::add_gpu`
 is public to every task crate, and nothing yet calls builders generically;
-each call names its builder. The config's table of which tables each
-calculation requires and accepts (`pipeline/config`) is not that caller:
-it checks keys, and each calculation's plan still names its builders.
+each call names its builder. The old binary's table of which tables each
+calculation required and accepted (deleted in #1873) was not that caller:
+it checked keys, and each calculation's plan named its builders.
 A `Step` trait for the pipeline's steps, never for a recipe's or an
 integral's builders, is revisited when the first nested chain rerun
 appears (an optimization, a semi-numerical Hessian or an IRC replanning
@@ -1122,7 +1121,7 @@ questions").
 ### The run's devices
 
 **A run holds `num_gpus` devices, `0..num_gpus`.** The config's top-level
-`num_gpus` (`fb_pipeline_config::Config::num_gpus`, default 1) is how many
+`num_gpus` (the old binary's `Config::num_gpus`, default 1) is how many
 devices the process holds for the run, devices `0` to `num_gpus - 1` in
 that order, its device list. 0 is refused as the file is read, before any
 device is touched, and a count above the devices the runtime sees is
@@ -1532,7 +1531,7 @@ workspace, which the library keeps beyond any borrow, is handed over by
 value instead: `BlasHandle::bind_workspace` owns an arena `HeldRow` until
 the handle is destroyed or rebound ([`gpu_layer.md`](gpu_layer.md),
 "Layering"). Every crate above the core and binding crates now has nothing
-left to call raw and forbids `unsafe`: `fb-pipeline-scf`, the recipe
+left to call raw and forbids `unsafe`: `fb-steps`, the recipe
 crates, `fb-integrals-mmd` and the four `fb-integrals-one-electron-*`
 crates among them.
 
