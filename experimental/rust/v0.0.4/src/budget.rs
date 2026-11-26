@@ -182,9 +182,8 @@ impl RawBuf {
                 check_or_abort(runtime_status(unsafe {
                     wwr_sys::wwr_host_alloc(&mut p, bytes, 0)
                 }));
-                // SAFETY: `p` is `bytes` fresh bytes; zeroed, so every page
-                // is touched here.
-                unsafe { std::ptr::write_bytes(p.cast::<u8>(), 0, bytes) };
+                // Not zeroed: page-locking has already brought every page
+                // in, and a second pass over it is time for nothing.
                 p.cast()
             }
             Mem::Host => {

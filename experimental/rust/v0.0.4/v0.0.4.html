@@ -364,7 +364,7 @@ Cargo workspace of its own, in no gate, never merged into <code>rust/</code>.</p
 </tr>
 <tr>
 <td><strong>staging buffer</strong></td>
-<td>One pinned buffer of at most 256 MiB that B passes through between a GPU and the host: a fitted pair batch on its way down, rows of B on their way up</td>
+<td>One pinned buffer that B passes through between a GPU and the host: a fitted pair batch on its way down, of at most 64 MiB, or rows of B on their way up, of at most 256 MiB</td>
 </tr>
 <tr>
 <td><strong>records</strong></td>
@@ -679,12 +679,15 @@ scatter is a transpose, done in 64 × 64 tiles: element by element it strides B
 by a whole row per write. A J/K pass then runs over aux batches: each GPU
 contracts its own, and the fragments are summed onto gpu0 through the host.</p>
 <p><strong>Pinned staging does not grow with the limit.</strong> A fitted pair batch comes
-down, and rows of B go up, through staging buffers of at most 256 MiB. So a
-pair batch is never wider than one staging buffer holds, whatever
-<code>mem_per_gpu</code> is, and an aux batch wider than one is uploaded a buffer at a
-time, with a blocking sync per buffer. Page-locking costs about 0.9 s per GiB
-here, and the build's time is flat in the width well below that
-(<a href="#batched-only">batched only</a>).</p>
+down through a staging buffer of at most 64 MiB, and rows of B go up through
+one of at most 256 MiB. So a pair batch is never wider than one staging
+buffer holds, whatever <code>mem_per_gpu</code> is, and an aux batch wider than one is
+uploaded a buffer at a time, with a blocking sync per buffer. Page-locking
+costs about 0.9 s per GiB here, and the ring page-locks a buffer for each of
+its depth: the build's time is flat in the width well below 64 MiB
+(<a href="#batched-only">batched only</a>). The upload's bound is the larger because an
+aux batch that goes up in several buffers pays a blocking sync for each
+(<a href="#what-it-showed">what it showed</a>).</p>
 <p><strong>The cache.</strong> A GPU's aux range is fixed: the aux functions are split across
 the GPUs once, in budget mode, so GPU g always contracts the same batches.
 The cache fills on the first J/K pass, from the host copy (the build's pair
@@ -2354,9 +2357,9 @@ GPU's cache holds part of its share of gly10's B, at 16 GiB all of it.</p>
 <td>1</td>
 <td>−2144.284111689079</td>
 <td>5.3e-11</td>
-<td>6.5 s</td>
-<td>9.8 s</td>
-<td>63.8 s</td>
+<td>5.7 s</td>
+<td>10.2 s</td>
+<td>63.2 s</td>
 </tr>
 <tr>
 <td></td>
@@ -2364,9 +2367,9 @@ GPU's cache holds part of its share of gly10's B, at 16 GiB all of it.</p>
 <td>2</td>
 <td>−2144.284111689078</td>
 <td>5.4e-11</td>
-<td>7.5 s</td>
-<td>5.3 s</td>
-<td>32.1 s</td>
+<td>5.9 s</td>
+<td>5.2 s</td>
+<td>31.8 s</td>
 </tr>
 <tr>
 <td></td>
@@ -2374,8 +2377,8 @@ GPU's cache holds part of its share of gly10's B, at 16 GiB all of it.</p>
 <td>4</td>
 <td>−2144.284111689077</td>
 <td>5.5e-11</td>
-<td>9.7 s</td>
-<td>2.9 s</td>
+<td>6.6 s</td>
+<td>2.8 s</td>
 <td>16.1 s</td>
 </tr>
 <tr>
@@ -2415,23 +2418,33 @@ GPU's cache holds part of its share of gly10's B, at 16 GiB all of it.</p>
 gly10's six runs, 5.7e-11 from PySCF, against the bar of 1e-9.</li>
 <li><strong>K from the occupied orbitals is what the SCF's time was.</strong> gly10 has 155
 occupied orbitals of 734. From D, one GPU took 233.6 s for the 19 passes;
-from C it takes 63.8 s, of which the guess's pass, still from D, is about
+from C it takes 63.2 s, of which the guess's pass, still from D, is about
 12 s.</li>
-<li><strong>The SCF still scales with the GPUs</strong>: 2.0× on two and 4.0× on four at
+<li><strong>The SCF still scales with the GPUs</strong>: 2.0× on two and 3.9× on four at
 gly10, as it did from D. The cheaper contraction did not expose the uploads
 or the per-buffer sync. At gly5, 2.0× and 3.5×.</li>
 <li><strong>The cache still buys little</strong>: holding the whole share takes gly10's SCF
-from 63.8 s to 59.4 s on one GPU.</li>
-<li><strong>The build of B was the host's scatter, and now scales</strong>: 1.8× on two and
-3.4× on four at gly10. Element by element the scatter was 14.2 s of the
+from 63.2 s to 59.4 s on one GPU.</li>
+<li><strong>The build of B was the host's scatter, and now scales</strong>: 1.9× on two and
+3.7× on four at gly10. Element by element the scatter was 14.2 s of the
 17.3 s build on one GPU, with the GPU idle behind it; in tiles it is 2.7 s,
 and the build waits on the device, whose time is the fit.</li>
-<li><strong>Budget mode is B's pages and the pinned staging.</strong> At gly10 on one GPU,
-touching B's 7.27 GiB takes 5.3 s with huge pages (7.6 s without) and
-page-locking a GPU's 1.03 GiB of staging 1.0 s. Before the staging bound, a
-16 GiB limit page-locked 4.98 GiB per GPU, and budget mode on four GPUs was
-28 s. <em>Open</em>: the 5.3 s. Touching one slab on several threads is slower,
-with or without huge pages.</li>
+<li><strong>Budget mode is B's pages.</strong> At gly10, 5.7 s on one GPU and 6.6 s on
+four. Touching B's 7.27 GiB takes 5.3 s with huge pages (7.6 s without):
+the kernel grants every huge page asked and zeroes them at about
+1.4 GiB/s, a cost the first writer of B pays wherever it falls. The rest
+is page-locking each GPU's 263 MiB of staging, about 0.3 s a GPU.</li>
+<li><strong>The ring's staging is bounded at 64 MiB, the upload's at 256 MiB.</strong> With
+both at 256 MiB a GPU page-locked 1.03 GiB, and budget mode on four GPUs
+was 9.8 s; the build's time did not move with the bound. With both at
+64 MiB, gly10's aux batch of 97 rows went up in four buffers with a
+blocking sync each, and the SCF on one GPU took 70.0 s. The budget-mode
+times of the gly5 rows and the 16 GiB rows above are from before the
+ring's bound.</li>
+<li><strong>Page-locking does not overlap.</strong> With each GPU's staging page-locked on
+a thread of its own while another touched B, the locks finished one after
+another and the touch slowed beside them: 6.8 s on four GPUs against the
+6.5 s of taking them in turn. They are taken in turn.</li>
 <li><strong>Staged uploads ran only here.</strong> An aux batch wider than one staging
 buffer (gly10 at 16 GiB: 794 rows against 124) has no test; these runs'
 energies are its check.</li>
@@ -2495,7 +2508,7 @@ mode alone, the solver work buffers added from the default run).</p>
 <td>263.87 MiB</td>
 <td>1.00 GiB</td>
 <td>2.24 GiB</td>
-<td>713.82 MiB</td>
+<td>293.24 MiB</td>
 <td>1.01 GiB</td>
 <td>250.66 MiB</td>
 <td>36.84 MiB</td>
@@ -2506,7 +2519,7 @@ mode alone, the solver work buffers added from the default run).</p>
 <td>989.67 MiB</td>
 <td>7.27 GiB</td>
 <td>2.54 GiB</td>
-<td>1.14 GiB</td>
+<td>374.96 MiB</td>
 <td>7.28 GiB</td>
 <td>583.00 MiB</td>
 <td>138.27 MiB</td>

@@ -58,11 +58,17 @@ use crate::steps::{GPU0, fan_out};
 /// for a measured value.
 pub const DEFAULT_MEM_PER_GPU: u64 = 2 << 30;
 
-/// The most one pinned staging buffer holds: a ring buffer's fitted batch
-/// on its way down, or the rows of B a J/K pass has on their way up. Page-
-/// locking costs about 0.9 s per GiB and the build's time is flat in the
-/// batch width well below this, so staging does not grow with the limit.
+/// The most one pinned staging buffer of a J/K pass holds: the rows of B on
+/// their way up. Page-locking costs about 0.9 s per GiB, so staging does
+/// not grow with the limit. Not smaller: at 64 MiB gly10's aux batch of 97
+/// rows went up in four buffers, each with its blocking sync, and the SCF
+/// took 70.0 s for 63.6 s.
 pub const STAGING_BYTES: usize = 256 << 20;
+
+/// The most one pinned staging buffer of the ring holds: a fitted pair
+/// batch on its way down. The build's time is flat in the batch width well
+/// below this, and the ring page-locks one for each buffer of its depth.
+pub const RING_STAGING_BYTES: usize = 64 << 20;
 
 /// The rows of B one pinned staging buffer holds.
 fn staged_rows(d: &Dims) -> usize {
@@ -819,7 +825,7 @@ impl Step<MainBus> for EriStep {
             .max()
             .unwrap_or(1)
             .min(i32::MAX as usize / q.max(1))
-            .min(STAGING_BYTES / (8 * q.max(1)))
+            .min(RING_STAGING_BYTES / (8 * q.max(1)))
             .max(least);
         let ring_at = |w: usize| ring_layout(d, w, depth).device_bytes as u64;
         let jk_at = |p: usize| jk_layout(d, p, 0).device_bytes as u64;
