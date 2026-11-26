@@ -21,6 +21,7 @@ use fb_molecule::Molecule;
 use serde::Deserialize;
 
 use crate::steps::core_hamiltonian::CoreHamiltonianOutput;
+use crate::steps::eri::EriManager;
 use crate::steps::guess::GuessOutput;
 use crate::steps::metric::MetricOutput;
 use crate::steps::orthogonalizer::OrthogonalizerOutput;
@@ -75,6 +76,21 @@ pub struct BasisTable {
 pub struct EriTable {
     /// The fitting set, a compiled-in name or a BSE JSON path.
     pub aux_basis: String,
+    /// Each GPU's ERI buffer, bytes: the step limit the pair and aux batch
+    /// widths are chosen within. Absent, [`DEFAULT_MEM_PER_GPU`]; under
+    /// [`EriStep::least_mem_per_gpu`], the plan is refused.
+    ///
+    /// [`DEFAULT_MEM_PER_GPU`]: crate::DEFAULT_MEM_PER_GPU
+    /// [`EriStep::least_mem_per_gpu`]: crate::EriStep::least_mem_per_gpu
+    pub mem_per_gpu: Option<u64>,
+    /// The depth of the build's ring and of a J/K pass's: 2, or 1.
+    #[serde(default = "default_ring")]
+    pub ring: usize,
+}
+
+/// `[eri] ring`'s default.
+fn default_ring() -> usize {
+    2
 }
 
 /// `[resources]`.
@@ -339,6 +355,10 @@ pub struct MainBus {
     pub(crate) overlap: Slot<OverlapOutput>,
     pub(crate) core_hamiltonian: Slot<CoreHamiltonianOutput>,
     pub(crate) metric: Slot<MetricOutput>,
+    pub(crate) eri: Slot<EriManager>,
+    /// The ERI's tests' reader of the manager.
+    #[cfg(test)]
+    pub(crate) probe: Slot<crate::steps::eri::tests::ProbeOutput>,
     pub(crate) guess: Slot<GuessOutput>,
     pub(crate) orthogonalizer: Slot<OrthogonalizerOutput>,
 }
@@ -402,6 +422,9 @@ impl MainBus {
         let real = backing == Backing::Real;
         if real {
             fb_recipes_sys::check_library().map_err(Error::gpu)?;
+            if config.eri.is_some() {
+                fb_integrals_sys::check_library().map_err(Error::gpu)?;
+            }
             let seen = fb_core_device::device_count()?;
             if let Some(d) = res.devices.iter().find(|&&d| d < 0 || d >= seen) {
                 return Err(Error::config(format!(
@@ -438,6 +461,9 @@ impl MainBus {
             overlap: Slot::new(),
             core_hamiltonian: Slot::new(),
             metric: Slot::new(),
+            eri: Slot::new(),
+            #[cfg(test)]
+            probe: Slot::new(),
             guess: Slot::new(),
             orthogonalizer: Slot::new(),
         }))

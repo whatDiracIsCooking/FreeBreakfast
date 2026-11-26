@@ -171,8 +171,9 @@ fn x_against_the_host(xyz: &str, aux: Option<&str>, unordered: usize) {
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn waters_x_matches_the_hosts_inverse_square_root_of_s() {
-    // Pinned: the guess, H and the metric are unordered with it.
-    x_against_the_host("h2o.xyz", Some("cc-pvdz-jkfit"), 3);
+    // Pinned: the guess, H, the metric and the ERI are unordered with it;
+    // device: the ERI.
+    x_against_the_host("h2o.xyz", Some("cc-pvdz-jkfit"), 5);
 }
 
 /// Benzene, κ₂(S) a hundred times water's: a slow case, about 2 s on the

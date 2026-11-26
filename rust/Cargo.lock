@@ -1181,6 +1181,7 @@ dependencies = [
  "fb-core-log",
  "fb-integrals-df-metric",
  "fb-integrals-s-overlap-host",
+ "fb-integrals-sys",
  "fb-integrals-t-kinetic-host",
  "fb-integrals-v-potential-en-host",
  "fb-io-basis",
@@ -1189,6 +1190,7 @@ dependencies = [
  "fb-molecule",
  "fb-recipes-sys",
  "fb-sad",
+ "log",
  "serde",
  "toml",
 ]

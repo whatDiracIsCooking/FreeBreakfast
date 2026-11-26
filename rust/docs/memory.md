@@ -33,6 +33,7 @@ allocates nothing. Each call, in order:
 | Heap | A sum, one for the host | `HeapSlab<T>`, a `Box<[T]>` | Cannot grow; pages touched in `mem_budget` |
 | Scratch | Packed, per gpu and kind | A `Lease` on the step's region for its `run` | "Step scratch" |
 | Handle workspace | `fb_core_device::HANDLE_WORKSPACE_BYTES`, 128 MiB per gpu | A `DeviceBuf<u8>` the gpu's `GpuResources` takes (`Ledger::take_workspace`) and binds its handle to once | Allocated by the final node |
+| ERI buffer | The device and pinned sums, per gpu | A `DeviceBuf<u8>` and a `PinnedBuf<u8>` the `EriManager` owns, carved into tenants ("Tenants of an Output's buffers") | Within `[eri] mem_per_gpu` (2 GiB by default, a constant so a dry budget is exact), charged at what the build's ring or a J/K pass's uses, whichever is larger; the batch widths are the widest that fit, a pinned ring buffer at most 64 MiB (build) or 128 MiB (pass); under the least that holds one batch the plan is refused, naming the key, its value and the bytes needed. B is the manager's `HeapSlab`, at the unscreened bound; the pair batches partition its pair columns, checked when the list is made, and each GPU takes a contiguous run of them, so it writes its own columns of every row through slices `split_at_mut` cut, beside the other GPUs, with no shared pointer |
 
 **The total is a sum and so order-independent.** The steps budget in
 parallel, in whatever order the executor runs them; the counters are

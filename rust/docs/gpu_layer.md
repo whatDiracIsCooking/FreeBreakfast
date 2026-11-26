@@ -713,7 +713,13 @@ and fills a stream enqueues, device slices, and each GPU's
   its last enqueue (the orthogonalizer's syevd `info`, through its
   download's token): it waits for no part of the step still to come, and
   the wrapper's own sync follows at once. The call carries an `allow` of
-  `disallowed_methods` naming that site.
+  `disallowed_methods` naming that site. A manager's ring is the second:
+  it waits on one slot's copy token before it reads or rewrites that
+  slot's host end, each slot on a stream of its own, so the wait covers
+  that slot's copies alone and never a GPU's stream or the device, and it
+  joins its streams before `run` (or a method such as `build_jk`, called
+  from a reader's `run`) returns (`fb_steps::EriManager`, its build's ring
+  and a J/K pass's). Each such call carries an `allow` naming it.
 - **One handle set per GPU, under its lock.** `GpuResources` is a GPU's
   stream, a BLAS and a dense-solver handle made on that stream, and the
   handle workspace; `GpuResources::new` returns it inside a `Mutex`, so
