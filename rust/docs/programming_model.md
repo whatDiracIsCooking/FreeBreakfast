@@ -241,8 +241,21 @@ through the host.
 `ssperi3<la, lb, lP>` writes all three indices as real solid harmonics,
 each pair's block at its spherical pair column, the layout the fit reads.
 No bra transform runs, and the ring holds no Cartesian batch and no
-transform scratch. It is plain FP64, unscreened. No array in the DF-RHF
-chain has a Cartesian index.
+transform scratch. It is plain FP64. No array in the DF-RHF chain has a
+Cartesian index.
+
+**The build is Schwarz-screened.** `[eri] schwarz_threshold`, 1e-12 by
+default (the old path's), drops a shell pair whose bound is under it:
+the pair has no cells, the ring buffer it would have been written into
+is zeroed first, and its columns of B are zero. The bound is the sum of
+the pair's records' dressed Schwarz bounds, formed on each GPU from the
+records it already holds (`fb_integrals_sys::record_bound`) and read on
+the host once, before the first batch; it is at least `sqrt((mn|mn))`
+for every Cartesian `m`, `n` of the pair, and the fit is a projection,
+`Σ_Q B_Q,mn² <= (mn|mn)`, so a dropped column is that small. B and the
+ring stay at the unscreened bound `Dims` gives
+([`memory.md`](memory.md), "Batched only"), so the budget does not
+depend on the threshold, and 0 is the unscreened build.
 
 **The build's ring.** `[eri] ring` pair batches are in flight per GPU,
 two or one. Each ring buffer has a stream of its own, which carries its

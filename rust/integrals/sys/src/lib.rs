@@ -108,6 +108,9 @@
 //!   square matrices through [`fb_packed_gather`], each column's row and
 //!   column handed in likewise. The old layer's [`add_record_tasks`] and
 //!   [`PackedTables::gather`] are their counterparts, bitwise.
+//! - [`record_bound`], each record's dressed Schwarz bound through
+//!   [`fb_ordered_pair_bound`] from the records [`mmd_records`] wrote,
+//!   which the eri step's screen sums per shell pair.
 //!
 //! A class kernel writes at AO offsets held in device memory, so
 //! [`ClassRows`] is a type only [`add_record_tasks`] makes; its doc comment
@@ -133,7 +136,7 @@ pub use classes::{kinetic_class, overlap_class, potential_en_class};
 pub use conventional::{add_conventional_tasks, pack, packed_pairs, unpack};
 pub use dense::{DenseBlocks, add_dense_tasks, dense_row_dot};
 pub use metric::{AuxTable, add_metric_tasks};
-pub use mmd_records::{RECORD_F64_FIELDS, RECORD_I32_FIELDS, mmd_records};
+pub use mmd_records::{RECORD_F64_FIELDS, RECORD_I32_FIELDS, mmd_records, record_bound};
 pub use packed::{PackedTables, add_packed_tables};
 pub use packed_gather::packed_gather;
 pub use records::{
