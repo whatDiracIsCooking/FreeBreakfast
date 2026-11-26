@@ -1,4 +1,4 @@
-"""The bars of `tests/open_localization.rs`: for each case of
+"""The bars of `tests/open_localization_device.rs`: for each case of
 `localization_rohf.json` (the C++ tree's `test/gtest/data/localization/rohf.json`,
 copied byte for byte: PySCF's DF-ROHF, its doubly and singly occupied
 spaces each localized by Pipek-Mezey over Mulliken populations) and each
@@ -8,7 +8,7 @@ that reference, to first order, per unit of the SCF residual it stopped at.
 Usage (from the checkout root; PySCF is in the `tools` dependency group):
 
     uv run --frozen --group tools python \\
-        rust/pipeline/config/tests/data/open_localization_reference.py
+        rust/steps/tests/data/open_localization_reference.py
 
 It writes `localization_rohf_bars.json` beside itself: its provenance, and
 per case and exponent `functional` (L summed over the two spaces, as the
@@ -68,7 +68,7 @@ import scipy.linalg
 from pyscf import gto, lib, scf
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[4]
+ROOT = HERE.parents[3]
 THREE_CENTER = (
     ROOT / "rust/integrals/eri/density_fitting/three_center/tests/data/reference.py"
 )
@@ -77,7 +77,7 @@ REFERENCE = HERE / "localization_rohf.json"
 OUT = HERE / "localization_rohf_bars.json"
 COMMAND = (
     "uv run --frozen --group tools python "
-    "rust/pipeline/config/tests/data/open_localization_reference.py"
+    "rust/steps/tests/data/open_localization_reference.py"
 )
 STEP = 1e-4
 TAU = 2 * (1e-10 + 1e-12)
@@ -336,7 +336,7 @@ def main() -> None:
     out = {
         "description": "Per localization_rohf.json case and exponent: L summed "
         "over the spaces (the reference's), and the first-order bars of "
-        "tests/open_localization.rs per unit of the SCF residual (sens_l on "
+        "tests/open_localization_device.rs per unit of the SCF residual (sens_l on "
         "L, sens_q on any population) and conv_q, a population's reach from "
         "the localization stopping short of the maximum",
         "provenance": {

@@ -3,7 +3,7 @@
 //! above 1, ROHF's doubly and singly occupied spaces each localized among
 //! itself by Pipek-Mezey over Mulliken populations, against PySCF's
 //! localization of the same spaces of its DF-ROHF over the same documents
-//! and geometry: `tests/data/localization_rohf.json`, the C++ tree's
+//! and geometry: `steps/tests/data/localization_rohf.json`, the C++ tree's
 //! `test/gtest/data/localization/rohf.json` copied byte for byte, its
 //! provenance inside (PySCF 2.14.0, `tools/emit/localization_reference.py`:
 //! the SCF at `conv_tol` 1e-12 and `conv_tol_grad` 1e-9, internally
@@ -13,7 +13,7 @@
 //! triplet, whose two are localized as a pair, at exponents 2 and 4.
 //!
 //! **The bars, by analysis, one run each**, from
-//! `tests/data/localization_rohf_bars.json`, written by
+//! `steps/tests/data/localization_rohf_bars.json`, written by
 //! `open_localization_reference.py` beside it (its docstring has the
 //! analysis and the command; it first reproduces each space's L to 1e-9):
 //!
@@ -62,10 +62,11 @@ const LOCALIZATION_TOLERANCES: f64 = 2.0 * (1e-10 + 1e-12);
 /// The density's bar, relative to its largest element.
 const DENSITY_BAR: f64 = 1e-12;
 
-/// A JSON file of `tests/data`.
+/// A JSON file of the steps crate's `tests/data`, where the reference
+/// moved with the open-shell localization step.
 fn data(file: &str) -> serde_json::Value {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/data")
+        .join("../../steps/tests/data")
         .join(file);
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }

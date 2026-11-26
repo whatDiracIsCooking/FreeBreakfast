@@ -32,24 +32,39 @@
 //! and stops after turn 0.
 //!
 //! **The order.** `G_ii` is `⟨i|F|i⟩` of the localized orbital `i`: the
-//! SCF's C diagonalizes the Fock matrix its last Roothaan step solved,
-//! `Cᵀ F C = diag(ε)`, so `C_b U`'s is `Uᵀ diag(ε_b) U`. The last turn's
-//! columns are stably sorted by it on the host, copied into the host copy
-//! in that order, and on the device from T into the `Output`'s block.
+//! SCF's C diagonalizes the Fock matrix its last Roothaan step solved
+//! within each block, `C_bᵀ F C_b = diag(ε_b)`, so `C_b U`'s is
+//! `Uᵀ diag(ε_b) U`. The last turn's columns are stably sorted by it on
+//! the host, copied into the host copy in that order, and on the device
+//! from T into the `Output`'s block.
 //!
-//! **A block is a run of C's columns**, `[b0, b1)`, with its own layout:
-//! a closed shell's one block is the doubly occupied `[0, n_occ)`; an open
-//! shell's are `[0, n_beta)` and `[n_beta, n_alpha)`, refused here
-//! (`Unsupported`) until the open-shell localization runs this body twice.
-//! Its arrays are sized by the block's width (`docs/programming_model.md`,
-//! "The MainBus and its steps").
+//! **An open shell's key is the same diagonal.** ROHF's published C is
+//! the eigenvectors of the effective Fock matrix it iterated on, its
+//! singly occupied block rotated to diagonalize `Fc = (Fa + Fb)/2` there
+//! with `ε` its eigenvalues (`ScfOutput`'s module doc), and PySCF's
+//! Roothaan matrix ([`ScfOutput::fock`](crate::ScfOutput::fock)) is `Fc`
+//! in both occupied diagonal blocks, so within each block `Uᵀ diag(ε_b) U`
+//! is that matrix's `⟨i|F|i⟩`, to the residual's order, with no product
+//! over F. It is also the order the C++ step and the old path's test held
+//! the open shell to, `Σ_k (C_bᵀ S C_local)_ki² ε_k`;
+//! `open_localization_reference.py` sorts by nothing, its test matching
+//! orbitals one to one.
 //!
-//! **Inputs.** S is the overlap's on gpu0; C's block and its orbital
+//! **A block is a run of C's columns**, `[b0, b1)`, with its own layout,
+//! after the previous block's in the step's one: a closed shell's one
+//! block is the doubly occupied `[0, n_occ)`; an open shell's are
+//! `[0, n_beta)` and `[n_beta, n_alpha)`, each localized among itself and
+//! the first left out when it is empty. Its arrays are sized by the
+//! block's width (`docs/programming_model.md`, "The MainBus and its
+//! steps"). `L` before and after and the sweeps are summed over the
+//! blocks.
+//!
+//! **Inputs.** S is the overlap's on gpu0; each block's C and orbital
 //! energies come from the SCF's host copies, staged and uploaded.
 //!
 //! | Step | Runs on | Locks | `Output` | Scratch |
 //! |---|---|---|---|---|
-//! | [`LocalizationStep`] | gpu0 | gpu0 | `C_local` (`n_ao × n_alpha`) on gpu0 and the host, `L` before and after, the sweeps | the block's: its input, `W`, the population tensor and U with their pongs, the angles, the tables, G and T; their pinned ends |
+//! | [`LocalizationStep`] | gpu0 | gpu0 | `C_local` (`n_ao × n_alpha`) on gpu0 and the host, `L` before and after and the sweeps, summed over the blocks | each block's: its input, `W`, the population tensor and U with their pongs, the angles, the tables, G and T; their pinned ends |
 
 use contracts::requires;
 use fb_core_budget::{Budget, DeviceBuf, HeapSlab, Kind, Layout, Lease, LockId, Span};
@@ -120,19 +135,20 @@ impl LocalizationOutput {
         self.n_cols
     }
 
-    /// `L` of the orbitals as the SCF left them.
+    /// `L` of the orbitals as the SCF left them, summed over the blocks.
     #[must_use]
     pub fn functional_before(&self) -> f64 {
         self.before
     }
 
-    /// `L` of the localized orbitals.
+    /// `L` of the localized orbitals, summed over the blocks.
     #[must_use]
     pub fn functional_after(&self) -> f64 {
         self.after
     }
 
-    /// The sweeps the last run took; 0 for one orbital.
+    /// The sweeps the last run took, summed over the blocks; 0 for one
+    /// orbital in each.
     #[must_use]
     pub fn sweeps(&self) -> usize {
         self.sweeps
@@ -140,12 +156,11 @@ impl LocalizationOutput {
 }
 
 /// One block's layout at `n` AOs, `n_atom` atoms and width `m`: the
-/// device scratch and its pinned ends. `mem_budget` declares its bytes,
-/// `run` carves its spans: the input's two the caller's, which stages it,
-/// the rest [`localize_block`]'s.
+/// device scratch and its pinned ends, after what `dev` and `pin` hold.
+/// `mem_budget` declares the layouts' bytes, `run` carves its spans: the
+/// input's two the caller's, which stages it, the rest
+/// [`localize_block`]'s.
 pub(crate) struct BlockLayout {
-    pub(crate) device_bytes: usize,
-    pub(crate) pinned_bytes: usize,
     /// C's block, `n × m`, then its `m` orbital energies.
     pub(crate) input: Span<f64>,
     /// The input's pinned end.
@@ -176,9 +191,14 @@ pub(crate) struct BlockSpans {
     h_order: Span<i32>,
 }
 
-/// The block layout (the module doc's).
-pub(crate) fn block_layout(n: usize, n_atom: usize, m: usize) -> BlockLayout {
-    let (mut dev, mut pin) = (Layout::new(), Layout::new());
+/// The block layout (the module doc's), appended to `dev` and `pin`.
+pub(crate) fn block_layout(
+    dev: &mut Layout,
+    pin: &mut Layout,
+    n: usize,
+    n_atom: usize,
+    m: usize,
+) -> BlockLayout {
     let (nm, m2, tensor) = (n * m, m * m, n_atom * m * m);
     let input = dev.span(nm + m);
     let h_input = pin.span(nm + m);
@@ -203,8 +223,6 @@ pub(crate) fn block_layout(n: usize, n_atom: usize, m: usize) -> BlockLayout {
         h_order: pin.span(m),
     };
     BlockLayout {
-        device_bytes: dev.bytes(),
-        pinned_bytes: pin.bytes(),
         input,
         h_input,
         spans,
@@ -218,29 +236,37 @@ pub(crate) struct BlockInfo {
     pub(crate) sweeps: usize,
 }
 
-/// Refuse what the step cannot localize: an open shell, until the
-/// open-shell localization, and a block past the kernels' count or the
-/// BLAS's i32.
+/// The blocks of C's columns, `[b0, b1)`: the doubly occupied
+/// `[0, n_beta)`, left out when empty, then an open shell's singly
+/// occupied `[n_beta, n_alpha)`.
+pub(crate) fn blocks(dims: &Dims) -> impl Iterator<Item = (usize, usize)> {
+    [(0, dims.n_beta), (dims.n_beta, dims.n_alpha)]
+        .into_iter()
+        .filter(|(b0, b1)| b1 > b0)
+}
+
+/// Refuse what the step cannot localize: no occupied orbital, and a block
+/// past the kernels' count or the BLAS's i32.
 pub(crate) fn check_dims(dims: &Dims) -> Status {
-    if dims.n_alpha > dims.n_beta {
-        return Err(Error::unsupported(format!(
-            "localization: an open shell ({} alpha, {} beta) is not localized yet; only a \
-             closed shell is",
-            dims.n_alpha, dims.n_beta
-        )));
+    if dims.n_alpha == 0 {
+        return Err(Error::unsupported(
+            "localization: no occupied orbital to localize",
+        ));
     }
-    let (n, m) = (dims.n_ao, dims.n_occ);
+    let n = dims.n_ao;
     let fits = |k: Option<usize>| k.is_some_and(|k| i32::try_from(k).is_ok());
-    if m == 0
-        || m > FB_PM_MAX_OCCUPIED as usize
-        || !fits(n.checked_mul(m))
-        || !fits(m.checked_mul(m).and_then(|m2| m2.checked_mul(dims.n_atom)))
-    {
-        return Err(Error::unsupported(format!(
-            "localization: {m} occupied orbitals over {n} AOs and {} atoms, outside the \
-             kernels' 1..={FB_PM_MAX_OCCUPIED} or past the i32 the products take",
-            dims.n_atom
-        )));
+    for (b0, b1) in blocks(dims) {
+        let m = b1 - b0;
+        if m > FB_PM_MAX_OCCUPIED as usize
+            || !fits(n.checked_mul(m))
+            || !fits(m.checked_mul(m).and_then(|m2| m2.checked_mul(dims.n_atom)))
+        {
+            return Err(Error::unsupported(format!(
+                "localization: a block of {m} occupied orbitals over {n} AOs and {} atoms, \
+                 past the kernels' {FB_PM_MAX_OCCUPIED} or the i32 the products take",
+                dims.n_atom
+            )));
+        }
     }
     Ok(())
 }
@@ -471,10 +497,13 @@ impl Step<MainBus> for LocalizationStep {
         options.check()?;
         let dims = &shared.dims;
         check_dims(dims)?;
-        let (n, m) = (dims.n_ao, dims.n_occ);
-        let l = block_layout(n, dims.n_atom, m);
-        budget.scratch(GPU0, Kind::Device, l.device_bytes);
-        budget.scratch(GPU0, Kind::Pinned, l.pinned_bytes);
+        let n = dims.n_ao;
+        let (mut dev, mut pin) = (Layout::new(), Layout::new());
+        for (b0, b1) in blocks(dims) {
+            block_layout(&mut dev, &mut pin, n, dims.n_atom, b1 - b0);
+        }
+        budget.scratch(GPU0, Kind::Device, dev.bytes());
+        budget.scratch(GPU0, Kind::Pinned, pin.bytes());
         budget.locks([LockId::Gpu(GPU0)]);
         Ok(LocalizationOutput {
             c: budget.device(GPU0, n * dims.n_alpha),
@@ -499,39 +528,47 @@ impl Step<MainBus> for LocalizationStep {
             .localization
             .as_ref()
             .ok_or_else(|| Error::config("the localization step runs with [localization]"))?;
-        let (n, m) = (shared.dims.n_ao, shared.dims.n_occ);
-        let BlockLayout {
-            input,
-            h_input,
-            spans,
-            ..
-        } = block_layout(n, shared.dims.n_atom, m);
+        let dims = &shared.dims;
+        let n = dims.n_ao;
         let overlap = view.read(OverlapStep);
         let scf = view.read(ScfStep);
         let gpu = held.gpu(GPU0);
-        // C's block and its orbital energies, from the SCF's host copies;
-        // the token is dropped, its pinned end a tenant of the lease.
-        let mut staged = scratch.pinned(GPU0, h_input);
-        staged[..n * m].copy_from_slice(&scf.c()[..n * m]);
-        staged[n * m..].copy_from_slice(&scf.epsilon()[..m]);
-        let mut input = scratch.device(GPU0, input);
-        drop(gpu.stream().upload(&mut input, staged)?);
-        let info = localize_block(
-            gpu,
-            shared,
-            scratch,
-            spans,
-            &Block {
-                options,
-                s: overlap.s(),
-                input: &input,
-                n,
-                m,
-            },
-            &mut part_mut(&mut out.c, 0, n * m),
-            &mut out.c_host[..n * m],
-        )?;
-        (out.before, out.after, out.sweeps) = (info.before, info.after, info.sweeps);
+        (out.before, out.after, out.sweeps) = (0.0, 0.0, 0);
+        let (mut dev, mut pin) = (Layout::new(), Layout::new());
+        for (b0, b1) in blocks(dims) {
+            let m = b1 - b0;
+            let BlockLayout {
+                input,
+                h_input,
+                spans,
+            } = block_layout(&mut dev, &mut pin, n, dims.n_atom, m);
+            // The block's C and orbital energies, from the SCF's host
+            // copies; the token is dropped, its pinned end a tenant of the
+            // lease.
+            let mut staged = scratch.pinned(GPU0, h_input);
+            staged[..n * m].copy_from_slice(&scf.c()[n * b0..n * b1]);
+            staged[n * m..].copy_from_slice(&scf.epsilon()[b0..b1]);
+            let mut input = scratch.device(GPU0, input);
+            drop(gpu.stream().upload(&mut input, staged)?);
+            let info = localize_block(
+                gpu,
+                shared,
+                scratch,
+                spans,
+                &Block {
+                    options,
+                    s: overlap.s(),
+                    input: &input,
+                    n,
+                    m,
+                },
+                &mut part_mut(&mut out.c, n * b0, n * m),
+                &mut out.c_host[n * b0..n * b1],
+            )?;
+            out.before += info.before;
+            out.after += info.after;
+            out.sweeps += info.sweeps;
+        }
         Ok(())
     }
 }
@@ -614,9 +651,10 @@ pub(crate) mod tests {
         fn mem_budget(shared: &Shared, budget: &Budget<'_>) -> Result<ProbeOutput> {
             let dims = &shared.dims;
             let (n, m) = (dims.n_ao, dims.n_occ);
-            let l = block_layout(n, dims.n_atom, m);
-            budget.scratch(GPU0, Kind::Device, l.device_bytes);
-            budget.scratch(GPU0, Kind::Pinned, l.pinned_bytes + n * n * 8 + 64);
+            let (mut dev, mut pin) = (Layout::new(), Layout::new());
+            block_layout(&mut dev, &mut pin, n, dims.n_atom, m);
+            budget.scratch(GPU0, Kind::Device, dev.bytes());
+            budget.scratch(GPU0, Kind::Pinned, pin.bytes() + n * n * 8 + 64);
             budget.locks([LockId::Gpu(GPU0)]);
             Ok(ProbeOutput {
                 s: budget.device(GPU0, n * n),
@@ -639,16 +677,13 @@ pub(crate) mod tests {
             let (s, _) = fixture(&format!("pm_{name}_s"));
             let (c, shape) = fixture(&format!("pm_{name}_c"));
             assert_eq!(shape, [n, m], "{name}: the fixture's C");
+            let (mut dev, mut pin) = (Layout::new(), Layout::new());
             let BlockLayout {
-                pinned_bytes,
                 input,
                 h_input,
                 spans,
-                ..
-            } = block_layout(n, shared.dims.n_atom, m);
+            } = block_layout(&mut dev, &mut pin, n, shared.dims.n_atom, m);
             // S's staging, after the block's own pinned tenants.
-            let mut pin = Layout::new();
-            let _ = pin.span::<u8>(pinned_bytes);
             let s_span = pin.span::<f64>(n * n);
             let gpu = held.gpu(GPU0);
             let mut staged_s = scratch.pinned(GPU0, s_span);
