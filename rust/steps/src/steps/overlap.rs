@@ -63,6 +63,6 @@ impl Step<MainBus> for OverlapStep {
             .host_pool()
             .install(|| fb_integrals_s_overlap_host::overlap_into(&shared.basis, triangle));
         unpack_lower_in_place(n, &mut staged);
-        upload(lane, GPU0, &mut out.s, staged)
+        upload(lane, std::slice::from_mut(&mut out.s), staged)
     }
 }

@@ -4,10 +4,12 @@
 //! `Output`: the ERI step factors a copy of it, and a gradient reads it. A
 //! host step: no library, no lock.
 //!
-//! One staging per GPU, each in that GPU's pinned scratch: a copy holds its
-//! host end until a sync covers it, so one staging cannot be in flight on
-//! several GPUs' streams at once. gpu0's is built and copied into each
-//! other's. The interim until a fan-out of one host end is expressible.
+//! One staging, in gpu0's pinned scratch, uploaded to every GPU under one
+//! token: each later GPU's copy joins the first
+//! ([`Pending::and_upload`](fb_core_device::Pending::and_upload)), so the
+//! staging is held until every copy of it has run, and its pinned bytes do
+//! not grow with the GPUs (`n_aux² × 8`, 104 MB at gly10's 3606 aux, once
+//! rather than once per GPU).
 
 use fb_core_budget::{Budget, DeviceBuf, Kind, Lease};
 use fb_core_error_handling::{Error, Result, Status};
@@ -48,13 +50,10 @@ impl Step<MainBus> for MetricStep {
 
     fn mem_budget(shared: &Shared, budget: &Budget<'_>) -> Result<MetricOutput> {
         let q = shared.dims.n_aux;
-        let bytes = staging(q * q).0.bytes();
+        budget.scratch(GPU0, Kind::Pinned, staging(q * q).0.bytes());
         Ok(MetricOutput {
             gpus: (0..budget.gpus())
-                .map(|gpu| {
-                    budget.scratch(gpu, Kind::Pinned, bytes);
-                    budget.device(gpu, q * q)
-                })
+                .map(|gpu| budget.device(gpu, q * q))
                 .collect(),
         })
     }
@@ -72,18 +71,12 @@ impl Step<MainBus> for MetricStep {
             .aux
             .as_ref()
             .ok_or_else(|| Error::config("the metric step runs with [eri]'s fitting set"))?;
-        let mut built = scratch.pinned(GPU0, staging(q * q).1);
-        let triangle = &mut built[..q * (q + 1) / 2];
+        let mut staged = scratch.pinned(GPU0, staging(q * q).1);
+        let triangle = &mut staged[..q * (q + 1) / 2];
         shared
             .host_pool()
             .install(|| fb_integrals_df_metric::metric_into(aux, triangle));
-        unpack_lower_in_place(q, &mut built);
-        let (gpu0, others) = out.gpus.split_at_mut(1);
-        for (gpu, metric) in others.iter_mut().enumerate() {
-            let mut staged = scratch.pinned(gpu + 1, staging(q * q).1);
-            staged.copy_from_slice(&built);
-            upload(lane, gpu + 1, metric, staged)?;
-        }
-        upload(lane, GPU0, &mut gpu0[0], built)
+        unpack_lower_in_place(q, &mut staged);
+        upload(lane, &mut out.gpus, staged)
     }
 }

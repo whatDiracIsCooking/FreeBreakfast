@@ -23,7 +23,16 @@ impl<T> DeviceBuf<T> {
         reason = "a test's own buffer, outside any plan: allocating is the budget's, and the test checks what is under it"
     )]
     pub(crate) fn new(len: usize) -> DeviceBuf<T> {
-        let _current = ScopedDevice::new(0);
+        DeviceBuf::on(0, len)
+    }
+
+    /// `len` elements on device `physical`.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test's own buffer, outside any plan: allocating is the budget's, and the test checks what is under it"
+    )]
+    pub(crate) fn on(physical: i32, len: usize) -> DeviceBuf<T> {
+        let _current = ScopedDevice::new(physical);
         let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
         // SAFETY: writes one pointer through a valid local.
         let status = unsafe { wwr_sys::wwr_malloc(&mut ptr, len.max(1) * size_of::<T>()) };
@@ -94,6 +103,13 @@ impl<T: Copy> Pinned<T> {
         // SAFETY: `len` initialized elements; the test synced first.
         let all = unsafe { std::slice::from_raw_parts(self.ptr, self.len) };
         all[self.len - 1]
+    }
+
+    /// Every element set to `x`, once the copies of it have run.
+    pub(crate) fn overwrite(&mut self, x: T) {
+        // SAFETY: `len` elements, reached only through this value; the
+        // test synced first.
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }.fill(x);
     }
 
     /// The elements, read once the copies into them have run.
@@ -260,6 +276,91 @@ fn an_event_orders_a_second_streams_read() {
         back.read() == values,
         "the second stream read before the upload ran"
     );
+}
+
+/// One pinned host end uploaded to a buffer on each of `devices`' streams
+/// under one token, synced through the token alone: every later stream
+/// has then run all it holds, and once the host end is overwritten every
+/// buffer still holds its first bits (exact: a copy). Each later stream's
+/// upload is queued behind 100 device copies of 64 MiB (tens of ms), so
+/// without the join the token's sync returns with that stream still busy
+/// (the query's `NOT_READY`); the overwrite catches a runtime whose copy
+/// reads the pinned bytes in flight (HIP stages them at the enqueue, so
+/// on the gfx1200 only the query sees it).
+fn broadcast_through_one_token(devices: &[i32]) {
+    let n = 8 << 20;
+    let mut values = awkward(4099);
+    values.extend((values.len()..n).map(|i| i as f64 + 0.5));
+    let streams: Vec<Stream> = devices.iter().map(|&d| Stream::new(d)).collect();
+    let mut bufs: Vec<DeviceBuf<f64>> = devices.iter().map(|&d| DeviceBuf::on(d, n)).collect();
+    let scratch: Vec<DeviceBuf<f64>> = devices.iter().map(|&d| DeviceBuf::on(d, n)).collect();
+    // Made first: a pinned allocation may wait for the device.
+    let src = Pinned::from(&values);
+    let backs: Vec<Pinned<f64>> = devices
+        .iter()
+        .map(|_| Pinned::from(&vec![-1.0; n]))
+        .collect();
+    for ((stream, buf), scratch) in streams.iter().zip(&mut bufs).zip(&scratch) {
+        stream.fill(buf, 0xFF).unwrap();
+        stream.copy_device(buf, scratch).unwrap();
+        stream.sync().unwrap();
+    }
+
+    let (first, rest) = bufs.split_first_mut().unwrap();
+    let mut copy = streams[0].upload(first, src).unwrap();
+    for ((stream, buf), scratch) in streams[1..].iter().zip(rest).zip(&scratch[1..]) {
+        for _ in 0..100 {
+            stream.copy_device(buf, scratch).unwrap();
+        }
+        copy = copy.and_upload(stream, buf).unwrap();
+    }
+    let mut src = copy.sync().unwrap();
+    for stream in &streams[1..] {
+        // SAFETY: a live stream.
+        let idle = unsafe { wwr_sys::wwr_stream_query(stream.raw()) };
+        assert_eq!(
+            idle,
+            wwr_sys::wwr_status::WWR_STATUS_SUCCESS,
+            "device {}: the stream's copies had not run when the token handed the host end back",
+            stream.physical()
+        );
+    }
+    assert_eq!(
+        streams[0].tickets.load(Ordering::SeqCst),
+        2,
+        "the token's one sync, after the setup's"
+    );
+    assert!(
+        bits(&src.read()) == bits(&values),
+        "the host end comes back as it went"
+    );
+    src.overwrite(0.0);
+
+    for ((stream, buf), back) in streams.iter().zip(&bufs).zip(backs) {
+        let back = stream.download(back, buf).unwrap().sync().unwrap();
+        assert!(
+            bits(&back.read()) == bits(&values),
+            "device {}: the copy had not run when the token handed the host end back",
+            stream.physical()
+        );
+    }
+}
+
+/// Needs a GPU. One host end to two streams of the card under one token
+/// (`broadcast_through_one_token`).
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn one_host_end_uploads_to_two_streams_under_one_token() {
+    broadcast_through_one_token(&[0, 0]);
+}
+
+/// Needs two GPUs. One host end to a stream on each of the first two
+/// devices under one token, gpu0's stream waiting on gpu1's copy
+/// (`broadcast_through_one_token`).
+#[test]
+#[ignore = "tier 5: needs two GPUs"]
+fn tier5_one_host_end_uploads_to_two_gpus_under_one_token() {
+    broadcast_through_one_token(&[0, 1]);
 }
 
 /// Needs a GPU. The runtime sees the card, and its free memory is under

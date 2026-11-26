@@ -81,6 +81,6 @@ impl Step<MainBus> for CoreHamiltonianStep {
         let mut staged = scratch.pinned(GPU0, staging(staging_len(n)).1);
         core_hamiltonian_host(shared, &mut staged);
         unpack_lower_in_place(n, &mut staged);
-        upload(lane, GPU0, &mut out.h, staged)
+        upload(lane, std::slice::from_mut(&mut out.h), staged)
     }
 }

@@ -9,7 +9,9 @@
 //!   (host to device, device to host, device to device) and the fills, and
 //!   whose [`Stream::sync`] counts and times itself ([`sync_meter`]). A
 //!   copy to or from the host returns a [`Pending`], which holds the host
-//!   end until a sync of the stream has covered the copy.
+//!   end until a sync of the stream has covered the copy; an upload's
+//!   token sends the same host end to further streams with
+//!   [`Pending::and_upload`], one token for every GPU.
 //! - [`Event`]: a point on a stream that another stream, or the host,
 //!   waits for.
 //! - [`DeviceSlice`] and [`DeviceSliceMut`]: device memory with its length,

@@ -89,6 +89,44 @@ pub struct Stream {
 /// }
 /// ```
 ///
+/// One host end goes to several streams with one token, the same bytes to
+/// each GPU: [`Pending::and_upload`] enqueues a second upload of it and
+/// joins that copy to the token's stream through an event, so the token's
+/// one sync covers both:
+///
+/// ```no_run
+/// use fb_core_device::{DeviceSliceMut, HostSlice, Stream};
+/// use fb_core_error_handling::Status;
+///
+/// fn broadcast(
+///     (gpu0, gpu1): (&Stream, &Stream),
+///     (d0, d1): (&mut impl DeviceSliceMut<f64>, &mut impl DeviceSliceMut<f64>),
+///     staged: impl HostSlice<f64>,
+/// ) -> Status {
+///     let staged = gpu0.upload(d0, staged)?.and_upload(gpu1, d1)?.sync()?;
+///     drop(staged); // both copies have run
+///     Ok(())
+/// }
+/// ```
+///
+/// Only an upload's token takes a second copy: a download writes its host
+/// end, so nothing may read it until the download has run. Its token is a
+/// `Pending<'_, H, false>`, which has no [`and_upload`](Pending::and_upload):
+///
+/// ```compile_fail,E0599
+/// use fb_core_device::{DeviceSlice, DeviceSliceMut, HostSlice, HostSliceMut, Stream};
+///
+/// fn read_while_written<H: HostSlice<f64> + HostSliceMut<f64>>(
+///     stream: &Stream,
+///     back: H,
+///     src: &impl DeviceSlice<f64>,
+///     dst: &mut impl DeviceSliceMut<f64>,
+/// ) {
+///     let copy = stream.download(back, src).unwrap();
+///     let _ = copy.and_upload(stream, dst); // the download may be writing it
+/// }
+/// ```
+///
 /// A ring rewrites a buffer's host end once the copy that read it has run:
 /// each buffer goes through a stream of its own, so the token's sync waits
 /// for that buffer's last copy and no other's.
@@ -97,14 +135,66 @@ pub struct Stream {
 /// back memory a copy may still use. A lease's tenant costs nothing that
 /// way (its bytes are the step's until the step-end sync); an owned buffer
 /// stays allocated, so sync it to have it back.
+///
+/// `UPLOAD` says the copies only read the host end: true for an upload's
+/// token, false for a download's.
 #[must_use = "dropped unsynced, the token leaks its host end; `sync` hands it back"]
-pub struct Pending<'s, H> {
+pub struct Pending<'s, H, const UPLOAD: bool = true> {
     stream: &'s Stream,
     ticket: u64,
     host: ManuallyDrop<H>,
 }
 
-impl<H> Pending<'_, H> {
+impl<'s, H> Pending<'s, H> {
+    /// Enqueue on `stream` the upload of the head of the host end, its
+    /// first `dst.len()` elements, into device `dst`, and join it to the
+    /// token's stream: an event recorded on `stream` after the copy, which
+    /// the token's stream waits for. The token returned covers both copies,
+    /// and every copy it covered before, so its sync, or a sync of its
+    /// stream begun after this, waits for them all. `stream` may be another
+    /// device's; the token's stream then waits for that device's copy
+    /// before anything enqueued on it after this call.
+    ///
+    /// # Errors
+    /// The failure of the enqueue, the event's record or the wait; the
+    /// host end is then leaked, since a copy of it may still run.
+    #[requires(le!(dst.len(), self.host.len()), "the host end holds the device end")]
+    #[track_caller]
+    pub fn and_upload<T: Copy>(
+        self,
+        stream: &Stream,
+        dst: &mut impl DeviceSliceMut<T>,
+    ) -> Result<Pending<'s, H>>
+    where
+        H: HostSlice<T>,
+    {
+        // No overflow: the device slice promises `len()` elements of memory.
+        let bytes = dst.len() * size_of::<T>();
+        // SAFETY: the host end holds at least `bytes` of host memory that
+        // only the value reaches (`HostSlice`'s promise); every copy the
+        // token covers only reads it (`UPLOAD`), and the token returned
+        // keeps it, unread and unwritten, until a sync covers this copy too,
+        // or leaks it, as does every error return here (the token has no
+        // drop); `dst` is `bytes` of device memory with no other user until
+        // the work enqueued here finishes (`DeviceSliceMut`'s).
+        unsafe {
+            stream.copy(
+                dst.as_mut_ptr().cast(),
+                self.host.as_ptr().cast(),
+                bytes,
+                wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
+            )
+        }?;
+        // Destroyed at the end of the call: the wait holds the point it
+        // was recorded at, not the event.
+        let joined = Event::new(stream.physical);
+        joined.record(stream)?;
+        self.stream.wait(&joined)?;
+        Ok(self.stream.pending(ManuallyDrop::into_inner(self.host)))
+    }
+}
+
+impl<H, const UPLOAD: bool> Pending<'_, H, UPLOAD> {
     /// The host end, once its copy has run: no wait when a sync of the
     /// stream already covered the copy, else a [`Stream::sync`].
     ///
@@ -306,7 +396,7 @@ impl Stream {
         &self,
         mut dst: H,
         src: &impl DeviceSlice<T>,
-    ) -> Result<Pending<'_, H>> {
+    ) -> Result<Pending<'_, H, false>> {
         // No overflow: the device slice promises `len()` elements of memory.
         let bytes = src.len() * size_of::<T>();
         // SAFETY: `dst` holds at least `bytes` of host memory that only the
@@ -326,7 +416,7 @@ impl Stream {
     }
 
     /// The token of a copy just enqueued, holding its host end.
-    fn pending<H>(&self, host: H) -> Pending<'_, H> {
+    fn pending<H, const UPLOAD: bool>(&self, host: H) -> Pending<'_, H, UPLOAD> {
         Pending {
             stream: self,
             // Read after the enqueue: a sync whose ticket is this or more
