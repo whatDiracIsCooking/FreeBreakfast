@@ -39,14 +39,19 @@ enqueues, so its `run` time is its enqueueing and whatever host waits it
 makes, and the device's share shows in the wrapper's sync. A step whose
 loop decides on the host carries its own meter in its `Output` (the SCF's
 `LoopMeter`: the loop's wall time, its host syncs and the time blocked in
-them, read from `Stream::sync_meter`). There is no stream scope and no
-`timing.json` in this layer yet; the first binary on it settles the
-record's form.
+them, read from `Stream::sync_meter`). `Run::write` puts them on disk
+after the run as `timing.json`, beside the products: the profile that
+built the binary, setup's, budget mode's and execute mode's times, and
+each step's `StepTime`, every time integer nanoseconds and each lock by
+its rank's name; its rustdoc is the schema. There is no stream scope in
+this layer yet.
 
 **Memory.** The budget table is the memory diagnostic
 ([`memory.md`](memory.md), "The final node"): logged at `info` on every
 accepted plan, and the whole of a refusal's message. After an execute it
-carries the plain heap's peak growth as its unbudgeted row.
+carries the plain heap's peak growth as its unbudgeted row. `Run::write`
+writes the table as budget mode left it, before any execute, as
+`budget.txt`: the text `--budget-only` prints.
 
 **Logging.** A step's line names the step (`step 'eri': ...`,
 `scf: ...`), by hand:
