@@ -56,6 +56,7 @@ members = [
     "integrals/eri/density_fitting/pair_map",
     "integrals/schwarz",
     "integrals/eri/density_fitting/transform",
+    "core/device",
 ]
 
 [workspace.package]
@@ -116,6 +117,7 @@ fb-localization-pipek-mezey = { path = "localization/pipek_mezey" }
 fb-integrals-eri-density-fitting-pair-map = { path = "integrals/eri/density_fitting/pair_map" }
 fb-integrals-schwarz = { path = "integrals/schwarz" }
 fb-integrals-eri-density-fitting-transform = { path = "integrals/eri/density_fitting/transform" }
+fb-core-device = { path = "core/device" }
 
 contracts = "0.6.11"
 # core::log: the line's local time, and the OS thread id (std has none).

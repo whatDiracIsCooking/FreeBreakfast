@@ -242,6 +242,16 @@ name = "fb-core-constants"
 version = "0.1.0"
 
 [[package]]
+name = "fb-core-device"
+version = "0.1.0"
+dependencies = [
+ "contracts",
+ "fb-core-error-handling",
+ "fb-core-log",
+ "wwr-sys",
+]
+
+[[package]]
 name = "fb-core-diagnostics"
 version = "0.1.0"
 dependencies = [
