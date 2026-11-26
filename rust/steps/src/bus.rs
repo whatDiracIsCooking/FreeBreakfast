@@ -49,6 +49,8 @@ pub struct Config {
     pub molecule: MoleculeTable,
     /// The orbital basis.
     pub basis: BasisTable,
+    /// The initial guess; absent, the SAD density.
+    pub guess: Option<GuessTable>,
     /// The density-fitted integrals; absent, no `metric` step.
     pub eri: Option<EriTable>,
     /// The RHF loop, ROHF for an open shell; absent, no `scf` step.
@@ -127,10 +129,18 @@ impl MoleculeTable {
     }
 }
 
-/// The lines of `[molecule]`'s spin keys, read again with their spans.
+/// The lines of `[molecule]`'s spin keys and of `[guess]`, read again with
+/// their spans.
 #[derive(Deserialize)]
-struct SpinSpans {
+struct Spans {
     molecule: toml::Spanned<MoleculeSpans>,
+    guess: Option<toml::Spanned<GuessSpans>>,
+}
+
+/// `[guess]`'s `from`, spanned; every other key ignored.
+#[derive(Deserialize)]
+struct GuessSpans {
+    from: Option<toml::Spanned<toml::Value>>,
 }
 
 /// `[molecule]`'s spin keys, spanned; every other key ignored.
@@ -146,6 +156,99 @@ struct MoleculeSpans {
 pub struct BasisTable {
     /// A compiled-in name or a BSE JSON path.
     pub name: String,
+}
+
+/// `[guess]`: the SCF's starting density, the SAD density when the
+/// table or both its keys are absent.
+///
+/// `from` loads a density saved as a float64 `.npy`, `n_ao × n_ao` in the
+/// basis's spherical AO order (a run's `d.npy`), into the guess step's
+/// staging in place of the SAD stamps, its bytes budgeted the same. The
+/// file carries only the numbers, so only its shape is checked: a basis
+/// of the same size in another order is not caught. Setup refuses, each
+/// refusal naming the key, the file and the line:
+///
+/// - `type` and `from` together, `InvalidConfig`
+///   (`<file>:<line>: [guess] type and from are both set ...`);
+/// - a file that is not `n_ao × n_ao`, `InvalidConfig`
+///   (`<file>:<line>: [guess] from = '<path>': the array is ...`), and one
+///   that cannot be read or is no float64 `.npy`, `Io`, before anything
+///   is allocated;
+/// - `from` with an open shell, `Unsupported`
+///   (`<file>:<line>: [guess] from = '<path>' with an open shell ...`):
+///   ROHF's restart needs its alpha and beta densities, and `d.npy` holds
+///   their sum.
+///
+/// ```
+/// use std::path::Path;
+/// use fb_steps::Config;
+///
+/// let text = "[molecule]\nxyz = \"h2o.xyz\"\n[basis]\nname = \"cc-pvdz\"\n\
+///             [guess]\nfrom = \"run/d.npy\"\n";
+/// let guess = Config::parse(text, Path::new("/data")).unwrap().guess.unwrap();
+/// assert_eq!(guess.from.unwrap(), Path::new("/data/run/d.npy"));
+/// assert!(guess.r#type.is_none());
+/// ```
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuessTable {
+    /// The guess built: `"sad"`, the superposition of atomic densities
+    /// from the compiled-in stamps (or computed, for a basis that carries
+    /// none). Absent, `"sad"` unless `from` is set.
+    pub r#type: Option<GuessType>,
+    /// A density to load in place of the built one, relative to the
+    /// config's directory.
+    pub from: Option<PathBuf>,
+    /// Where the guess was set, `<file>:<line>`: `from`'s line, else the
+    /// table's.
+    #[serde(skip)]
+    at: String,
+}
+
+/// `[guess] type`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuessType {
+    /// `"sad"`: the superposition of atomic densities.
+    #[default]
+    Sad,
+}
+
+impl GuessTable {
+    /// Refuse `from` beside `type`, with an open shell, or of a shape
+    /// other than `n_ao × n_ao`, reading the file's header alone.
+    fn check(&self, dims: &Dims, multiplicity: i32) -> Result<()> {
+        let Some(path) = &self.from else {
+            return Ok(());
+        };
+        let at = &self.at;
+        if self.r#type.is_some() {
+            return Err(Error::config(format!(
+                "{at}: [guess] type and from are both set: from loads a density in place of \
+                 the one type builds"
+            )));
+        }
+        let from = path.display();
+        if dims.n_alpha != dims.n_beta {
+            return Err(Error::unsupported(format!(
+                "{at}: [guess] from = '{from}' with an open shell (multiplicity \
+                 {multiplicity}): ROHF's restart needs its alpha and beta densities, and a \
+                 saved d.npy holds their sum"
+            )));
+        }
+        let n = dims.n_ao;
+        let shape = fb_io_npy::read_npy_shape(path).map_err(|mut e| {
+            e.message = format!("{at}: [guess] from: {}", e.message);
+            e
+        })?;
+        if shape != [n, n] {
+            return Err(Error::config(format!(
+                "{at}: [guess] from = '{from}': the array is {shape:?}, not [{n}, {n}], the \
+                 basis's spherical AO count"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// `[eri]`.
@@ -385,9 +488,9 @@ impl Default for ResourcesTable {
 }
 
 impl Config {
-    /// Parse `text`, resolving a relative `[molecule] xyz` against `dir`.
-    /// A refusal, and a later one of `[molecule]`'s spin, names the line
-    /// as `config:<line>`.
+    /// Parse `text`, resolving a relative `[molecule] xyz` and `[guess]
+    /// from` against `dir`. A refusal, and a later one of `[molecule]`'s
+    /// spin or of `[guess]`, names the line as `config:<line>`.
     ///
     /// # Errors
     /// `InvalidConfig`, `config:<line>: ...` with the parser's message: a
@@ -412,8 +515,8 @@ impl Config {
         )
     }
 
-    /// [`Config::parse`], its refusals and `[molecule]`'s spin located in
-    /// `file`.
+    /// [`Config::parse`], its refusals, `[molecule]`'s spin and `[guess]`
+    /// located in `file`.
     fn parse_in(text: &str, dir: &Path, file: &str) -> Result<Config> {
         let line = |offset: usize| text[..offset].matches('\n').count() + 1;
         let mut config: Config = toml::from_str(text).map_err(|e| {
@@ -423,7 +526,7 @@ impl Config {
             Error::config(format!("{at}: {}", e.message().trim_end()))
         })?;
         // The text parsed as a `Config`, so it parses again.
-        let spans: SpinSpans = toml::from_str(text).map_err(|e| Error::config(e.to_string()))?;
+        let spans: Spans = toml::from_str(text).map_err(|e| Error::config(e.to_string()))?;
         let table = &spans.molecule;
         let set = table.get_ref();
         let offset = set
@@ -434,6 +537,17 @@ impl Config {
         config.molecule.at = format!("{file}:{}", line(offset));
         if config.molecule.xyz.is_relative() {
             config.molecule.xyz = dir.join(&config.molecule.xyz);
+        }
+        if let (Some(guess), Some(table)) = (config.guess.as_mut(), spans.guess.as_ref()) {
+            let offset = table
+                .get_ref()
+                .from
+                .as_ref()
+                .map_or(table.span().start, |k| k.span().start);
+            guess.at = format!("{file}:{}", line(offset));
+            if let Some(from) = guess.from.as_mut().filter(|f| f.is_relative()) {
+                *from = dir.join(&*from);
+            }
         }
         Ok(config)
     }
@@ -676,7 +790,8 @@ impl MainBus {
     /// solver work buffer counted as zero.
     ///
     /// # Errors
-    /// The readers' refusals; [`MoleculeTable::occupations`]'s; a config
+    /// The readers' refusals; [`MoleculeTable::occupations`]'s;
+    /// [`GuessTable`]'s, before anything is allocated; a config
     /// with no GPU, no thread or no
     /// host thread, or a device the runtime does not see
     /// (`InvalidConfig`); the host integrals' threads not starting (`Io`);
@@ -699,6 +814,9 @@ impl MainBus {
             None => None,
         };
         let dims = Dims::count(&basis, aux.as_ref(), occupations);
+        if let Some(guess) = &config.guess {
+            guess.check(&dims, spin.multiplicity)?;
+        }
         let e_nuc = fb_molecule::nuclear_repulsion_energy(&molecule);
 
         let res = &config.resources;

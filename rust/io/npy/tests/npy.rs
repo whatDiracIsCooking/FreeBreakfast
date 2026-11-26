@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 
 use fb_core_error_handling::ErrorKind;
 use fb_io_npy::{
-    NpyArray, element_count, npy_to_bytes, parse_npy, read_npy, read_npy_shape, write_npy,
+    NpyArray, element_count, npy_to_bytes, parse_npy, read_npy, read_npy_into, read_npy_shape,
+    write_npy,
 };
 
 /// Hand-assemble a `.npy` document: any version, any header dict, any
@@ -492,6 +493,88 @@ fn read_npy_shape_refusals_name_the_path() {
         "{}",
         error.message
     );
+}
+
+// --- read_npy_into ---------------------------------------------------------
+
+/// A file read into a buffer already held is [`read_npy`]'s array, bit
+/// for bit: a Fortran-order file in both length fields, a C-order matrix
+/// and rank-three array reordered, and a payload past one stack chunk
+/// (a 40 × 30 matrix, 9600 bytes).
+#[test]
+fn read_npy_into_matches_read_npy() {
+    let dir = scratch("read_npy_into_matches_read_npy");
+    let big: Vec<f64> = (0..1200).map(|i| f64::from(i) * 0.25 - 7.0).collect();
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "fortran.npy",
+            npy_to_bytes(&NpyArray {
+                shape: vec![40, 30],
+                data: big.clone(),
+            })
+            .unwrap(),
+        ),
+        (
+            "c_matrix.npy",
+            make_npy(
+                "{'descr': '<f8', 'fortran_order': False, 'shape': (40, 30), }",
+                &doubles_as_bytes(&big),
+                2,
+            ),
+        ),
+        (
+            "c_rank3.npy",
+            make_npy(
+                "{'descr': '<f8', 'fortran_order': False, 'shape': (2, 3, 4), }",
+                &doubles_as_bytes(&big[..24]),
+                3,
+            ),
+        ),
+    ];
+    for (file, bytes) in cases {
+        let path = dir.join(file);
+        std::fs::write(&path, bytes).unwrap();
+        let array = read_npy(&path).unwrap();
+        let mut out = vec![f64::NAN; array.data.len()];
+        read_npy_into(&path, &array.shape, &mut out).unwrap();
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&out), bits(&array.data), "{file}");
+    }
+}
+
+/// [`read_npy_into`]'s refusals each name the path: a shape other than
+/// the one asked for `InvalidConfig`, a payload cut short and a bad
+/// magic `Io`; a buffer the shape disagrees with is `InvalidConfig`.
+#[test]
+fn read_npy_into_refusals_name_the_path() {
+    let dir = scratch("read_npy_into_refusals_name_the_path");
+    let square = dir.join("square.npy");
+    write_npy(&square, &[3, 3], &[1.0; 9]).unwrap();
+    let error = read_npy_into(&square, &[4, 4], &mut [0.0; 16]).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidConfig);
+    assert!(
+        error.message.contains("(3, 3), not (4, 4)"),
+        "{}",
+        error.message
+    );
+
+    let dict = "{'descr': '<f8', 'fortran_order': True, 'shape': (2, 2), }";
+    let cut = dir.join("cut.npy");
+    std::fs::write(&cut, make_npy(dict, &[0; 24], 1)).unwrap();
+    let magic = dir.join("magic.npy");
+    std::fs::write(&magic, b"\x93NUMPX\x01\x00").unwrap();
+    for (path, needle) in [(&cut, "shorter than"), (&magic, "bad magic")] {
+        let error = read_npy_into(path, &[2, 2], &mut [0.0; 4]).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Io, "{}", error.message);
+        assert!(error.message.contains(needle), "{}", error.message);
+        assert!(
+            error.message.contains(&path.display().to_string()),
+            "{}",
+            error.message
+        );
+    }
+    let error = read_npy_into(&square, &[3, 3], &mut [0.0; 8]).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidConfig);
 }
 
 // --- The SAD stamps --------------------------------------------------------

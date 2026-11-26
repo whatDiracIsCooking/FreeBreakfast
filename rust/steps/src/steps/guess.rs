@@ -1,6 +1,10 @@
 //! The initial guess: the superposition of atomic densities, read from the
-//! compiled-in stamps (or computed, for a basis that carries none) on the
-//! host into the step's pinned staging, and uploaded to gpu0. A host step: no library, no lock.
+//! compiled-in stamps (or computed, for a basis that carries none), or the
+//! density `[guess] from` names, read from its `.npy`, on the host into
+//! the step's pinned staging, and uploaded to gpu0. A host step: no
+//! library, no lock. Either way the staging is the same `n_ao²` doubles,
+//! so `from` leaves the budget as it was; setup has checked the file's
+//! shape, and the read checks it again.
 
 use fb_core_budget::{Budget, DeviceBuf, Kind, Lease};
 use fb_core_error_handling::{Result, Status};
@@ -64,9 +68,13 @@ impl Step<MainBus> for GuessStep {
         lane: &Lane,
         scratch: &Lease<'_>,
     ) -> Status {
-        let n = view.shared().dims.n_ao;
+        let shared = view.shared();
+        let n = shared.dims.n_ao;
         let mut staged = scratch.pinned(GPU0, staging(n * n).1);
-        sad_density(view.shared(), &mut staged)?;
+        match shared.config.guess.as_ref().and_then(|g| g.from.as_deref()) {
+            Some(from) => fb_io_npy::read_npy_into(from, &[n, n], &mut staged)?,
+            None => sad_density(shared, &mut staged)?,
+        }
         upload(lane, std::slice::from_mut(&mut out.d), staged)
     }
 }
