@@ -13,6 +13,9 @@
 //! - [`plan`]: the DAG a config asks for; [`run`]: setup, budget mode and
 //!   execute mode over the run's one executor, and [`Run::replay`], execute
 //!   mode again in the same buffers.
+//! - [`Run::write`]: the run's record and its products on disk, on the host
+//!   after execute mode (`budget.txt`, `timing.json`, and with `[scf]`
+//!   `scf.json`, `c.npy` and `d.npy`).
 //!
 //! ```text
 //! overlap ──> orthogonalizer ─┐
@@ -64,6 +67,7 @@
 
 mod bus;
 mod steps;
+mod write;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -107,7 +111,8 @@ pub fn plan(bus: Arc<MainBus>) -> Result<Plan<MainBus>> {
 }
 
 /// What a whole run leaves: the plan (and through it the bus and every
-/// step's `Output`), the executor, the budget table, and the times.
+/// step's `Output`), the executor, the budget table, and the times;
+/// [`Run::write`] puts them on disk.
 pub struct Run {
     /// The plan; `plan.output(ScfStep)` reads the energy.
     pub plan: Plan<MainBus>,
