@@ -111,8 +111,9 @@ fn a_cap_is_clamped_to_the_reading() {
     // No reading: as written, or none.
     assert_eq!(Cap::resolve(Some(gib), None, gib).used, gib);
     assert_eq!(Cap::resolve(None, None, gib).used, u64::MAX);
-    assert_eq!(device_margin(10 * gib), 512 << 20);
-    assert_eq!(device_margin(16 * gib), 16 * gib / 20);
+    assert_eq!(device_margin(10 * gib), 2 * gib);
+    assert_eq!(device_margin(40 * gib), 2 * gib);
+    assert_eq!(device_margin(48 * gib), 48 * gib / 20);
     assert_eq!(host_margin(8 * gib), gib);
     assert_eq!(host_margin(64 * gib), 64 * gib / 20);
 }

@@ -96,7 +96,7 @@ sync, and an owned buffer is never freed.
 ### Caps and margins
 
 - **A defaulted device cap** is the gpu's free memory, read once after its
-  handles exist, less the larger of 512 MiB and 5% of its total
+  handles exist, less the larger of 2 GiB and 5% of its total
   (`device_margin`); gpus sharing one device split both evenly.
 - **A defaulted host cap** is the host's available memory, read once in
   setup, less the larger of 1 GiB and 5% (`host_margin`). The reading is
@@ -114,34 +114,59 @@ sync, and an owned buffer is never freed.
   budget leaves out: the device context, the handles' own memory, loaded
   modules, the kernels' stack and small host allocations such as the
   geometry and the basis. An explicit cap leaves those to the user.
-- **A kernel's scratch is per queue and per card, kept, and bounded by
-  launch order.** The runtime sizes a launch's scratch (its stack) at the
-  kernel's bytes per lane times every lane the card can keep resident,
-  not at the dispatch, and keeps it. On ROCm each hardware queue, so each
-  ring stream, holds its own, and a launch needing more than the queue
-  holds takes a new allocation without giving the old one back; past
-  ROCm's single-allocation ceiling, 140 MiB, a launch is sized to its
-  dispatch instead, and the next launch under the ceiling takes a new
-  allocation again. CUDA holds one per context, sized for the largest
-  kernel run. So the eri step launches its largest class first on each
-  ring stream (`scratch_rank`, by `(la + lb, la)` and then the aux
-  momentum, both descending; B is bitwise the same in either order). On
-  the gfx1200 (32,768 resident lanes; `ssperi3`'s scratch per lane from 0
-  to 13,072 bytes, `<3, 3, 6>`), one run each:
-  - Water's chain in cc-pVDZ / cc-pVDZ-JKFIT took 492.6 MiB past its
-    budget in its first execute in the classes' order; largest first it
-    takes 141.2 MiB. Each stream takes one allocation, its largest
-    class's, so the bound is the ring depth times `ssperi3<2, 2, 3>`'s
-    125 MiB, with the code objects and the libraries' first calls
-    (`steps/tests/chain_vram.rs`): 266 MiB, under the 512 MiB floor of
-    `device_margin`, which is left as it is.
-  - All 70 classes on one stream: 3.7 GiB in the classes' order, 950 MiB
-    largest first. A batch's launches past the ceiling come first, so
-    the largest of those is taken once, and each class's first launch
-    under the ceiling can take one allocation of at most 140 MiB.
-
-  Neither figure is in the budget: the card's resident lanes and a
-  kernel's scratch per lane are not read at planning.
+- **The kernel stack is not in the budget; the device margin absorbs
+  it.** The runtime gives every kernel a per-thread stack for its locals
+  (ROCm calls it scratch, CUDA local memory), sized at the kernel's bytes
+  per lane times every lane the card can keep resident, not at the
+  dispatch, and keeps it. No `mem_budget` declares it and no row of the
+  table counts it: a library's kernels cannot be asked their size, and
+  the bound that is true on HIP is too loose to plan by. "Scratch" in
+  this document means only what a step declares, "Step scratch" below.
+  - **HIP holds it per hardware queue.** There are up to
+    `GPU_MAX_HW_QUEUES` of them (the runtime's environment variable,
+    default 4), and a stream is not bound to one: it takes the
+    least-loaded queue each time it goes from idle to busy, so one
+    stream's successive batches land on different queues. Each queue
+    keeps every allocation it has made, and a launch needing more than
+    its queue holds takes a new one. Past the single-allocation ceiling,
+    140 MiB, a launch is sized to its dispatch instead, and the next
+    launch under the ceiling takes a new allocation again.
+  - **CUDA holds one per context**, sized for the largest kernel run.
+  - **The eri step launches its largest class first** on each ring
+    stream (`stack_rank`, by `(la + lb, la)` and then the aux momentum,
+    both descending; B is bitwise the same in either order). A queue
+    that has run a larger launch runs every smaller one in what it
+    holds, so the order takes away most of the staircase a rising order
+    climbs. It bounds nothing: a queue whose first launch is a small one
+    still climbs.
+  - **Measured on the gfx1200** (32,768 resident lanes; `ssperi3`'s
+    stack per lane from 0 to 13,072 bytes, `<3, 3, 6>`), beyond the
+    budget's allocation. Water's chain in cc-pVDZ / cc-pVDZ-JKFIT takes
+    128.6 to 197.1 MiB in its first execute, by which queues its
+    batches landed on, and a second execute can add the largest class's
+    125 MiB on a queue that had not run it: 322 MiB. In the classes'
+    order it took 492.6 MiB, 246 MiB on each of two streams. All 70
+    classes on one stream took 950 MiB largest first and 3.7 GiB in the
+    classes' order.
+  - **The bound per queue is the whole ascending staircase**: the sum
+    of the plan's distinct stack sizes under the ceiling, each times
+    the resident lanes, reached when a queue meets them smallest first.
+    For water that is 17,428 bytes per lane, 544.6 MiB a queue and
+    2.1 GiB on four (`steps/tests/chain_vram.rs` asserts it of the
+    first execute and a replay together).
+  - **What the 2 GiB floor of `device_margin` covers**: every figure
+    measured above, and the estimate for CUDA at f, about 1.3 GiB in
+    one allocation on an RTX 3080 (nvcc's local sizes were not read).
+    It is not sized for the bound, and it does not cover an f-shell
+    plan on HIP in which every queue ends up holding the full range of
+    classes: about 3.8 GiB from the one-stream figure, about 15 GiB in
+    the classes' order on all four queues. `GPU_MAX_HW_QUEUES` in the
+    environment lowers the queue count. An explicit cap takes no
+    margin, so its user leaves the room.
+  - **When the room is not there** the run fails with an out-of-memory
+    error at the eri build's first launches, before the first SCF
+    iteration. Lower the device cap, or `[eri] mem_per_gpu`, by what
+    the stack needs.
 
 ## Step scratch
 
