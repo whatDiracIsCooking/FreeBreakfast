@@ -1,21 +1,12 @@
-//! `src/pipeline/config` and `src/main.cpp`: the `free-breakfast` binary's
-//! config, read from TOML, and the plan it asks for. The binary is this
-//! crate's `src/main.rs`: `free-breakfast <config.toml>` reads the config
-//! ([`read_config`]), plans it ([`plan`], syevd's work asked of device 0
-//! when the calculation diagonalizes), makes the output directory and
-//! writes the plan into it, `plan.txt` its text and `plan.dot` its
-//! [`Graph`](fb_core_planner::Graph), admits every worker's tables against
-//! the `[memory]` caps ([`admit_plan`]), runs the plan once on the run's
-//! devices ([`Config::num_gpus`]), and writes `timing.json`, the run's
-//! [`Record`](fb_core_thread_pool::Record), and `timing.dot`, the graph
-//! with the run's times on it, beside the products. Its `main`
-//! is the one place an error is logged, exiting with
-//! [`ErrorKind::exit_code`] (`docs/diagnostics.md`, "The one boundary").
+//! `src/pipeline/config`: the old binary's config, read from TOML, the
+//! plan it asks for ([`plan`]) and its admission against the `[memory]`
+//! caps ([`admit_plan`]), over the old layer. The `free-breakfast` binary
+//! is `fb-steps`' now; this library, its tests and their fixtures
+//! (`tests/data/examples/`, the old binary's configs) stay until the old
+//! pipeline crates are deleted.
 //!
-//! [`Config`] is the reference: each key is a field, its doc comment its
-//! default and unit (`docs/documentation.md`, "Configuration: the reference
-//! is emitted from the type"). `rust/examples/` holds one config per
-//! calculation, each run through the binary by `tests/examples.rs`.
+//! [`Config`] is the old reference: each key is a field, its doc comment
+//! its default and unit.
 //!
 //! Four calculations exist. [`Calculation::Overlap`]: the overlap of
 //! [`fb_integrals_one_electron_overlap`], then its write nodes
@@ -140,7 +131,6 @@
 //! | `-i <input_dir>` | nothing: paths are relative to the config file |
 //! | `main`, `print_products` | `src/main.rs`: the error logged once, the exit code, `plan.txt`, `plan.dot`, `timing.json`, `timing.dot` |
 //!
-//! [`ErrorKind::exit_code`]: fb_core_error_handling::ErrorKind::exit_code
 //! [`GuessStep`]: fb_pipeline_guess::GuessStep
 //! [`GuessStep::kind`]: fb_pipeline_guess::GuessStep::kind
 //! [`GuessStep::from`]: fb_pipeline_guess::GuessStep::from

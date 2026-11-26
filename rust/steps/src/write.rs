@@ -6,6 +6,8 @@
 //! |---|---|---|
 //! | `budget.txt` | always | the budget table, [`Run::table`]: `--budget-only`'s text |
 //! | `timing.json` | always | the run's times: `profile` (`debug` or `release`), `setup`, `budget` and `execute`, and per step of the last execute its [`StepTime`], each time integer nanoseconds, each lock its rank's name (`Manager(Eri)`, `Gpu(0)`); `steps` is empty for a dry run |
+//! | `overlap.npy` | for `calculation = "overlap"`, after execute | S, `n_ao × n_ao` float64 |
+//! | `d.npy` | for `calculation = "guess"`, after execute | the guess's density, `n_ao × n_ao` float64 |
 //! | `scf.json` | with `[scf]`, after execute | `energy`, `residual`, `iterations`, `converged`, `n_alpha`, `n_beta` and `epsilon`, ascending, each double in its shortest round-trip form |
 //! | `c.npy`, `d.npy` | with `[scf]`, after execute | C and D, `n_ao × n_ao` float64 in Fortran order ([`fb_io_npy::write_npy`]), the host copies' bytes as they are |
 //! | `localization.json` | with `[localization]`, after execute | `mode`, `exponent`, `functional_before`, `functional_after` (`L` of the SCF's orbitals and of the localized ones) and `sweeps`, each summed over the blocks |
@@ -25,7 +27,8 @@ use fb_core_flow::Bus;
 use serde_json::{Value, json};
 
 use crate::{
-    Dims, LocalizationOutput, LocalizationStep, LocalizationTable, Run, ScfOutput, ScfStep,
+    Calculation, Dims, GuessStep, LocalizationOutput, LocalizationStep, LocalizationTable,
+    OverlapStep, Run, ScfOutput, ScfStep,
 };
 
 impl Run {
@@ -64,6 +67,20 @@ impl Run {
             return Ok(());
         }
         let shared = self.plan.bus().shared();
+        let n = shared.dims.n_ao;
+        match shared.config.calculation {
+            Some(Calculation::Overlap) => {
+                if let Some(s) = self.plan.output(OverlapStep).s_host() {
+                    fb_io_npy::write_npy(&dir.join("overlap.npy"), &[n, n], s)?;
+                }
+            }
+            Some(Calculation::Guess) => {
+                if let Some(d) = self.plan.output(GuessStep).d_host() {
+                    fb_io_npy::write_npy(&dir.join("d.npy"), &[n, n], d)?;
+                }
+            }
+            _ => {}
+        }
         if shared.config.scf.is_some() {
             write_scf(&self.plan.output(ScfStep), &shared.dims, dir)?;
         }

@@ -1,6 +1,6 @@
 [package]
 name = "fb-steps"
-description = "steps: the v0.0.4 layer's MainBus (the config, setup, the dimensions counted without building an array) and every step's mem_budget and run, in one crate so the bus names every Output"
+description = "steps: the v0.0.4 layer's MainBus (the config, setup, the dimensions counted without building an array) and every step's mem_budget and run, in one crate so the bus names every Output; and the free-breakfast binary"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -25,7 +25,8 @@ fb-core-device.workspace = true
 fb-core-error-handling.workspace = true
 # Steps, slots, Views and the two-mode DAG, and the executor it runs on.
 fb-core-flow.workspace = true
-# The value checks of the always-on contracts (eq!, le!).
+# The value checks of the always-on contracts (eq!, le!), and the binary's
+# logger and its counts.
 fb-core-log.workspace = true
 # check_library, before the first launch of a real run.
 fb-recipes-sys.workspace = true
@@ -49,6 +50,11 @@ toml.workspace = true
 # timing.json.
 fb-io-npy.workspace = true
 serde_json.workspace = true
+
+# The binary: a config through the steps, its record and products written.
+[[bin]]
+name = "free-breakfast"
+path = "src/main.rs"
 
 # Counts the process's threads, so no libtest harness threads beside it.
 [[test]]

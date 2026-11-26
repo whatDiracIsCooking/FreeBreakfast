@@ -1,18 +1,16 @@
 # The DF-RHF of water in cc-pVDZ over cc-pVDZ-JKFIT, then the Pipek-Mezey
 # localization of its occupied orbitals over Mulliken populations. Writes
-# scf.json, c.npy and d.npy, as rhf.toml does, then c_local.npy,
-# localization.json and timing.json.
-calculation = "localization"
-output = "localization"   # relative to the working directory
+# scf.json, c.npy and d.npy, as rhf.toml does, then c_local.npy and
+# localization.json, beside budget.txt and timing.json.
+calculation = "localization"   # the chain to the SCF, then the localization
 
 [molecule]
 xyz = "water.xyz"      # Angstrom, relative to this file
 
-[basis_set]
-basis = "cc-pvdz"
+[basis]
+name = "cc-pvdz"
 
-[eri]                  # required: no default
-mode = "density_fitting"
+[eri]                  # required by "localization"
 aux_basis = "cc-pvdz-jkfit"
 
 [localization]         # every key optional; these are the defaults

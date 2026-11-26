@@ -1,9 +1,9 @@
-//! Give the binary and the tests an rpath to WarpWraps' C ABI libraries
+//! Give the tests an rpath to WarpWraps' C ABI libraries
 //! (`rust/capi_dir.rs`) and to the three kernel libraries a plan reaches,
 //! `libfb_integrals_kernels.so` (the integrals),
 //! `libfb_recipes_kernels.so` (the orthogonalizer, the Cholesky factor,
 //! DIIS) and `libfb_localization_kernels.so` (Pipek-Mezey): wwr-sys's and the `-sys` crates' rpaths reach their own targets
-//! only, and `free-breakfast` is run from wherever cargo put it.
+//! only.
 
 include!("../../capi_dir.rs");
 

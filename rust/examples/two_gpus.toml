@@ -1,14 +1,17 @@
-# The overlap example on a run that holds two devices. Writes overlap.npy
-# and timing.json, the same as the overlap example's: work is not spread
-# over devices yet, so every GPU worker is on device 0 and device 1 holds
-# nothing. Needs two visible devices; the binary refuses it on one.
-calculation = "overlap"
-output = "two_gpus"    # relative to the working directory; default "fbf_output"
-num_gpus = 2           # devices 0 and 1; default 1, at least 1, at most the
-                       # devices the runtime sees
+# The DF-RHF of water in cc-pVDZ over cc-pVDZ-JKFIT on two GPUs: B's pair
+# batches and each J/K pass's aux batches split across devices 0 and 1, the
+# SCF's loop on gpu0. Writes what rhf.toml writes, at its energy. Needs two
+# visible devices; setup refuses a device the runtime does not see.
+calculation = "rhf"
 
 [molecule]
-xyz = "water.xyz"      # Angstrom, relative to this file
+xyz = "water.xyz"
 
-[basis_set]
-basis = "cc-pvdz"      # a compiled-in name, or a BSE JSON path relative to this file
+[basis]
+name = "cc-pvdz"
+
+[eri]
+aux_basis = "cc-pvdz-jkfit"
+
+[resources]
+devices = [0, 1]

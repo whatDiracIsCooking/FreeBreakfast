@@ -377,7 +377,7 @@ def test_dry_run_names_tier4_crates(
     assert gates.cmd_push(args, {}) == 0
     out = capsys.readouterr().out
     assert "C++ half: no, Python half: no, cargo half: yes" in out
-    assert "push: tier 4 crate(s): fb-pipeline-config" in out
+    assert "push: tier 4 crate(s): fb-steps" in out
 
 
 def test_push_by_hand_without_a_base_exits_2(
@@ -682,6 +682,7 @@ _META = {
         "fb-core-thread-pool",
         "fb-core-planner",
         "fb-pipeline-config",
+        "fb-steps",
         "fb-recipes-sys",
         "fb-integrals-sys",
         "fb-atom",
@@ -695,6 +696,7 @@ _META = {
         _package("fb-core-thread-pool", "core/thread_pool"),
         _package("fb-core-planner", "core/planner"),
         _package("fb-pipeline-config", "pipeline/config"),
+        _package("fb-steps", "steps"),
         _package("fb-recipes-sys", "recipes/sys", "fb_recipes_kernels"),
         _package("fb-integrals-sys", "integrals/sys", "fb_integrals_kernels"),
         _package("fb-atom", "atom"),
@@ -712,6 +714,7 @@ _META = {
                 "fb-core-thread-pool": ["fb-core-wwr", "fb-core-log"],
                 "fb-core-planner": ["fb-core-arena", "fb-core-thread-pool"],
                 "fb-pipeline-config": ["fb-core-planner"],
+                "fb-steps": ["fb-core-log", "fb-recipes-sys"],
                 "fb-recipes-sys": ["wwr-sys", "fb-core-wwr"],
                 "fb-integrals-sys": ["wwr-sys", "fb-core-wwr"],
                 "fb-atom": ["fb-core-log"],
@@ -728,6 +731,7 @@ _LINKING = {
     "fb-core-thread-pool",
     "fb-core-planner",
     "fb-pipeline-config",
+    "fb-steps",
     "fb-recipes-sys",
     "fb-integrals-sys",
 }
@@ -759,11 +763,11 @@ _LINKING = {
         # its reverse dependents' (no library links another); docs and the
         # bindings generator are tier-3 crates'; the examples are the
         # crate's that runs them.
-        (["rust/recipes/kernels/merge_sort.cu"], {"fb-recipes-sys"}),
+        (["rust/recipes/kernels/merge_sort.cu"], {"fb-recipes-sys", "fb-steps"}),
         (["rust/integrals/kernels/mmd/mmd.h"], {"fb-integrals-sys"}),
         (["rust/docs/testing.md", "rust/README.md"], set()),
         (["devtools/rust-bindings.py"], set()),
-        (["rust/examples/overlap.toml"], {"fb-pipeline-config"}),
+        (["rust/examples/overlap.toml"], {"fb-steps"}),
         # A file in no crate and no rule, or no diff at all: everything.
         (["rust/Cargo.lock"], _LINKING),
         (["rust/capi_dir.rs"], _LINKING),

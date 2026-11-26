@@ -366,7 +366,7 @@ edge, read from `cargo metadata`, in debug and on one test thread. The
 hand-written path rules of "Selection" below are in `devtools/test.py`:
 a module's `kernels/` affect its `-sys` crate (`rust/<module>/sys/`) and
 so that crate's reverse dependents, `docs/` and
-`README.md` only `fb-doc-check`, `examples/` only `fb-pipeline-config`
+`README.md` only `fb-doc-check`, `examples/` only `fb-steps`
 (whose tests run them through the binary), and any other file outside
 every crate the whole workspace (`clippy.toml` and `Cargo.toml` among
 them, so a lint-config change lints every crate that links). `pr --all`

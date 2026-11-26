@@ -14,9 +14,12 @@
 //!   execute mode over the run's one executor, and [`Run::replay`], execute
 //!   mode again in the same buffers.
 //! - [`Run::write`]: the run's record and its products on disk, on the host
-//!   after execute mode (`budget.txt`, `timing.json`, and with `[scf]`
+//!   after execute mode (`budget.txt`, `timing.json`; `overlap.npy` for
+//!   `calculation = "overlap"`, `d.npy` for `"guess"`; with `[scf]`
 //!   `scf.json`, `c.npy` and `d.npy`; with `[localization]`
 //!   `localization.json` and `c_local.npy`).
+//! - The `free-breakfast` binary (`src/main.rs`): `free-breakfast
+//!   <config.toml>`, a config through [`run`] and [`Run::write`].
 //!
 //! ```text
 //! overlap ──> orthogonalizer ─┐
@@ -80,8 +83,9 @@ use fb_core_error_handling::Result;
 use fb_core_flow::{Bus, Dag, Executor, Plan, StepTime};
 
 pub use bus::{
-    BasisTable, ClassDim, Config, Dims, EriTable, GuessTable, GuessType, LocalizationMode,
-    LocalizationTable, MainBus, MoleculeTable, ResourcesTable, ScfTable, Shared, for_each_pair,
+    BasisTable, Calculation, ClassDim, Config, Dims, EriTable, GuessTable, GuessType,
+    LocalizationMode, LocalizationTable, MainBus, MoleculeTable, ResourcesTable, ScfTable, Shared,
+    for_each_pair,
 };
 pub use steps::core_hamiltonian::{CoreHamiltonianOutput, CoreHamiltonianStep};
 pub use steps::eri::{DEFAULT_MEM_PER_GPU, Density, EriManager, EriStep};
@@ -92,27 +96,41 @@ pub use steps::orthogonalizer::{EIGENVALUE_FLOOR, OrthogonalizerOutput, Orthogon
 pub use steps::overlap::{OverlapOutput, OverlapStep};
 pub use steps::scf::{LoopMeter, ScfOutput, ScfStep};
 
-/// The DAG `bus`'s config asks for: the one-electron steps, the guess and
-/// the orthogonalizer with `[basis]`, the metric and the ERI with `[eri]`,
-/// the SCF with `[scf]`, the localization with `[localization]`. A step that reads one the config leaves out is
-/// refused, naming both.
+/// The DAG `bus`'s config asks for. `calculation = "overlap"` is the
+/// overlap alone and `"guess"` the guess alone; otherwise the one-electron
+/// steps, the guess and the orthogonalizer with `[basis]`, the metric and
+/// the ERI with `[eri]`, the SCF with `[scf]`, the localization with
+/// `[localization]`, the tables `"rhf"` and `"localization"` read filled
+/// in as the config was parsed ([`Calculation`]). A step that reads one
+/// the config leaves out is refused, naming both.
 ///
 /// # Errors
 /// [`Dag::build`]'s refusals.
 pub fn plan(bus: Arc<MainBus>) -> Result<Plan<MainBus>> {
     let mut dag = Dag::new();
-    dag.add(OverlapStep)
-        .add(CoreHamiltonianStep)
-        .add(GuessStep)
-        .add(OrthogonalizerStep);
-    if bus.shared().config.eri.is_some() {
-        dag.add(MetricStep).add(EriStep);
-    }
-    if bus.shared().config.scf.is_some() {
-        dag.add(ScfStep);
-    }
-    if bus.shared().config.localization.is_some() {
-        dag.add(LocalizationStep);
+    let config = &bus.shared().config;
+    match config.calculation {
+        Some(Calculation::Overlap) => {
+            dag.add(OverlapStep);
+        }
+        Some(Calculation::Guess) => {
+            dag.add(GuessStep);
+        }
+        _ => {
+            dag.add(OverlapStep)
+                .add(CoreHamiltonianStep)
+                .add(GuessStep)
+                .add(OrthogonalizerStep);
+            if config.eri.is_some() {
+                dag.add(MetricStep).add(EriStep);
+            }
+            if config.scf.is_some() {
+                dag.add(ScfStep);
+            }
+            if config.localization.is_some() {
+                dag.add(LocalizationStep);
+            }
+        }
     }
     dag.build(bus)
 }

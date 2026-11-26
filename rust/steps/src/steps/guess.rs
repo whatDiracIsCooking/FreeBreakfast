@@ -6,13 +6,13 @@
 //! so `from` leaves the budget as it was; setup has checked the file's
 //! shape, and the read checks it again.
 
-use fb_core_budget::{Budget, DeviceBuf, Kind, Lease};
+use fb_core_budget::{Budget, DeviceBuf, HeapSlab, Kind, Lease};
 use fb_core_error_handling::{Result, Status};
 use fb_core_flow::{Held, Lane, Placement, Slot, Step, View};
 use fb_io_sad::builtin_sad_density;
 use fb_sad::SadStampLookup;
 
-use crate::bus::{MainBus, Shared};
+use crate::bus::{Calculation, MainBus, Shared};
 use crate::steps::{GPU0, staging, upload};
 
 /// The step.
@@ -22,6 +22,7 @@ pub struct GuessStep;
 /// The guess density D on gpu0.
 pub struct GuessOutput {
     d: DeviceBuf<f64>,
+    d_host: Option<HeapSlab<f64>>,
 }
 
 impl GuessOutput {
@@ -29,6 +30,13 @@ impl GuessOutput {
     #[must_use]
     pub fn d(&self) -> &DeviceBuf<f64> {
         &self.d
+    }
+
+    /// D on the host, `n_ao × n_ao`, for `calculation = "guess"`,
+    /// which writes it as `d.npy`; `None` for any other.
+    #[must_use]
+    pub fn d_host(&self) -> Option<&[f64]> {
+        self.d_host.as_deref()
     }
 }
 
@@ -58,6 +66,8 @@ impl Step<MainBus> for GuessStep {
         budget.scratch(GPU0, Kind::Pinned, staging(n * n).0.bytes());
         Ok(GuessOutput {
             d: budget.device(GPU0, n * n),
+            d_host: (shared.config.calculation == Some(Calculation::Guess))
+                .then(|| budget.heap(n * n)),
         })
     }
 
@@ -74,6 +84,9 @@ impl Step<MainBus> for GuessStep {
         match shared.config.guess.as_ref().and_then(|g| g.from.as_deref()) {
             Some(from) => fb_io_npy::read_npy_into(from, &[n, n], &mut staged)?,
             None => sad_density(shared, &mut staged)?,
+        }
+        if let Some(host) = out.d_host.as_mut() {
+            host.copy_from_slice(&staged[..n * n]);
         }
         upload(lane, std::slice::from_mut(&mut out.d), staged)
     }

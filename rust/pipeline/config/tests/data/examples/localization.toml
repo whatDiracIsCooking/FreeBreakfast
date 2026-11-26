@@ -1,0 +1,23 @@
+# The DF-RHF of water in cc-pVDZ over cc-pVDZ-JKFIT, then the Pipek-Mezey
+# localization of its occupied orbitals over Mulliken populations. Writes
+# scf.json, c.npy and d.npy, as rhf.toml does, then c_local.npy,
+# localization.json and timing.json.
+calculation = "localization"
+output = "localization"   # relative to the working directory
+
+[molecule]
+xyz = "water.xyz"      # Angstrom, relative to this file
+
+[basis_set]
+basis = "cc-pvdz"
+
+[eri]                  # required: no default
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"
+
+[localization]         # every key optional; these are the defaults
+mode = "pipek_mezey"          # the only mode ported; "ibo" is refused
+max_sweeps = 64               # sweeps before MaxIterationsExceeded
+functional_tolerance = 1e-10  # |dL| over a sweep under which it converged
+rotation_gain_threshold = 1e-14  # a pair gaining no more than this is not rotated
+exponent = 2                  # the power of the populations: 2, or 4 (Knizia's)

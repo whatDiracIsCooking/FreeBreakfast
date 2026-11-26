@@ -29,8 +29,9 @@ use crate::steps::orthogonalizer::OrthogonalizerOutput;
 use crate::steps::overlap::OverlapOutput;
 use crate::steps::scf::{DIIS_HISTORY_MAX, ScfOutput};
 
-/// The config file: one table per step family, plus the run's resources.
-/// A step whose table is absent is not in the DAG.
+/// The config file: the calculation, one table per step family, plus the
+/// run's resources. With no `calculation`, a step whose table is absent is
+/// not in the DAG.
 ///
 /// ```
 /// use std::path::Path;
@@ -45,6 +46,9 @@ use crate::steps::scf::{DIIS_HISTORY_MAX, ScfOutput};
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// The calculation, the steps of its DAG and the products the run
+    /// writes ([`Calculation`]); absent, the tables present pick the steps.
+    pub calculation: Option<Calculation>,
     /// The geometry.
     pub molecule: MoleculeTable,
     /// The orbital basis.
@@ -129,12 +133,73 @@ impl MoleculeTable {
     }
 }
 
-/// The lines of `[molecule]`'s spin keys and of `[guess]`, read again with
-/// their spans.
+/// `calculation`: the steps its DAG holds, the tables it reads beside
+/// `[molecule]`, `[basis]` and `[resources]`, and the products
+/// [`Run::write`] puts beside the run's record. One row per calculation:
+///
+/// | `calculation` | Steps | Reads | Writes |
+/// |---|---|---|---|
+/// | `"overlap"` | overlap | none | `overlap.npy` |
+/// | `"guess"` | guess | `[guess]` | `d.npy` |
+/// | `"rhf"` | the chain to the SCF | `[guess]`, `[eri]` (required), `[scf]` | `scf.json`, `c.npy`, `d.npy` |
+/// | `"localization"` | the chain to the SCF, and the localization | `[guess]`, `[eri]` (required), `[scf]`, `[localization]` | the SCF's, `localization.json`, `c_local.npy` |
+///
+/// An optional table it reads is at its defaults when absent. Parsing
+/// refuses, `InvalidConfig`, naming the file and the line: a table it
+/// does not read, at the table's line; a missing `[eri]`, at
+/// `calculation`'s.
+///
+/// ```
+/// use std::path::Path;
+/// use fb_steps::{Calculation, Config};
+///
+/// let base = "[molecule]\nxyz = \"h2o.xyz\"\n[basis]\nname = \"cc-pvdz\"\n\
+///             [eri]\naux_basis = \"cc-pvdz-jkfit\"\n";
+/// let config = Config::parse(&format!("calculation = \"rhf\"\n{base}"), Path::new(".")).unwrap();
+/// assert_eq!(config.calculation, Some(Calculation::Rhf));
+/// assert!(config.scf.is_some() && config.localization.is_none());
+/// let error = Config::parse(&format!("calculation = \"overlap\"\n{base}"), Path::new("."))
+///     .unwrap_err();
+/// assert!(error.message.starts_with("config:6: [eri] is set"), "{}", error.message);
+/// ```
+///
+/// [`Run::write`]: crate::Run::write
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Calculation {
+    /// `"overlap"`: S.
+    Overlap,
+    /// `"guess"`: the guess's density.
+    Guess,
+    /// `"rhf"`: the DF-RHF energy, ROHF at a multiplicity above 1.
+    Rhf,
+    /// `"localization"`: that SCF, then the Pipek-Mezey localization of its
+    /// occupied orbitals.
+    Localization,
+}
+
+impl Calculation {
+    /// Its row: its name in the config and the optional tables it reads.
+    fn row(self) -> (&'static str, &'static [&'static str]) {
+        match self {
+            Calculation::Overlap => ("overlap", &[]),
+            Calculation::Guess => ("guess", &["guess"]),
+            Calculation::Rhf => ("rhf", &["guess", "eri", "scf"]),
+            Calculation::Localization => ("localization", &["guess", "eri", "scf", "localization"]),
+        }
+    }
+}
+
+/// The lines of `calculation`, of `[molecule]`'s spin keys and of the
+/// optional tables, read again with their spans.
 #[derive(Deserialize)]
 struct Spans {
+    calculation: Option<toml::Spanned<toml::Value>>,
     molecule: toml::Spanned<MoleculeSpans>,
     guess: Option<toml::Spanned<GuessSpans>>,
+    eri: Option<toml::Spanned<toml::Value>>,
+    scf: Option<toml::Spanned<toml::Value>>,
+    localization: Option<toml::Spanned<toml::Value>>,
 }
 
 /// `[guess]`'s `from`, spanned; every other key ignored.
@@ -489,13 +554,15 @@ impl Default for ResourcesTable {
 
 impl Config {
     /// Parse `text`, resolving a relative `[molecule] xyz` and `[guess]
-    /// from` against `dir`. A refusal, and a later one of `[molecule]`'s
-    /// spin or of `[guess]`, names the line as `config:<line>`.
+    /// from` against `dir`, and fill the optional tables `calculation`
+    /// reads at their defaults. A refusal, and a later one of
+    /// `[molecule]`'s spin or of `[guess]`, names the line as
+    /// `config:<line>`.
     ///
     /// # Errors
     /// `InvalidConfig`, `config:<line>: ...` with the parser's message: a
     /// key or table the config does not have, a required one missing, a
-    /// value of the wrong type.
+    /// value of the wrong type; and [`Calculation`]'s refusals.
     pub fn parse(text: &str, dir: &Path) -> Result<Config> {
         Config::parse_in(text, dir, "config")
     }
@@ -537,6 +604,43 @@ impl Config {
         config.molecule.at = format!("{file}:{}", line(offset));
         if config.molecule.xyz.is_relative() {
             config.molecule.xyz = dir.join(&config.molecule.xyz);
+        }
+        if let Some(calculation) = config.calculation {
+            let (name, reads) = calculation.row();
+            let set = [
+                ("guess", spans.guess.as_ref().map(toml::Spanned::span)),
+                ("eri", spans.eri.as_ref().map(toml::Spanned::span)),
+                ("scf", spans.scf.as_ref().map(toml::Spanned::span)),
+                (
+                    "localization",
+                    spans.localization.as_ref().map(toml::Spanned::span),
+                ),
+            ];
+            for (table, span) in set {
+                if let Some(span) = span.filter(|_| !reads.contains(&table)) {
+                    return Err(Error::config(format!(
+                        "{file}:{}: [{table}] is set, but calculation = \"{name}\" does not \
+                         read it",
+                        line(span.start)
+                    )));
+                }
+            }
+            if reads.contains(&"eri") && config.eri.is_none() {
+                let offset = spans.calculation.as_ref().map_or(0, |c| c.span().start);
+                return Err(Error::config(format!(
+                    "{file}:{}: calculation = \"{name}\" needs [eri], whose aux_basis has no \
+                     default",
+                    line(offset)
+                )));
+            }
+            if reads.contains(&"scf") {
+                config.scf.get_or_insert_with(ScfTable::default);
+            }
+            if reads.contains(&"localization") {
+                config
+                    .localization
+                    .get_or_insert_with(LocalizationTable::default);
+            }
         }
         if let (Some(guess), Some(table)) = (config.guess.as_mut(), spans.guess.as_ref()) {
             let offset = table

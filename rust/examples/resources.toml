@@ -1,0 +1,26 @@
+# The DF-RHF of water in cc-pVDZ over cc-pVDZ-JKFIT, as rhf.toml, with the
+# run's resources and the ERI's buffer written out. Writes what rhf.toml
+# writes.
+calculation = "rhf"
+
+[molecule]
+xyz = "water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[eri]
+aux_basis = "cc-pvdz-jkfit"
+mem_per_gpu = 268435456  # each GPU's ERI buffer, bytes; default 2 GiB; under the least the plan needs it is refused
+ring = 2                 # pair batches in flight per GPU, and J/K passes' depth: 2 (the default) or 1
+
+[scf]
+stage_sync = false     # a measurement, off by default: sync gpu0 where an iteration would end a step were it three
+
+[resources]            # every key optional
+devices = [0]          # the run's GPUs by device, the first gpu0; default [0]
+threads = 4            # the executor's width; default 4
+host_threads = 2       # the host integrals' pool; default the host's parallelism less threads, at least 1
+device_cap_mib = 4096  # the device cap per GPU, MiB; default the GPU's free memory less its margin
+host_cap_mib = 8192    # the host cap, heap and pinned, MiB; default the available memory less its margin
+nan_fill = false       # test mode: fill each step's scratch with NaN before its run; default false
