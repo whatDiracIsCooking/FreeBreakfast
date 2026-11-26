@@ -19,7 +19,8 @@
 //! | `:reader`: `parse_npy(string_view)` | [`parse_npy`]`(&[u8])` |
 //! | `:reader`: `read_npy(path)` | [`read_npy`]`(path)` |
 //! | nothing: the C++ reads a whole file | [`read_npy_shape`]`(path)`, a file's shape from its header alone |
-//! | nothing | the private `header_bounds` and `header_fields`, the header's checks, which [`parse_npy`] and [`read_npy_shape`] share |
+//! | nothing: the C++ returns a new array | [`read_npy_into`]`(path, shape, out)`, a file of a known shape into a buffer already held |
+//! | nothing | the private `header_bounds` and `header_fields`, the header's checks, which [`parse_npy`], [`read_npy_shape`] and [`read_npy_into`] share |
 //! | `:writer`: `npy_header(shape)`, a `std::string` | [`npy_header`]`(shape)`, a `Vec<u8>` |
 //! | `:writer`: `npy_to_bytes(array)`, a `std::string` | [`npy_to_bytes`]`(array)`, a `Vec<u8>` |
 //! | `:writer`: `write_npy(path, array)` | [`write_npy`]`(path, shape, data)`, the data borrowed, so a CPU node writes a row of its view in place |
@@ -321,6 +322,100 @@ pub fn read_npy_shape(path: &Path) -> Result<Vec<usize>> {
     }
     let (_, shape, _) = header_fields(&bytes[header_start..data_offset]).map_err(named)?;
     Ok(shape)
+}
+
+/// Read the `.npy` file at `path`, an array of `shape`, into `out`, in
+/// Fortran order: [`read_npy`] with no array of its own, for a reader
+/// whose buffer is already held (a step's pinned staging). The payload is
+/// streamed through a small stack buffer, a C-order one placed element by
+/// element at its column-major offset.
+///
+/// The header's refusals are [`parse_npy`]'s, of the same kinds, and a
+/// file whose shape is not `shape`, or whose payload is shorter than it,
+/// is refused too: each names `path`, a shape refused as
+/// [`ErrorKind::InvalidConfig`]. A `shape` that disagrees with
+/// `out.len()` is [`ErrorKind::InvalidConfig`], as [`write_npy`]'s is.
+pub fn read_npy_into(path: &Path, shape: &[usize], out: &mut [f64]) -> Status {
+    let count = element_count(shape)?;
+    if count != out.len() {
+        return Err(Error::config(format!(
+            "NPY shape {} describes {count} elements but the buffer holds {}",
+            format_shape(shape),
+            out.len()
+        )));
+    }
+    let named = |mut e: Error| {
+        e.message = format!("'{}': {}", path.display(), e.message);
+        e
+    };
+    let cannot = |e: std::io::Error| Error::io(format!("cannot read '{}': {e}", path.display()));
+    let mut file = std::fs::File::open(path).map_err(cannot)?;
+    // The magic, the version and the longest length field, then the rest
+    // of the dict, which NumPy pads to 64 bytes: a few lines at most.
+    let mut header = Vec::new();
+    (&mut file)
+        .take(12)
+        .read_to_end(&mut header)
+        .map_err(cannot)?;
+    let (header_start, data_offset) = header_bounds(&header).map_err(named)?;
+    if data_offset > header.len() {
+        let rest = (data_offset - header.len()) as u64;
+        (&mut file)
+            .take(rest)
+            .read_to_end(&mut header)
+            .map_err(cannot)?;
+    }
+    if data_offset > header.len() {
+        return Err(named(Error::io("truncated NPY header")));
+    }
+    let (fortran, file_shape, _) =
+        header_fields(&header[header_start..data_offset]).map_err(named)?;
+    if file_shape != shape {
+        return Err(named(Error::config(format!(
+            "the array is {}, not {}",
+            format_shape(&file_shape),
+            format_shape(shape)
+        ))));
+    }
+    // C order walks the last axis fastest: an odometer over the
+    // multi-index carries the element's column-major offset.
+    let reorder = !fortran && layouts_differ(shape);
+    let mut f_stride = vec![1_usize; shape.len()];
+    for k in 1..shape.len() {
+        f_stride[k] = f_stride[k - 1] * shape[k - 1];
+    }
+    let mut index = vec![0_usize; shape.len()];
+    let mut offset = 0;
+    let mut chunk = [0_u8; 4096];
+    let mut filled = 0;
+    while filled < count {
+        let take = (count - filled).min(chunk.len() / ELEMENT_BYTES);
+        let bytes = &mut chunk[..take * ELEMENT_BYTES];
+        file.read_exact(bytes).map_err(|_| {
+            named(Error::io(format!(
+                "NPY payload is shorter than the shape's {count} elements"
+            )))
+        })?;
+        for &element in bytes.as_chunks::<ELEMENT_BYTES>().0 {
+            let value = f64::from_le_bytes(element);
+            if !reorder {
+                out[filled] = value;
+            } else {
+                out[offset] = value;
+                for k in (0..shape.len()).rev() {
+                    offset += f_stride[k];
+                    index[k] += 1;
+                    if index[k] < shape[k] {
+                        break;
+                    }
+                    offset -= f_stride[k] * shape[k];
+                    index[k] = 0;
+                }
+            }
+            filled += 1;
+        }
+    }
+    Ok(())
 }
 
 /// A shape as the header spells it, `()`, `(5,)` or `(2, 3)`:

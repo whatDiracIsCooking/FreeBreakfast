@@ -4,7 +4,8 @@
 //! apart from every step unordered with it, the config's refusals (an
 //! unknown key and an impossible multiplicity naming the file and the
 //! line), an open shell set up and its SCF's budget exact, a closed-shell
-//! ion's budget the neutral's, a localization's budget exact in the
+//! ion's budget the neutral's, `[guess] from` budgeted as the SAD guess
+//! and its refusals naming the file and the line, a localization's budget exact in the
 //! occupied block, the allocation record failing a step that allocates on the plain heap in its
 //! `run`, and the four host steps passing it: each builds its triangle in
 //! its pinned staging, so no `run` allocates one of its own
@@ -287,6 +288,102 @@ fn an_impossible_multiplicity_and_an_unknown_key_name_the_file_and_line() {
     assert_eq!(error.kind, ErrorKind::InvalidConfig);
     let at = format!("{}:3: unknown field `spin`", path.display());
     assert!(error.message.starts_with(&at), "{}", error.message);
+}
+
+/// A density file of `shape` written beside the configs `read_config`
+/// writes, named `name`.
+fn density_file(name: &str, shape: &[usize]) {
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let data: Vec<f64> = (0..shape.iter().product::<usize>())
+        .map(|i| i as f64)
+        .collect();
+    fb_io_npy::write_npy(&path, shape, &data).unwrap();
+}
+
+/// `[guess] from` budgets as the SAD guess does: the same staging, the
+/// same bytes, so the dry table is the same text but for the host's
+/// available memory read at setup.
+#[test]
+fn a_guess_from_a_file_is_budgeted_as_the_sad_guess() {
+    density_file("guess_from_24.npy", &[24, 24]);
+    let table = |guess: &str| {
+        let text = format!(
+            "[molecule]\nxyz = \"@data/h2o.xyz\"\n[basis]\nname = \"cc-pvdz\"\n\
+             [eri]\naux_basis = \"cc-pvdz-jkfit\"\n[scf]\n{guess}"
+        );
+        let (_, config) = read_config("guess_budget.toml", &text);
+        let plan = plan(MainBus::setup(config.unwrap(), Backing::Dry).unwrap()).unwrap();
+        plan.budget(&Executor::new(2)).unwrap();
+        assert_eq!(plan.bus().shared().dims.n_ao, 24);
+        let lines: Vec<String> = plan
+            .bus()
+            .ledger()
+            .table()
+            .lines()
+            .filter(|l| !l.starts_with("host: "))
+            .map(str::to_owned)
+            .collect();
+        lines
+    };
+    let sad = table("");
+    assert!(sad.iter().any(|l| l.contains("guess")), "{sad:?}");
+    assert_eq!(table("[guess]\nfrom = \"guess_from_24.npy\"\n"), sad);
+    assert_eq!(table("[guess]\ntype = \"sad\"\n"), sad);
+}
+
+/// Setup refuses `[guess] from` beside `type`, of a shape other than
+/// `n_ao × n_ao`, missing, or with an open shell, each naming the key, the
+/// file and `from`'s line.
+#[test]
+fn a_guess_from_refusals_name_the_key_the_file_and_the_line() {
+    density_file("guess_from_23.npy", &[23, 23]);
+    density_file("guess_from_24.npy", &[24, 24]);
+    let water = "[molecule]\nxyz = \"@data/h2o.xyz\"\n[basis]\nname = \"cc-pvdz\"\n";
+    let cation = "[molecule]\nxyz = \"@data/h2o.xyz\"\nmultiplicity = 2\ncharge = 1\n\
+                  [basis]\nname = \"cc-pvdz\"\n";
+    for (name, molecule, guess, line, kind, needle) in [
+        (
+            "guess_both.toml",
+            water,
+            "[guess]\ntype = \"sad\"\nfrom = \"guess_from_24.npy\"\n",
+            7,
+            ErrorKind::InvalidConfig,
+            "[guess] type and from are both set",
+        ),
+        (
+            "guess_shape.toml",
+            water,
+            "[guess]\n\nfrom = \"guess_from_23.npy\"\n",
+            7,
+            ErrorKind::InvalidConfig,
+            "the array is [23, 23], not [24, 24]",
+        ),
+        (
+            "guess_missing.toml",
+            water,
+            "[guess]\nfrom = \"no_such.npy\"\n",
+            6,
+            ErrorKind::Io,
+            "[guess] from: cannot open",
+        ),
+        (
+            "guess_open.toml",
+            cation,
+            "[guess]\nfrom = \"guess_from_24.npy\"\n",
+            8,
+            ErrorKind::Unsupported,
+            "with an open shell (multiplicity 2)",
+        ),
+    ] {
+        let (path, config) = read_config(name, &format!("{molecule}{guess}"));
+        let Err(error) = MainBus::setup(config.unwrap(), Backing::Dry) else {
+            panic!("{name}: refused");
+        };
+        assert_eq!(error.kind, kind, "{name}: {}", error.message);
+        let at = format!("{}:{line}: [guess] ", path.display());
+        assert!(error.message.starts_with(&at), "{name}: {}", error.message);
+        assert!(error.message.contains(needle), "{name}: {}", error.message);
+    }
 }
 
 /// A closed-shell ion, water's dication, is budgeted exactly as the

@@ -117,6 +117,13 @@ stays in its module's crate.
   localization of the SCF's occupied orbitals; `[resources]` the GPUs,
   the executor's width and the caps. A step whose table is absent is not in
   the DAG, and a step that reads one the config leaves out is refused.
+- **`[guess]` chooses the guess's density, the SAD density when absent.**
+  `from` loads a float64 `.npy` (a run's `d.npy`) into the guess's staging
+  in place of the SAD stamps, so its budget is the SAD guess's. Setup
+  refuses it beside `type` or of a shape other than `n_ao × n_ao`
+  (`InvalidConfig`), and with an open shell (`Unsupported`: `d.npy` is
+  ROHF's two spin densities summed, which cannot restart it), before
+  anything is allocated, naming the key, the file and the line.
 - **`[molecule]` sets the charge and the multiplicity, and setup counts
   the occupations.** `charge` (default 0) and `multiplicity` (default 1)
   give `Dims`' `n_alpha` and `n_beta`, `n_alpha - n_beta = multiplicity -
@@ -142,7 +149,8 @@ stays in its module's crate.
   against the plan's GPUs rather than the devices behind them; a
   host-backed plan refuses to run a step that takes one.
 - **A host step builds on the host and uploads.** S, H = T + V, (P|Q) and
-  the SAD density are built on rayon's threads ("CPU workers"), written
+  the SAD density are built on rayon's threads ("CPU workers"), or a
+  loaded guess read from its file, written
   into the step's pinned scratch and uploaded on the step's own stream,
   each copy's token dropped, since the staging is a tenant of the lease and
   the wrapper's step-end sync covers the copy. A copy holds its host end
