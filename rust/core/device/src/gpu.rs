@@ -776,6 +776,31 @@ impl GpuResources {
         })
     }
 
+    /// Each element of `data` replaced by `1 / sqrt(x)` in place on the
+    /// GPU's stream, or by 0 at or below `floor`: the recipes'
+    /// `fb_inverse_sqrt` kernel, the floor tested before the root, so no
+    /// Inf comes out and no NaN that was not one already. An empty `data`
+    /// enqueues nothing.
+    ///
+    /// # Errors
+    /// The launch's failure; a fault inside the kernel surfaces at the next
+    /// sync.
+    #[requires(le!(data.len(), u32::MAX as usize), "data's length fits the launch's u32")]
+    #[track_caller]
+    pub fn inverse_sqrt(&mut self, data: &mut impl DeviceSliceMut<f64>, floor: f64) -> Status {
+        let _current = self.current();
+        let count = data.len() as u32;
+        let data = data.as_mut_ptr();
+        // SAFETY: `data` is `count` doubles of device memory with no other
+        // user until the work enqueued here finishes (DeviceSliceMut's
+        // promise), on the guard's live stream; the floor's scale is null,
+        // which the kernel reads as none.
+        let status = unsafe {
+            fb_recipes_sys::fb_inverse_sqrt(self.stream.raw(), count, data, floor, std::ptr::null())
+        };
+        launched("fb_inverse_sqrt", status)
+    }
+
     /// BLAS's triangular solve on the GPU's stream, the tree's own and never
     /// the library's (`docs/gpu_layer.md`, "Layering"): `B ← alpha
     /// op(A)⁻¹ B` (`side` `WWR_BLAS_SIDE_LEFT`) or `B ← alpha B op(A)⁻¹`

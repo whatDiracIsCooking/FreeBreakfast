@@ -1,0 +1,40 @@
+[package]
+name = "fb-steps"
+description = "steps: the v0.0.4 layer's MainBus (the config, setup, the dimensions counted without building an array) and every step's mem_budget and run, in one crate so the bus names every Output"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+contracts.workspace = true
+# The setup's geometry and bases, read and placed on the host.
+fb-basis.workspace = true
+fb-molecule.workspace = true
+fb-io-basis.workspace = true
+fb-io-xyz.workspace = true
+# The guess's SAD density and its compiled-in stamps.
+fb-io-sad.workspace = true
+fb-sad.workspace = true
+# The ledger, the buffers a step's Output owns, its lease.
+fb-core-budget.workspace = true
+# A step's copies and each GPU's guarded calls.
+fb-core-device.workspace = true
+fb-core-error-handling.workspace = true
+# Steps, slots, Views and the two-mode DAG, and the executor it runs on.
+fb-core-flow.workspace = true
+# The value checks of the always-on contracts (eq!, le!).
+fb-core-log.workspace = true
+# check_library, before the first launch of a real run.
+fb-recipes-sys.workspace = true
+# The host steps' integrals, on rayon's threads: the only way to rayon
+# (docs/programming_model.md, "CPU workers").
+fb-integrals-s-overlap-host.workspace = true
+fb-integrals-t-kinetic-host.workspace = true
+fb-integrals-v-potential-en-host.workspace = true
+fb-integrals-df-metric.workspace = true
+# The config file.
+serde.workspace = true
+toml.workspace = true

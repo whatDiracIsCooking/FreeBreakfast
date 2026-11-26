@@ -21,7 +21,8 @@
 //!   handle made on it and the handle workspace, made inside a `Mutex` and
 //!   reached only through its guard; its checked BLAS and solver calls, and
 //!   the tree's [`GpuResources::trsm`] and [`GpuResources::cholesky`]
-//!   recipes over them, on the guard's one stream.
+//!   recipes and the recipes' [`GpuResources::inverse_sqrt`] over them, on
+//!   the guard's one stream.
 //!
 //! **Each call makes its stream's device current.** A stream and an event
 //! remember their device, and every method holds a [`ScopedDevice`] on it
@@ -57,6 +58,10 @@ pub use slice::{
     split_at_mut,
 };
 pub use stream::{Event, Pending, Stream, sync_meter};
+/// The BLAS mode enums [`GpuResources`]' calls take (`gemm`'s operations,
+/// `dgmm`'s and `trsm`'s side, `trsm`'s fill and diagonal), re-exported so
+/// a caller names no `wwr-sys` of its own.
+pub use wwr_sys::{wwr_blas_diag_type, wwr_blas_fill_mode, wwr_blas_operation, wwr_blas_side_mode};
 
 /// A runtime call's status as a [`Status`], located at the caller: a
 /// `GpuRuntime` error naming the status. Out of memory is no exception: an

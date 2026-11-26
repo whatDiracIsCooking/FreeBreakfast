@@ -1,0 +1,20 @@
+# Ten glycines in cc-pVDZ over cc-pVDZ-JKFIT, on one GPU: the steps of
+# fb-steps (overlap, core_hamiltonian, guess, orthogonalizer, and metric
+# with [eri]). One table per step family: a step whose table is absent is
+# not in the DAG.
+
+[molecule]
+xyz = "../tests/data/gly10.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[eri]
+aux_basis = "cc-pvdz-jkfit"
+
+[resources]
+devices = [0]
+threads = 4
+# device_cap_mib = 512   # absent: the GPU's free memory after its handles, less its margin
+# host_cap_mib = 4096    # absent: the host's available memory, less its margin
+# nan_fill = true        # test mode: every scratch lease NaN before run

@@ -404,6 +404,11 @@ every case that calls it is named here, which `fb-doc-check`'s
   substitution on the host, most of its time the library's first load of
   each gemm; `cholesky_matches_a_host_factor`, whose panels are the right,
   transposed case, is its family's representative.
+- `fb-steps`' `benzenes_x_matches_the_hosts_inverse_square_root_of_s`,
+  the orthogonalizer's X for benzene in cc-pVDZ against the host's
+  S^(-1/2), most of its time the solver library's first load in a fresh
+  plan; `waters_x_matches_the_hosts_inverse_square_root_of_s` is its
+  family's representative.
 
 libtest has no skipped state, so a returned case counts as passed; the
 gate's line, not the count, is what says it did not run. `#[ignore]` is

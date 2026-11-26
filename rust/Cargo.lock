@@ -1157,6 +1157,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "fb-steps"
+version = "0.1.0"
+dependencies = [
+ "contracts",
+ "fb-basis",
+ "fb-core-budget",
+ "fb-core-device",
+ "fb-core-error-handling",
+ "fb-core-flow",
+ "fb-core-log",
+ "fb-integrals-df-metric",
+ "fb-integrals-s-overlap-host",
+ "fb-integrals-t-kinetic-host",
+ "fb-integrals-v-potential-en-host",
+ "fb-io-basis",
+ "fb-io-sad",
+ "fb-io-xyz",
+ "fb-molecule",
+ "fb-recipes-sys",
+ "fb-sad",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "fb-test-support"
 version = "0.1.0"
 

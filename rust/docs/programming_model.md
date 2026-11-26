@@ -102,6 +102,41 @@ and flagged in turn, and the plan returns the first failure in its one
 topological order, the others on its context
 ([`diagnostics.md`](diagnostics.md), "One worker fails").
 
+### The MainBus and its steps
+
+`fb-steps` is the run's bus and its steps, in one crate so the bus names
+every step's `Output` with no dependency cycle; the method code a step calls
+stays in its module's crate (`../experimental/rust/v0.0.4/README.md`, "Steps
+and the MainBus").
+
+- **The config is one table per step family.** `[molecule]` and `[basis]`
+  bring the overlap, the core Hamiltonian, the guess and the orthogonalizer;
+  `[eri]` the metric; `[resources]` the GPUs, the executor's width and the
+  caps. A step whose table is absent is not in the DAG.
+- **Setup is the unbudgeted host phase, and it counts.**
+  `MainBus::setup` reads the geometry and both bases, fills `Dims` by a
+  walk over the shells that builds no array (`for_each_pair`), makes each
+  GPU's `GpuResources` before it reads the device caps, and returns the bus.
+  Every `mem_budget` is then a function of `Dims`, the step's options and
+  the caps, so a dry budget, with no device behind it, prints exact lengths:
+  only a solver's work buffer, which needs a live handle to query, is
+  counted as zero. A GPU's lock is declared and checked in a dry plan too,
+  against the plan's GPUs rather than the devices behind them; a
+  host-backed plan refuses to run a step that takes one.
+- **A host step builds on the host and uploads.** S, H = T + V, (P|Q) and
+  the SAD density are built on rayon's threads ("CPU workers"), written
+  into the step's pinned scratch and uploaded on the step's own stream,
+  each copy's token dropped, since the staging is a tenant of the lease and
+  the wrapper's step-end sync covers the copy. A copy holds its host end
+  until a sync covers it, so a step that uploads to every GPU stages once
+  per GPU. A host step takes no lock and runs beside the GPU work.
+- **A library step takes its GPU's lock and enqueues on the guard's
+  stream.** The orthogonalizer, X = S^(-1/2), runs syevd, the inverse
+  square root, a `dgmm` and a `gemm` on gpu0's guarded stream, with no
+  event, its eigenvectors and work buffer in its device scratch; it reads
+  the solver's flag on the host after its last enqueue
+  ([`gpu_layer.md`](gpu_layer.md), "The v0.0.4 runtime").
+
 ## Three owners
 
 The things one has to decide about a feature belong to three owners. A task
@@ -942,8 +977,9 @@ them, never by an edge of its own, and no member depends on any other pool
 crate but `fb-core-flow` on rustflow (below). Each needs the FMA target feature, which the workspace's
 `.cargo/config.toml` sets for every member, so a dependent built from
 `rust/` gets it. The rayon pool's threads are outside the plan's worker
-count until the step that calls these crates sets its size from the config
-and admits it beside the CPU workers' budget; that step is not built.
+count until the steps that call these crates (`fb-steps`, "The MainBus and
+its steps") set its size from the config and admit it beside the CPU
+workers' budget; today they run it at rayon's default size.
 
 **The v0.0.4 layer's executor, and its fan-out.** The step DAG runs on
 rustflow's `Executor` ("Steps on rustflow"), not on the orchestrator's

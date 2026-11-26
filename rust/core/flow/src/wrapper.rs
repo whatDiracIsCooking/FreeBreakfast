@@ -103,8 +103,9 @@ fn spans(placement: Placement, n: usize) -> std::ops::Range<usize> {
 }
 
 /// Budget mode's half, after the step's `mem_budget`: check the GPU locks
-/// it declared are GPUs it runs on, and make its `streams` streams on each
-/// of them.
+/// it declared are GPUs it runs on, of the plan's (the ledger's, so a
+/// device-free plan is checked as a real one), and make its `streams`
+/// streams on each of them that has a device behind it.
 ///
 /// # Errors
 /// `InvalidConfig` for a declared GPU lock outside the step's GPUs.
@@ -115,7 +116,7 @@ pub(crate) fn make_lane<B: Bus>(
     streams: usize,
 ) -> Result<Lane> {
     let physical = bus.locks().physical();
-    let spanned = spans(placement, physical.len());
+    let spanned = spans(placement, bus.ledger().gpus());
     for lock in bus.ledger().locks_of(step) {
         if let LockId::Gpu(g) = lock
             && !spanned.contains(&g)
@@ -127,6 +128,7 @@ pub(crate) fn make_lane<B: Bus>(
     }
     Ok(Lane {
         gpus: spanned
+            .filter(|&gpu| gpu < physical.len())
             .map(|gpu| GpuLane {
                 gpu,
                 streams: (0..streams).map(|_| Stream::new(physical[gpu])).collect(),
@@ -142,7 +144,8 @@ pub(crate) fn make_lane<B: Bus>(
 /// regions and, on the step's first stream on each GPU, its device ones.
 ///
 /// # Errors
-/// A workspace bind, a fill or its sync failing.
+/// A workspace bind, a fill or its sync failing; `InvalidConfig` for a
+/// declared GPU lock with no device behind it, on a host-backed plan.
 pub(crate) fn acquire<'a, B: Bus>(
     bus: &'a B,
     step: &'static str,
@@ -170,9 +173,14 @@ pub(crate) fn acquire<'a, B: Bus>(
                 .managers
                 .push(locked(&locks.managers[manager_index(id)])),
             LockId::Gpu(g) => {
-                // In range: `make_lane` held every GPU lock to the step's
-                // GPUs, which are the run's.
-                let mut guard = locked(&locks.gpus[g]);
+                // `make_lane` held every GPU lock to the plan's GPUs; a
+                // host-backed plan has no device behind them.
+                let Some(gpu) = locks.gpus.get(g) else {
+                    return Err(Error::config(format!(
+                        "step '{step}' takes the lock of gpu {g}, which has no device in this run"
+                    )));
+                };
+                let mut guard = locked(gpu);
                 if let Some(workspace) = ledger.take_workspace(g) {
                     guard.bind_workspace(workspace)?;
                 }
