@@ -829,9 +829,10 @@ exit to the final node makes the report the same every run too, complete and
 not whichever step crossed the line first.</li>
 <li><strong>Two moments of the device check:</strong> per step for <code>Output</code>s, once at the
 end for the packed scratch and the handle workspace. Each is its own row.</li>
-<li><strong>In parallel</strong> lets independent steps' slabs be touched at once. It does
-not speed up one slab: touching gly10's B on 8 or 16 threads took 13 s
-against 7.6 s on one (<a href="#what-it-showed">what it showed</a>).</li>
+<li><strong>In parallel</strong> lets independent steps' slabs be touched at once. One slab
+is touched on one thread, with huge pages: on bare metal that already runs
+at 14 GiB/s, and on the VM the glycine runs used, more threads made the
+touch slower (<a href="#what-it-showed">what it showed</a>).</li>
 </ul>
 <h3 id="what-is-budgeted-by-kind">What is budgeted, by kind</h3>
 <div class="table"><table>
@@ -2415,10 +2416,18 @@ which about 2.7 ms is the copy of its 28 MiB of B up.</li>
 17.3 s build on one GPU, with the GPU idle behind it; in tiles it is 2.7 s,
 and the build waits on the device, whose time is the fit.</li>
 <li><strong>Budget mode is B's pages.</strong> At gly10, 5.7 s on one GPU and 6.5 s on
-four. Touching B's 7.27 GiB takes 5.3 s with huge pages (7.6 s without):
-the kernel grants every huge page asked and zeroes them at about
-1.4 GiB/s, a cost the first writer of B pays wherever it falls. The rest
-is page-locking each GPU's 272 MiB of staging, about 0.3 s a GPU.</li>
+four. Touching B's 7.27 GiB takes 5.3 s with huge pages (7.6 s without),
+about 1.4 GiB/s. The rest is page-locking each GPU's 272 MiB of staging,
+about 0.3 s a GPU.</li>
+<li><strong>That touch is the VM's, not the rule's.</strong> The same touch of a fresh
+7.27 GiB slab on bare metal (a Ryzen 9 5900X, kernel 6.8,
+<code>examples/touch_probe.rs</code>) takes 0.52 s with huge pages, 14 GiB/s, and
+2.67 s without. More threads help there: 0.39 s on sixteen at 4 KiB,
+where on the VM sixteen took 12.8 s against 7.6 s on one. A 10× gap that
+threads widen points at the hypervisor backing guest memory on its first
+touch. On bare metal, budget mode at gly10 would be about 1 s. Whether a
+second slab in the same process on the VM touches at bare-metal speed is
+<a href="#open-questions">open</a>.</li>
 <li><strong>Staging is bounded: 64 MiB a buffer of the build's ring, 128 MiB a
 buffer of the pass's.</strong> A GPU page-locks two of each, and the larger pair
 is what its pinned buffer holds. The build's time does not move with its
@@ -2637,7 +2646,10 @@ cargo run --release --example run -- examples/h2o.toml            # setup, budge
 cargo run --release --example run -- --budget-only examples/h2o.toml
 cargo run --release --example run -- examples/h2o.toml --devices 0,1 --mem-per-gpu-mib 1
 cargo run --release --example run -- examples/h2o.toml --stage-sync   # the SCF iteration as three steps' syncs
+cargo run --release --example touch_probe -- 7.27 16              # first touch of a B-sized slab: no device, no config
 </code></pre>
+<p><code>touch_probe</code> uses only <code>std</code>. Where the two CMake builds are missing,
+<code>rustc --edition 2024 -O examples/touch_probe.rs</code> builds it alone.</p>
 <h3 id="not-in-it">Not in it</h3>
 <ul>
 <li>Any change under <code>rust/</code>.</li>
@@ -2716,6 +2728,12 @@ FelizJueves change. It lowers the ERI buffer a batch needs.</li>
 streams.</li>
 <li><strong>Idle workers</strong>: what rustflow's parking costs while a run waits on the
 device (<code>src/executor/notifier.rs</code>; verify).</li>
+<li><strong>First touch on a VM</strong>: whether the 1.4 GiB/s of B's touch is paid once
+per process or by every slab. <code>examples/touch_probe.rs</code> touches the same
+size twice in one process: if the second is fast, the host was backing
+guest memory, and a replay or a long-lived process pays it once. If both
+are slow, the cost is the guest's own zeroing. Either way, it is not a
+reason to stop touching the pages up front.</li>
 <li><strong>Pinned pages and NUMA</strong>: a pinned slab is touched by whichever worker runs
 its step's <code>mem_budget</code>.</li>
 <li><strong>cuBLAS and rocBLAS handle thread-safety</strong>: the lock answers it either way;
