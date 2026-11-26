@@ -365,7 +365,7 @@ Rules:
   validate, also run those cases unskipped: devtools/test.py pr --preset
   <the same preset> does not, so run the affected suites by hand from the
   build directory without FREE_BREAKFAST_FAST_TESTS, e.g.
-  `ctest --preset <preset> -R <Suite>` (the nightly runs all of them).
+  `ctest --preset <preset> -R <Suite>` (`test.py nightly --cpp` runs all of them; the timer's nightly no longer does).
   Say in the PR which backend you did NOT run. If you touched a .cu, also run
   devtools/cross-backend-check.sh (exit 2 means it could not run — not a
   pass).

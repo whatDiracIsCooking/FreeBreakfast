@@ -38,7 +38,7 @@ A gate is named by **when it runs**, not by what it contains.
 | --- | --- | --- | --- |
 | `push` | `git push`, by pre-commit's pre-push stage | the Python half when the push touches `.py`, the cargo half when it touches `rust/` (and then not the Python half for those paths); the C++ half only with `--cpp` (the C++ tree is frozen, below). C++: the host binaries' fast set, and of the GPU binaries each family's representative, as `pr` (#1126; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates (clippy and rustdoc, then their tests on the card) | under 5 min on a busy card |
 | `pr` | by hand before opening a PR; `milestone-run` requires it | C++, only with `--cpp` or `--only cpp`: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates (clippy and rustdoc, then their tests on the test preset's card; `--all`, every crate's), when `origin/main...HEAD` or the uncommitted tree touches `rust/` (`--only cargo` alone) | under 5 min on a busy card |
-| `nightly` | a timer on this box | everything, unskipped: the C++ and Python halves, and the cargo half as `pr --only cargo --all` with its slow cases (#1459), plus the cross-backend compile check | none; it has the night |
+| `nightly` | a timer on this box | everything but the frozen C++ tree, unskipped: the Python half, and the cargo half as `pr --only cargo --all` with its slow cases (#1459); with `--cpp`, the C++ half and the cross-backend compile check too | none; it has the night |
 
 **The single-backend rule holds for all three.** A gate runs on one card, and
 which one is printed in its result line. No gate runs both backends unless asked.
@@ -54,9 +54,10 @@ build file gets one line saying it went untested
 (`push: the diff touches the C++ tree, which the gates no longer test …`).
 `--cpp` adds the half to either gate; on `pr`, so do `--only cpp` and the
 options that act on the build alone (`--fresh`, `--clean`, `--no-test`,
-`--tidy`, `--record`), and on `push`, `--all`. The nightly still runs every
-C++ case, so a regression in the frozen tree (a submodule bump, a toolchain
-change) still surfaces within a day.
+`--tidy`, `--record`), and on `push`, `--all`. The nightly leaves it out
+too (`nightly --cpp` puts it back), so nothing runs the C++ tree on its
+own: a regression in it (a submodule bump, a toolchain change) surfaces
+only when someone runs one of them with `--cpp`.
 
 **C++ under `experimental/` or `test/experimental/` never counts as
 touching the C++ tree.** The C++ half builds the `default` preset, which
@@ -451,6 +452,10 @@ timer, `devtools/systemd/free-breakfast-nightly@.timer`.
    `--rev` tests another commit.
 2. **Run that checkout's own `test.py`**, so what runs is the code under test,
    not whatever the primary checkout has. Everything below is that run.
+   **The C++ tree is frozen** ("Gates" above), so steps 3, 6 and 8 and the
+   C++ half of step 4 run only with `--cpp` (or a reduced run's `--`):
+   without it the night is pytest, the cargo half, the record and the
+   issue, and its record has no `build`.
 3. **Build** with `--preset default`, the CUDA card. On six nights out of seven
    that is the usual sccache-warm build, recorded as `nightly` with
    `build.mode` `warm` and kept out of the build-time trend. On
@@ -507,7 +512,7 @@ printed just above the summary name each. The exit status is the first failing p
 `devtools/test.py nightly --dry-run` prints the phases and what each runs,
 and fetches, builds and runs nothing.
 
-**A reduced run** takes ctest's arguments after `--`, as `pr` does:
+**A reduced run** (it implies `--cpp`) takes ctest's arguments after `--`, as `pr` does:
 `devtools/test.py nightly --rev REF -- -R Name`. They select the ctest
 entries and the GPU batches; pytest, the cargo half and the slow-test report
 do not run, and the record is `manual`, so it never enters the timing series.

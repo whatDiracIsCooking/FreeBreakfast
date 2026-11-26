@@ -24,7 +24,7 @@ whole C++ toolchain lives in the CUDA image.
 | Runner | `ctest` via `devtools/test.py pr` | `pytest` |
 | Tests | the library's own units, including CUDA kernels | the Python-side suite — `test/pytest/`, marker and harness coverage plus the live BSE download test |
 | Needs | the CUDA image (clang-23, CMake 4.2, nvcc) | a venv |
-| Gated by | nothing by default: `src/` is frozen, so it runs only with `--cpp` (`test.py push --cpp`, `pr --cpp`) and in the nightly | the push gate and CI |
+| Gated by | nothing by default: `src/` is frozen, so it runs only with `--cpp` (`test.py push --cpp`, `pr --cpp`, `nightly --cpp`) | the push gate and CI |
 
 **Which one a change needs is not negotiable by convenience.** A change under
 `src/`, `deps/`, `cmake/` or `CMakeLists.txt` is verified by the C++ tier and by
@@ -84,11 +84,13 @@ back on, and in a mature tree they are a handful of entries and the majority of
 a full run's wall time.
 
 ```bash
-devtools/test.py nightly                   # origin/main, nothing skipped
+devtools/test.py nightly                   # origin/main, nothing skipped (no C++)
+devtools/test.py nightly --cpp             # and the frozen C++ tree
 ctest --preset default -R <Suite>          # one family, unskipped, by hand
 ```
 
-The **nightly** is the un-skipped run, of both languages: a timer on this box
+The **nightly** is the un-skipped run of pytest and the cargo half (the
+frozen C++ tree only with `--cpp`): a timer on this box
 runs it on a clean checkout of `origin/main` and records it on `metrics`
 (`docs/testing.md` "The nightly"). By hand it takes the better part of an hour
 or more and tests `origin/main`, not your branch (`--rev` names another

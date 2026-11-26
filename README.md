@@ -362,7 +362,7 @@ cannot run, so a skip is never mistaken for a pass.
 `git push` runs `devtools/test.py push`: the fast pytest tier when the push
 touches a `.py`, and the cargo half when it touches `rust/`. `src/` is
 frozen, so the C++ smoke runs only with `--cpp` (`test.py pr --cpp` the
-same), and the nightly runs every C++ case. Per PR, CI
+same, and `test.py nightly --cpp`: the nightly leaves it out too). Per PR, CI
 runs `lint` and the fast pytest tier (`test`, on the oldest and newest
 supported Python); the `slow` job runs the slow pytest tier nightly and on a
 manual dispatch, never on a PR.
