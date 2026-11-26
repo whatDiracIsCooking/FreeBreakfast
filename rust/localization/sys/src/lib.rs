@@ -23,6 +23,7 @@
 //! | one sweep's `n_occ - 1` rounds and `read_functional`, one stream sync | `pm sweep` ([`add_pm_sweep`]), the same, in a loop body |
 //! | `wwrError_t` | [`fb_launch_status`]: 0, a positive `wwr_status`, or a negative refusal ([`FB_LAUNCH_INVALID_ARGUMENT`]) |
 //! | nothing: the C++ tree compiles its kernels into the binary | [`check_library`], the library's [`fb_localization_abi_version`] and [`fb_localization_backend`] against the bindings' |
+//! | the same launches on the v0.0.4 layer, for `fb_steps::LocalizationStep` | [`pm_populations`], [`pm_schedule`] and its [`Schedule`], [`pm_sweep`], [`pm_functional`], [`pm_identity`], over `fb-core-device`'s stream and slices |
 //! | `localization/ibo`'s IAO populations and the rest of `src/localization` | not forked yet |
 //!
 //! **The safe layer is two builders**, since the indices the kernels trust
@@ -53,8 +54,13 @@
 
 #[rustfmt::skip]
 mod bindings;
+mod sweep;
 
 pub use bindings::*;
+pub use sweep::{
+    Angles, Schedule, pm_functional, pm_identity, pm_populations, pm_schedule, pm_schedule_len,
+    pm_sweep,
+};
 
 use contracts::{debug_requires, requires};
 use fb_core_arena::{Bufs, CopyOnly, Device, Heap, Layout, Pinned, RowId, memcpy_d2p};

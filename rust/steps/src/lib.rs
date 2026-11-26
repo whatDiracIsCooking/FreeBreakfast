@@ -15,7 +15,8 @@
 //!   mode again in the same buffers.
 //! - [`Run::write`]: the run's record and its products on disk, on the host
 //!   after execute mode (`budget.txt`, `timing.json`, and with `[scf]`
-//!   `scf.json`, `c.npy` and `d.npy`).
+//!   `scf.json`, `c.npy` and `d.npy`; with `[localization]`
+//!   `localization.json` and `c_local.npy`).
 //!
 //! ```text
 //! overlap ──> orthogonalizer ─┐
@@ -24,7 +25,8 @@
 //! guess ──────────────────────┘
 //! ```
 //!
-//! `scf` reads `overlap` too.
+//! `scf` reads `overlap` too, and `localization` (with `[localization]`)
+//! reads `overlap` and `scf`.
 //!
 //! | Step | Runs on | Locks | `Output` | Scratch |
 //! |---|---|---|---|---|
@@ -35,6 +37,7 @@
 //! | [`OrthogonalizerStep`] | gpu0 | gpu0 | X = S^(-1/2) on gpu0 | the eigenvectors, a scaled copy, syevd's work and flag |
 //! | [`EriStep`] | every GPU, two ring streams each | the [`EriManager`]'s, every GPU's | the [`EriManager`]: L on every GPU, B on the host heap, each GPU's ERI buffer and staging | the shell and pair tables, the aux records, each class's records, the Cholesky tile and flag |
 //! | [`ScfStep`] | every GPU, its loop on gpu0 | the [`EriManager`]'s, every GPU's | C, the orbital energies, D and the energy, on gpu0 and the host | on gpu0: J, K, F, the DIIS ring, syevd's work; the turn's pinned reads |
+//! | [`LocalizationStep`] | gpu0 | gpu0 | `C_local` on gpu0 and the host, `L` before and after, the sweeps | on gpu0, sized by the occupied block: its input, `S C`, the population tensor and U with their pongs, the angles, the tables, G and `C U`; their pinned ends |
 //!
 //! The host steps build through the host integral crates inside
 //! [`Shared::host_pool`], the one pool beside the executor, started in setup
@@ -77,12 +80,13 @@ use fb_core_error_handling::Result;
 use fb_core_flow::{Bus, Dag, Executor, Plan, StepTime};
 
 pub use bus::{
-    BasisTable, ClassDim, Config, Dims, EriTable, MainBus, MoleculeTable, ResourcesTable, ScfTable,
-    Shared, for_each_pair,
+    BasisTable, ClassDim, Config, Dims, EriTable, LocalizationMode, LocalizationTable, MainBus,
+    MoleculeTable, ResourcesTable, ScfTable, Shared, for_each_pair,
 };
 pub use steps::core_hamiltonian::{CoreHamiltonianOutput, CoreHamiltonianStep};
 pub use steps::eri::{DEFAULT_MEM_PER_GPU, Density, EriManager, EriStep};
 pub use steps::guess::{GuessOutput, GuessStep};
+pub use steps::localization::{LocalizationOutput, LocalizationStep};
 pub use steps::metric::{MetricOutput, MetricStep};
 pub use steps::orthogonalizer::{EIGENVALUE_FLOOR, OrthogonalizerOutput, OrthogonalizerStep};
 pub use steps::overlap::{OverlapOutput, OverlapStep};
@@ -90,7 +94,7 @@ pub use steps::scf::{LoopMeter, ScfOutput, ScfStep};
 
 /// The DAG `bus`'s config asks for: the one-electron steps, the guess and
 /// the orthogonalizer with `[basis]`, the metric and the ERI with `[eri]`,
-/// the SCF with `[scf]`. A step that reads one the config leaves out is
+/// the SCF with `[scf]`, the localization with `[localization]`. A step that reads one the config leaves out is
 /// refused, naming both.
 ///
 /// # Errors
@@ -106,6 +110,9 @@ pub fn plan(bus: Arc<MainBus>) -> Result<Plan<MainBus>> {
     }
     if bus.shared().config.scf.is_some() {
         dag.add(ScfStep);
+    }
+    if bus.shared().config.localization.is_some() {
+        dag.add(LocalizationStep);
     }
     dag.build(bus)
 }

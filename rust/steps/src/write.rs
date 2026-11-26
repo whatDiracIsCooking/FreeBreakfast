@@ -8,6 +8,8 @@
 //! | `timing.json` | always | the run's times: `profile` (`debug` or `release`), `setup`, `budget` and `execute`, and per step of the last execute its [`StepTime`], each time integer nanoseconds, each lock its rank's name (`Manager(Eri)`, `Gpu(0)`); `steps` is empty for a dry run |
 //! | `scf.json` | with `[scf]`, after execute | `energy`, `residual`, `iterations`, `converged`, `n_alpha`, `n_beta` and `epsilon`, ascending, each double in its shortest round-trip form |
 //! | `c.npy`, `d.npy` | with `[scf]`, after execute | C and D, `n_ao × n_ao` float64 in Fortran order ([`fb_io_npy::write_npy`]), the host copies' bytes as they are |
+//! | `localization.json` | with `[localization]`, after execute | `mode`, `exponent`, `functional_before`, `functional_after` (`L` of the SCF's orbitals and of the localized ones) and `sweeps` |
+//! | `c_local.npy` | with `[localization]`, after execute | `C_local`, `n_ao × n_alpha` float64 in Fortran order, each block's columns ascending in `⟨i\|F\|i⟩` |
 //!
 //! A step's products are one private function of its `Output` here, called
 //! from [`Run::write`] when the config has the step's table and execute
@@ -22,7 +24,9 @@ use fb_core_error_handling::{Error, Status};
 use fb_core_flow::Bus;
 use serde_json::{Value, json};
 
-use crate::{Dims, Run, ScfOutput, ScfStep};
+use crate::{
+    Dims, LocalizationOutput, LocalizationStep, LocalizationTable, Run, ScfOutput, ScfStep,
+};
 
 impl Run {
     /// Write the run's record into `dir`, and, after an execute mode, each
@@ -62,6 +66,14 @@ impl Run {
         let shared = self.plan.bus().shared();
         if shared.config.scf.is_some() {
             write_scf(&self.plan.output(ScfStep), &shared.dims, dir)?;
+        }
+        if let Some(table) = &shared.config.localization {
+            write_localization(
+                &self.plan.output(LocalizationStep),
+                table,
+                &shared.dims,
+                dir,
+            )?;
         }
         Ok(())
     }
@@ -113,6 +125,30 @@ fn write_scf(scf: &ScfOutput, dims: &Dims, dir: &Path) -> Status {
     )?;
     fb_io_npy::write_npy(&dir.join("c.npy"), &[n, n], scf.c())?;
     fb_io_npy::write_npy(&dir.join("d.npy"), &[n, n], scf.d())
+}
+
+/// The localization's products: `localization.json` and `c_local.npy`.
+fn write_localization(
+    out: &LocalizationOutput,
+    table: &LocalizationTable,
+    dims: &Dims,
+    dir: &Path,
+) -> Status {
+    write_json(
+        &dir.join("localization.json"),
+        &json!({
+            "mode": "pipek_mezey",
+            "exponent": table.exponent,
+            "functional_before": out.functional_before(),
+            "functional_after": out.functional_after(),
+            "sweeps": out.sweeps(),
+        }),
+    )?;
+    fb_io_npy::write_npy(
+        &dir.join("c_local.npy"),
+        &[dims.n_ao, out.n_cols()],
+        out.c(),
+    )
 }
 
 /// `value`, pretty-printed, to `path`; serde_json writes each double in its
