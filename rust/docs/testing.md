@@ -59,8 +59,8 @@ The rules already in the crate carry over:
   `assert!` remains for three things alone:
   - a check on state the body produces partway through, which no
     attribute can see: a value only the body's work yields, not one a
-    function of the arguments recomputes, as `merge_sort`'s workspace size
-    is `merge_sort_workspace_bytes(keys.len(), true)`;
+    function of the arguments recomputes, as `syevd`'s work is held to the
+    `syevd_lwork(n)` it asks the solver again;
   - a check whose recomputation in an attribute would be long: as a guide,
     a condition over about 70 characters, or one that needs a loop;
   - a private helper's check, the helper called once per operand, whose
@@ -70,8 +70,8 @@ The rules already in the crate carry over:
   A public function that hands its work to a private body owns that
   body's preconditions on its arguments: they are its contracts, rendered
   in its `§ Contracts`, even when two public functions share the body and
-  so each carries the same ones (`merge_sort` and `merge_sort_keys` over
-  `sort`). A helper whose message would be the same from every caller is
+  so each carries the same ones (`Stream::upload` and
+  `Pending::and_upload` over the private `Stream::copy`). A helper whose message would be the same from every caller is
   not the third case but this one.
 
   Every product or sum a contract recomputes is checked arithmetic,

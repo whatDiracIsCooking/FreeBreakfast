@@ -1,4 +1,4 @@
-/* The triangular solve's diagonal-block launch wrappers: the C header forked
+/* The triangular solve's diagonal-block launch wrapper: the C header forked
  * from src/recipes/trsm/trsm_bridge.h. trsm.cu defines them; fb_recipes.h
  * includes this, and devtools/rust-bindings.py reads it into fb-recipes-sys.
  * Plain C: no templates, no vendor types. */
@@ -17,7 +17,7 @@ extern "C" {
 #endif
 
 /// The order of the diagonal blocks a blocked triangular solve hands to
-/// fb_trsm_diagonal_f64 and _f32 one at a time, and so the inner dimension
+/// fb_trsm_diagonal_f64 one at a time, and so the inner dimension
 /// of its gemm updates: the C++ kTrsmBlock. A block is 64^2 doubles, 32 KiB.
 #define FB_TRSM_TILE ((int32_t)64)
 
@@ -41,11 +41,6 @@ extern "C" {
 fb_launch_status fb_trsm_diagonal_f64(wwr_stream stream, int32_t jb, int32_t ncols, double s,
                                       const double *a, int32_t lda, bool a_trans, bool upper,
                                       bool unit, double *b, int32_t ldb, bool b_trans);
-
-/// fb_trsm_diagonal_f64 in floats.
-fb_launch_status fb_trsm_diagonal_f32(wwr_stream stream, int32_t jb, int32_t ncols, float s,
-                                      const float *a, int32_t lda, bool a_trans, bool upper,
-                                      bool unit, float *b, int32_t ldb, bool b_trans);
 
 #ifdef __cplusplus
 }

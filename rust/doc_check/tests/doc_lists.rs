@@ -156,39 +156,35 @@ fn gpu_layer_states_each_library_version_and_function() {
 #[test]
 fn a_stale_version_or_an_unnamed_function_fails() {
     let lib = Library {
-        module: "recipes".to_owned(),
+        module: "integrals".to_owned(),
         functions: [
-            "fb_merge_sort",
-            "fb_merge_sort_workspace_bytes",
-            "fb_diis_solve",
-            "fb_recipes_backend",
+            "fb_mmd_records",
+            "fb_mmd_bound",
+            "fb_metric_class",
+            "fb_integrals_backend",
         ]
         .map(str::to_owned)
         .to_vec(),
         abi_version: Some("5".to_owned()),
     };
-    let build = "`libfb_recipes_kernels.so` (`fb_merge_sort*` and `fb_diis_solve`)";
+    let build = "`libfb_integrals_kernels.so` (`fb_mmd_*` and `fb_metric_class`)";
     assert!(
         check_libraries(
             std::slice::from_ref(&lib),
-            "`FB_RECIPES_ABI_VERSION` is 5",
+            "`FB_INTEGRALS_ABI_VERSION` is 5",
             build
         )
         .is_empty()
     );
     let failures = check_libraries(
         std::slice::from_ref(&lib),
-        "`FB_RECIPES_ABI_VERSION` is 4",
-        "`libfb_recipes_kernels.so` (`fb_merge_sort`)",
+        "`FB_INTEGRALS_ABI_VERSION` is 4",
+        "`libfb_integrals_kernels.so` (`fb_mmd_records`)",
     );
     assert_eq!(failures.len(), 3, "{failures:#?}");
     assert!(failures[0].contains("is 5"), "{}", failures[0]);
-    assert!(
-        failures[1].contains("fb_merge_sort_workspace_bytes"),
-        "{}",
-        failures[1]
-    );
-    assert!(failures[2].contains("fb_diis_solve"), "{}", failures[2]);
+    assert!(failures[1].contains("fb_mmd_bound"), "{}", failures[1]);
+    assert!(failures[2].contains("fb_metric_class"), "{}", failures[2]);
 }
 
 /// The name of the function enclosing byte `at` of `code`: the last
