@@ -9,9 +9,9 @@
 //! - **The libraries' functions**: `docs/gpu_layer.md`, "Build", names each
 //!   `libfb_<module>_kernels.so` and every function its bindings declare
 //!   but the two ABI entries, a trailing `*` naming a prefix.
-//! - **The slow cases**: `docs/testing.md`, "Slow cases", names every
-//!   function that calls `fast_tests()`, and only a function named
-//!   `fast_tests` reads `FREE_BREAKFAST_FAST_TESTS`.
+//! - **The slow cases**: `docs/testing.md`, "Slow cases", lists every
+//!   function that calls `fast_tests()` and no other name, and only a
+//!   function named `fast_tests` reads `FREE_BREAKFAST_FAST_TESTS`.
 //! - **What links the library**: `README.md`, "Build and test", sorts every
 //!   member into two lists, by whether its graph reaches a package that
 //!   declares `links` (`wwr-sys`, a kernel `-sys` crate) never or always; a
@@ -238,21 +238,48 @@ fn slow_cases(sources: &[(String, String)]) -> (BTreeSet<(String, String)>, Vec<
     (cases, stray)
 }
 
+/// The slow cases "Slow cases" lists: in each item of its list, the first
+/// backticked name that is an identifier (the crate before it is not, and
+/// the representatives and files after it are not the case).
+fn listed_slow_cases(slow: &str) -> BTreeSet<&str> {
+    slow.split(" - `")
+        .skip(1)
+        .filter_map(|item| {
+            item.split('`')
+                .step_by(2)
+                .find(|name| !name.is_empty() && name.bytes().all(is_ident))
+        })
+        .collect()
+}
+
+/// Each way the slow cases of the tree and those `slow` lists disagree: a
+/// case the section does not list, and a listed name no case carries.
+fn check_slow_cases(cases: &BTreeSet<(String, String)>, slow: &str) -> Vec<String> {
+    let listed = listed_slow_cases(slow);
+    let found: BTreeSet<&str> = cases.iter().map(|(_, name)| name.as_str()).collect();
+    let mut failures = Vec::new();
+    for (path, name) in cases {
+        if !listed.contains(name.as_str()) {
+            failures.push(format!(
+                "{path}: `{name}` calls `fast_tests()`, and testing.md, \"Slow cases\", does not list it"
+            ));
+        }
+    }
+    for name in listed.difference(&found) {
+        failures.push(format!(
+            "testing.md, \"Slow cases\", lists `{name}`, and no function calling `fast_tests()` has that name"
+        ));
+    }
+    failures
+}
+
 #[test]
 fn testing_names_every_slow_case() {
     let root = rust_root();
     let doc = std::fs::read_to_string(root.join("docs/testing.md")).unwrap();
-    let slow = section(&doc, "Slow cases");
-    let named: BTreeSet<&str> = backticked(&slow).into_iter().collect();
     let (cases, mut failures) = slow_cases(&workspace_sources());
     assert!(!cases.is_empty(), "the scan found no slow case");
-    for (path, name) in &cases {
-        if !named.contains(name.as_str()) {
-            failures.push(format!(
-                "{path}: `{name}` calls `fast_tests()`, and testing.md, \"Slow cases\", does not name it"
-            ));
-        }
-    }
+    failures.extend(check_slow_cases(&cases, &section(&doc, "Slow cases")));
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
@@ -270,6 +297,22 @@ fn a_slow_case_is_found_and_a_stray_read_fails() {
     );
     assert_eq!(stray.len(), 1, "{stray:#?}");
     assert!(stray[0].starts_with("t.rs:12:"), "{}", stray[0]);
+}
+
+#[test]
+fn an_unlisted_case_or_a_listed_name_with_no_case_fails() {
+    let cases: BTreeSet<_> = [("t.rs".to_owned(), "slow".to_owned())].into();
+    let listed = "every case is named here: - `fb-x`'s `slow`, against `quick` (`t.rs`), \
+                  is its family's representative.";
+    assert!(check_slow_cases(&cases, listed).is_empty());
+    let failures = check_slow_cases(
+        &cases,
+        "named here: - `fb-x`'s `quick`, beside `slow`. - `fb-y`'s `gone`.",
+    );
+    assert_eq!(failures.len(), 3, "{failures:#?}");
+    assert!(failures[0].contains("`slow` calls"), "{}", failures[0]);
+    assert!(failures[1].contains("lists `gone`"), "{}", failures[1]);
+    assert!(failures[2].contains("lists `quick`"), "{}", failures[2]);
 }
 
 /// How a member reaches a package that declares `links`.
