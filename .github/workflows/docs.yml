@@ -53,15 +53,18 @@ jobs:
           FB_RUST_DOC_ONLY: "1"
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --locked --workspace --no-deps
-      # The two commands are md2html.py's own usage lines, run as written.
+      # The commands are md2html.py's own usage lines, run as written.
+      # --blob points a link to a file the site does not publish (another
+      # rust/docs page, a README) at its source on main.
       - uses: astral-sh/setup-uv@v5
       - name: design pages
         working-directory: rust/docs
         run: |
-          uv run --no-project --with markdown-it-py python md2html.py \
+          B=https://github.com/whatDiracIsCooking/FreeBreakfast/blob/main/rust/docs/
+          uv run --no-project --with markdown-it-py python md2html.py --blob "$B" \
             programming_model.md programming_model.html memory.md \
             figures/programming_model.figs
-          uv run --no-project --with markdown-it-py python md2html.py \
+          uv run --no-project --with markdown-it-py python md2html.py --blob "$B" \
             memory.md memory.html programming_model.md
       # rustdoc writes no workspace index on stable, so list the crates, and
       # point the root at /api/.

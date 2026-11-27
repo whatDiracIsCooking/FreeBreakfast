@@ -1,8 +1,12 @@
 """Render a rebuild design doc to a standalone, theme-aware HTML page.
 
-usage: md2html.py <in.md> <out.html> [sibling.md ...] [figures/<doc>.figs]
+usage: md2html.py [--blob <url>] <in.md> <out.html> [sibling.md ...]
+                  [figures/<doc>.figs]
 
-Links to a listed sibling .md are rewritten to its .html. A `.figs` argument
+Links to a listed sibling .md are rewritten to its .html. With `--blob`,
+every other relative link, to a file the site does not publish, is resolved
+against <url>, the GitHub blob URL of this directory, so it lands on the
+file's source rather than a 404. A `.figs` argument
 splices in the hand-drawn SVG figures it holds (see `insert_figures`). The
 .md is the source. The pages of this directory are not tracked:
 .github/workflows/docs.yml renders them for the Pages site with the two
@@ -10,10 +14,11 @@ commands below, which also render them locally, from this directory. The
 experimental/rust/v0.0.* pages are still rendered by hand and tracked;
 regenerate one after editing its .md or .figs.
 
-    uv run --no-project --with markdown-it-py python md2html.py \
+    B=https://github.com/whatDiracIsCooking/FreeBreakfast/blob/main/rust/docs/
+    uv run --no-project --with markdown-it-py python md2html.py --blob "$B" \
       programming_model.md programming_model.html memory.md \
       figures/programming_model.figs
-    uv run --no-project --with markdown-it-py python md2html.py \
+    uv run --no-project --with markdown-it-py python md2html.py --blob "$B" \
       memory.md memory.html programming_model.md
 """
 
@@ -21,6 +26,7 @@ import html
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urljoin, urlsplit
 
 from markdown_it import MarkdownIt
 
@@ -142,7 +148,11 @@ def slug(text):
 
 
 def main():
-    src, out, *rest = sys.argv[1:]
+    args = sys.argv[1:]
+    blob = None
+    if args[:1] == ["--blob"]:
+        blob, args = args[1], args[2:]
+    src, out, *rest = args
     figs = [a for a in rest if a.endswith(".figs")]
     sibs = [a for a in rest if not a.endswith(".figs")]
     md_text = Path(src).read_text()
@@ -170,6 +180,10 @@ def main():
                     href = c.attrGet("href")
                     if href in sib_names:
                         c.attrSet("href", href[:-3] + ".html")
+                    elif blob and not (
+                        href.startswith(("#", "/")) or urlsplit(href).scheme
+                    ):
+                        c.attrSet("href", urljoin(blob, href))
         if t.type == "table_open":
             t.attrSet("data-wrap", "1")
 
