@@ -15,8 +15,8 @@
 //! - **What links the library**: `README.md`, "Build and test", sorts every
 //!   member into two lists, by whether its graph reaches a package that
 //!   declares `links` (`wwr-sys`, a kernel `-sys` crate) never or always; a
-//!   member that links only through its default features is in neither,
-//!   and fails.
+//!   member that links only through its default features fails, since the
+//!   gate tests and lints one feature set.
 //!
 //! Tier 3: it reads text and runs `cargo metadata`, and links nothing.
 
@@ -277,16 +277,15 @@ fn a_slow_case_is_found_and_a_stray_read_fails() {
 enum Links {
     /// Never: it builds and its tests pass with the library missing.
     Never,
-    /// Only through its default features, which no member may do: the old
-    /// layer's `device` features were the last.
-    ByDefault,
-    /// With `--no-default-features` too.
+    /// With its default features and without them alike.
     Always,
 }
 
 /// Each member's [`Links`], from the package graph: its own normal, build
 /// and dev edges, and its dependencies' normal and build edges, resolved
-/// with the features each edge enables.
+/// with the features each edge enables. Panics on a member that links
+/// only through its default features, which no member may: the gate tests
+/// and lints one feature set, and its two lists would then disagree.
 fn link_classes(root: &Path) -> BTreeMap<String, Links> {
     let graph = guppy::MetadataCommand::new()
         .manifest_path(root.join("Cargo.toml"))
@@ -311,13 +310,14 @@ fn link_classes(root: &Path) -> BTreeMap<String, Links> {
         .workspace()
         .iter()
         .map(|p| {
-            let class = if reaches(p.id(), StandardFeatures::None) {
-                Links::Always
-            } else if reaches(p.id(), StandardFeatures::Default) {
-                Links::ByDefault
-            } else {
-                Links::Never
-            };
+            let always = reaches(p.id(), StandardFeatures::None);
+            assert_eq!(
+                reaches(p.id(), StandardFeatures::Default),
+                always,
+                "`{}` links a library only through its default features",
+                p.name()
+            );
+            let class = if always { Links::Always } else { Links::Never };
             (p.name().to_owned(), class)
         })
         .collect()
@@ -382,7 +382,7 @@ fn readme_sorts_every_member_by_what_it_links() {
 fn a_member_missing_or_misfiled_fails() {
     let members: BTreeMap<String, Links> = [
         ("fb-a", Links::Never),
-        ("fb-b", Links::ByDefault),
+        ("fb-b", Links::Never),
         ("fb-c", Links::Always),
         ("fb-d", Links::Always),
     ]
@@ -393,7 +393,7 @@ fn a_member_missing_or_misfiled_fails() {
     let failures = check_link_lists(good, &members);
     assert_eq!(failures.len(), 1, "{failures:#?}");
     assert!(
-        failures[0].contains("`fb-b` (ByDefault) is in none"),
+        failures[0].contains("`fb-b` (Never) is in none"),
         "{}",
         failures[0]
     );

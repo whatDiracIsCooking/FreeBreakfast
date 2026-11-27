@@ -222,7 +222,7 @@ buffer reached beside its tenant.
 
 | Run | Tiers | Runs |
 |---|---|---|
-| **PR** (`test.py push`, `test.py pr`) | 1, 2, 3 in full; 4 for the affected crates | `cargo test --no-default-features` of every link-free crate in debug, so every contract is on, and `cargo doc`. Then, over the affected crates that link a library, `cargo clippy --all-targets -D warnings`, `cargo doc --no-deps` with `RUSTDOCFLAGS=-D warnings`, and every test, on the gate's card ("Selecting GPU tiers in cargo", below). |
+| **PR** (`test.py push`, `test.py pr`) | 1, 2, 3 in full; 4 for the affected crates | `cargo test` of every link-free crate in debug, so every contract is on, and `cargo doc`. Then, over the affected crates that link a library, `cargo clippy --all-targets -D warnings`, `cargo doc --no-deps` with `RUSTDOCFLAGS=-D warnings`, and every test, on the gate's card ("Selecting GPU tiers in cargo", below). |
 | **Nightly** | 4 in full; performance | Every GPU case. A release build, so the timings it records are real ("Performance", below). |
 | **Weekly** | sanitizers, fuzz, mutants, 5 | compute-sanitizer over tier 4. Miri and ASan over tier 3. The fuzzers and property tests with their large case counts. `cargo-mutants` over tier 3. Tier 5 on a multi-GPU VM. |
 
@@ -254,7 +254,7 @@ go with the table:
   CUDA run, since a bare HIP run has no stall watchdog.
 - **Format and lint are the commit hook's, as for C++ and Python.**
   `devtools/test.py cargo-lint` (`cargo fmt --check`, and `clippy` with
-  warnings denied in both feature sets) runs beside clang-format, cmake-lint
+  warnings denied) runs beside clang-format, cmake-lint
   and ruff at commit and in CI's `lint` job. It builds no native library,
   so its clippy reaches only the link-free members; the crates that link
   are linted by tier 4 of the gates, which builds the library first
@@ -281,8 +281,8 @@ go with the table:
   else.** `test.py push` and `test.py pr` pick it through the diff dispatch
   they have for `.py` and C++: any path under `rust/`, its `.cu` files and
   CMake project included, fires the cargo half and neither of the others.
-  Tiers 1 to 3 run first, over the members whose graph declares no `links`
-  under `--no-default-features`, in seconds and with no card; tier 4 runs
+  Tiers 1 to 3 run first, over the members whose graph declares no `links`,
+  in seconds and with no card; tier 4 runs
   only once they pass. A failing half is named in the gate's result line
   (`failed=cargo`). The root [`docs/testing.md`](../../docs/testing.md),
   "Gates", has the commands.
