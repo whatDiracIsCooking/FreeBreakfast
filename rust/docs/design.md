@@ -328,5 +328,5 @@ formula that becomes `mem_budget`. What differs:
   ([`gpu_layer.md`](gpu_layer.md), "What the port changes"). "Done" for a
   module PR is its crate passing its tiers.
 
-The crate's README has the order the modules are taken in
-([`README.md`](../README.md), "Order of work").
+A module is ported bottom-up from `core`, one module per crate
+([`gpu_layer.md`](gpu_layer.md), "What the port changes").

@@ -40,7 +40,7 @@ are relative to `rust/`.
 | A test, a golden, a reference, a tolerance, what a gate runs | `docs/testing.md`, "Contracts are part of the spec", "Tiers: where a check lives", "Levels: how much of the DAG a test covers", "Selecting GPU tiers in cargo", "Slow cases", "Regression" |
 | A log line, a timing scope, an error, a panic | `docs/diagnostics.md`, "Levels", "Values, never panics", "The one boundary", "Panics and profiles" |
 | A doc comment, an equation, a citation, a config key, a diagram | `docs/documentation.md`, "Code: rustdoc", "Equations", "References", "Configuration: the reference is emitted from the type" |
-| Porting a C++ module | `docs/design.md`, "Porting a module"; `docs/gpu_layer.md`, "What the port changes"; `README.md`, "Order of work" |
+| Porting a C++ module | `docs/design.md`, "Porting a module"; `docs/gpu_layer.md`, "What the port changes" |
 
 ## Designing
 
