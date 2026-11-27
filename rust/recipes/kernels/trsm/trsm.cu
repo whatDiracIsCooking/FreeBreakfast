@@ -2,12 +2,12 @@
 // One source for both backends -- nvcc under CUDA, clang -x hip under HIP.
 //
 // Forked from src/recipes/trsm/trsm.cu. The kernel is unchanged. The launcher
-// is rewritten as trsm.h's extern "C", enqueue-only launch wrappers
-// (rust/docs/gpu_layer.md, "From bridge to C ABI"): one entry per element
-// type, the leading dimensions the module's int32_t, widened here, the null
-// pointers and the short leading dimensions refused as well as the C++
-// launcher's arguments, and the status the C ABI's wwr_get_last_error(), so
-// no vendor code crosses.
+// is rewritten as trsm.h's extern "C", enqueue-only launch wrapper
+// (rust/docs/gpu_layer.md, "From bridge to C ABI"): doubles alone, the one
+// element type a caller solves in, the leading dimensions the module's
+// int32_t, widened here, the null pointers and the short leading dimensions
+// refused as well as the C++ launcher's arguments, and the status the C ABI's
+// wwr_get_last_error(), so no vendor code crosses.
 
 // Standard headers, and ours (which include only standard headers), before the
 // wwr headers below: under HIP the vendor runtime header they pull in must not
@@ -198,15 +198,6 @@ extern "C" fb_launch_status
 fb_trsm_diagonal_f64(const wwr_stream stream, const int32_t jb, const int32_t ncols, const double s,
                      const double *a, const int32_t lda, const bool a_trans, const bool upper,
                      const bool unit, double *b, const int32_t ldb, const bool b_trans) {
-  return free_breakfast::device::launch(stream, jb, ncols, s, a, lda, a_trans, upper, unit, b, ldb,
-                                        b_trans);
-}
-
-extern "C" fb_launch_status fb_trsm_diagonal_f32(const wwr_stream stream, const int32_t jb,
-                                                 const int32_t ncols, const float s, const float *a,
-                                                 const int32_t lda, const bool a_trans,
-                                                 const bool upper, const bool unit, float *b,
-                                                 const int32_t ldb, const bool b_trans) {
   return free_breakfast::device::launch(stream, jb, ncols, s, a, lda, a_trans, upper, unit, b, ldb,
                                         b_trans);
 }

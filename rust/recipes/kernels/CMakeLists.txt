@@ -4,15 +4,15 @@
 # forked sources and rust/device_headers alone: nothing under src/ is compiled
 # or included.
 #
-# Linked: wwr::device PRIVATE for runtime.h, cooperative_groups.h,
-# device_guard.h and WWR_WARP_SIZE; the C ABI's runtime_api library PRIVATE
+# Linked: wwr::device PRIVATE for runtime.h, device_guard.h and
+# WWR_WARP_SIZE; the C ABI's runtime_api library PRIVATE
 # for wwr_get_last_error(), so a status is mapped by the very library the
 # crates already load. The vendor runtime is the shared one, so the launches
 # here and that query read the same per-thread error.
 add_library(
   fb_recipes_kernels SHARED
   abi.cu cholesky/cholesky.cu diis/diis_solve.cu orthogonalize/inverse_sqrt.cu
-  sort/merge_sort.cu symmetrize/symmetrize.cu trsm/trsm.cu
+  symmetrize/symmetrize.cu trsm/trsm.cu
 )
 target_include_directories(
   fb_recipes_kernels PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
@@ -43,7 +43,7 @@ else()
   # -x hip reaches this target's own sources only (PRIVATE, never PUBLIC).
   set_source_files_properties(
     abi.cu cholesky/cholesky.cu diis/diis_solve.cu orthogonalize/inverse_sqrt.cu
-    sort/merge_sort.cu symmetrize/symmetrize.cu trsm/trsm.cu
+    symmetrize/symmetrize.cu trsm/trsm.cu
     PROPERTIES LANGUAGE CXX
   )
   target_link_libraries(fb_recipes_kernels PRIVATE hip::device)

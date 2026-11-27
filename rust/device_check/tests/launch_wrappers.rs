@@ -126,11 +126,11 @@ fn launch_wrappers_only_enqueue() {
     let mut files = Vec::new();
     sources(&rust, &mut files);
     files.sort();
-    // At least the merge sort, so a walk that found nothing fails.
+    // At least the triangular solve, so a walk that found nothing fails.
     assert!(
         files
             .iter()
-            .any(|f| f.ends_with("recipes/kernels/sort/merge_sort.cu")),
+            .any(|f| f.ends_with("recipes/kernels/trsm/trsm.cu")),
         "{files:?}"
     );
     let mut failures = Vec::new();

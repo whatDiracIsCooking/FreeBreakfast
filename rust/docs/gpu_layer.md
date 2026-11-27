@@ -43,8 +43,10 @@ The port changes the ABI the bridge is spoken in, not what it says.
 The C++ tree is where the layer's shape comes from, not what `rust/` builds
 on. A port copies the bridges and kernels it needs into `rust/`, and the
 copy is what the Rust tree compiles; the counts above are the C++ tree's,
-and they say how much a full port forks. Forked so far: the merge sort
-(`rust/recipes/kernels/`), and the launchers and emitted units of the
+and they say how much a full port forks. Forked so far: the inverse
+square root, the symmetrization, the Cholesky diagonal tile, the DIIS solve
+and the triangular solve's diagonal block (`rust/recipes/kernels/`), the
+launchers and emitted units of the
 primitive-pair records, the overlap, the kinetic energy and the nuclear
 attraction (`rust/integrals/kernels/`, the last with the emitted Boys
 routine, `eval_boys.h` and its `eval_boys_<m>.h`, in `shared/` there), and
@@ -77,7 +79,7 @@ paragraph on the two trees, below, says when it goes.
 
 **The wrapper lives in the `.cu`.** The layering diagram below shows the
 launch wrapper as its own layer, and that is its role, not its file. Every
-launcher is a `.cu` (`mmd_launch.cu`, `merge_sort.cu`), because the launch
+launcher is a `.cu` (`mmd_launch.cu`, `trsm.cu`), because the launch
 syntax is compiled only by nvcc or `clang -x hip`, and the `extern "C"`
 wrapper goes into that same unit. There is no `.cpp` that launches, and no
 attempt to build one.
@@ -90,8 +92,7 @@ the emitters, whose output each tree commits. The order of the port is therefore
 device code forked with it. Nothing is cut over all at once.
 
 **The fork has a cost, and it is paid by hand.** The hand-written device
-code a port forks, the launchers, the merge sort and the shared device
-headers, exists twice, once in each tree, and nothing keeps the two copies
+code a port forks, the launchers and the shared device headers, exists twice, once in each tree, and nothing keeps the two copies
 in step but review: a fix to one is a fix owed to the other, and the PR that
 makes it says so. The emitted units carry no such cost. `tools/emit`'s
 `--out-root` writes the same tree under `rust/` that its default writes for
@@ -122,10 +123,11 @@ only in review. Each library exports two entries,
 `fb_<module>_abi_version()` and `fb_<module>_backend()`, defined in its
 `kernels/abi.cu`: the first returns the `FB_<MODULE>_ABI_VERSION` its C
 header defines, bumped by hand with any change to a declaration the header
-reaches (`FB_RECIPES_ABI_VERSION` is 7, bumped as the inverse square root,
+reaches (`FB_RECIPES_ABI_VERSION` is 8, bumped as the inverse square root,
 the symmetrization, the Cholesky diagonal tile and the DIIS solve joined the
 merge sort, then as the inverse square root took its floor's factor from the
-device, then as the triangular solve's diagonal block joined;
+device, then as the triangular solve's diagonal block joined, then as the
+merge sort and that block's `float` entry left, which nothing called;
 `FB_INTEGRALS_ABI_VERSION` is 13, bumped as the kinetic and
 nuclear-attraction wrappers with `fb_nuclei_view`, then density fitting's
 metric and three-center launchers, joined the overlap, then as the records'
@@ -258,7 +260,7 @@ in `clippy.toml`, and no site allows it.
 
 What changes when a C++ bridge header is forked into `rust/` as the C header
 the bindings are generated from. The forked `mmd.h`, `overlap.h`,
-`kinetic.h`, `potential_en.h` and `merge_sort.h` follow this table:
+`kinetic.h`, `potential_en.h` and `trsm.h` follow this table:
 
 | The C++ tree's bridge | The forked C header |
 |---|---|
@@ -353,10 +355,10 @@ takes four `n_rec`-long arrays. The sizes are correct and unenforced, which is
 the footprint problem the programming model names, one level down.
 
 **Every forked launcher that takes scratch gets a query,
-`fb_<launcher>_workspace_bytes(dims)`,** as `fb_merge_sort` has. It is a
-plain host function in the
-same header, pure in its dimensions, and it returns the bytes of one buffer
-the wrapper partitions internally, with each piece aligned as the kernel
+`fb_<launcher>_workspace_bytes(dims)`.** None forked so far takes scratch.
+The query is a plain host function in the same header, pure in its
+dimensions, and it returns the bytes of one buffer the wrapper partitions
+internally, with each piece aligned as the kernel
 needs. The step's `mem_budget` calls it and declares that amount as
 scratch, `run` carves it from its `Lease`, and the wrapper receives one pointer and its length. A size that is a fixed
 constant is exported as a constant instead, and the bindings carry it across.
@@ -740,12 +742,11 @@ because nvcc accepts code that `clang -x hip` rejects.
 
 **One shared object per module.** `rust/<module>/kernels/` builds
 `libfb_<module>_kernels.so` at `<build>/<module>/kernels`:
-`libfb_recipes_kernels.so` (the merge sort, the inverse square root, the
+`libfb_recipes_kernels.so` (the inverse square root, the
 symmetrization, the Cholesky diagonal tile, the DIIS solve and the
 triangular solve's diagonal block:
-`fb_merge_sort*`, `fb_inverse_sqrt`, `fb_symmetrize`, `fb_mirror_triangle`,
-`fb_cholesky_diagonal`, `fb_diis_solve`, `fb_trsm_diagonal_f32` and
-`fb_trsm_diagonal_f64`) and `libfb_integrals_kernels.so` (the
+`fb_inverse_sqrt`, `fb_symmetrize`, `fb_mirror_triangle`,
+`fb_cholesky_diagonal`, `fb_diis_solve` and `fb_trsm_diagonal_f64`) and `libfb_integrals_kernels.so` (the
 primitive-pair records, the overlap, the kinetic energy, the nuclear
 attraction, density fitting's metric and packed three-center integrals,
 the bra Cartesian or spherical, and density fitting's gather over the

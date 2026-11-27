@@ -22,8 +22,8 @@
 #
 # Linked: wwr::device PRIVATE for runtime.h and WWR_WARP_SIZE; the C ABI's
 # runtime_api library PRIVATE for wwr_get_last_error(). No other kernel
-# library: the C++ records' order, which called the recipes' merge sort, is
-# not forked (mmd/mmd_launch.cu has why). The vendor runtime is the shared
+# library: the C++ records' order is not forked (mmd/mmd_launch.cu has why),
+# nor the recipes' merge sort it called. The vendor runtime is the shared
 # one, as in ../../recipes/kernels, so the launches here and that query read
 # the same per-thread error.
 file(GLOB _fb_integrals_units CONFIGURE_DEPENDS
