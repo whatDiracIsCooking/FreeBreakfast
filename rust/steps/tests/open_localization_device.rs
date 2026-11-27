@@ -47,15 +47,6 @@
 //! shell's margin, `localization_device.rs`); L before at most L after,
 //! and a sweep run. Every run is NaN-filled under the allocation record.
 
-#![allow(
-    clippy::disallowed_methods,
-    reason = "a test reads its result back on the host: the harness waits, not a task"
-)]
-#![allow(
-    clippy::disallowed_macros,
-    reason = "a test's reference and host checks, outside any step's run"
-)]
-
 mod common;
 
 use std::path::Path;

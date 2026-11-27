@@ -545,16 +545,11 @@ dependencies = [
  "fb-molecule",
  "fb-recipes-sys",
  "fb-sad",
- "fb-test-support",
  "log",
  "serde",
  "serde_json",
  "toml",
 ]
-
-[[package]]
-name = "fb-test-support"
-version = "0.1.0"
 
 [[package]]
 name = "fb-tools-sad"

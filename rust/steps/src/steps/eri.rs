@@ -1624,7 +1624,7 @@ pub(crate) mod tests {
         }
         let mut gap = batches(d, 25);
         gap[1].first_col += 1;
-        let message = fb_test_support_message(|| check_partition(d, &gap));
+        let message = panic_message(|| check_partition(d, &gap));
         assert!(
             message.contains("eri: pair batch 1 opens at column"),
             "{message}"
@@ -1680,7 +1680,7 @@ pub(crate) mod tests {
     }
 
     /// The panic message of `f`.
-    fn fb_test_support_message(f: impl FnOnce()) -> String {
+    fn panic_message(f: impl FnOnce()) -> String {
         let payload =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).expect_err("the call panics");
         payload

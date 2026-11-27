@@ -18,7 +18,6 @@ members = [
     "device_check",
     "io/xyz",
     "io/basis",
-    "test_support",
     "doc_check",
     "sad",
     "io/npy",
@@ -55,7 +54,6 @@ fb-recipes-sys = { path = "recipes/sys" }
 fb-io-xyz = { path = "io/xyz" }
 fb-io-basis = { path = "io/basis" }
 fb-integrals-sys = { path = "integrals/sys" }
-fb-test-support = { path = "test_support" }
 fb-sad = { path = "sad" }
 fb-io-npy = { path = "io/npy" }
 fb-io-sad = { path = "io/sad" }

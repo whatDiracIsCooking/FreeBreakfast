@@ -12,11 +12,6 @@
 //! representative, the one case of the writer, so it is no slow case
 //! (`docs/testing.md`, "Slow cases").
 
-#![allow(
-    clippy::disallowed_macros,
-    reason = "a test's paths and host reads, outside any step's run"
-)]
-
 mod common;
 
 use fb_core_budget::Backing;

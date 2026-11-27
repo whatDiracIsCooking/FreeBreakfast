@@ -23,15 +23,6 @@
 //!
 //! The control asserts the failure.
 
-#![allow(
-    clippy::disallowed_methods,
-    reason = "a test reads its result back on the host: the harness waits, not a task"
-)]
-#![allow(
-    clippy::disallowed_macros,
-    reason = "a test's case lists, outside any step's run"
-)]
-
 mod common;
 
 use fb_core_budget::Backing;

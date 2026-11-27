@@ -32,10 +32,6 @@
 //! fails here. One run each, well under a second on an RTX 3080.
 
 #![allow(
-    clippy::disallowed_methods,
-    reason = "a test reads its result back on the host: the harness waits, not a task"
-)]
-#![allow(
     clippy::disallowed_macros,
     reason = "a test's reference and host checks, outside any step's run"
 )]

@@ -76,7 +76,7 @@ const HANDLES: &[&str] = &["fb-core-device", "wwr-sys"];
 /// members, so 37 others and a bar of 24): the two global crates sat at 30
 /// (`fb-core-log`) and 29 (`fb-core-error-handling`), 81% and 78%, and every
 /// other member at 20 or fewer (the old layer's handle crate 20,
-/// `fb-core-types` 18, `fb-atom` 17, `fb-molecule` 16, `fb-test-support`
+/// `fb-core-types` 18, `fb-atom` 17, `fb-molecule` 16, the test-support crate
 /// and the old layer's thread pool 15), 54% at most. Two thirds sits in that gap: the
 /// highest ordinary crate has a sixth of the workspace in headroom, and a
 /// crate everything above the core leaves depends on (the C++ tree's

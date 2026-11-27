@@ -36,17 +36,12 @@
 //! The case is alone in its binary, its two plans one after the other:
 //! the reading is the whole process's, and a case beside it would move it.
 
-#![allow(
-    clippy::disallowed_macros,
-    reason = "a test's report of its readings, outside any step's run"
-)]
-
 mod common;
 
+use common::amdgpu_process_vram;
 use fb_core_budget::{Backing, bytes};
 use fb_core_flow::{Bus, Executor};
 use fb_steps::{Config, MainBus, ScfStep, plan};
-use fb_test_support::amdgpu_process_vram;
 
 /// The lanes the gfx1200 keeps resident (`rocminfo`: 32 compute units of
 /// 32 waves of 32). ROCm sizes a launch's stack for all of them. Measured
