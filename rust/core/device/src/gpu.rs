@@ -1092,7 +1092,7 @@ impl GpuResources {
         Ok(())
     }
 
-    /// The tree's blocked right-looking Cholesky (`src/recipes/cholesky`) on
+    /// The C++ tree's blocked right-looking Cholesky (`src/recipes`) on
     /// the GPU's stream, in place of a vendor `potrf`: `A = L Lᵀ` in the
     /// lower triangle of the n × n `a` at leading dimension n, its strict
     /// upper triangle neither read nor written. Each diagonal tile by the

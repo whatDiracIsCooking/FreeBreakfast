@@ -561,8 +561,8 @@ pub(crate) mod tests {
     //! The sweep body at the old crate's fixtures' bar (tier 4): PySCF's
     //! RHF S and occupied C of water (five orbitals, the schedule's
     //! padding) and borane (four) in cc-pVDZ, and PySCF's Pipek-Mezey of
-    //! them over Mulliken populations at both exponents, copied from
-    //! `localization/pipek_mezey/tests/data` with its `reference.py`.
+    //! them over Mulliken populations at both exponents, `tests/data/pm_*.npy`,
+    //! written by `tests/data/pm_reference.py`.
     //! A probe step on the MainBus uploads them and calls
     //! [`localize_block`], as [`LocalizationStep`] does with the SCF's.
     //!

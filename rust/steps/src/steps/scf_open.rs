@@ -1,7 +1,6 @@
 //! The open shell's part of [`ScfStep`](crate::ScfStep): ROHF at
 //! `n_alpha > n_beta`, what it changes in the closed shell's iteration
-//! (the deleted `rust/pipeline/scf/src/open.rs`, the old path's nodes, and the C++
-//! loop's open-shell steps before them).
+//! (the C++ loop's open-shell steps, ported).
 //!
 //! **Two densities, one J/K pass.** The carried orbitals C give the spin
 //! densities `Da = Ca Caᵀ` and `Db = Cb Cbᵀ`, `Ca` C's first `n_alpha`

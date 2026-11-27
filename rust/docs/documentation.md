@@ -59,8 +59,8 @@ by lints").
 
 **A doc example is a test, so it is never `ignore`.** `cargo test` compiles and
 runs every example, which is what keeps an example from drifting from the API
-it shows. An ```` ```ignore ```` block opts out of both, and the crate's one
-example today (`core::diagnostics`) is one. The three markers that stay are:
+it shows. An ```` ```ignore ```` block opts out of both, and the workspace has
+none. The three markers that stay are:
 
 | Marker | What `cargo test` does | For |
 |---|---|---|
