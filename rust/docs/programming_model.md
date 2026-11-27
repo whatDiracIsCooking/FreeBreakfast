@@ -112,6 +112,10 @@ stays in its module's crate.
   localization of the SCF's occupied orbitals; `[resources]` the GPUs,
   the executor's width and the caps. A step whose table is absent is not in
   the DAG, and a step that reads one the config leaves out is refused.
+  A relative path a key names (`[molecule] xyz`, `[guess] from`, and a
+  `[basis] name` or `[eri] aux_basis` that is not a compiled-in set's
+  name) is read against the config file's directory, never the working
+  directory; a compiled-in name is passed on unchanged.
 - **`calculation` picks the steps and the products.** `"overlap"` is the
   overlap alone, `"guess"` the guess alone, `"rhf"` the chain to the SCF,
   `"localization"` that and the localization; the optional tables it reads

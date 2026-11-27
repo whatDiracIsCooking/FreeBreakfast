@@ -3,7 +3,8 @@
 //! the dry budget's exact bytes from them, the orthogonalizer's scratch
 //! apart from every step unordered with it, the config's refusals (an
 //! unknown key and an impossible multiplicity naming the file and the
-//! line), an open shell set up and its SCF's budget exact, a closed-shell
+//! line), a relative basis path read against the config's directory, an
+//! open shell set up and its SCF's budget exact, a closed-shell
 //! ion's budget the neutral's, `[guess] from` budgeted as the SAD guess
 //! and its refusals naming the file and the line, a localization's budget exact in the
 //! occupied block, the allocation record failing a step that allocates on the plain heap in its
@@ -178,6 +179,53 @@ fn the_water_cations_doublet_is_five_alpha_and_four_beta() {
     let bus = MainBus::setup(config, Backing::Dry).expect("an open shell is set up");
     let dims = &bus.shared().dims;
     assert_eq!((dims.n_alpha, dims.n_beta), (5, 4));
+}
+
+/// A relative basis and aux-basis path is read against the config's
+/// directory, as `xyz` is, not the working directory: a config in the
+/// target's scratch directory names its BSE JSON copies of sto-3g and
+/// cc-pVDZ-JKFIT by relative path, and its dry setup counts what the
+/// carried names count. A carried name is not joined: beside a garbage file
+/// called `sto-3g` in the same directory, `sto-3g` still resolves from the
+/// binary.
+#[test]
+fn a_relative_basis_path_is_read_against_the_configs_directory() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("relative_basis");
+    std::fs::create_dir_all(dir.join("sets")).unwrap();
+    std::fs::copy(common::data("h2o.xyz"), dir.join("h2o.xyz")).unwrap();
+    std::fs::copy(
+        root.join("basis/sto-3g.json"),
+        dir.join("sets/orbital.json"),
+    )
+    .unwrap();
+    std::fs::copy(
+        root.join("aux_basis/cc-pVDZ-JKFIT.json"),
+        dir.join("sets/fitting.json"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("sto-3g"), "not a basis").unwrap();
+    std::fs::write(dir.join("cc-pvdz-jkfit"), "not a basis").unwrap();
+    assert!(
+        !std::path::Path::new("sets/orbital.json").exists(),
+        "the working directory is not the config's"
+    );
+    let dims = |name: &str, basis: &str, aux: &str| {
+        let path = dir.join(name);
+        let text = format!(
+            "[molecule]\nxyz = \"h2o.xyz\"\n[basis]\nname = \"{basis}\"\n\
+             [eri]\naux_basis = \"{aux}\"\n"
+        );
+        std::fs::write(&path, text).unwrap();
+        let config = fb_steps::Config::read(&path).unwrap();
+        let bus = MainBus::setup(config, Backing::Dry).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let dims = &bus.shared().dims;
+        (dims.n_ao, dims.n_aux)
+    };
+    let carried = dims("carried.toml", "sto-3g", "cc-pvdz-jkfit");
+    assert_eq!(carried.0, 7, "water in sto-3g");
+    let paths = dims("paths.toml", "sets/orbital.json", "sets/fitting.json");
+    assert_eq!(paths, carried);
 }
 
 /// The SCF's scratch, dry, as its layout places it: the closed shell's
