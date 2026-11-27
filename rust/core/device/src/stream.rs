@@ -428,7 +428,7 @@ impl Stream {
 
     /// Enqueue the copy of device `src` into the head of device `dst`, its
     /// first `src.len()` elements. Two parts of one slice are apart, so a
-    /// copy between them is too ([`split_at_mut`](crate::split_at_mut)).
+    /// copy between them is too.
     ///
     /// # Errors
     /// The enqueue's failure.

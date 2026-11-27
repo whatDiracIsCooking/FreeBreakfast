@@ -252,14 +252,6 @@ impl<O> Slot<O> {
         Self::default()
     }
 
-    /// Whether budget mode has put the step's `Output` here.
-    pub fn is_filled(&self) -> bool {
-        self.output
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_some()
-    }
-
     fn fill(&self, output: O, lane: Lane) {
         *self.output.write().unwrap_or_else(PoisonError::into_inner) = Some(output);
         *locked(&self.lane) = Some(lane);
