@@ -339,14 +339,19 @@ runs `cargo doc --workspace --no-deps` there under `RUSTDOCFLAGS=-D warnings`
 and deploys nothing, which makes it the one server-side check of the rustdoc
 of the members that link; a push to `main` builds and deploys. The API is
 at `/api/`, beside a generated list of the crates, and the site root
-redirects there until the book takes it.
+redirects there until the book takes it. Until the book exists,
+[`memory.md`](memory.md) and [`programming_model.md`](programming_model.md)
+are rendered by `docs/md2html.py`, with the commands its header gives, into
+`/design/`, linked from that list. The `.md` is the source and the rendered
+pages are not tracked (`docs/.gitignore`): a tracked copy is checked by
+nothing, and one drifted from its source.
 
 **Publish now, as experimental.** The site is the only rendering of
 these documents, the KaTeX and Mermaid conventions are only checked by
 rendering them, and the `build.rs` change above is the whole cost. The site
 says it documents an experimental tree, the way `experimental/README.md`
-does. The rustdoc is published today; the book, KaTeX and Mermaid are not
-yet built.
+does. The rustdoc and the two rendered design pages are published today;
+the book, KaTeX and Mermaid are not yet built.
 
 **What the docs build checks, and where.** The checks are tier 3 and tier 1,
 and run where the testing document puts those tiers:

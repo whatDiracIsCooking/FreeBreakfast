@@ -1,7 +1,9 @@
 # The rust/ workspace's rustdoc, published to GitHub Pages
 # (rust/docs/documentation.md, "Publishing"). The API lands under /api/ and
 # the site root redirects there, which leaves the root to the book once it
-# exists.
+# exists. Two design documents, memory.md and programming_model.md, are
+# rendered by rust/docs/md2html.py into /design/ beside it and linked from the
+# API index; the .md is the source and no rendered page is tracked.
 #
 # The runner has no CUDA or HIP toolchain, so it has no
 # libwwr_capi_runtime_api.so and no kernel library: FB_RUST_DOC_ONLY=1 tells
@@ -51,12 +53,23 @@ jobs:
           FB_RUST_DOC_ONLY: "1"
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --locked --workspace --no-deps
+      # The two commands are md2html.py's own usage lines, run as written.
+      - uses: astral-sh/setup-uv@v5
+      - name: design pages
+        working-directory: rust/docs
+        run: |
+          uv run --no-project --with markdown-it-py python md2html.py \
+            programming_model.md programming_model.html memory.md \
+            figures/programming_model.figs
+          uv run --no-project --with markdown-it-py python md2html.py \
+            memory.md memory.html programming_model.md
       # rustdoc writes no workspace index on stable, so list the crates, and
       # point the root at /api/.
       - name: assemble site
         run: |
-          mkdir -p site/api
+          mkdir -p site/api site/design
           cp -r rust/target/doc/. site/api/
+          cp rust/docs/memory.html rust/docs/programming_model.html site/design/
           {
             echo '<!doctype html><meta charset="utf-8">'
             echo '<meta name="viewport" content="width=device-width">'
@@ -64,7 +77,10 @@ jobs:
             echo '<h1>free-breakfast: the Rust rebuild</h1>'
             echo '<p>The API of the <code>rust/</code> workspace, an'
             echo 'experimental rebuild of the C++ tree, built from'
-            echo "<code>main</code> at <code>${GITHUB_SHA::8}</code>.</p><ul>"
+            echo "<code>main</code> at <code>${GITHUB_SHA::8}</code>.</p>"
+            echo '<p>Design: the <a href="../design/programming_model.html">'
+            echo 'programming model</a> and <a href="../design/memory.html">'
+            echo 'memory</a>.</p><ul>'
             for d in site/api/*/index.html; do
               c=$(basename "$(dirname "$d")")
               echo "<li><a href=\"$c/index.html\">$c</a></li>"

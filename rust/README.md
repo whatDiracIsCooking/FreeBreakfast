@@ -338,6 +338,10 @@ hold the mechanics: the [programming model](docs/programming_model.md),
 [memory](docs/memory.md), the [GPU layer](docs/gpu_layer.md),
 [testing](docs/testing.md), [diagnostics](docs/diagnostics.md) and
 [documentation](docs/documentation.md).
+The programming model and memory are also rendered as pages on the Pages
+site, under `/design/` beside the API at `/api/`
+([`documentation.md`](docs/documentation.md), "Publishing"); the `.md` is
+the source, and nothing rendered is tracked.
 [`rules.md`](docs/rules.md) is the register of the rules they state, each
 with what checks it. **A new rule is added to the register in the PR that
 states it, with its check or an *unenforced* entry.**
