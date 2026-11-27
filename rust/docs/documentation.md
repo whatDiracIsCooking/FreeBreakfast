@@ -103,13 +103,14 @@ drifts from the first. `fb-doc-check`'s `tests/contracts.rs` fails a doc
 comment that does, by the old restating phrase or by the contract's own
 message.
 
-**The verification record is the metrics branch, not the README.** The
-crate's README carries two dated "Verified" paragraphs: card, test counts,
-runs in a row, clippy and rustdoc clean. That is a changelog, and it will not
-scale past a few modules. The nightly already writes what ran, where and how
-long to the metrics branch ([`testing.md`](testing.md), "Performance"), so
-that branch is the record and the site reads it. The README says what the
-crate is, and the two paragraphs retire when the nightly covers the crate.
+**The verification record is the metrics branch, not the README.** A dated
+paragraph per change (card, test counts, clippy and rustdoc clean) is a
+changelog, and it does not scale past a few modules. The nightly writes
+what ran, where and how long to the metrics branch
+([`testing.md`](testing.md), "Performance"), so that branch is the record
+and the site reads it. The README says what the crate is and how it is
+built and tested, and carries no log of runs or of the order work landed
+in; a PR's own run is in its description.
 
 ## The C header
 
@@ -269,9 +270,8 @@ by a command names the command; one whose numbers cannot says so.
 and a quoted section name, and a renamed heading breaks the citation
 silently: two such references pointed at sections of `design.md` that had
 moved to documents of their own, and were found by hand. A tier-3 check,
-`doc_check/tests/section_citations.rs` ([`README.md`](../README.md), "Order of work"),
-reads every `` [`x.md`](x.md), "Section" `` in the README and these
-documents, and every `` `docs/x.md`, "Section" `` in a Rust comment, and
+`doc_check/tests/section_citations.rs`, reads every
+`` [`x.md`](x.md), "Section" `` in the README and these documents, and every `` `docs/x.md`, "Section" `` in a Rust comment, and
 fails when `x.md` has no such heading. A citation may run on: in
 `` `a.md`, "A", `b.md`, "B" `` each name is looked up in the nearest file
 before it, and in a document, `"Section", below` (or `above`) cites the
