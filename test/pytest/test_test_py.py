@@ -429,12 +429,12 @@ def test_pr_runs_the_cpp_half_only_when_asked(
 # A stand-in `cargo` on PATH: a two-member workspace, one member linking
 # wwr-sys, and a `cargo test` that exits FAKE_CARGO_TEST_RC. Each call's
 # arguments go to FAKE_CARGO_LOG. With FAKE_CARGO_STALE_LOCK, every --locked
-# call fails as cargo does on a lock its manifests have outgrown. Without
-# --no-default-features, `test` is tier 4: fb-core-wwr's one device case is
+# call fails as cargo does on a lock its manifests have outgrown. A `test` of
+# fb-core-wwr, the member that links, is tier 4: its one device case is
 # ignored unless --include-ignored.
 # `clippy` exits FAKE_CARGO_CLIPPY_RC, printing a lint error when non-zero;
-# with FAKE_CARGO_DOC_RC, a `doc` with the default features (tier 4's, or
-# tiers 1 to 3's over the defaults) exits it, printing a rustdoc error.
+# with FAKE_CARGO_DOC_RC, tier 4's `doc` (of fb-core-wwr) exits it, printing
+# a rustdoc error.
 # A `test` recorded (--message-format=json-render-diagnostics) prints each
 # executable's compiler-artifact message first, and tier 3 then its cases.
 _FAKE_CARGO = """
@@ -482,7 +482,7 @@ elif args[0] == "clippy":
         print("error: unsafe block missing a safety comment")
         print("  --> core/wwr/src/lib.rs:1:1")
     sys.exit(rc)
-elif args[0] == "doc" and "--no-default-features" not in args \
+elif args[0] == "doc" and "fb-core-wwr" in args \
         and os.environ.get("FAKE_CARGO_DOC_RC"):
     print("error: unresolved link to `Missing`")
     print("  --> core/wwr/src/lib.rs:3:5")
@@ -497,7 +497,7 @@ elif args[0] == "test" and "--list" in args:
     print("runtime::tests::tier5_two: test")
     print("")
     print("1 test, 0 benchmarks")
-elif args[0] == "test" and "--no-default-features" not in args:
+elif args[0] == "test" and "fb-core-wwr" in args:
     artifact("/t/deps/fb_core_wwr-0123abcd", "wwr#fb-core-wwr@0.1.0")
     print("     Running unittests src/lib.rs (/t/deps/fb_core_wwr-0123abcd)")
     print("test status::tests::names ... ok")
@@ -549,9 +549,11 @@ def fake_cargo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_link_free_crates_leave_out_a_linking_graph(fake_cargo: Path) -> None:
-    assert gates.link_free_crates() == (["fb-core-log"], ["fb-core-log"])
+    assert gates.link_free_crates() == ["fb-core-log"]
     trees = [c for c in fake_cargo.read_text().splitlines() if c.startswith("tree")]
-    assert sum("--no-default-features" in c for c in trees) == 2
+    # One query per member, with its default features.
+    assert len(trees) == 2
+    assert not any("--no-default-features" in c for c in trees)
     assert all("-e normal,dev,build" in c for c in trees)
 
 
@@ -616,17 +618,13 @@ def test_push_runs_the_cargo_half_and_prints_its_counts(
     assert "test.py push PASS  rev=abc1234  ran=cargo" in out
     calls = fake_cargo.read_text().splitlines()
     test = next(c for c in calls if c.startswith("test"))
-    assert test == "test --locked -j 4 --no-default-features -p fb-core-log"
+    assert test == "test --locked -j 4 -p fb-core-log"
     # The slow cases return at once, whatever the caller's shell exported.
     assert "slow cases skipped (FREE_BREAKFAST_FAST_TESTS=1)" in out
     assert Path(f"{fake_cargo}.fast").read_text() == "1\n"
-    # Documented in both feature sets, as clippy lints them: a device
-    # feature's docs must resolve without it (#1404).
+    # Documented once, over the same crates, as clippy lints them.
     docs = [c for c in calls if c.startswith("doc")]
-    assert docs == [
-        "doc --locked -j 4 --no-deps --no-default-features -p fb-core-log",
-        "doc --locked -j 4 --no-deps -p fb-core-log",
-    ]
+    assert docs == ["doc --locked -j 4 --no-deps -p fb-core-log"]
 
 
 def test_a_failing_cargo_half_fails_the_push_and_is_named(
@@ -1099,8 +1097,7 @@ def test_nightly_cargo_runs_the_slow_cases_in_both_tiers(
     tests = [c for c in calls if c.startswith("test")]
     # Each recorded, so its cases reach the night's record.
     assert tests == [
-        "test --locked -j 4 --no-default-features"
-        " --message-format=json-render-diagnostics -p fb-core-log",
+        "test --locked -j 4 --message-format=json-render-diagnostics -p fb-core-log",
         # Every crate's tier 4, as `pr --all`.
         "test --locked -j 4 --message-format=json-render-diagnostics"
         " -p fb-core-wwr -- --test-threads=1 --include-ignored",

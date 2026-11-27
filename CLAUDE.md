@@ -279,10 +279,10 @@ incremental build, the host binaries, each GPU binary as one process running
 cannot list).
 Any path under `rust/` (the Rust rebuild, `rust/README.md`) fires the
 **cargo half** and neither of the others, even its `.cu`, CMake and `.py`:
-tiers 1 to 3, `cargo test --no-default-features` over the workspace members
-whose graph declares no `links` (no `wwr-sys`, no kernel `-sys` crate; found
-by `cargo tree`, never listed), then `cargo doc -D warnings` over those
-whose defaults link nothing; then tier 4: `rust/`'s CMake project built
+tiers 1 to 3, `cargo test` over the workspace members whose graph declares
+no `links` (no `wwr-sys`, no kernel `-sys` crate; found by `cargo tree`,
+never listed), then `cargo doc -D warnings` over the same members; then
+tier 4: `rust/`'s CMake project built
 for the gate's card, `cargo clippy --all-targets -D warnings` over the
 affected crates that link the library (each changed crate and its reverse
 dependents; the only gate of the workspace lints on them, since

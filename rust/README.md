@@ -318,14 +318,14 @@ made a neighbouring pool's create abort or its destroy segfault.
 
 Nothing in ctest runs cargo. Both gates do, for a diff under `rust/`:
 `devtools/test.py push` and `pr` run tiers 1 to 3, `cargo test` over every
-member whose graph declares no `links` under `--no-default-features` (found from `cargo tree`, so a new link-free crate
-is gated without being named), then `RUSTDOCFLAGS='-D warnings' cargo doc
---no-deps` over the same members with `--no-default-features`, and over the
-members whose default features link nothing with their defaults, in
-`target/nodef` ([`docs/testing.md`](../docs/testing.md), "Gates", at the
-root). A commit touching `rust/` runs `devtools/test.py cargo-lint`, `cargo
-fmt --check` and clippy with warnings denied in both feature sets, over
-the link-free members, and so does CI's `lint` job. Tier 4 runs in both
+member whose graph declares no `links` (found from `cargo tree`, so a new
+link-free crate is gated without being named), then `RUSTDOCFLAGS='-D
+warnings' cargo doc --no-deps` over the same members, in `target/link-free`
+([`docs/testing.md`](../docs/testing.md), "Gates", at the root). One
+feature set serves: no member links a library only through a default
+feature. A commit touching `rust/` runs `devtools/test.py cargo-lint`,
+`cargo fmt --check` and clippy with warnings denied, over the link-free
+members, and so does CI's `lint` job. Tier 4 runs in both
 gates for the crates a diff affects that link (above): `cargo clippy
 --all-targets -- -D warnings` over them in `target/<backend>`, the one
 gate of the workspace lints on those crates, then their tests on a card.

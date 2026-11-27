@@ -31,11 +31,10 @@ push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   implies --cpp.
   --dry-run prints the changed files, which halves would run, and the
   crates the cargo half's tier 4 would test.
-  Cargo: tiers 1 to 3 of the Rust rebuild, `cargo test --no-default-features`
-  in debug over the workspace members that build without any native library
-  (found from `cargo tree`, not named), then `cargo doc` with warnings
-  denied in each feature set that builds without the library, as
-  cargo-lint's clippy, in rust/target/nodef; it prints each test binary's
+  Cargo: tiers 1 to 3 of the Rust rebuild, `cargo test` in debug over the
+  workspace members that build without any native library (found from
+  `cargo tree`, not named), then `cargo doc` with warnings denied over the
+  same members, in rust/target/link-free; it prints each test binary's
   counts.
   It needs no card and skips itself, exit 0, where cargo is absent. Then
   tier 4, once those pass: rust/'s CMake project built for the preset's
@@ -110,8 +109,7 @@ nightly: what the timer runs (docs/testing.md "The nightly"). Fetch origin,
 
 cargo-lint: what the commit hook runs for a commit touching rust/, and CI's
   lint job: `cargo fmt --check`, and `cargo clippy --all-targets -D warnings`
-  over the link-free members in each feature set that builds without the
-  library (--no-default-features, and their defaults). Reads no config.sh.
+  over the link-free members. Reads no config.sh.
   The members that link are linted by tier 4 of push and pr instead.
   Its clippy passes --locked, as the gates' cargo calls do.
 
@@ -211,7 +209,7 @@ RUST_DIR = REPO_ROOT / "rust"
 # are built in it, so no build.rs bakes a library's path into an rpath, and a
 # backend's own target directory (rust/README.md "Build and test") is left
 # alone.
-CARGO_TARGET_DIR = RUST_DIR / "target" / "nodef"
+CARGO_TARGET_DIR = RUST_DIR / "target" / "link-free"
 CARGO_RUNNING = re.compile(r"^\s*(Running|Doc-tests) (.*)$")
 CARGO_RESULT = re.compile(
     r"^test result: \w+\. (\d+) passed; (\d+) failed; (\d+) ignored"
@@ -1047,15 +1045,16 @@ def cargo_query(*args: str) -> str:
     return proc.stdout
 
 
-def link_free_crates() -> tuple[list[str], list[str]]:
-    """The workspace members that build without any native library: those
-    with --no-default-features (tier 3, what the cargo half tests), and
-    those with their default features (linted too). A member qualifies when
-    no package in its own graph -- normal, dev and build edges, under that
-    feature set -- declares `links` from a path, not the registry: wwr-sys
-    does, and so does every kernel library's -sys crate. Each member is
-    resolved alone, as `cargo test -p` resolves it, so another member's
-    features do not leak in."""
+def link_free_crates() -> list[str]:
+    """The workspace members that build without any native library, what
+    the cargo half tests and cargo-lint lints. A member qualifies when no
+    package in its own graph -- normal, dev and build edges, with its
+    default features -- declares `links` from a path, not the registry:
+    wwr-sys does, and so does every kernel library's -sys crate. Each member
+    is resolved alone, as `cargo test -p` resolves it, so another member's
+    features do not leak in. One feature set is enough: no member links a
+    library only through a default feature (rust/doc_check's
+    readme_sorts_every_member_by_what_it_links holds that)."""
     meta = json.loads(cargo_query("metadata", "--format-version", "1"))
     # Path packages alone: a registry crate's `links` key names no native
     # library of this tree's (rayon-core's guards against two rayons).
@@ -1067,17 +1066,14 @@ def link_free_crates() -> tuple[list[str], list[str]]:
     ids = set(meta["workspace_members"])
     members = [p["name"] for p in meta["packages"] if p["id"] in ids]
 
-    def free(name: str, *flags: str) -> bool:
+    def free(name: str) -> bool:
         out = cargo_query(
-            *("tree", "-p", name, *flags, "-e", "normal,dev,build"),
+            *("tree", "-p", name, "-e", "normal,dev,build"),
             *("--prefix", "none", "--format", "{p}"),
         )
         return not linking & {line.split(" ")[0] for line in out.splitlines()}
 
-    return (
-        [m for m in members if free(m, "--no-default-features")],
-        [m for m in members if free(m)],
-    )
+    return [m for m in members if free(m)]
 
 
 def cargo_binary(running: re.Match[str]) -> str:
@@ -1131,13 +1127,9 @@ def cargo_half(
     cases: list[dict] | None = None,
 ) -> int:
     """The cargo half of the gates, tiers 1 to 3 (rust/docs/testing.md, "What
-    runs when"): `cargo test --no-default-features` over link_free_crates'
-    first set, in debug so every contract is on, then `cargo doc` with
-    warnings denied in each feature set that builds without the library, as
-    cargo-lint's clippy is run: --no-default-features over the first set,
-    and the defaults over the second. So a device feature's crate
-    (`thread_pool`, `planner`) is documented without its feature, and its
-    docs must not link an item that feature compiles in. Needs neither
+    runs when"): `cargo test` over link_free_crates, in debug so every
+    contract is on, then `cargo doc` with warnings denied over the same
+    crates, as cargo-lint's clippy lints them. Needs neither
     card nor library, so it never takes the card lock; skips, exit 0, where
     cargo is absent, as the C++ half does without its toolchain. Every line
     goes to `log`; the test counts, one line per binary that ran a case, to
@@ -1151,7 +1143,7 @@ def cargo_half(
         say(f"{tag}: skipping the cargo half")
         return 0
     try:
-        tested, documented = link_free_crates()
+        tested = link_free_crates()
     except (CargoError, ValueError, KeyError) as e:
         say(f"{tag}: cargo half: cannot list the link-free crates: {e}", err=True)
         return 1
@@ -1161,7 +1153,7 @@ def cargo_half(
     steps = (
         (
             "cargo test",
-            cargo_cmd("test", *jflag, "--no-default-features")
+            cargo_cmd("test", *jflag)
             + ([CARGO_RECORD_FLAG] if cases is not None else [])
             + [a for c in tested for a in ("-p", c)],
             # The slow cases return at once (rust/docs/testing.md, "Slow
@@ -1169,15 +1161,9 @@ def cargo_half(
             {"FREE_BREAKFAST_FAST_TESTS": "1"} if fast else {},
         ),
         (
-            "cargo doc --no-default-features",
-            cargo_cmd("doc", *jflag, "--no-deps", "--no-default-features")
-            + [a for c in tested for a in ("-p", c)],
-            {"RUSTDOCFLAGS": "-D warnings"},
-        ),
-        (
             "cargo doc",
             cargo_cmd("doc", *jflag, "--no-deps")
-            + [a for c in documented for a in ("-p", c)],
+            + [a for c in tested for a in ("-p", c)],
             {"RUSTDOCFLAGS": "-D warnings"},
         ),
     )
@@ -1325,7 +1311,7 @@ def tier4_crates(files: list[str] | None) -> list[str]:
     (affected_crates) that link the library, sorted. Raises CargoError,
     ValueError or KeyError when the workspace graph cannot be read."""
     meta = json.loads(cargo_query("metadata", "--format-version", "1"))
-    return sorted(affected_crates(files, meta) - set(link_free_crates()[1]))
+    return sorted(affected_crates(files, meta) - set(link_free_crates()))
 
 
 def device_probe(build: Path) -> tuple[int, str]:
@@ -1622,13 +1608,13 @@ def cargo_tier4(
 
 def cmd_cargo_lint() -> int:
     """The commit hook's and CI's Rust lint: `cargo fmt --check` over the
-    workspace, and `cargo clippy --all-targets -D warnings` in each feature
-    set that builds without the library (link_free_crates)."""
+    workspace, and `cargo clippy --all-targets -D warnings` over the members
+    that build without the library (link_free_crates)."""
     if shutil.which("cargo") is None:
         say("cargo-lint: cargo not found -- skipped (the toolchain is the container's)")
         return 0
     try:
-        nodef, default = link_free_crates()
+        free = link_free_crates()
     except (CargoError, ValueError, KeyError) as e:
         say(f"cargo-lint: cannot list the link-free crates: {e}", err=True)
         return 1
@@ -1638,9 +1624,7 @@ def cmd_cargo_lint() -> int:
     rc = 0
     for cmd in (
         ["cargo", "fmt", "--all", "--check"],
-        [*clippy, "--no-default-features", *(a for c in nodef for a in ("-p", c))]
-        + lint,
-        [*clippy, *(a for c in default for a in ("-p", c))] + lint,
+        [*clippy, *(a for c in free for a in ("-p", c))] + lint,
     ):
         say(f"--- {' '.join(cmd)} ---")
         proc = subprocess.run(cmd, cwd=RUST_DIR, env=cargo_env(), check=False)
@@ -2766,7 +2750,7 @@ def nightly_plan(args: argparse.Namespace, cfg: dict[str, str]) -> list[str]:
         f"2. C++: ctest and the GPU batches, under the {backend} card lock"
         + ("" if cpp else off),
         "3. pytest: the whole suite, slow included, the card released",
-        "4. cargo half: tiers 1 to 3 (cargo test --no-default-features over the"
+        "4. cargo half: tiers 1 to 3 (cargo test over the"
         " link-free crates, cargo doc), then tier 4 of every crate (clippy,"
         f" rustdoc, then the tests under the {backend} card lock); slow cases"
         " included",

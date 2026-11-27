@@ -72,25 +72,23 @@ tool). The Rust rebuild is not C++ the tree builds or Python it tests
 (`CARGO_FILES` in `devtools/test.py`; `devtools/rust-bindings.py` fires it
 too, beside the Python half, since `fb-device-check` runs it). The cargo half
 is tiers 1 to 3 of `rust/docs/testing.md`, "What runs when", and needs no
-card: `cargo test --no-default-features`, in debug so every contract is on,
-over the workspace members that build without any native library, then
-`cargo doc` with warnings denied in each feature set: over those members
-with `--no-default-features`, and over the members whose *default* features
-build without one with their defaults. Neither list is written down: a
+card: `cargo test`, in debug so every contract is on, over the workspace
+members that build without any native library, then `cargo doc` with
+warnings denied over the same members. The list is not written down: a
 member qualifies when no package in its own `cargo tree` (normal, dev and
-build edges, under that feature set) declares `links`, which `wwr-sys` and
-every kernel library's `-sys` crate do. So `arena`, `thread_pool` and
-`planner` are tested and documented without their `device` feature, and
-their docs name a device item in plain code rather than link it. It builds in `rust/target/nodef`, prints each test binary's counts,
-and skips, exit 0, where cargo is absent.
+build edges) declares `links`, which `wwr-sys` and every kernel library's
+`-sys` crate do. No member links a library only through a default feature
+(`fb-doc-check` holds that), so one feature set serves. It builds in
+`rust/target/link-free`, prints each test binary's counts, and skips, exit
+0, where cargo is absent.
 
 **Tier 4, the tests on a card, follows once tiers 1 to 3 pass.** It builds
 `rust/`'s own CMake project for the backend of the gate's preset
 (`rust/build-<backend>`, configured the first time), then, in
 `rust/target/<backend>` with `FB_RUST_BUILD_DIR` set, over the affected
 crates that link the library: each changed file's crate and its reverse
-dependents, read from `cargo metadata`, less those whose default graph
-declares no `links` (their tests ran in tier 3). A module's `kernels/`
+dependents, read from `cargo metadata`, less those whose graph declares
+no `links` (their tests ran in tier 3). A module's `kernels/`
 select its own `-sys` crate and that crate's dependents, `rust/docs/` none, and any other file
 under `rust/` outside every crate selects them all, `clippy.toml` and the
 workspace `Cargo.toml` (its `[workspace.lints]`) among them; `pr --all`
@@ -120,7 +118,7 @@ case(s) (<why>)`, every case that did not run with its binary and reason, or
 tier 4 is skipped whole with a line saying so. `rust/docs/testing.md`
 "Selecting GPU tiers in cargo" has the rule. At commit, a change under `rust/` runs `devtools/test.py
 cargo-lint`: `cargo fmt --check`, and `cargo clippy --all-targets -D
-warnings` in both of those feature sets, over the link-free members only;
+warnings`, over the link-free members only;
 CI's `lint` job runs it too. A crate that links is linted by tier 4.
 `rust/Cargo.lock` is tracked, and every one of those cargo calls but `cargo
 fmt` passes `--locked`, so a manifest change committed without its lock
