@@ -397,8 +397,9 @@ the switch: `cargo test -p <crate>` by hand, and the nightly's cargo half
 ("What runs when"), which clears it and says so on a `slow cases run` line. It is the C++ rule's case, past about 1.5 s
 outside its family's representative, and it carries the reason in the
 case. A case reads the switch through a function named `fast_tests`, and
-every case that calls it is named here, which `fb-doc-check`'s
-`doc_lists.rs` holds:
+the list below names every case that calls it and nothing else, each
+item's case its first name after the crate, which `fb-doc-check`'s
+`doc_lists.rs` holds both ways:
 
 - `fb-io-sad`'s `baked_matches_computed_through_argon`, every element
   through argon in every compiled-in set against the atomic SCF;
