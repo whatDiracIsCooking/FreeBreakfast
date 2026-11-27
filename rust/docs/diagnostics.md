@@ -3,9 +3,9 @@
 Diagnostics is everything a run says about itself besides its results: how
 long each part took, what it logged, how it failed, and what the process did
 when a bug surfaced. Three of the four are ports. The C++ `core` has `log`,
-`error_handling` and the `diagnostics.h` macros over them, and the crate
-already carries all three (`core::log`, `core::error_handling`,
-`core::diagnostics`), each with its C++-to-Rust table in its doc comment. The
+`error_handling` and the `diagnostics.h` macros over them; the Rust core
+carries the first two (`fb-core-log`, `fb-core-error-handling`), each with
+its C++-to-Rust table in its doc comment. The
 fourth, timing, is new: the C++ tree has no timing infrastructure beyond two
 files that pair `steady_clock` reads by hand.
 
@@ -143,10 +143,10 @@ The record has three readers, each written down elsewhere:
 
 `core::log` already provides the levels. A call site logs through `log`'s
 macros and `fb_core_log::critical!`, imported from those two crates, and no
-other crate re-exports them: `core::diagnostics` holds only `gpu_must`,
-which reads a wwr status, so it depends on the handle types, and a crate
-that only logs must not ([`testing.md`](testing.md), "Selection: the
-workspace graph is the selection graph").
+other crate re-exports them: a crate that only logs then depends on the
+logging crates alone, not on whatever crate would re-export them
+([`testing.md`](testing.md), "Selection: the workspace graph is the
+selection graph").
 
 The rule for each level:
 

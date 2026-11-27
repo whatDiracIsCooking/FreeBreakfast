@@ -1,5 +1,5 @@
 /* The Cholesky diagonal tile's launch wrapper: the C header forked from
- * src/recipes/cholesky/cholesky_bridge.h. cholesky.cu defines it;
+ * the C++ tree's cholesky_bridge.h (src/recipes). cholesky.cu defines it;
  * fb_recipes.h includes this, and devtools/rust_bindings.py reads it into
  * fb-recipes-sys. Plain C: no templates, no vendor types. */
 #pragma once

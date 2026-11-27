@@ -710,9 +710,7 @@ and fills a stream enqueues, device slices, and each GPU's
   matrices) follow on the same terms: the records' shell and pair tables
   (each shell's primitive range, each pair's shells and record range) and
   the gather's per-column row and column come in on the host by value,
-  are checked against what they index and are uploaded by the call, and
-  each equals its old-layer counterpart (`add_record_tasks`,
-  `PackedTables::gather`) bitwise, the same kernel on the same inputs.
+  are checked against what they index and are uploaded by the call.
 - **A library call may differ by backend where one was measured
   faster.** K's update in a J/K pass from C is a syrk on CUDA (−13% at
   gly10, RTX 3080) and a gemm on HIP (rocBLAS's dsyrk +15%, gfx1200),

@@ -1,14 +1,15 @@
 // The diagonal tile of the blocked Cholesky factorization, in shared memory.
 // One source for both backends -- nvcc under CUDA, clang -x hip under HIP.
 //
-// Forked from src/recipes/cholesky/cholesky.cu. The kernel's factorization is
+// Forked from the C++ tree's cholesky.cu (src/recipes). The kernel's factorization is
 // unchanged: per column, read the pivot, barrier, scale the column, barrier,
 // rank-1 update of the trailing triangle, barrier. Two things differ, both at
 // the edges of it. It also writes the factored tile's lower triangle, packed,
 // into l11: the panel's trsm takes L11 as an operand while it writes the
 // panel below it in the same columns, and a safe call cannot hand one
 // allocation out as both, so the caller keeps the copy in a scratch row of
-// its own (rust/recipes/cholesky has the loop). And the launcher is rewritten
+// its own (GpuResources::cholesky, in rust/core/device/src/gpu.rs, has the
+// loop). And the launcher is rewritten
 // as cholesky.h's extern "C", enqueue-only launch wrapper
 // (rust/docs/gpu_layer.md, "From bridge to C ABI"): lda is the module's
 // int32_t, widened here, the null pointers are refused as well as the C++

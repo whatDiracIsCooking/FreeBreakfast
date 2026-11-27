@@ -103,8 +103,9 @@ endif()
 add_subdirectory("${_fb_wwr}" deps/WarpWraps EXCLUDE_FROM_ALL)
 
 # `all` is what the crates link, and nothing else of wwr: the runtime, BLAS
-# for the overlap's spherical transform (wwr-sys's `blas` feature), the
-# dense solver for the eigensolver (`solver`).
+# for fb-core-device's dense products, the SCF's and the fit's among them
+# (wwr-sys's `blas` feature), and the dense solver for the eigensolver
+# (`solver`).
 add_custom_target(
   rust_native_libs ALL COMMENT "The libraries the rust/ crates link"
 )
