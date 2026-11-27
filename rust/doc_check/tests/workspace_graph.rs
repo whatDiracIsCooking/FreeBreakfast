@@ -860,9 +860,9 @@ fn a_logging_facade_reaching_the_handles_fails() {
         src(
             "fb-facade",
             "pub use ::log::{debug, error, info, trace, warn};\n\
-             pub use fb_core_log::critical;\npub fn gpu_must() {}\n",
+             pub use fb_core_log::critical;\npub fn check() {}\n",
         ),
-        src("fb-gpu", "pub fn gpu_must() {}\n"),
+        src("fb-gpu", "pub fn check() {}\n"),
         src("fb-quiet", "// pub use log::info;\npub fn f() {}\n"),
         src("fb-logs", "pub use fb_core_log::critical;\n"),
     ];
