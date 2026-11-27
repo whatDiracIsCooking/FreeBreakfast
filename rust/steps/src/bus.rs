@@ -219,7 +219,9 @@ struct MoleculeSpans {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BasisTable {
-    /// A compiled-in name or a BSE JSON path.
+    /// A compiled-in name ([`fb_io_basis::is_builtin_basis`]), passed on
+    /// unchanged, or else a BSE JSON path, relative to the config's
+    /// directory.
     pub name: String,
 }
 
@@ -320,7 +322,9 @@ impl GuessTable {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EriTable {
-    /// The fitting set, a compiled-in name or a BSE JSON path.
+    /// The fitting set: a compiled-in name
+    /// ([`fb_io_basis::is_builtin_aux_basis`]), passed on unchanged, or else
+    /// a BSE JSON path, relative to the config's directory.
     pub aux_basis: String,
     /// Each GPU's ERI buffer, bytes: the step limit the pair and aux batch
     /// widths are chosen within. Absent, [`DEFAULT_MEM_PER_GPU`]; under
@@ -604,6 +608,23 @@ impl Config {
         config.molecule.at = format!("{file}:{}", line(offset));
         if config.molecule.xyz.is_relative() {
             config.molecule.xyz = dir.join(&config.molecule.xyz);
+        }
+        // A compiled-in name is passed on; anything else is a path, joined
+        // to the config's directory as `xyz` is.
+        let join = |spec: &mut String| {
+            if Path::new(spec.as_str()).is_relative() {
+                *spec = dir.join(spec.as_str()).to_string_lossy().into_owned();
+            }
+        };
+        if !fb_io_basis::is_builtin_basis(&config.basis.name) {
+            join(&mut config.basis.name);
+        }
+        if let Some(eri) = config
+            .eri
+            .as_mut()
+            .filter(|e| !fb_io_basis::is_builtin_aux_basis(&e.aux_basis))
+        {
+            join(&mut eri.aux_basis);
         }
         if let Some(calculation) = config.calculation {
             let (name, reads) = calculation.row();
