@@ -691,11 +691,9 @@ pub struct Dims {
     pub n_atom: usize,
     /// Spherical AOs.
     pub n_ao: usize,
-    /// Doubly occupied orbitals, `n_beta`.
-    pub n_occ: usize,
-    /// Occupied alpha orbitals, `n_occ` plus the singly occupied ones.
+    /// Occupied alpha orbitals, `n_beta` plus the singly occupied ones.
     pub n_alpha: usize,
-    /// Occupied beta orbitals.
+    /// Occupied beta orbitals, the doubly occupied ones.
     pub n_beta: usize,
     /// Orbital shells.
     pub n_shell: usize,
@@ -747,7 +745,6 @@ impl Dims {
         Dims {
             n_atom: basis.natoms() as usize,
             n_ao: basis.nao_sphe() as usize,
-            n_occ: n_beta,
             n_alpha,
             n_beta,
             n_shell,

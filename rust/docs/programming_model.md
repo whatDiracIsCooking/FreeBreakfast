@@ -132,7 +132,7 @@ stays in its module's crate.
 - **`[molecule]` sets the charge and the multiplicity, and setup counts
   the occupations.** `charge` (default 0) and `multiplicity` (default 1)
   give `Dims`' `n_alpha` and `n_beta`, `n_alpha - n_beta = multiplicity -
-  1`, beside `n_occ`, the doubly occupied, `n_beta`. A multiplicity the
+  1`, `n_beta` also the doubly occupied. A multiplicity the
   electron count cannot have is refused `InvalidConfig`, naming the key,
   the file and the line ([`documentation.md`](documentation.md),
   "Configuration: the reference is emitted from the type"); an open
@@ -190,8 +190,8 @@ stays in its module's crate.
   Pipek-Mezey sweeps on the population tensor; each turn reads `L`, the
   turn's orbitals `C U` and the sort key `diag(Uᵀ diag(ε) U)`, each
   column's `⟨i|F|i⟩`, through their downloads' token, the loop's turn
-  read. The converged turn's columns are stably sorted by the key, on the
-  host copy and on the device. An open shell's two blocks, the doubly
+  read. The converged turn's columns are stably sorted by the key into
+  the host copy. An open shell's two blocks, the doubly
   and the singly occupied columns, are each localized among itself and
   sorted by its own key, one after the other in the step's scratch, and
   `L` and the sweeps are summed over them.

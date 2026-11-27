@@ -68,7 +68,7 @@ const OP_T: wwr_blas_operation = wwr_blas_operation::WWR_BLAS_OP_T;
 /// CH₂/cc-pVTZ). Over twenty open shells in PySCF, 0.7 and 0.8 reach
 /// every minimum; 3/4 is the middle. The minimum, the energy and the
 /// residual do not read the diagonal blocks.
-pub(crate) const OPEN_BLOCK_BETA_WEIGHT: f64 = 0.75;
+const OPEN_BLOCK_BETA_WEIGHT: f64 = 0.75;
 
 /// The open shell's tenants of the step's layout, after the closed
 /// shell's: the spin Fock matrices and densities, the second density's J

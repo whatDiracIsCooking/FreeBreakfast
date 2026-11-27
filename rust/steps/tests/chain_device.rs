@@ -97,7 +97,7 @@ fn the_first_pass_is_the_guesss_factor() {
     for ((xyz, ..), from_d) in [(WATER, 11), (BENZENE, 11), (ETHYLENE, 51)] {
         let run = converged(common::chain(xyz));
         let dims = &run.plan.bus().shared().dims;
-        let (n, n_occ) = (dims.n_ao, dims.n_occ);
+        let (n, n_occ) = (dims.n_ao, dims.n_beta);
         let scf = run.plan.output(ScfStep);
         let (rank, iterations) = (scf.guess_rank(), scf.iterations());
         println!(
@@ -133,7 +133,7 @@ fn the_water_dications_energy_matches_pyscfs() {
     let mut config = common::chain("h2o.xyz");
     config.molecule.charge = 2;
     let run = converged(config);
-    assert_eq!(run.plan.bus().shared().dims.n_occ, 4);
+    assert_eq!(run.plan.bus().shared().dims.n_beta, 4);
     let (e, iterations) = energy(&run);
     println!(
         "water's dication: E = {e:.12} in {iterations} iterations, |E - PySCF| = {:.1e}",
