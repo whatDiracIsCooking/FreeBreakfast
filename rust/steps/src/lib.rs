@@ -40,7 +40,7 @@
 //! | [`OrthogonalizerStep`] | gpu0 | gpu0 | X = S^(-1/2) on gpu0 | the eigenvectors, a scaled copy, syevd's work and flag |
 //! | [`EriStep`] | every GPU, two ring streams each | the [`EriManager`]'s, every GPU's | the [`EriManager`]: L on every GPU, B on the host heap, each GPU's ERI buffer and staging | the shell and pair tables, the aux records, each class's records, the Cholesky tile and flag |
 //! | [`ScfStep`] | every GPU, its loop on gpu0 | the [`EriManager`]'s, every GPU's | C, the orbital energies, D and the energy, on gpu0 and the host | on gpu0: J, K, F, the DIIS ring, syevd's work; the turn's pinned reads |
-//! | [`LocalizationStep`] | gpu0 | gpu0 | `C_local` on gpu0 and the host, `L` before and after, the sweeps | on gpu0, sized by the occupied block: its input, `S C`, the population tensor and U with their pongs, the angles, the tables, G and `C U`; their pinned ends |
+//! | [`LocalizationStep`] | gpu0 | gpu0 | `C_local` on the host, `L` before and after, the sweeps | on gpu0, sized by the occupied block: its input, `S C`, the population tensor and U with their pongs, the angles, the tables, G and `C U`; their pinned ends |
 //!
 //! The host steps build through the host integral crates inside
 //! [`Shared::host_pool`], the one pool beside the executor, started in setup

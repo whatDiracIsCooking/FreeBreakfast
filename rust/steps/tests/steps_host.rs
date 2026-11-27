@@ -177,7 +177,7 @@ fn the_water_cations_doublet_is_five_alpha_and_four_beta() {
     assert_eq!(spin.occupations(molecule.electron_count()).unwrap(), (5, 4));
     let bus = MainBus::setup(config, Backing::Dry).expect("an open shell is set up");
     let dims = &bus.shared().dims;
-    assert_eq!((dims.n_occ, dims.n_alpha, dims.n_beta), (4, 5, 4));
+    assert_eq!((dims.n_alpha, dims.n_beta), (5, 4));
 }
 
 /// The SCF's scratch, dry, as its layout places it: the closed shell's
@@ -418,10 +418,9 @@ fn a_closed_shell_ions_dry_budget_is_the_neutrals() {
     };
     let (neutral, neutral_table) = budget(0);
     let (ion, ion_table) = budget(2);
-    assert_eq!((neutral.n_occ, neutral.n_alpha, neutral.n_beta), (5, 5, 5));
-    assert_eq!((ion.n_occ, ion.n_alpha, ion.n_beta), (4, 4, 4));
+    assert_eq!((neutral.n_alpha, neutral.n_beta), (5, 5));
+    assert_eq!((ion.n_alpha, ion.n_beta), (4, 4));
     let occupied_as_the_neutral = fb_steps::Dims {
-        n_occ: 5,
         n_alpha: 5,
         n_beta: 5,
         ..ion
@@ -474,7 +473,7 @@ fn block_scratch(dev: &mut Layout, pin: &mut Layout, n: usize, n_atom: usize, m:
 /// A `"localization"` run's dry budget is exact, its arrays sized by the
 /// occupied blocks: water's five doubly occupied orbitals and its
 /// dication's four, each step's scratch the formula's, `C_local`
-/// `n_ao × n_occ` on gpu0 and the host; and every other step's region
+/// `n_ao × n_beta` on the host; and every other step's region
 /// the same for the two, since only the localization's budget reads more
 /// of the occupations than whether the shell is open
 /// (`docs/programming_model.md`, "The MainBus and its steps"). The water
@@ -501,7 +500,7 @@ fn a_localizations_dry_budget_is_exact_in_the_occupied_block() {
         let (plan, budgeted) = budget(charge, 1);
         budgeted.unwrap();
         let dims = plan.bus().shared().dims.clone();
-        assert_eq!((dims.n_atom, dims.n_occ), (3, m), "charge {charge}");
+        assert_eq!((dims.n_atom, dims.n_beta), (3, m), "charge {charge}");
         let ledger = plan.bus().ledger();
         let region = |kind: Kind| {
             ledger
@@ -526,7 +525,7 @@ fn a_localizations_dry_budget_is_exact_in_the_occupied_block() {
         heap.push((ledger.heap_total(), dims.n_ao));
     }
     assert_eq!(regions[0], regions[1], "the other steps' scratch");
-    // C_local's host copy, n_ao × n_occ, the one heap difference.
+    // C_local's host copy, n_ao × n_beta, the one heap difference.
     assert_eq!(heap[0].0 - heap[1].0, (heap[0].1 * 8) as u64);
 
     let (plan, budgeted) = budget(1, 2);

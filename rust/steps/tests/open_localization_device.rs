@@ -148,10 +148,6 @@ fn config(case: &Value, exponent: i32) -> Config {
 }
 
 /// The case `name` at `exponent` on the card, held to the bars.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one case's checks, in the order of the module doc"
-)]
 fn localizes_like_pyscf(name: &str, exponent: i32) {
     let reference = data("localization_rohf.json");
     let case = named(&reference["cases"], name);

@@ -71,7 +71,7 @@ fn a_restart_from_a_written_density_starts_converged() {
         error.message
     );
     let scf = one.output(ScfStep);
-    let n_occ = one.bus().shared().dims.n_occ;
+    let n_occ = one.bus().shared().dims.n_beta;
     assert_eq!(scf.iterations(), 1);
     assert_eq!(scf.guess_rank(), n_occ, "the loaded D's factor");
     let e_first = scf.energy();

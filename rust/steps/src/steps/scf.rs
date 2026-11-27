@@ -453,10 +453,6 @@ impl Step<MainBus> for ScfStep {
         })
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one SCF iteration, spelled out in the order it is enqueued"
-    )]
     fn run(
         out: &mut ScfOutput,
         view: &View<'_, MainBus, Self>,
@@ -473,7 +469,7 @@ impl Step<MainBus> for ScfStep {
             .scf
             .as_ref()
             .ok_or_else(|| Error::config("the scf step runs with [scf]"))?;
-        let (n, n_occ) = (shared.dims.n_ao, shared.dims.n_occ);
+        let (n, n_occ) = (shared.dims.n_ao, shared.dims.n_beta);
         let (n_alpha, n_beta) = (shared.dims.n_alpha, shared.dims.n_beta);
         let m = open_width(&shared.dims);
         // In range: mem_budget refused an n² past i32.
@@ -524,7 +520,7 @@ impl Step<MainBus> for ScfStep {
         // orbitals of `out.d` after any Roothaan step, so on a replay from
         // the start, and the guess's factor's rank on a fresh run's first.
         // An open shell's are its alpha factor's, its beta factor their
-        // first `n_beta`; a closed shell's `n_alpha` is `n_occ`.
+        // first `n_beta`; a closed shell's `n_alpha` is `n_beta`.
         let mut cols = n_alpha;
         let after_roothaan = if n_beta > 0 { Pass::Both } else { Pass::Alpha };
         let mut pass = if fresh {

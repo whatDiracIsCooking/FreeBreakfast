@@ -52,7 +52,7 @@
 //!
 //! **A block is a run of C's columns**, `[b0, b1)`, with its own layout,
 //! after the previous block's in the step's one: a closed shell's one
-//! block is the doubly occupied `[0, n_occ)`; an open shell's are
+//! block is the doubly occupied `[0, n_beta)`; an open shell's are
 //! `[0, n_beta)` and `[n_beta, n_alpha)`, each localized among itself and
 //! the first left out when it is empty. Its arrays are sized by the
 //! block's width (`docs/programming_model.md`, "The MainBus and its
@@ -64,13 +64,12 @@
 //!
 //! | Step | Runs on | Locks | `Output` | Scratch |
 //! |---|---|---|---|---|
-//! | [`LocalizationStep`] | gpu0 | gpu0 | `C_local` (`n_ao × n_alpha`) on gpu0 and the host, `L` before and after and the sweeps, summed over the blocks | each block's: its input, `W`, the population tensor and U with their pongs, the angles, the tables, G and T; their pinned ends |
+//! | [`LocalizationStep`] | gpu0 | gpu0 | `C_local` (`n_ao × n_alpha`) on the host, `L` before and after and the sweeps, summed over the blocks | each block's: its input, `W`, the population tensor and U with their pongs, the angles, the tables, G and T; their pinned ends |
 
 use contracts::requires;
-use fb_core_budget::{Budget, DeviceBuf, HeapSlab, Kind, Layout, Lease, LockId, Span};
+use fb_core_budget::{Budget, HeapSlab, Kind, Layout, Lease, LockId, Span};
 use fb_core_device::{
-    DeviceSlice, DeviceSliceMut, GpuResources, part, part_mut, wwr_blas_operation,
-    wwr_blas_side_mode,
+    DeviceSlice, GpuResources, part, part_mut, wwr_blas_operation, wwr_blas_side_mode,
 };
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_flow::{Held, Lane, Placement, Slot, Step, View};
@@ -107,7 +106,6 @@ pub struct LocalizationStep;
 
 /// The localized orbitals and what the loop measured.
 pub struct LocalizationOutput {
-    c: DeviceBuf<f64>,
     c_host: HeapSlab<f64>,
     before: f64,
     after: f64,
@@ -116,12 +114,6 @@ pub struct LocalizationOutput {
 }
 
 impl LocalizationOutput {
-    /// `C_local` on gpu0, `n_ao × n_cols` column-major.
-    #[must_use]
-    pub fn c_device(&self) -> &DeviceBuf<f64> {
-        &self.c
-    }
-
     /// `C_local` on the host, `n_ao × n_cols` column-major, each block's
     /// columns ascending in `⟨i|F|i⟩`.
     #[must_use]
@@ -129,7 +121,7 @@ impl LocalizationOutput {
         &self.c_host
     }
 
-    /// The localized columns: `n_alpha`, a closed shell's `n_occ`.
+    /// The localized columns: `n_alpha`, a closed shell's `n_beta`.
     #[must_use]
     pub fn n_cols(&self) -> usize {
         self.n_cols
@@ -160,16 +152,16 @@ impl LocalizationOutput {
 /// `mem_budget` declares the layouts' bytes, `run` carves its spans: the
 /// input's two the caller's, which stages it, the rest
 /// [`localize_block`]'s.
-pub(crate) struct BlockLayout {
+struct BlockLayout {
     /// C's block, `n × m`, then its `m` orbital energies.
-    pub(crate) input: Span<f64>,
+    input: Span<f64>,
     /// The input's pinned end.
-    pub(crate) h_input: Span<f64>,
-    pub(crate) spans: BlockSpans,
+    h_input: Span<f64>,
+    spans: BlockSpans,
 }
 
 /// The tenants [`localize_block`] carves.
-pub(crate) struct BlockSpans {
+struct BlockSpans {
     w: Span<f64>,
     pops: Span<f64>,
     pops_pong: Span<f64>,
@@ -192,7 +184,7 @@ pub(crate) struct BlockSpans {
 }
 
 /// The block layout (the module doc's), appended to `dev` and `pin`.
-pub(crate) fn block_layout(
+fn block_layout(
     dev: &mut Layout,
     pin: &mut Layout,
     n: usize,
@@ -230,16 +222,16 @@ pub(crate) fn block_layout(
 }
 
 /// What one block's loop measured.
-pub(crate) struct BlockInfo {
-    pub(crate) before: f64,
-    pub(crate) after: f64,
-    pub(crate) sweeps: usize,
+struct BlockInfo {
+    before: f64,
+    after: f64,
+    sweeps: usize,
 }
 
 /// The blocks of C's columns, `[b0, b1)`: the doubly occupied
 /// `[0, n_beta)`, left out when empty, then an open shell's singly
 /// occupied `[n_beta, n_alpha)`.
-pub(crate) fn blocks(dims: &Dims) -> impl Iterator<Item = (usize, usize)> {
+fn blocks(dims: &Dims) -> impl Iterator<Item = (usize, usize)> {
     [(0, dims.n_beta), (dims.n_beta, dims.n_alpha)]
         .into_iter()
         .filter(|(b0, b1)| b1 > b0)
@@ -247,7 +239,7 @@ pub(crate) fn blocks(dims: &Dims) -> impl Iterator<Item = (usize, usize)> {
 
 /// Refuse what the step cannot localize: no occupied orbital, and a block
 /// past the kernels' count or the BLAS's i32.
-pub(crate) fn check_dims(dims: &Dims) -> Status {
+fn check_dims(dims: &Dims) -> Status {
     if dims.n_alpha == 0 {
         return Err(Error::unsupported(
             "localization: no occupied orbital to localize",
@@ -274,19 +266,19 @@ pub(crate) fn check_dims(dims: &Dims) -> Status {
 /// The block's inputs as handed to [`localize_block`]: the options, the
 /// overlap, the uploaded input (C's block, `n × m`, then its `m` orbital
 /// energies) and the block's place.
-pub(crate) struct Block<'a, S, I> {
-    pub(crate) options: &'a LocalizationTable,
-    pub(crate) s: &'a S,
-    pub(crate) input: &'a I,
+struct Block<'a, S, I> {
+    options: &'a LocalizationTable,
+    s: &'a S,
+    input: &'a I,
     /// AOs.
-    pub(crate) n: usize,
+    n: usize,
     /// The block's width.
-    pub(crate) m: usize,
+    m: usize,
 }
 
 /// Localize one block whose C and orbital energies the caller has
 /// uploaded into `block.input`, and write its sorted columns
-/// into `c_out` (device, `n × m`) and `c_host` (`n × m`): the module doc's
+/// into `c_host` (`n × m`): the module doc's
 /// loop, on gpu0's guarded stream.
 ///
 /// # Errors
@@ -300,17 +292,12 @@ pub(crate) struct Block<'a, S, I> {
     le!(block.n * block.m + block.m, block.input.len()),
     "localize_block: input holds n × m and m"
 )]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one turn, spelled out in the order it is enqueued"
-)]
-pub(crate) fn localize_block<S, I>(
+fn localize_block<S, I>(
     gpu: &mut GpuResources,
     shared: &Shared,
     scratch: &Lease<'_>,
     spans: BlockSpans,
     block: &Block<'_, S, I>,
-    c_out: &mut impl DeviceSliceMut<f64>,
     c_host: &mut [f64],
 ) -> Result<BlockInfo>
 where
@@ -464,8 +451,6 @@ where
     for (j, &from) in order.iter().enumerate() {
         let from = from as usize;
         c_host[j * n..(j + 1) * n].copy_from_slice(&h_t[from * n..(from + 1) * n]);
-        gpu.stream()
-            .copy_device(&mut part_mut(c_out, j * n, n), &part(&t, from * n, n))?;
     }
     log::info!("localization: converged in {sweeps} sweeps, L = {last:.12} (from {before:.12})");
     Ok(BlockInfo {
@@ -506,7 +491,6 @@ impl Step<MainBus> for LocalizationStep {
         budget.scratch(GPU0, Kind::Pinned, pin.bytes());
         budget.locks([LockId::Gpu(GPU0)]);
         Ok(LocalizationOutput {
-            c: budget.device(GPU0, n * dims.n_alpha),
             c_host: budget.heap(n * dims.n_alpha),
             before: 0.0,
             after: 0.0,
@@ -562,7 +546,6 @@ impl Step<MainBus> for LocalizationStep {
                     n,
                     m,
                 },
-                &mut part_mut(&mut out.c, n * b0, n * m),
                 &mut out.c_host[n * b0..n * b1],
             )?;
             out.before += info.before;
@@ -601,7 +584,7 @@ pub(crate) mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
 
-    use fb_core_budget::Backing;
+    use fb_core_budget::{Backing, DeviceBuf};
     use fb_core_flow::{Dag, Executor};
 
     use crate::bus::Config;
@@ -613,7 +596,6 @@ pub(crate) mod tests {
     /// The probe's result.
     pub(crate) struct ProbeOutput {
         s: DeviceBuf<f64>,
-        c: DeviceBuf<f64>,
         c_host: HeapSlab<f64>,
         info: Option<BlockInfo>,
     }
@@ -650,7 +632,7 @@ pub(crate) mod tests {
 
         fn mem_budget(shared: &Shared, budget: &Budget<'_>) -> Result<ProbeOutput> {
             let dims = &shared.dims;
-            let (n, m) = (dims.n_ao, dims.n_occ);
+            let (n, m) = (dims.n_ao, dims.n_beta);
             let (mut dev, mut pin) = (Layout::new(), Layout::new());
             block_layout(&mut dev, &mut pin, n, dims.n_atom, m);
             budget.scratch(GPU0, Kind::Device, dev.bytes());
@@ -658,7 +640,6 @@ pub(crate) mod tests {
             budget.locks([LockId::Gpu(GPU0)]);
             Ok(ProbeOutput {
                 s: budget.device(GPU0, n * n),
-                c: budget.device(GPU0, n * m),
                 c_host: budget.heap(n * m),
                 info: None,
             })
@@ -672,7 +653,7 @@ pub(crate) mod tests {
             scratch: &Lease<'_>,
         ) -> Status {
             let shared = view.shared();
-            let (n, m) = (shared.dims.n_ao, shared.dims.n_occ);
+            let (n, m) = (shared.dims.n_ao, shared.dims.n_beta);
             let name = case(shared);
             let (s, _) = fixture(&format!("pm_{name}_s"));
             let (c, shape) = fixture(&format!("pm_{name}_c"));
@@ -707,7 +688,6 @@ pub(crate) mod tests {
                     n,
                     m,
                 },
-                &mut out.c,
                 &mut out.c_host,
             )?;
             out.info = Some(info);

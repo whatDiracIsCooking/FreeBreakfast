@@ -78,7 +78,7 @@ fn water_at(exponent: i32) {
     run.write(&dir).unwrap();
 
     let shared = run.plan.bus().shared();
-    let (n, m) = (shared.dims.n_ao, shared.dims.n_occ);
+    let (n, m) = (shared.dims.n_ao, shared.dims.n_beta);
     let local = run.plan.output(LocalizationStep);
     let array = fb_io_npy::read_npy(&dir.join("c_local.npy")).unwrap();
     assert_eq!(array.shape, [n, m]);

@@ -223,12 +223,6 @@ impl EriManager {
         &self.b
     }
 
-    /// `gpu`'s copy of the metric's Cholesky factor, in the lower triangle.
-    #[must_use]
-    pub fn l(&self, gpu: usize) -> &DeviceBuf<f64> {
-        &self.l[gpu]
-    }
-
     /// The pair batch width `[eri] mem_per_gpu` gave, in pair columns.
     #[must_use]
     pub fn width(&self) -> usize {
@@ -1727,7 +1721,7 @@ pub(crate) mod tests {
         }
 
         fn mem_budget(shared: &Shared, budget: &Budget<'_>) -> Result<ProbeOutput> {
-            let (n, o) = (shared.dims.n_ao, shared.dims.n_occ);
+            let (n, o) = (shared.dims.n_ao, shared.dims.n_beta);
             let mut l = Layout::new();
             let _ = l.span::<f64>(n * o);
             budget.scratch(GPU0, Kind::Pinned, l.bytes());
@@ -1750,7 +1744,7 @@ pub(crate) mod tests {
             scratch: &Lease<'_>,
         ) -> Status {
             let shared = view.shared();
-            let (n, o) = (shared.dims.n_ao, shared.dims.n_occ);
+            let (n, o) = (shared.dims.n_ao, shared.dims.n_beta);
             let mut staged = scratch.pinned(GPU0, Layout::new().span::<f64>(n * o));
             staged.copy_from_slice(&c_of(n, o));
             let gpu = held.gpu(GPU0);
