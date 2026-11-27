@@ -41,15 +41,11 @@
     reason = "a test's report of its readings, outside any step's run"
 )]
 
-#[allow(
-    dead_code,
-    reason = "the shared module's orthogonalizer check is the other binaries'"
-)]
 mod common;
 
 use fb_core_budget::{Backing, bytes};
 use fb_core_flow::{Bus, Executor};
-use fb_steps::{Config, MainBus, ScfStep, ScfTable, plan};
+use fb_steps::{Config, MainBus, ScfStep, plan};
 use fb_test_support::amdgpu_process_vram;
 
 /// The lanes the gfx1200 keeps resident (`rocminfo`: 32 compute units of
@@ -150,8 +146,7 @@ fn readings(config: Config, converged: bool) -> ([Option<u64>; 3], u64) {
 #[ignore = "tier 4: needs a GPU"]
 fn the_libraries_hold_their_budget_and_the_chain_its_kernel_stack_bound() {
     let library = readings(common::config("h2o.xyz", "cc-pvdz", None), false);
-    let mut config = common::config("h2o.xyz", "cc-pvdz", Some("cc-pvdz-jkfit"));
-    config.scf = Some(ScfTable::default());
+    let config = common::chain("h2o.xyz");
     let chain = readings(config, true);
     for (what, ([budgeted, first, second], allocated)) in
         [("library steps", library), ("chain", chain)]

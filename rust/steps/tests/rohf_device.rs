@@ -40,30 +40,21 @@
     reason = "a test's reference and host checks, outside any step's run"
 )]
 
-#[allow(
-    dead_code,
-    reason = "the shared module's orthogonalizer check is the other binaries'"
-)]
 mod common;
 
 use std::path::Path;
 
-use fb_core_budget::{Backing, Caps, Ledger};
-use fb_core_device::Stream;
+use fb_core_budget::Backing;
 use fb_core_flow::Bus;
 use fb_steps::{Config, EriStep, ScfStep, ScfTable, run};
 
-/// The energy bar, hartree.
-const ENERGY_BAR: f64 = 1e-9;
+use common::{ANGSTROM_PER_BOHR, ENERGY_BAR};
 
 /// The orbital energy bar, hartree.
 const EPSILON_BAR: f64 = 1e-6;
 
 /// The density's bar, relative to its largest element.
 const DENSITY_BAR: f64 = 1e-12;
-
-/// Angstrom per bohr, CODATA 2018: the XYZ reader's.
-const ANGSTROM_PER_BOHR: f64 = 0.529_177_210_903;
 
 /// One case of `df_rohf.json`.
 struct Case {
@@ -79,9 +70,9 @@ struct Case {
 
 /// The case `name` of `tests/data/df_rohf.json`.
 fn case(name: &str) -> Case {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/df_rohf.json");
     let json: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(common::data("df_rohf.json")).unwrap())
+            .unwrap();
     let case = json["df_rohf"]
         .as_array()
         .unwrap()
@@ -198,10 +189,7 @@ fn converges_to_pyscf(name: &str) {
 
     // The effective Fock matrix, brought back, in the published orbitals.
     let fock = scf.fock().expect("an open shell's effective Fock matrix");
-    let caps = Caps::read(&[0], &[None], None, Backing::Real).unwrap();
-    let ledger = Ledger::new(caps, Backing::Real, vec![0], false);
-    let host = ledger.budget("test").pinned::<f64>(0, n * n);
-    let f = Stream::new(0).download(host, fock).unwrap().sync().unwrap();
+    let f = common::download(0, fock);
     let diagonal_miss = (0..n)
         .map(|i| {
             let col = &c[i * n..(i + 1) * n];

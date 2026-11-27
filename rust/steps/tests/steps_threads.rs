@@ -14,10 +14,6 @@
 //! The count is the `Threads:` line of `/proc/self/status`. `harness =
 //! false`: libtest runs cases on threads of its own, which would be counted.
 
-#[allow(
-    dead_code,
-    reason = "the shared module's orthogonalizer check is the other binaries'"
-)]
 mod common;
 
 use std::time::{Duration, Instant};

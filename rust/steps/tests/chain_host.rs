@@ -8,10 +8,6 @@
     reason = "a test's file lists, outside any step's run"
 )]
 
-#[allow(
-    dead_code,
-    reason = "the shared module's orthogonalizer check is the other binaries'"
-)]
 mod common;
 
 use std::path::Path;
@@ -20,18 +16,11 @@ use fb_core_budget::Backing;
 use fb_core_error_handling::ErrorKind;
 use fb_steps::{MainBus, ScfTable, plan, run};
 
-/// Water's chain config, `[scf]` at its defaults.
-fn chain() -> fb_steps::Config {
-    let mut config = common::config("h2o.xyz", "cc-pvdz", Some("cc-pvdz-jkfit"));
-    config.scf = Some(ScfTable::default());
-    config
-}
-
 /// The dry run on two GPUs is accepted, its table has every step's row and
 /// the SCF's locks, and the SCF reads exactly the five steps it declares.
 #[test]
 fn a_dry_run_budgets_the_whole_chain() {
-    let mut config = chain();
+    let mut config = common::chain("h2o.xyz");
     config.resources.devices = [0, 1].into();
     let run = run(config, Backing::Dry).expect("the plan is accepted");
     for row in [
@@ -89,7 +78,7 @@ fn scf_options_out_of_range_are_refused() {
         (|t| t.diis_history = 65, "diis_history is 65"),
     ];
     for (set, key) in cases {
-        let mut config = chain();
+        let mut config = common::chain("h2o.xyz");
         set(config.scf.as_mut().unwrap());
         let error = run(config, Backing::Dry).err().expect("refused");
         assert_eq!(error.kind, ErrorKind::InvalidConfig, "{error}");

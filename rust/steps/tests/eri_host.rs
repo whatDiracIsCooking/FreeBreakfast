@@ -5,10 +5,6 @@
 //! schwarz_threshold` is the budget at 0, and a threshold under 0 or not a
 //! number is refused.
 
-#[allow(
-    dead_code,
-    reason = "the shared module's orthogonalizer check is the other binaries'"
-)]
 mod common;
 
 use fb_core_budget::Backing;

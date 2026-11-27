@@ -56,10 +56,6 @@
     reason = "a test's reference and host checks, outside any step's run"
 )]
 
-#[allow(
-    dead_code,
-    reason = "the shared module's orthogonalizer check is the other binaries'"
-)]
 mod common;
 
 use std::path::Path;
@@ -68,6 +64,8 @@ use fb_core_budget::Backing;
 use fb_core_flow::Bus;
 use fb_steps::{Config, LocalizationStep, LocalizationTable, ScfStep, ScfTable, run};
 use serde_json::Value;
+
+use common::ANGSTROM_PER_BOHR;
 
 /// The SCF's residual tolerance, `ScfTable`'s default.
 const COMMUTATOR_TOLERANCE: f64 = 1e-7;
@@ -83,15 +81,9 @@ const DENSITY_BAR: f64 = 1e-12;
 /// The order's margin, hartree.
 const ORDER_MARGIN: f64 = 1e-10;
 
-/// Angstrom per bohr, CODATA 2018: the XYZ reader's.
-const ANGSTROM_PER_BOHR: f64 = 0.529_177_210_903;
-
 /// A JSON file of `tests/data`.
 fn data(file: &str) -> Value {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/data")
-        .join(file);
-    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    serde_json::from_str(&std::fs::read_to_string(common::data(file)).unwrap()).unwrap()
 }
 
 /// The entry `name` of `list`.
@@ -153,20 +145,6 @@ fn config(case: &Value, exponent: i32) -> Config {
     });
     config.resources.nan_fill = true;
     config
-}
-
-/// The full symmetric matrix of the packed lower triangle `packed`.
-fn unpack(packed: &[f64], n: usize) -> Vec<f64> {
-    let mut full = vec![0.0; n * n];
-    let mut at = 0;
-    for p in 0..n {
-        for q in 0..=p {
-            full[p * n + q] = packed[at];
-            full[q * n + p] = packed[at];
-            at += 1;
-        }
-    }
-    full
 }
 
 /// The case `name` at `exponent` on the card, held to the bars.
@@ -253,7 +231,7 @@ fn localizes_like_pyscf(name: &str, exponent: i32) {
     // Each orbital's Mulliken population on each atom, Q^A_ii =
     // Σ_{μ ∈ A} C_μi (S C)_μi, over the basis's atom AO ranges.
     let basis = &shared.basis;
-    let s = unpack(&fb_integrals_s_overlap_host::overlap(basis), n);
+    let s = common::unpack(&fb_integrals_s_overlap_host::overlap(basis), n);
     let (n_atoms, n_shells) = (basis.natoms(), basis.nshells());
     let offsets: Vec<usize> = (0..=n_atoms)
         .map(|a| {

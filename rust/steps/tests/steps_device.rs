@@ -27,10 +27,11 @@
 
 mod common;
 
-use fb_core_budget::{Backing, Caps, Ledger, device_margin};
-use fb_core_device::Stream;
+use fb_core_budget::{Backing, device_margin};
 use fb_core_flow::{Bus, Executor};
 use fb_steps::{EIGENVALUE_FLOOR, MainBus, OrthogonalizerStep, plan};
+
+use common::fast_tests;
 
 /// The bar: X's error relative to its largest element.
 const BAR: f64 = 1e-10;
@@ -119,12 +120,6 @@ fn host_x(packed: &[f64], n: usize) -> (Vec<f64>, f64) {
     (x, w[n - 1] / w[0])
 }
 
-/// Whether the gates' fast mode is on: `FREE_BREAKFAST_FAST_TESTS` set,
-/// non-empty and not starting with `0` (`docs/testing.md`, "Slow cases").
-fn fast_tests() -> bool {
-    std::env::var("FREE_BREAKFAST_FAST_TESTS").is_ok_and(|v| !v.is_empty() && !v.starts_with('0'))
-}
-
 /// `xyz` in cc-pVDZ, with `[eri]` over `aux` when given, set up on device
 /// 0, budgeted and run once; X against the host's, and the orthogonalizer's
 /// scratch apart from the `unordered` steps' in the plan's table.
@@ -141,13 +136,7 @@ fn x_against_the_host(xyz: &str, aux: Option<&str>, unordered: usize) {
 
     let shared = plan.bus().shared();
     let n = shared.dims.n_ao;
-    // A pinned buffer of a ledger of the test's own to bring X back.
-    let caps = Caps::read(&[0], &[None], None, Backing::Real).unwrap();
-    let ledger = Ledger::new(caps, Backing::Real, vec![0], false);
-    let host = ledger.budget("test").pinned::<f64>(0, n * n);
-    let stream = Stream::new(0);
-    let x = plan.output(OrthogonalizerStep);
-    let got = stream.download(host, x.x()).unwrap().sync().unwrap();
+    let got = common::download(0, plan.output(OrthogonalizerStep).x());
 
     let (want, kappa) = host_x(&fb_integrals_s_overlap_host::overlap(&shared.basis), n);
     let largest = want.iter().fold(0.0f64, |m, v| m.max(v.abs()));
@@ -215,15 +204,11 @@ fn the_metric_reaches_every_gpu(devices: &str) {
             want[r * q + p] = v;
         }
     }
-    let caps = Caps::read(&[0], &[None], None, Backing::Real).unwrap();
-    let ledger = Ledger::new(caps, Backing::Real, vec![0], false);
-    let mut host = ledger.budget("test").pinned::<f64>(0, q * q);
     let metric = plan.output(fb_steps::MetricStep);
     let gpus = metric.gpus();
     assert_eq!(gpus.len(), physical.len());
     for (gpu, (metric, &device)) in gpus.iter().zip(&physical).enumerate() {
-        let stream = Stream::new(device);
-        host = stream.download(host, metric).unwrap().sync().unwrap();
+        let host = common::download(device, metric);
         assert!(
             host.iter()
                 .zip(&want)

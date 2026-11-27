@@ -1,19 +1,52 @@
 //! What the steps' tests share: a config over a molecule of `tests/data`,
-//! and the check that the orthogonalizer, gpu0's lock holder, shares no
-//! scratch byte with a step the DAG leaves unordered with it; and the
-//! allocation record, installed in every test binary of the steps, so the
-//! wrapper fails a step whose `run` makes one allocation past its threshold
-//! on the plain heap (`docs/memory.md`, "The budget").
+//! the chain's config, a file of `tests/data`, the energy bar, the bohr,
+//! the gates' fast switch, a buffer brought back to the host, a packed
+//! triangle unpacked, and the check that the orthogonalizer, gpu0's lock
+//! holder, shares no scratch byte with a step the DAG leaves unordered with
+//! it; and the allocation record, installed in every test binary of the
+//! steps, so the wrapper fails a step whose `run` makes one allocation past
+//! its threshold on the plain heap (`docs/memory.md`, "The budget").
 
-use std::path::Path;
+#![allow(
+    dead_code,
+    reason = "each test binary uses its own part of what the tests share"
+)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a test reads its result back on the host: the harness waits, not a task"
+)]
+#![allow(
+    clippy::disallowed_macros,
+    reason = "a test's host buffers, outside any step's run"
+)]
 
-use fb_core_budget::{Kind, Ledger};
-use fb_steps::Config;
+use std::path::{Path, PathBuf};
+
+use fb_core_budget::{Backing, Caps, DeviceBuf, Kind, Ledger};
+use fb_core_device::{DeviceSlice, Stream};
+use fb_steps::{Config, ScfTable};
 
 /// The allocation record: every `run` the wrapper calls in this binary is
 /// watched.
 #[global_allocator]
 static RECORD: fb_core_budget::AllocationRecord = fb_core_budget::AllocationRecord;
+
+/// The bar on an energy, hartree, set by the loop's own convergence:
+/// `[scf] energy_tolerance` is 1e-10 between two builds and the commutator
+/// 1e-7, whose square bounds a converged energy's distance from the
+/// stationary point, so two runs that converge along different paths agree
+/// within a few 1e-11 (`chain_device.rs`).
+pub const ENERGY_BAR: f64 = 1e-9;
+
+/// Angstrom per bohr, CODATA 2018: the XYZ reader's.
+pub const ANGSTROM_PER_BOHR: f64 = 0.529_177_210_903;
+
+/// `tests/data/<file>`.
+pub fn data(file: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data")
+        .join(file)
+}
 
 /// The config of `xyz` (a file of `tests/data`) in `basis`, with `[eri]`
 /// over `aux` when given, on device 0.
@@ -22,8 +55,49 @@ pub fn config(xyz: &str, basis: &str, aux: Option<&str>) -> Config {
     if let Some(aux) = aux {
         text += &format!("[eri]\naux_basis = \"{aux}\"\n");
     }
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
-    Config::parse(&text, &dir).unwrap()
+    Config::parse(&text, &data("")).unwrap()
+}
+
+/// The chain's config of `xyz`: cc-pVDZ, `[eri]` over cc-pVDZ-JKFIT, and
+/// `[scf]` at its defaults.
+pub fn chain(xyz: &str) -> Config {
+    let mut config = config(xyz, "cc-pvdz", Some("cc-pvdz-jkfit"));
+    config.scf = Some(ScfTable::default());
+    config
+}
+
+/// Whether the gates' fast mode is on: `FREE_BREAKFAST_FAST_TESTS` set,
+/// non-empty and not starting with `0` (`docs/testing.md`, "Slow cases").
+pub fn fast_tests() -> bool {
+    std::env::var("FREE_BREAKFAST_FAST_TESTS").is_ok_and(|v| !v.is_empty() && !v.starts_with('0'))
+}
+
+/// `buf`, on `device`, brought back on a stream of the test's own into a
+/// pinned buffer of a ledger of its own.
+pub fn download(device: i32, buf: &DeviceBuf<f64>) -> Vec<f64> {
+    let caps = Caps::read(&[0], &[None], None, Backing::Real).unwrap();
+    let ledger = Ledger::new(caps, Backing::Real, vec![0], false);
+    let host = ledger.budget("test").pinned::<f64>(0, buf.len());
+    let host = Stream::new(device)
+        .download(host, buf)
+        .unwrap()
+        .sync()
+        .unwrap();
+    host.to_vec()
+}
+
+/// The full symmetric matrix of the packed lower triangle `packed`.
+pub fn unpack(packed: &[f64], n: usize) -> Vec<f64> {
+    let mut full = vec![0.0; n * n];
+    let mut at = 0;
+    for p in 0..n {
+        for q in 0..=p {
+            full[p * n + q] = packed[at];
+            full[q * n + p] = packed[at];
+            at += 1;
+        }
+    }
+    full
 }
 
 /// The steps the orthogonalizer is unordered with: all but the overlap,

@@ -36,34 +36,16 @@
     reason = "a test's comparisons, outside any step's run"
 )]
 
-#[allow(
-    dead_code,
-    reason = "the shared module's orthogonalizer check is the other binaries'"
-)]
 mod common;
 
-use fb_core_budget::{Backing, Caps, DeviceBuf, Ledger};
+use fb_core_budget::Backing;
 use fb_core_flow::Bus;
-use fb_steps::{CoreHamiltonianStep, MetricStep, OverlapStep, ScfStep, ScfTable, run};
+use fb_steps::{CoreHamiltonianStep, MetricStep, OverlapStep, ScfStep, run};
 
-/// The bar on an energy, hartree.
-const ENERGY_BAR: f64 = 1e-9;
+use common::{ENERGY_BAR, data, download, fast_tests};
 
 /// The bar on S, H and the metric, relative to the largest element.
 const MATRIX_BAR: f64 = 1e-12;
-
-/// Whether the gates' fast mode is on: `FREE_BREAKFAST_FAST_TESTS` set,
-/// non-empty and not starting with `0` (`docs/testing.md`, "Slow cases").
-fn fast_tests() -> bool {
-    std::env::var("FREE_BREAKFAST_FAST_TESTS").is_ok_and(|v| !v.is_empty() && !v.starts_with('0'))
-}
-
-/// A file of `tests/data`.
-fn data(file: &str) -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/data")
-        .join(file)
-}
 
 /// The old path's recorded DF-RHF energy of `xyz` and its iterations.
 fn recorded_energy(xyz: &str) -> (f64, u64) {
@@ -83,9 +65,8 @@ fn recorded_energy(xyz: &str) -> (f64, u64) {
 
 /// The steps' DF-RHF energy of `xyz`, converged, the screen off.
 fn new_energy(xyz: &str) -> (f64, usize) {
-    let mut config = common::config(xyz, "cc-pvdz", Some("cc-pvdz-jkfit"));
+    let mut config = common::chain(xyz);
     config.eri.as_mut().unwrap().schwarz_threshold = 0.0;
-    config.scf = Some(ScfTable::default());
     let run = run(config, Backing::Real).expect("the chain runs");
     let scf = run.plan.output(ScfStep);
     assert!(scf.converged());
@@ -122,20 +103,6 @@ fn benzenes_and_ethylenes_energies_match_the_old_paths() {
     energy_agrees("ethylene_meci856.xyz");
 }
 
-/// `buf`'s first `len` doubles, brought back on a stream of the test's own
-/// into a pinned buffer of a ledger of its own.
-fn download(buf: &DeviceBuf<f64>, len: usize) -> Vec<f64> {
-    let caps = Caps::read(&[0], &[None], None, Backing::Real).unwrap();
-    let ledger = Ledger::new(caps, Backing::Real, vec![0], false);
-    let host = ledger.budget("test").pinned::<f64>(0, len);
-    let host = fb_core_device::Stream::new(0)
-        .download(host, buf)
-        .unwrap()
-        .sync()
-        .unwrap();
-    host.to_vec()
-}
-
 /// Water's S, H and metric from the host steps against the old path's
 /// recorded from the GPU, each symmetric and full, element for element.
 #[test]
@@ -146,9 +113,9 @@ fn waters_s_h_and_metric_match_the_old_paths() {
     let dims = &run.plan.bus().shared().dims;
     let (n, q) = (dims.n_ao, dims.n_aux);
     let new = [
-        (n, download(run.plan.output(OverlapStep).s(), n * n)),
-        (n, download(run.plan.output(CoreHamiltonianStep).h(), n * n)),
-        (q, download(&run.plan.output(MetricStep).gpus()[0], q * q)),
+        (n, download(0, run.plan.output(OverlapStep).s())),
+        (n, download(0, run.plan.output(CoreHamiltonianStep).h())),
+        (q, download(0, &run.plan.output(MetricStep).gpus()[0])),
     ];
     let files = [
         "old_path_h2o_s.npy",
@@ -159,6 +126,7 @@ fn waters_s_h_and_metric_match_the_old_paths() {
         let old = fb_io_npy::read_npy(&data(file)).unwrap();
         assert_eq!(old.shape, [*dim, *dim], "{what}: the shape");
         let old = old.data;
+        assert_eq!(new.len(), old.len(), "{what}: the length");
         let largest = old.iter().fold(0.0f64, |m, v| m.max(v.abs()));
         let worst = new
             .iter()

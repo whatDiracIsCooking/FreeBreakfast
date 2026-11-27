@@ -17,15 +17,11 @@
     reason = "a test's paths and host reads, outside any step's run"
 )]
 
-#[allow(
-    dead_code,
-    reason = "the shared module's orthogonalizer check is the other binaries'"
-)]
 mod common;
 
 use fb_core_budget::Backing;
 use fb_core_flow::Bus;
-use fb_steps::{ScfStep, ScfTable, run};
+use fb_steps::{ScfStep, run};
 use serde_json::Value;
 
 /// Whether `a` and `b` hold the same bits.
@@ -36,8 +32,7 @@ fn bitwise(a: &[f64], b: &[f64]) -> bool {
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn waters_products_read_back_bitwise() {
-    let mut config = common::config("h2o.xyz", "cc-pvdz", Some("cc-pvdz-jkfit"));
-    config.scf = Some(ScfTable::default());
+    let config = common::chain("h2o.xyz");
     let run = run(config, Backing::Real).expect("the chain runs");
     let dir = std::env::temp_dir().join(format!("fb-steps-write-device-{}", std::process::id()));
     run.write(&dir).unwrap();

@@ -26,20 +26,13 @@
     reason = "a test's case lists and host reference, outside any step's run"
 )]
 
-#[allow(
-    dead_code,
-    reason = "the shared module's orthogonalizer check is the other binaries'"
-)]
 mod common;
-
-use std::path::Path;
 
 use fb_core_budget::{Backing, LockId};
 use fb_core_flow::Bus;
-use fb_steps::{Config, EriStep, MainBus, Run, ScfStep, ScfTable, for_each_pair, run};
+use fb_steps::{Config, EriStep, MainBus, Run, ScfStep, for_each_pair, run};
 
-/// The bar on an energy, hartree.
-const ENERGY_BAR: f64 = 1e-9;
+use common::ENERGY_BAR;
 
 /// `(file, recorded, PySCF)`: v0.0.2's recorded energy and PySCF's DF-RHF.
 const WATER: (&str, f64, f64) = ("h2o.xyz", -76.026_751_140_543, -76.026_751_140_542_9);
@@ -49,14 +42,6 @@ const ETHYLENE: (&str, f64, f64) = (
     -77.867_545_824_336,
     -77.867_545_824_336_02,
 );
-
-/// The chain's config of `xyz`: cc-pVDZ, `[eri]` over cc-pVDZ-JKFIT, and
-/// `[scf]` at its defaults.
-fn chain(xyz: &str) -> Config {
-    let mut config = common::config(xyz, "cc-pvdz", Some("cc-pvdz-jkfit"));
-    config.scf = Some(ScfTable::default());
-    config
-}
 
 /// The least `[eri] mem_per_gpu` of `config`'s plan at `ring`.
 fn least(config: &Config, ring: usize) -> u64 {
@@ -80,7 +65,7 @@ fn energy(run: &Run) -> (f64, usize) {
 /// `case` on one GPU against its recorded energy, its J/K passes one per
 /// iteration (exact).
 fn against_the_record((xyz, recorded, pyscf): (&str, f64, f64)) {
-    let run = converged(chain(xyz));
+    let run = converged(common::chain(xyz));
     let (e, iterations) = energy(&run);
     assert_eq!(
         run.plan.output(EriStep).passes(),
@@ -110,7 +95,7 @@ fn against_the_record((xyz, recorded, pyscf): (&str, f64, f64)) {
 #[ignore = "tier 4: needs a GPU"]
 fn the_first_pass_is_the_guesss_factor() {
     for ((xyz, ..), from_d) in [(WATER, 11), (BENZENE, 11), (ETHYLENE, 51)] {
-        let run = converged(chain(xyz));
+        let run = converged(common::chain(xyz));
         let dims = &run.plan.bus().shared().dims;
         let (n, n_occ) = (dims.n_ao, dims.n_occ);
         let scf = run.plan.output(ScfStep);
@@ -145,7 +130,7 @@ fn waters_energy_matches_the_recorded_one() {
 #[ignore = "tier 4: needs a GPU"]
 fn the_water_dications_energy_matches_pyscfs() {
     const PYSCF: f64 = -74.596_854_781_569_2;
-    let mut config = chain("h2o.xyz");
+    let mut config = common::chain("h2o.xyz");
     config.molecule.charge = 2;
     let run = converged(config);
     assert_eq!(run.plan.bus().shared().dims.n_occ, 4);
@@ -172,7 +157,7 @@ fn benzenes_and_ethylenes_energies_match_the_recorded_ones() {
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn forced_batches_and_rings_of_one_give_waters_energy() {
-    let default = converged(chain(WATER.0));
+    let default = converged(common::chain(WATER.0));
     let (e0, _) = energy(&default);
     {
         let eri = default.plan.output(EriStep);
@@ -180,7 +165,7 @@ fn forced_batches_and_rings_of_one_give_waters_energy() {
     }
     drop(default);
     for ring in [2, 1] {
-        let mut config = chain(WATER.0);
+        let mut config = common::chain(WATER.0);
         let at = least(&config, ring);
         let eri = config.eri.as_mut().unwrap();
         (eri.mem_per_gpu, eri.ring) = (Some(at), ring);
@@ -210,15 +195,15 @@ fn forced_batches_and_rings_of_one_give_waters_energy() {
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn several_gpus_give_benzenes_energy_on_one() {
-    let (one, _) = energy(&converged(chain(BENZENE.0)));
+    let (one, _) = energy(&converged(common::chain(BENZENE.0)));
     assert!((one - BENZENE.1).abs() < ENERGY_BAR);
     let mut lists = vec![vec![0, 0]];
     let seen = fb_core_device::device_count().unwrap();
     lists.extend((2..=seen.min(4)).map(|n| (0..n).collect::<Vec<i32>>()));
-    let forced = least(&chain(BENZENE.0), 2) * 3 / 2;
+    let forced = least(&common::chain(BENZENE.0), 2) * 3 / 2;
     for devices in lists {
         for (mem_per_gpu, threads) in [(None, 8), (Some(forced), 2)] {
-            let mut config = chain(BENZENE.0);
+            let mut config = common::chain(BENZENE.0);
             config.eri.as_mut().unwrap().mem_per_gpu = mem_per_gpu;
             config.resources.devices.clone_from(&devices);
             (config.resources.nan_fill, config.resources.threads) = (true, threads);
@@ -249,7 +234,7 @@ fn several_gpus_give_benzenes_energy_on_one() {
 #[ignore = "tier 4: needs a GPU"]
 fn the_worker_count_does_not_move_waters_energy() {
     let at = |threads: usize| {
-        let mut config = chain(WATER.0);
+        let mut config = common::chain(WATER.0);
         (config.resources.threads, config.resources.nan_fill) = (threads, true);
         converged(config)
     };
@@ -323,7 +308,7 @@ fn the_worker_count_does_not_move_waters_energy() {
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn a_replay_gives_waters_energy_and_allocates_nothing() {
-    let mut run = converged(chain(WATER.0));
+    let mut run = converged(common::chain(WATER.0));
     let (first, n_first) = energy(&run);
     let allocations = run.plan.bus().ledger().allocations();
     run.replay().expect("the replay runs");
@@ -354,16 +339,13 @@ fn a_replay_gives_waters_energy_and_allocates_nothing() {
 #[test]
 #[ignore = "tier 4: needs a GPU"]
 fn waters_b_matches_pyscf() {
-    let mut config = chain(WATER.0);
+    let mut config = common::chain(WATER.0);
     config.scf = None;
     let run = run(config, Backing::Real).unwrap();
     let shared = run.plan.bus().shared();
     let eri = run.plan.output(EriStep);
     let (n_aux, n_col) = (eri.n_aux(), eri.n_col());
-    let reference = fb_io_npy::read_npy(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/b_h2o_cc-pvdz_cc-pvdz-jkfit.npy"),
-    )
-    .unwrap();
+    let reference = fb_io_npy::read_npy(&common::data("b_h2o_cc-pvdz_cc-pvdz-jkfit.npy")).unwrap();
     assert_eq!(
         reference.shape,
         [n_aux, shared.dims.n_ao * (shared.dims.n_ao + 1) / 2]

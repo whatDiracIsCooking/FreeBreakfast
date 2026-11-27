@@ -19,6 +19,8 @@ use fb_core_budget::{Backing, Budget, Cap, Caps, Kind, Layout, Lease, Ledger, RE
 use fb_core_device::HANDLE_WORKSPACE_BYTES;
 use fb_core_error_handling::{ErrorKind, Result, Status};
 use fb_core_flow::{Bus, Dag, Executor, Held, Lane, Locks, Slot, Step, View};
+
+use common::fast_tests;
 use fb_steps::{
     CoreHamiltonianStep, DEFAULT_MEM_PER_GPU, EriStep, GuessStep, MainBus, MetricStep, OverlapStep,
     ScfStep, plan,
@@ -655,10 +657,6 @@ fn a_step_allocating_2_mib_on_the_heap_in_run_fails_named() {
         "{}",
         bus.ledger().table()
     );
-}
-
-fn fast_tests() -> bool {
-    std::env::var("FREE_BREAKFAST_FAST_TESTS").is_ok_and(|v| !v.is_empty() && !v.starts_with('0'))
 }
 
 /// `xyz`'s four host steps in cc-pVDZ / cc-pVDZ-JKFIT, budgeted and
