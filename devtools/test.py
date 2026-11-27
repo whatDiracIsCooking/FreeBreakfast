@@ -199,7 +199,7 @@ CPP_FROZEN = (
     " frozen) -- --cpp runs the C++ half"
 )
 # The Rust rebuild fires the cargo half and nothing else: whatever the path --
-# Rust, a .cu, its own CMake project, docs, its by-hand docs/md2html.py --
+# Rust, a .cu, its own CMake project, docs, docs/md2html.py (docs.yml runs it) --
 # nothing under rust/ is C++ the tree builds or Python the tree tests.
 # devtools/rust-bindings.py fires it too, beside the Python half: fb-device-check
 # runs it and compares the committed bindings.
