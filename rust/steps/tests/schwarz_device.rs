@@ -23,14 +23,12 @@
     reason = "a test reads its result back on the host: the harness waits, not a task"
 )]
 
-#[allow(
-    dead_code,
-    reason = "the shared module's orthogonalizer check is the other binaries'"
-)]
 mod common;
 
 use fb_core_budget::Backing;
-use fb_steps::{EriStep, ScfStep, ScfTable, run};
+use fb_steps::{EriStep, ScfStep, run};
+
+use common::fast_tests;
 
 /// The energy bar between the two thresholds, hartree.
 const BAR: f64 = 1e-10;
@@ -41,17 +39,10 @@ const CHAIN_BAR: f64 = 1e-9;
 /// Benzene's recorded DF-RHF energy (`tests/chain_device.rs`).
 const RECORDED: f64 = -230.721_729_270_921;
 
-/// Whether the gates' fast mode is on: `FREE_BREAKFAST_FAST_TESTS` set,
-/// non-empty and not starting with `0`, as `FBF_SKIP_IF_FAST_TESTS` reads it.
-fn fast_tests() -> bool {
-    std::env::var("FREE_BREAKFAST_FAST_TESTS").is_ok_and(|v| !v.is_empty() && !v.starts_with('0'))
-}
-
 /// Benzene's converged energy at `threshold`, the default when `None`, and
 /// the pairs the screen dropped.
 fn energy(threshold: Option<f64>) -> (f64, usize) {
-    let mut config = common::config("benzene.xyz", "cc-pvdz", Some("cc-pvdz-jkfit"));
-    config.scf = Some(ScfTable::default());
+    let mut config = common::chain("benzene.xyz");
     if let Some(t) = threshold {
         config.eri.as_mut().unwrap().schwarz_threshold = t;
     }

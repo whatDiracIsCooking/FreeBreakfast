@@ -22,10 +22,6 @@
     reason = "a test's paths and config text, outside any step's run"
 )]
 
-#[allow(
-    dead_code,
-    reason = "the shared module's orthogonalizer check is the other binaries'"
-)]
 mod common;
 
 use std::path::Path;
@@ -35,8 +31,7 @@ use fb_core_error_handling::ErrorKind;
 use fb_core_flow::{Bus, Executor};
 use fb_steps::{Config, MainBus, ScfStep, plan, run};
 
-/// The bar between two converged energies, hartree (`chain_device.rs`).
-const ENERGY_BAR: f64 = 1e-9;
+use common::ENERGY_BAR;
 
 /// Water's chain under the NaN fill, with `extra` appended to the config.
 fn config(extra: &str) -> Config {

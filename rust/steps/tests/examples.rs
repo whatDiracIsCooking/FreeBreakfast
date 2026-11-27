@@ -27,14 +27,15 @@
     reason = "a test's case lists and its readings back, outside any step's run"
 )]
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use fb_core_error_handling::ErrorKind;
 
-/// The bar on an energy, hartree (`chain_device.rs`).
-const ENERGY_BAR: f64 = 1e-9;
+use common::{ENERGY_BAR, data};
 
 /// The bar on S, relative to its largest element (`recorded_device.rs`).
 const MATRIX_BAR: f64 = 1e-12;
@@ -63,13 +64,6 @@ const EXAMPLES: [&str; 7] = [
 fn example(file: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../examples")
-        .join(file)
-}
-
-/// `tests/data/<file>`.
-fn data(file: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/data")
         .join(file)
 }
 

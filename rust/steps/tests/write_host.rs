@@ -8,19 +8,14 @@
     reason = "a test's paths, outside any step's run"
 )]
 
-#[allow(
-    dead_code,
-    reason = "the shared module's orthogonalizer check is the other binaries'"
-)]
 mod common;
 
 use fb_core_budget::Backing;
-use fb_steps::{ScfTable, run};
+use fb_steps::run;
 
 #[test]
 fn a_dry_run_writes_the_budget_only_table_and_no_product() {
-    let mut config = common::config("h2o.xyz", "cc-pvdz", Some("cc-pvdz-jkfit"));
-    config.scf = Some(ScfTable::default());
+    let config = common::chain("h2o.xyz");
     let run = run(config, Backing::Dry).unwrap();
     let dir = std::env::temp_dir().join(format!("fb-steps-write-host-{}", std::process::id()));
     run.write(&dir).unwrap();

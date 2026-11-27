@@ -32,18 +32,13 @@
     reason = "a test's case lists, outside any step's run"
 )]
 
-#[allow(
-    dead_code,
-    reason = "the shared module's orthogonalizer check is the other binaries'"
-)]
 mod common;
 
 use fb_core_budget::Backing;
 use fb_core_flow::controls;
-use fb_steps::{ScfStep, ScfTable, run};
+use fb_steps::{ScfStep, run};
 
-/// The bar on an energy, hartree.
-const ENERGY_BAR: f64 = 1e-9;
+use common::ENERGY_BAR;
 
 /// Water's recorded DF-RHF energy (`chain_device.rs`).
 const WATER: f64 = -76.026_751_140_543;
@@ -51,8 +46,7 @@ const WATER: f64 = -76.026_751_140_543;
 /// Water in cc-pVDZ over cc-pVDZ-JKFIT, `[scf]` at its defaults,
 /// NaN-filled.
 fn config() -> fb_steps::Config {
-    let mut config = common::config("h2o.xyz", "cc-pvdz", Some("cc-pvdz-jkfit"));
-    config.scf = Some(ScfTable::default());
+    let mut config = common::chain("h2o.xyz");
     config.resources.nan_fill = true;
     config
 }

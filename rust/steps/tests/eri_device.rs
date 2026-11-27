@@ -23,10 +23,6 @@
     reason = "a test reads its result back on the host: the harness waits, not a task"
 )]
 
-#[allow(
-    dead_code,
-    reason = "the shared module's orthogonalizer check is the other binaries'"
-)]
 mod common;
 
 use fb_core_budget::Backing;

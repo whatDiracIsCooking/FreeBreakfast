@@ -29,30 +29,12 @@
     reason = "a test's paths and host reads, outside any step's run"
 )]
 
-#[allow(
-    dead_code,
-    reason = "the shared module's orthogonalizer check is the other binaries'"
-)]
 mod common;
 
 use fb_core_budget::Backing;
 use fb_core_flow::Bus;
-use fb_steps::{LocalizationStep, LocalizationTable, ScfStep, ScfTable, run};
+use fb_steps::{LocalizationStep, LocalizationTable, ScfStep, run};
 use serde_json::Value;
-
-/// The full symmetric matrix of the packed lower triangle `packed`.
-fn unpack(packed: &[f64], n: usize) -> Vec<f64> {
-    let mut full = vec![0.0; n * n];
-    let mut at = 0;
-    for p in 0..n {
-        for q in 0..=p {
-            full[p * n + q] = packed[at];
-            full[q * n + p] = packed[at];
-            at += 1;
-        }
-    }
-    full
-}
 
 /// `a b`, `a` `r × k` and `b` `k × c`, column-major.
 fn mul(a: &[f64], b: &[f64], r: usize, k: usize, c: usize) -> Vec<f64> {
@@ -82,8 +64,7 @@ fn transpose(a: &[f64], r: usize, c: usize) -> Vec<f64> {
 /// Water localized at `exponent`, written into a directory of its own,
 /// and its products checked against the module's bars.
 fn water_at(exponent: i32) {
-    let mut config = common::config("h2o.xyz", "cc-pvdz", Some("cc-pvdz-jkfit"));
-    config.scf = Some(ScfTable::default());
+    let mut config = common::chain("h2o.xyz");
     config.localization = Some(LocalizationTable {
         exponent,
         ..LocalizationTable::default()
@@ -119,7 +100,7 @@ fn water_at(exponent: i32) {
         .iter()
         .map(|e| e.as_f64().unwrap())
         .collect();
-    let s = unpack(&fb_integrals_s_overlap_host::overlap(&shared.basis), n);
+    let s = common::unpack(&fb_integrals_s_overlap_host::overlap(&shared.basis), n);
 
     // F = (S C) diag(ε) (S C)ᵀ, then f_i = c_iᵀ F c_i.
     let sc = mul(&s, &c, n, n, n);
