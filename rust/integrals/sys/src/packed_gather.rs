@@ -31,8 +31,8 @@ const KERNEL: &str = "fb_packed_gather";
 /// `stream` has covered it.
 ///
 /// `tables` is each column's row `m` (`n_columns` of them), then its column
-/// `n` (as many): the map's `Packing::write_tables`' first two. `weights` is
-/// its third, on the device: 1 on a diagonal shell pair's column, whose
+/// `n` (as many), as the eri step's `pair_columns` writes them. `weights`
+/// is on the device: 1 on a diagonal shell pair's column, whose
 /// upper-triangle twin is then not read, and 2 on any other.
 ///
 /// # Errors

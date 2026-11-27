@@ -28,9 +28,7 @@
 //! | `kThreeCenterBraFields`, the packed bra records' segment count | nothing: the bra records cross as a class view, a field per pointer |
 //! | `wwrErrorInvalidValue` for a refusal | [`FB_LAUNCH_INVALID_ARGUMENT`] (a count, a null pointer, a short workspace) or [`FB_LAUNCH_UNSUPPORTED`] (no kernel for the class) |
 //! | nothing: the C++ tree compiles its kernels into the binary | [`check_library`], the library's [`fb_integrals_abi_version`] and [`fb_integrals_backend`] against the bindings' |
-//! | nothing: the C++ tree has no conventional mode | [`fb_conventional_eri_class`], [`fb_conventional_exchange`], [`fb_conventional_pack`] and [`fb_conventional_unpack`], rust/'s own launchers over FelizJueves's `eri/full_eri` units (`eri<la, lb, lc, ld>`, `eri_kperm`), and [`FB_CONVENTIONAL_MAX_MOMENTUM`], [`FB_CONVENTIONAL_MAX_AO`], [`FB_CONVENTIONAL_PAIR_FIELDS`], [`FB_CONVENTIONAL_TASK_FIELDS`], with no safe call |
-//! | nothing: the C++ tree has no conventional mode | [`fb_dense_eri_class`], rust/'s own launcher over FelizJueves's dense `eri/full_eri` units (`eri_dj<la, lb, lc, ld>`, `eri_dk<la, lb, lc, ld>`), [`FB_DENSE_LAYOUT_J`], [`FB_DENSE_LAYOUT_K`]; and [`fb_dense_row_dot`], a row-major matrix by a vector in an order fixed by its width, with no safe call |
-//! | nothing: the C++ B is square and resident | [`fb_packed_pack`] and [`fb_packed_gather`], rust/'s own pack of a density into density fitting's packed shell-pair map and gather of packed columns back into the square; the gather's safe call is [`packed_gather`], the pack has none |
+//! | nothing: the C++ B is square and resident | [`fb_packed_gather`], rust/'s own gather of packed columns of density fitting's packed shell-pair map back into the square; the safe call is [`packed_gather`] |
 //! | the other one-electron families (the dipole, the mixed overlap, the derivatives), J, K, density fitting past the metric and (mn\|P), and the rest | not forked yet |
 //!
 //! **The safe layer.** What a caller uses (`docs/gpu_layer.md`, "The safe
@@ -56,8 +54,10 @@
 //!   inside the matrix.
 //!
 //! The launchers with no safe call are the old layer's, whose task
-//! builders were deleted with it (#1874); each is tested raw, through its
-//! bindings, under `tests/`.
+//! builders were deleted with it (#1874). Under `tests/`, through their
+//! bindings, the overlap, kinetic, nuclear-attraction, metric and packed
+//! three-center ones are launched on one s class each against its closed
+//! form; [`fb_mmd_bound`] is held only to its refusals, never launched.
 
 #![allow(non_camel_case_types, reason = "the C header's names, kept as written")]
 

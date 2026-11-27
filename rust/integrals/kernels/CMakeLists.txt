@@ -2,25 +2,20 @@
 # from src/integrals -- mmd's records, bound and dressed bound, the
 # overlap, the kinetic energy, the nuclear attraction, density fitting's
 # metric, rust/'s own packed three-center integrals (the spherical-aux speri3
-# and the fully spherical ssperi3), the pack and gather over
-# density fitting's packed shell-pair map, and rust/'s own conventional ERI
-# (the packed tensor, its exchange gather, the packing and unpacking around
-# the GEMVs, and the dense J- and K-layout row blocks), with no C++ launcher
-# behind them -- with the FelizJueves units they launch, one shared object
-# with its own device link, which fb-integrals-sys (../sys) links
-# (docs/gpu_layer.md, "Build"). Built from these forked sources,
-# rust/device_headers and FelizJueves's include/ alone: nothing under src/ is
-# compiled or included.
+# and the fully spherical ssperi3) and the gather over density fitting's
+# packed shell-pair map, with no C++ launcher behind them -- with the
+# FelizJueves units they launch, one shared object with its own device link,
+# which fb-integrals-sys (../sys) links (docs/gpu_layer.md, "Build"). Built
+# from these forked sources, rust/device_headers and FelizJueves's include/
+# alone: nothing under src/ is compiled or included.
 #
 # The emitted units (mmd/kernels/, one_electron/{overlap,kinetic,
 # potential_en}/kernels/, eri/density_fitting/metric/kernels/,
-# eri/density_fitting/three_center/{packed,spherical}/kernels/,
-# eri/conventional/kernels/, eri/conventional/dense/kernels/, and shared/'s
-# Boys routine) are
-# tools/emit/one_electron_kernels.py's, tools/emit/exchange_kernels.py's,
-# tools/emit/df_kernels.py's, tools/emit/packed_three_center_kernels.py's and
-# tools/emit/conventional_kernels.py's, copied here byte for byte (README.md,
-# "Build and test").
+# eri/density_fitting/three_center/{packed,spherical}/kernels/, and shared/'s
+# Boys routine) are tools/emit/one_electron_kernels.py's,
+# tools/emit/exchange_kernels.py's, tools/emit/df_kernels.py's and
+# tools/emit/packed_three_center_kernels.py's, copied here byte for byte
+# (README.md, "Build and test").
 #
 # The packed three-center patterns are relative, to fit 80 columns: GLOB reads
 # it from this directory and returns absolute paths, as for the rest.
@@ -40,8 +35,6 @@ file(GLOB _fb_integrals_units CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/eri/density_fitting/metric/kernels/*.cu
      eri/density_fitting/three_center/packed/kernels/*.cu
      eri/density_fitting/three_center/spherical/kernels/*.cu
-     ${CMAKE_CURRENT_SOURCE_DIR}/eri/conventional/kernels/*.cu
-     ${CMAKE_CURRENT_SOURCE_DIR}/eri/conventional/dense/kernels/*.cu
 )
 set(_fb_integrals_sources
     abi.cu
@@ -52,8 +45,6 @@ set(_fb_integrals_sources
     eri/density_fitting/metric/metric_launch.cu
     eri/density_fitting/three_center/three_center_launch.cu
     eri/density_fitting/packed/packed_launch.cu
-    eri/conventional/conventional_launch.cu
-    eri/conventional/dense/dense_launch.cu
     ${_fb_integrals_units}
 )
 add_library(fb_integrals_kernels SHARED ${_fb_integrals_sources})
