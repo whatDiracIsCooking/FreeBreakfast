@@ -404,7 +404,6 @@ dependencies = [
  "contracts",
  "fb-basis",
  "fb-core-primitives",
- "fb-integrals-s-overlap-host",
  "fb-io-basis",
  "fb-io-npy",
  "fb-io-xyz",

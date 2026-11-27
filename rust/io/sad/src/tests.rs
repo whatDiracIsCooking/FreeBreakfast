@@ -140,26 +140,6 @@ fn nothing_else_is_baked() {
     // potassium, and nothing has element 0.
     for (basis, z) in [("cc-pvdz", 8), ("", 8), ("cc-pVDZ", 19), ("STO-3G", 0)] {
         assert!(builtin_sad_density(basis, z).is_none(), "{basis} Z={z}");
-        assert!(!carries_sad_stamp(basis, z), "{basis} Z={z}");
-    }
-}
-
-#[test]
-fn carries_exactly_what_the_lookup_finds() {
-    // The query a caller asks in place of the lookup: the same answer
-    // for every carried stamp and for every element 0 to 118 of every
-    // compiled-in set, carried or not.
-    for (basis, z, _) in BUILTIN {
-        assert!(carries_sad_stamp(basis, z), "{basis} Z={z}");
-    }
-    for name in COMPILED_IN_SETS {
-        for z in 0..=118 {
-            assert_eq!(
-                carries_sad_stamp(name, z),
-                builtin_sad_density(name, z).is_some(),
-                "{name} Z={z}"
-            );
-        }
     }
 }
 

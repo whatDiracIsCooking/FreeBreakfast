@@ -769,27 +769,6 @@ pub fn potential_en_into(basis: &BasisSet, charges: &[PointCharge], v: &mut [f64
     }
 }
 
-/// How many of `basis`'s shell pairs `A >= B` [`potential_en`] leaves zero
-/// as negligible in the field of `charges`, and how many pairs there are.
-#[must_use]
-pub fn negligible_pairs(basis: &BasisSet, charges: &[PointCharge]) -> (usize, usize) {
-    let data: Vec<ShellData> = (0..basis.shells().len())
-        .map(|index| ShellData::new(basis, index))
-        .collect();
-    let charge_sum = charge_sum(charges);
-    let negligible: usize = data
-        .par_iter()
-        .enumerate()
-        .map(|(sa, a)| {
-            data[..sa]
-                .iter()
-                .filter(|b| pair_is_negligible(a, b, norm2(sub(a.center, b.center)), charge_sum))
-                .count()
-        })
-        .sum();
-    (negligible, data.len() * (data.len() + 1) / 2)
-}
-
 /// The index of `x^i y^j z^k` in a dense cube of side `d`.
 fn cube(e: [usize; 3], d: usize) -> usize {
     (e[0] * d + e[1]) * d + e[2]
@@ -979,6 +958,28 @@ pub fn potential_en_via_cartesian(basis: &BasisSet, charges: &[PointCharge]) -> 
 mod tests {
     use super::*;
     use fb_basis::ShellStamp;
+
+    /// How many of `basis`'s shell pairs `A >= B` [`potential_en`] leaves zero
+    /// as negligible in the field of `charges`, and how many pairs there are.
+    fn negligible_pairs(basis: &BasisSet, charges: &[PointCharge]) -> (usize, usize) {
+        let data: Vec<ShellData> = (0..basis.shells().len())
+            .map(|index| ShellData::new(basis, index))
+            .collect();
+        let charge_sum = charge_sum(charges);
+        let negligible: usize = data
+            .par_iter()
+            .enumerate()
+            .map(|(sa, a)| {
+                data[..sa]
+                    .iter()
+                    .filter(|b| {
+                        pair_is_negligible(a, b, norm2(sub(a.center, b.center)), charge_sum)
+                    })
+                    .count()
+            })
+            .sum();
+        (negligible, data.len() * (data.len() + 1) / 2)
+    }
 
     /// A primitive-normalized shell placed at `at`.
     fn place(l: i32, exponents: &[f64], coefficients: &[f64], at: [f64; 3]) -> Shell {

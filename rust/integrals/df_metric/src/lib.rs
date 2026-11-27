@@ -12,7 +12,7 @@
 //! ```
 //!
 //! - `E` is the one-center Hermite expansion of a monomial,
-//!   `x^i exp(-a x²) = sum_t E^i_t Λ_t` ([`hermite_expansion`]). It is zero
+//!   `x^i exp(-a x²) = sum_t E^i_t Λ_t` (`hermite_expansion`). It is zero
 //!   unless `i - t` is even, which is why the sign of the second function's
 //!   Hermite derivatives is `(-1)^lb` for the whole shell.
 //! - `R_tuv` are the Hermite Coulomb integrals at `alpha = a b / (a + b)`
@@ -154,7 +154,7 @@ pub fn boys(x: f64, f: &mut [f64]) {
 /// `E^0_0 = 1` and `E^(i+1)_t = E^i_(t-1) / (2a) + (t + 1) E^i_(t+1)`; an
 /// entry with `i - t` odd, or `t > i`, is zero.
 #[must_use]
-pub fn hermite_expansion(l: usize, a: f64) -> Vec<f64> {
+pub(crate) fn hermite_expansion(l: usize, a: f64) -> Vec<f64> {
     let d = l + 1;
     let half = 0.5 / a;
     let mut e = vec![0.0; d * d];
@@ -803,31 +803,6 @@ pub fn metric_into(aux: &BasisSet, m: &mut [f64]) {
     });
 }
 
-/// How many of `aux`'s shell pairs `A >= B` [`metric`] takes from the far
-/// field, and how many pairs there are.
-#[must_use]
-pub fn far_pairs(aux: &BasisSet) -> (usize, usize) {
-    let data: Vec<ShellData> = (0..aux.shells().len())
-        .map(|index| ShellData::new(aux, index))
-        .collect();
-    let far: usize = data
-        .par_iter()
-        .enumerate()
-        .map(|(sa, a)| {
-            data[..sa]
-                .iter()
-                .filter(|b| {
-                    let r2: f64 = (0..3).map(|k| (a.center[k] - b.center[k]).powi(2)).sum();
-                    let alpha_min =
-                        a.min_exponent * b.min_exponent / (a.min_exponent + b.min_exponent);
-                    is_far(alpha_min, r2, a.l + b.l)
-                })
-                .count()
-        })
-        .sum();
-    (far, data.len() * (data.len() + 1) / 2)
-}
-
 /// [`metric`] by the textbook route, kept to check and time it against:
 /// every Cartesian integral `(a|b)` of a shell pair through the full
 /// Hermite expansion, then `Uaᵀ (a|b) Ub`, with no far field. The same
@@ -871,6 +846,30 @@ pub fn metric_via_cartesian(aux: &BasisSet) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// How many of `aux`'s shell pairs `A >= B` [`metric`] takes from the far
+    /// field, and how many pairs there are.
+    fn far_pairs(aux: &BasisSet) -> (usize, usize) {
+        let data: Vec<ShellData> = (0..aux.shells().len())
+            .map(|index| ShellData::new(aux, index))
+            .collect();
+        let far: usize = data
+            .par_iter()
+            .enumerate()
+            .map(|(sa, a)| {
+                data[..sa]
+                    .iter()
+                    .filter(|b| {
+                        let r2: f64 = (0..3).map(|k| (a.center[k] - b.center[k]).powi(2)).sum();
+                        let alpha_min =
+                            a.min_exponent * b.min_exponent / (a.min_exponent + b.min_exponent);
+                        is_far(alpha_min, r2, a.l + b.l)
+                    })
+                    .count()
+            })
+            .sum();
+        (far, data.len() * (data.len() + 1) / 2)
+    }
 
     /// `F_n(x)` by composite Simpson over `t` in `[0, 1]`: an independent
     /// evaluation, good to about 1e-13 here.

@@ -68,8 +68,7 @@
 //! | `SadStampLookup`, a function pointer | [`SadStampLookup`], a `fn` pointer; `Option` for the C++ `nullptr` |
 //! | `sad_density(basis, atoms, baked = nullptr)` | [`sad_density`], `baked` always given |
 //! | `sad_density(flow, basis, atoms, out, baked)`, the task form | not here: the guess step calls [`sad_density_into`] |
-//! | `sad.cpp`: `AtomicDensityStamp`, `StampSites`, `distinct_stamps`, `stamp_density` | [`AtomicDensityStamp`], [`StampSites`], [`distinct_stamps`], [`stamp_density`], public; `stamp_density` takes the basis's name, the one thing of the basis it reads |
-//! | `sad.cpp`: `place`, `same_shells`, `stamp_and_place` | the private items of those names here |
+//! | `sad.cpp`: `AtomicDensityStamp`, `StampSites`, `distinct_stamps`, `stamp_density`, `place`, `same_shells`, `stamp_and_place` | the private items of those names here; `stamp_density` takes the basis's name, the one thing of the basis it reads |
 //! | `:aufbau`: `SubshellFill`, `kAufbauOrder`, `subshell_occupation` | `aufbau`'s `SubshellFill`, `AUFBAU_ORDER`, `subshell_occupation` |
 //! | `:hermite`: `one_center_hermite`, `one_center_hermite_coulomb` | `atomic_scf::hermite`'s functions of those names |
 //! | `:one_electron`: `one_center_pair_loop`, `one_center_overlap_1d`, `one_center_overlap`, `one_center_kinetic`, `one_center_nuclear` | `atomic_scf::one_electron`'s functions of those names; the loop takes a closure for the template's functor |
@@ -191,14 +190,14 @@ fn spherical_count(shells: &[Shell]) -> usize {
 /// column-major: `AtomicDensityStamp`. Every integral of the atomic SCF is
 /// one-center, so the block is geometry-free: every atom with this Z and
 /// these shells wears the same one.
-pub struct AtomicDensityStamp<'a> {
+struct AtomicDensityStamp<'a> {
     /// The atomic number.
-    pub z: i32,
+    z: i32,
     /// The atom's shells, on its center.
-    pub shells: &'a [Shell],
+    shells: &'a [Shell],
     /// The block, `n × n` over the shells' spherical AOs; empty until its
     /// SCF runs.
-    pub density: Vec<f64>,
+    density: Vec<f64>,
 }
 
 /// Write `stamp`'s block onto the diagonal of the `n × n` column-major
@@ -215,11 +214,11 @@ fn place(stamp: &AtomicDensityStamp<'_>, offset: usize, n: usize, density: &mut 
 /// One distinct (Z, shells) of a molecule and where it goes, `StampSites`:
 /// its stamp, whose density stays empty until its SCF runs, and the first AO
 /// of each atom that wears it.
-pub struct StampSites<'a> {
+struct StampSites<'a> {
     /// The stamp.
-    pub stamp: AtomicDensityStamp<'a>,
+    stamp: AtomicDensityStamp<'a>,
     /// The first spherical AO of each atom that wears it, in atom order.
-    pub offsets: Vec<usize>,
+    offsets: Vec<usize>,
 }
 
 /// The distinct (Z, shells) of `atoms` over `basis`, in order of each one's
@@ -228,7 +227,7 @@ pub struct StampSites<'a> {
 ///
 /// # Errors
 /// `InvalidConfig` if `basis.natoms()` differs from the atom count.
-pub fn distinct_stamps<'a>(basis: &'a BasisSet, atoms: &[Atom]) -> Result<Vec<StampSites<'a>>> {
+fn distinct_stamps<'a>(basis: &'a BasisSet, atoms: &[Atom]) -> Result<Vec<StampSites<'a>>> {
     if basis.natoms() as usize != atoms.len() {
         return Err(Error::config(format!(
             "sad_density: the basis groups its shells over {} atoms but {} were given; the \
@@ -276,7 +275,7 @@ pub fn distinct_stamps<'a>(basis: &'a BasisSet, atoms: &[Atom]) -> Result<Vec<St
 ///
 /// # Errors
 /// [`sad_density`]'s, for this one stamp.
-pub fn stamp_density(
+fn stamp_density(
     stamp: &AtomicDensityStamp<'_>,
     basis_name: &str,
     baked: Option<SadStampLookup>,
