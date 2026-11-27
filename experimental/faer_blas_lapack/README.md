@@ -87,10 +87,12 @@ basis (aug-cc-pVDZ) would.
 
 ```sh
 # 1. Matrices (inside the devcontainer, which has cargo): the packed lower
-#    triangles from the two existing host generators.
-cd experimental/rust
+#    triangles from the two host generators, removed since; they run in a
+#    checkout of b0935805. From this checkout's root:
+M=$PWD/experimental/faer_blas_lapack/results/matrices
 G=/path/to/main/.temp/gly   # the main checkout's; any XYZ works
-M=../faer_blas_lapack/results/matrices
+git worktree add /tmp/fb-b0935805 b0935805
+cd /tmp/fb-b0935805/experimental/rust
 mkdir -p $M
 for g in gly5 gly10 gly15 gly20 gly30; do
   cargo run --release -q --manifest-path s_overlap_host/Cargo.toml -- $G/$g.xyz cc-pvdz $M/S_$g.npy

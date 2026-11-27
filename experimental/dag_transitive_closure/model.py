@@ -1,6 +1,6 @@
 """Step scratch packed by the transitive closure of the step DAG: a model.
 
-The Rust redesign (experimental/rust/v0.0.4/v0.0.4.html, "Step scratch") packs
+The Rust redesign (rust/docs/memory.md, "Step scratch") packs
 each step's scratch region into one slab per device and kind, letting two
 regions overlap only when the DAG orders their steps. This is that packing
 over fixed dummy sizes, and the checks dag_transitive_closure.html lists.

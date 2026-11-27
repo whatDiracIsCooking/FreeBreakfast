@@ -5,7 +5,7 @@
 One class, (p d | d), of the fully spherical packed (μν|P) of water
 (`rust/examples/water.xyz`) in cc-pVDZ against cc-pVDZ-JKFIT, with the
 inputs it was computed from, for `tests/three_center_spherical.rs`: the
-output of `experimental/rust/df_batched/single_gpu_spherical`'s own
+output of the prototype `experimental/rust/df_batched/single_gpu_spherical`'s own
 `ssperi3` library (`fbx_ssperi3_packed_class`), the same kernel text as
 `fb_three_center_spherical_class` launches, on the same input bits.
 
@@ -17,9 +17,12 @@ output of `experimental/rust/df_batched/single_gpu_spherical`'s own
 | `spherical_eri3.npy` | The batch, shape (116, 60), Fortran order (aux fastest), zero outside the d aux functions' rows |
 
 Written on the RTX 3080 (CUDA) by the experiment's `ssperi3-class-golden`
-binary (`src/class_golden.rs` there, which documents each input), from the
-checkout root, after building rust/'s CMake project (`cmake --preset cuda
-&& cmake --build --preset cuda`, from rust/):
+binary (`src/class_golden.rs` there, which documents each input). The
+prototype is removed, and the crates it builds against went before it, so
+the recipe runs in a checkout of `99e2d21b`, the commit that wrote these
+files: from its root, after building its rust/ CMake project (`cmake
+--preset cuda && cmake --build --preset cuda`, from rust/), then copying
+the four files into this directory of the current tree:
 
 ```bash
 E=experimental/rust/df_batched/single_gpu_spherical

@@ -13,7 +13,7 @@ for its value. It returns a `Status` and does not synchronize. Link
 On ROCm, rocBLAS's trsm takes workspace that grows with the right-hand sides:
 about a copy of B when the triangular order is not a multiple of 128, and 1/32
 of it when it is (`experimental/rust/blas_workspace_scaling`,
-`experimental/rust/v0.0.4/v0.0.4.html` "workspace"). So no fixed handle workspace covers
+and the v0.0.4 prototype's page, "workspace", at `b0935805`). So no fixed handle workspace covers
 it, and a call past it allocates its own memory, outside any budget. This
 recipe needs nothing but the gemm the handle's fixed workspace already serves.
 

@@ -1,4 +1,4 @@
-//! The handle ring's two measurements (experimental/rust/v0.0.4/v0.0.4.html, "A ring of
+//! The handle ring's two measurements (the v0.0.4 prototype's page at b0935805, "A ring of
 //! library handles, and no library stream"), through wwr-sys, the path the
 //! Rust tree takes. One case per process; run_all.sh runs them all under the
 //! card's lock.
