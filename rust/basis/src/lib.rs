@@ -27,11 +27,11 @@
 //! | `:shell`: `Shell(l, exponents, coefficients, center)` | [`Shell::zipped`] |
 //! | `:shell`: `angular_momentum`, `primitives`, `nprimitives`, `center`, `function_count_cart`, `function_count_sphe` | the [`Shell`] methods of those names |
 //! | `:ao`: `cartesian_powers` | [`cartesian_powers`] |
-//! | `:ao`: `AO` | [`Ao`] |
+//! | `:ao`: `AO`, and the basis set's table of them | nothing: no caller reads one AO's powers through the basis |
 //! | `:harmonics`: `solid_harmonic_block` | [`solid_harmonic_block`] |
 //! | `:basis_set`: `BasisSet()`, `BasisSet(shells)` | [`BasisSet::default`], [`BasisSet::new`] |
 //! | `:basis_set`: `BasisSet(shells, atom_shell_offsets, name = {})` | [`BasisSet::with_atoms`], the name always given |
-//! | `:basis_set`: `natoms`, `atom_shell_offset`, `atom_shell_count`, `name`, `shells`, `aos_cart`, `nshells`, `nao_cart`, `ao_offset_cart`, `nao_sphe`, `ao_offset_sphe` | the [`BasisSet`] methods of those names |
+//! | `:basis_set`: `natoms`, `atom_shell_offset`, `atom_shell_count`, `name`, `shells`, `nshells`, `nao_cart`, `ao_offset_cart`, `nao_sphe`, `ao_offset_sphe` | the [`BasisSet`] methods of those names |
 //! | `:basis_set`: `spherical_transform_matrix` | [`spherical_transform_matrix`] |
 //! | `:shell_stamp`: `ShellStamp`, both constructors, its accessors and `primitive_normalized` | [`ShellStamp::new`], [`ShellStamp::zipped`] and the methods of those names |
 //! | `:shell_stamp`: `place(stamp, center)` | [`ShellStamp::place`] |
@@ -70,7 +70,7 @@ mod harmonics;
 mod shell;
 mod shell_stamp;
 
-pub use ao::{Ao, cartesian_powers};
+pub use ao::cartesian_powers;
 pub use basis_set::{BasisSet, spherical_transform_matrix};
 pub use basis_stamp::BasisStamp;
 pub use harmonics::solid_harmonic_block;

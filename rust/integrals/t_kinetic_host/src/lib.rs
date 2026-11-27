@@ -49,11 +49,6 @@
 //! the textbook route, Obara-Saika per axis and a dense transform, kept to
 //! check and time against.
 //!
-//! **S beside it.** The overlap is the order-`la + lb` sum of the same
-//! `h_t` under the same weight, so [`overlap_and_kinetic`] returns both
-//! triangles from one exponential, weight and set of recurrences per
-//! primitive pair.
-//!
 //! **Negligible pairs.** A primitive pair's block is `mu` times a
 //! polynomial of degree `la + lb + 2` in `sqrt(mu) R` times
 //! `exp(-mu R²)`, so a primitive pair with
@@ -277,15 +272,9 @@ struct Scratch {
     /// h_(u+2) h_v + h_t h_u h_(v+2))`, `t + u + v = la + lb`, at
     /// `t * (la + lb + 1) + u`.
     top: Vec<f64>,
-    /// The overlap's sum, `weight h_t h_u h_v`, laid out as `top`; filled
-    /// only when the overlap is asked for.
-    top_s: Vec<f64>,
     /// The spherical block of T, `nsph_a` rows by `nsph_b` columns at
     /// `ia * nsph_b + ib`.
     out: Vec<f64>,
-    /// The spherical block of S, laid out as `out`; filled only when the
-    /// overlap is asked for.
-    out_s: Vec<f64>,
 }
 
 impl Scratch {
@@ -295,9 +284,7 @@ impl Scratch {
         Scratch {
             h: vec![0.0; 3 * (d + 2)],
             top: vec![0.0; d * d],
-            top_s: vec![0.0; d * d],
             out: vec![0.0; d * d],
-            out_s: vec![0.0; d * d],
         }
     }
 }
@@ -325,11 +312,10 @@ fn contract(top: &[f64], d: usize, va: &ShellView, vb: &ShellView, out: &mut [f6
 }
 
 /// The spherical block `<a|T|b>` of two shells `r = A - B` apart with no
-/// Cartesian integral formed, into `scratch.out`, and with `OVERLAP` also
-/// `<a|b>` into `scratch.out_s`, from the same exponentials, weights and
-/// recurrences: the module's "Directly spherical". Negligible primitive
-/// pairs, by T's bound, are skipped; the shell pair is not screened here.
-fn block<const OVERLAP: bool>(
+/// Cartesian integral formed, into `scratch.out`: the module's "Directly
+/// spherical". Negligible primitive pairs are skipped; the shell pair is
+/// not screened here.
+fn block(
     a: &ShellData,
     va: &ShellView,
     b: &ShellData,
@@ -337,19 +323,13 @@ fn block<const OVERLAP: bool>(
     r: [f64; 3],
     scratch: &mut Scratch,
 ) {
-    let Scratch {
-        h,
-        top,
-        top_s,
-        out,
-        out_s,
-    } = scratch;
+    let Scratch { h, top, out } = scratch;
     let order = a.l + b.l;
     let d = order + 1;
     let dh = d + 2;
     let r2 = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
     if order == 0 {
-        let (mut t, mut s) = (0.0, 0.0);
+        let mut t = 0.0;
         for &(ax, wa) in &a.primitives {
             for &(bx, wb) in &b.primitives {
                 let p = ax + bx;
@@ -359,21 +339,13 @@ fn block<const OVERLAP: bool>(
                 }
                 let overlap = wa * wb * (PI / p) * (PI / p).sqrt() * (-mu * r2).exp();
                 t = (overlap * mu).mul_add((2.0 * mu).mul_add(-r2, 3.0), t);
-                if OVERLAP {
-                    s += overlap;
-                }
             }
         }
         out[0] = t;
-        out_s[0] = s;
         return;
     }
     let top = &mut top[..d * d];
     top.fill(0.0);
-    let top_s = &mut top_s[..d * d];
-    if OVERLAP {
-        top_s.fill(0.0);
-    }
     for &(ax, wa) in &a.primitives {
         for &(bx, wb) in &b.primitives {
             let p = ax + bx;
@@ -402,18 +374,11 @@ fn block<const OVERLAP: bool>(
                         hx[t] * hy[u + 2].mul_add(hz[v], hy[u] * hz[v + 2]),
                     );
                     top[t * d + u] = weight_t.mul_add(laplacian, top[t * d + u]);
-                    if OVERLAP {
-                        top_s[t * d + u] =
-                            (weight * hx[t]).mul_add(hy[u] * hz[v], top_s[t * d + u]);
-                    }
                 }
             }
         }
     }
     contract(top, d, va, vb, out);
-    if OVERLAP {
-        contract(top_s, d, va, vb, out_s);
-    }
 }
 
 /// The lower triangle of the kinetic energy `T[μ][ν] = <μ| -∇²/2 |ν>` of
@@ -446,112 +411,53 @@ pub fn kinetic(basis: &BasisSet) -> Vec<f64> {
     "t is the n (n + 1) / 2 lower triangle"
 )]
 pub fn kinetic_into(basis: &BasisSet, t: &mut [f64]) {
-    triangles::<false>(basis, t, &mut []);
-}
-
-/// The lower triangles of the overlap `S` and of the kinetic energy `T`,
-/// in that order, both packed as [`kinetic`] packs `T`, in one pass:
-/// each primitive pair's exponential, weight and recurrences serve both,
-/// so the pair costs little more than `T` alone.
-///
-/// `T` carries the same bits as [`kinetic`]'s. `S` is screened by `T`'s
-/// bound, which is past `S`'s own, so it drops nothing an overlap-only
-/// route would keep.
-#[must_use]
-pub fn overlap_and_kinetic(basis: &BasisSet) -> (Vec<f64>, Vec<f64>) {
-    let packed = lower_index(basis.nao_sphe() as usize, 0);
-    let (mut s, mut t) = (vec![0.0; packed], vec![0.0; packed]);
-    triangles::<true>(basis, &mut t, &mut s);
-    (s, t)
-}
-
-/// [`overlap_and_kinetic`] into `t` and `s`, every value of each; `s` is
-/// not touched, and may be empty, unless `OVERLAP`.
-fn triangles<const OVERLAP: bool>(basis: &BasisSet, t: &mut [f64], s: &mut [f64]) {
     let n = basis.nao_sphe() as usize;
     let views = views(basis);
     let data: Vec<ShellData> = (0..basis.shells().len())
         .map(|index| ShellData::new(basis, index))
         .collect();
     let centers = centers(&data, n);
-    let bounds = || centers.iter().map(|c| c.rows.clone());
-    let rows_t = split_rows(t, bounds());
-    let rows_s = if OVERLAP {
-        split_rows(s, bounds())
-    } else {
-        bounds().map(|_| <&mut [f64]>::default()).collect()
-    };
+    let rows_t = split_rows(t, centers.iter().map(|c| c.rows.clone()));
 
     let l_max = views.len() - 1;
-    rows_t
-        .into_par_iter()
-        .zip(rows_s)
-        .enumerate()
-        .for_each(|(ca, (rows_t, rows_s))| {
-            // Each task zeroes its own rows, so a fresh buffer's pages are
-            // touched first by the thread that writes them.
-            rows_t.fill(0.0);
-            rows_s.fill(0.0);
-            let mut scratch = Scratch::new(l_max);
-            let center_a = &centers[ca];
-            let start = lower_index(center_a.rows.start, 0);
-            let at_a = data[center_a.shells.start].center;
-            for (cb, center_b) in centers[..=ca].iter().enumerate() {
-                let at_b = data[center_b.shells.start].center;
-                let r = [at_a[0] - at_b[0], at_a[1] - at_b[1], at_a[2] - at_b[2]];
-                let r2 = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
-                for sa in center_a.shells.clone() {
-                    let a = &data[sa];
-                    // A center with itself: the shell pairs `b <= a`.
-                    let last = if cb == ca {
-                        sa + 1
-                    } else {
-                        center_b.shells.end
-                    };
-                    for (sb, b) in data[..last].iter().enumerate().skip(center_b.shells.start) {
-                        if is_negligible(mu_min(a, b), r2, a.l + b.l) {
-                            continue;
-                        }
-                        block::<OVERLAP>(a, &views[a.l], b, &views[b.l], r, &mut scratch);
-                        let nsb = b.nsph();
-                        for ia in 0..a.nsph() {
-                            // Shells are laid out in order, so an earlier
-                            // shell's columns are all below the diagonal.
-                            let cols = if sa == sb { ia + 1 } else { nsb };
-                            let at = lower_index(a.row0 + ia, b.row0) - start;
-                            let from = ia * nsb..ia * nsb + cols;
-                            rows_t[at..at + cols].copy_from_slice(&scratch.out[from.clone()]);
-                            if OVERLAP {
-                                rows_s[at..at + cols].copy_from_slice(&scratch.out_s[from]);
-                            }
-                        }
+    rows_t.into_par_iter().enumerate().for_each(|(ca, rows_t)| {
+        // Each task zeroes its own rows, so a fresh buffer's pages are
+        // touched first by the thread that writes them.
+        rows_t.fill(0.0);
+        let mut scratch = Scratch::new(l_max);
+        let center_a = &centers[ca];
+        let start = lower_index(center_a.rows.start, 0);
+        let at_a = data[center_a.shells.start].center;
+        for (cb, center_b) in centers[..=ca].iter().enumerate() {
+            let at_b = data[center_b.shells.start].center;
+            let r = [at_a[0] - at_b[0], at_a[1] - at_b[1], at_a[2] - at_b[2]];
+            let r2 = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+            for sa in center_a.shells.clone() {
+                let a = &data[sa];
+                // A center with itself: the shell pairs `b <= a`.
+                let last = if cb == ca {
+                    sa + 1
+                } else {
+                    center_b.shells.end
+                };
+                for (sb, b) in data[..last].iter().enumerate().skip(center_b.shells.start) {
+                    if is_negligible(mu_min(a, b), r2, a.l + b.l) {
+                        continue;
+                    }
+                    block(a, &views[a.l], b, &views[b.l], r, &mut scratch);
+                    let nsb = b.nsph();
+                    for ia in 0..a.nsph() {
+                        // Shells are laid out in order, so an earlier
+                        // shell's columns are all below the diagonal.
+                        let cols = if sa == sb { ia + 1 } else { nsb };
+                        let at = lower_index(a.row0 + ia, b.row0) - start;
+                        rows_t[at..at + cols]
+                            .copy_from_slice(&scratch.out[ia * nsb..ia * nsb + cols]);
                     }
                 }
             }
-        });
-}
-
-/// How many of `basis`'s shell pairs `A >= B` [`kinetic`] leaves zero as
-/// negligible, and how many pairs there are.
-#[must_use]
-pub fn negligible_pairs(basis: &BasisSet) -> (usize, usize) {
-    let data: Vec<ShellData> = (0..basis.shells().len())
-        .map(|index| ShellData::new(basis, index))
-        .collect();
-    let negligible: usize = data
-        .par_iter()
-        .enumerate()
-        .map(|(sa, a)| {
-            data[..sa]
-                .iter()
-                .filter(|b| {
-                    let r2: f64 = (0..3).map(|k| (a.center[k] - b.center[k]).powi(2)).sum();
-                    is_negligible(mu_min(a, b), r2, a.l + b.l)
-                })
-                .count()
-        })
-        .sum();
-    (negligible, data.len() * (data.len() + 1) / 2)
+        }
+    });
 }
 
 /// The one-axis Obara-Saika overlaps `s_ij`, `i <= la`, `j <= lb`, of
@@ -695,6 +601,28 @@ mod tests {
     use super::*;
     use fb_basis::ShellStamp;
 
+    /// How many of `basis`'s shell pairs `A >= B` [`kinetic`] leaves zero as
+    /// negligible, and how many pairs there are.
+    fn negligible_pairs(basis: &BasisSet) -> (usize, usize) {
+        let data: Vec<ShellData> = (0..basis.shells().len())
+            .map(|index| ShellData::new(basis, index))
+            .collect();
+        let negligible: usize = data
+            .par_iter()
+            .enumerate()
+            .map(|(sa, a)| {
+                data[..sa]
+                    .iter()
+                    .filter(|b| {
+                        let r2: f64 = (0..3).map(|k| (a.center[k] - b.center[k]).powi(2)).sum();
+                        is_negligible(mu_min(a, b), r2, a.l + b.l)
+                    })
+                    .count()
+            })
+            .sum();
+        (negligible, data.len() * (data.len() + 1) / 2)
+    }
+
     /// A primitive-normalized shell placed at `at`.
     fn place(l: i32, exponents: &[f64], coefficients: &[f64], at: [f64; 3]) -> Shell {
         let mut center = Shell::zipped(0, &[1.0], &[1.0], Default::default()).center();
@@ -782,40 +710,6 @@ mod tests {
                         (got - want).abs() <= 1e-14 * scale,
                         "<{la}|T|{lb}> [{k}]: {got:e} vs {want:e}"
                     );
-                }
-            }
-        }
-    }
-
-    /// [`overlap_and_kinetic`] on contracted shells of every pair of
-    /// momenta through i, off every axis, near (the overlap large) and at
-    /// the distance where the tight primitive pairs are skipped: its `T`
-    /// carries [`kinetic`]'s bits, and its `S` is `fb_integrals_s_overlap_host`'s to
-    /// 1e-14.
-    #[test]
-    fn overlap_and_kinetic_match_each_alone_through_i() {
-        for r in [[0.48, -0.6, 0.64], [0.96, -1.2, 1.28]] {
-            for la in 0..=6 {
-                for lb in 0..=6 {
-                    let basis = BasisSet::new(vec![
-                        place(lb, &[900.0, 1.3, 0.5], &[0.1, 0.7, 0.4], [0.0; 3]),
-                        place(la, &[0.8, 2.1, 900.0], &[0.3, 0.9, 0.1], r),
-                    ]);
-                    let (s, t) = overlap_and_kinetic(&basis);
-                    let alone = kinetic(&basis);
-                    assert!(
-                        t.iter()
-                            .zip(&alone)
-                            .all(|(a, b)| a.to_bits() == b.to_bits()),
-                        "<{la}|T|{lb}> at {r:?}"
-                    );
-                    let want = fb_integrals_s_overlap_host::overlap(&basis);
-                    for (k, (got, want)) in s.iter().zip(&want).enumerate() {
-                        assert!(
-                            (got - want).abs() <= 1e-14,
-                            "<{la}|{lb}> at {r:?} [{k}]: {got:e} vs {want:e}"
-                        );
-                    }
                 }
             }
         }

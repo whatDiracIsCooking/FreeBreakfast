@@ -19,5 +19,3 @@ rayon.workspace = true
 fb-io-basis.workspace = true
 fb-io-npy.workspace = true
 fb-io-xyz.workspace = true
-# The overlap crate checks overlap_and_kinetic's S; nothing else uses it.
-fb-integrals-s-overlap-host.workspace = true

@@ -438,29 +438,6 @@ pub fn overlap_into(basis: &BasisSet, s: &mut [f64]) {
     });
 }
 
-/// How many of `basis`'s shell pairs `A >= B` [`overlap`] leaves zero as
-/// negligible, and how many pairs there are.
-#[must_use]
-pub fn negligible_pairs(basis: &BasisSet) -> (usize, usize) {
-    let data: Vec<ShellData> = (0..basis.shells().len())
-        .map(|index| ShellData::new(basis, index))
-        .collect();
-    let negligible: usize = data
-        .par_iter()
-        .enumerate()
-        .map(|(sa, a)| {
-            data[..sa]
-                .iter()
-                .filter(|b| {
-                    let r2: f64 = (0..3).map(|k| (a.center[k] - b.center[k]).powi(2)).sum();
-                    is_negligible(mu_min(a, b), r2, a.l + b.l)
-                })
-                .count()
-        })
-        .sum();
-    (negligible, data.len() * (data.len() + 1) / 2)
-}
-
 /// The one-axis Obara-Saika overlaps `s_ij`, `i <= la`, `j <= lb`, of
 /// `x_A^i x_B^j exp(-a x_A² - b x_B²)`, at `i * (lb + 1) + j`:
 /// `s_00 = sqrt(pi / p) exp(-mu X²)`,
@@ -576,6 +553,28 @@ pub fn overlap_via_cartesian(basis: &BasisSet) -> Vec<f64> {
 mod tests {
     use super::*;
     use fb_basis::ShellStamp;
+
+    /// How many of `basis`'s shell pairs `A >= B` [`overlap`] leaves zero as
+    /// negligible, and how many pairs there are.
+    fn negligible_pairs(basis: &BasisSet) -> (usize, usize) {
+        let data: Vec<ShellData> = (0..basis.shells().len())
+            .map(|index| ShellData::new(basis, index))
+            .collect();
+        let negligible: usize = data
+            .par_iter()
+            .enumerate()
+            .map(|(sa, a)| {
+                data[..sa]
+                    .iter()
+                    .filter(|b| {
+                        let r2: f64 = (0..3).map(|k| (a.center[k] - b.center[k]).powi(2)).sum();
+                        is_negligible(mu_min(a, b), r2, a.l + b.l)
+                    })
+                    .count()
+            })
+            .sum();
+        (negligible, data.len() * (data.len() + 1) / 2)
+    }
 
     /// A primitive-normalized shell placed at `at`.
     fn place(l: i32, exponents: &[f64], coefficients: &[f64], at: [f64; 3]) -> Shell {

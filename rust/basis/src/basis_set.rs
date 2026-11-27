@@ -5,7 +5,7 @@ use contracts::debug_requires;
 use fb_core_error_handling::{Error, check_or_abort};
 use fb_core_primitives::double_factorial_odd;
 
-use crate::{Ao, Shell, cartesian_powers, solid_harmonic_block};
+use crate::{Shell, solid_harmonic_block};
 
 /// An ordered collection of shells with atomic-orbital indexing:
 /// `BasisSet`.
@@ -13,9 +13,8 @@ use crate::{Ao, Shell, cartesian_powers, solid_harmonic_block};
 /// **Two parallel AO layouts.** The AOs are each shell's functions
 /// concatenated in shell order: shell 0 owns `[0, n0)`, shell 1
 /// `[n0, n0 + n1)`, and so on. In the Cartesian layout the kernels evaluate
-/// ([`BasisSet::nao_cart`], [`BasisSet::ao_offset_cart`],
-/// [`BasisSet::aos_cart`]) `n` is `(l+1)(l+2)/2`; in the spherical layout
-/// the basis means ([`BasisSet::nao_sphe`], [`BasisSet::ao_offset_sphe`])
+/// ([`BasisSet::nao_cart`], [`BasisSet::ao_offset_cart`]) `n` is
+/// `(l+1)(l+2)/2`; in the spherical layout the basis means ([`BasisSet::nao_sphe`], [`BasisSet::ao_offset_sphe`])
 /// it is `2l+1`. [`spherical_transform_matrix`] bridges the two.
 ///
 /// A basis made by [`crate::BasisStamp::place`] also records which atom owns
@@ -32,8 +31,6 @@ pub struct BasisSet {
     // only for the default basis.
     ao_offsets_cart: Vec<u32>,
     ao_offsets_sphe: Vec<u32>,
-    // One AO per Cartesian function, in global AO order.
-    aos_cart: Vec<Ao>,
     // One offset per atom plus a trailing total; empty with no per-atom map.
     atom_shell_offsets: Vec<u32>,
     name: String,
@@ -77,19 +74,10 @@ impl BasisSet {
     fn build(shells: Vec<Shell>, atom_shell_offsets: Vec<u32>, name: String) -> BasisSet {
         let mut ao_offsets_cart = Vec::with_capacity(shells.len() + 1);
         let mut ao_offsets_sphe = Vec::with_capacity(shells.len() + 1);
-        let mut aos_cart = Vec::new();
         let (mut offset, mut spherical_offset) = (0u32, 0u32);
-        for (s, shell) in (0u32..).zip(&shells) {
+        for shell in &shells {
             ao_offsets_cart.push(offset);
             ao_offsets_sphe.push(spherical_offset);
-            for [a, b, c] in cartesian_powers(shell.angular_momentum()) {
-                aos_cart.push(Ao {
-                    shell_index: s,
-                    a: a as u8,
-                    b: b as u8,
-                    c: c as u8,
-                });
-            }
             offset += shell.function_count_cart();
             spherical_offset += shell.function_count_sphe();
             // Per shell, so a u32 wrap cannot hide an oversized basis: one
@@ -107,7 +95,6 @@ impl BasisSet {
             shells,
             ao_offsets_cart,
             ao_offsets_sphe,
-            aos_cart,
             atom_shell_offsets,
             name,
         }
@@ -154,12 +141,6 @@ impl BasisSet {
     /// The shells, in the order supplied.
     pub fn shells(&self) -> &[Shell] {
         &self.shells
-    }
-
-    /// The Cartesian AOs in global AO order, [`BasisSet::nao_cart`] of them:
-    /// each shell's [`cartesian_powers`] in shell order.
-    pub fn aos_cart(&self) -> &[Ao] {
-        &self.aos_cart
     }
 
     /// The number of shells.
@@ -258,7 +239,7 @@ pub fn spherical_transform_matrix(basis: &BasisSet, u: &mut [f64]) {
 mod tests {
     use super::*;
     use crate::moments::{monomial_gram, row_of};
-    use crate::{Primitive, ShellStamp};
+    use crate::{Primitive, ShellStamp, cartesian_powers};
     use fb_core_types::Double3;
     use std::f64::consts::PI;
 
@@ -294,7 +275,6 @@ mod tests {
         assert_eq!(basis.nshells(), 0);
         assert_eq!(basis.nao_cart(), 0);
         assert_eq!(basis.nao_sphe(), 0);
-        assert!(basis.aos_cart().is_empty());
         assert!(transform(&basis).is_empty());
         // An empty shell list is the same basis.
         let built = BasisSet::new(Vec::new());
@@ -363,17 +343,6 @@ mod tests {
         assert_eq!(basis.ao_offset_cart(1), 1);
         assert_eq!(basis.ao_offset_cart(2), 4);
         assert_eq!(basis.ao_offset_sphe(2), 4);
-
-        let aos_cart = basis.aos_cart();
-        assert_eq!(aos_cart.len(), basis.nao_cart() as usize);
-        for s in 0..basis.nshells() {
-            let powers = cartesian_powers(basis.shells()[s as usize].angular_momentum());
-            for (i, p) in powers.iter().enumerate() {
-                let ao = aos_cart[basis.ao_offset_cart(s) as usize + i];
-                assert_eq!(ao.shell_index, s);
-                assert_eq!([ao.a, ao.b, ao.c].map(i32::from), *p);
-            }
-        }
     }
 
     /// The acceptance check: for a basis with every momentum through f, the
@@ -400,7 +369,6 @@ mod tests {
         assert_eq!(offsets, [[0, 0], [1, 1], [4, 4], [10, 9]]);
         assert_eq!(basis.nao_cart(), 20);
         assert_eq!(basis.nao_sphe(), 16);
-        assert_eq!(basis.aos_cart().len(), 20);
         assert_eq!(transform(&basis).len(), 20 * 16);
     }
 

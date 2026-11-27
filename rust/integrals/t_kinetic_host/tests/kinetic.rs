@@ -5,15 +5,11 @@
 //! contractions): water in STO-3G and cc-pVDZ, and CO in cc-pVTZ, f on both
 //! atoms and the bond off every axis. The packed lower triangle is compared
 //! with the reference's, at the bar, `1e-12 max |T_ref|`.
-//!
-//! `overlap_and_kinetic`'s S is held to PySCF's `int1e_ovlp` on the same
-//! molecules (`rust/integrals/s_overlap_host/tests/data/`, the same XYZ files byte
-//! for byte), at the same bar, and its T to `kinetic`'s bits.
 
 use std::path::{Path, PathBuf};
 
 use fb_core_primitives::lower_index;
-use fb_integrals_t_kinetic_host::{kinetic, kinetic_via_cartesian, overlap_and_kinetic};
+use fb_integrals_t_kinetic_host::{kinetic, kinetic_via_cartesian};
 
 /// The bar, relative to `max |T_ref|`.
 const BAR: f64 = 1e-12;
@@ -33,13 +29,6 @@ fn basis(xyz: &str, basis_name: &str) -> fb_basis::BasisSet {
         .primitive_normalized()
         .place(&molecule)
         .expect("the basis covers the molecule")
-}
-
-/// The overlap's PySCF reference `stem`.npy.
-fn overlap_reference(stem: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../s_overlap_host/tests/data")
-        .join(format!("{stem}.npy"))
 }
 
 /// `got`, a packed lower triangle, against the lower triangle of the full
@@ -66,29 +55,16 @@ fn compare(label: &str, got: &[f64], reference: &Path, n: usize) {
     );
 }
 
-/// One fixture: T's lower triangle computed by each route, and S and T
-/// together, each compared with PySCF; T together carries T alone's bits.
+/// One fixture: T's lower triangle computed by each route, each compared
+/// with PySCF.
 fn check(stem: &str, xyz: &str, basis_name: &str) {
     let basis = basis(xyz, basis_name);
     let n = basis.nao_sphe() as usize;
     let reference = data(&format!("{stem}.npy"));
-    let alone = kinetic(&basis);
-    compare(&format!("{stem}, T spherical"), &alone, &reference, n);
+    let direct = kinetic(&basis);
+    compare(&format!("{stem}, T spherical"), &direct, &reference, n);
     let via = kinetic_via_cartesian(&basis);
     compare(&format!("{stem}, T via cartesian"), &via, &reference, n);
-    let (s, t) = overlap_and_kinetic(&basis);
-    assert!(
-        t.iter()
-            .zip(&alone)
-            .all(|(a, b)| a.to_bits() == b.to_bits()),
-        "{stem}: T together differs from T alone"
-    );
-    compare(
-        &format!("{stem}, S together"),
-        &s,
-        &overlap_reference(stem),
-        n,
-    );
 }
 
 #[test]
@@ -106,9 +82,8 @@ fn carbon_monoxide_in_cc_pvtz_matches_pyscf() {
     check("co_cc-pvtz", "co.xyz", "cc-pvtz");
 }
 
-/// The triangles carry the same bits on one thread as on eight, T alone
-/// and S and T together: a shell pair's block depends on nothing another
-/// task computes.
+/// The triangle carries the same bits on one thread as on eight: a shell
+/// pair's block depends on nothing another task computes.
 #[test]
 fn the_thread_count_does_not_change_a_bit() {
     let basis = basis("co.xyz", "cc-pvtz");
@@ -117,9 +92,8 @@ fn the_thread_count_does_not_change_a_bit() {
             .num_threads(threads)
             .build()
             .expect("a thread pool")
-            .install(|| (kinetic(&basis), overlap_and_kinetic(&basis)))
+            .install(|| kinetic(&basis))
     };
-    let same = |a: &[f64], b: &[f64]| a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits());
-    let ((t1, (s1, st1)), (t8, (s8, st8))) = (on(1), on(8));
-    assert!(same(&t1, &t8) && same(&s1, &s8) && same(&st1, &st8));
+    let (t1, t8) = (on(1), on(8));
+    assert!(t1.iter().zip(&t8).all(|(x, y)| x.to_bits() == y.to_bits()));
 }
