@@ -4,8 +4,11 @@ usage: md2html.py <in.md> <out.html> [sibling.md ...] [figures/<doc>.figs]
 
 Links to a listed sibling .md are rewritten to its .html. A `.figs` argument
 splices in the hand-drawn SVG figures it holds (see `insert_figures`). The
-.md is the source; regenerate the .html after editing either. From this
-directory:
+.md is the source. The pages of this directory are not tracked:
+.github/workflows/docs.yml renders them for the Pages site with the two
+commands below, which also render them locally, from this directory. The
+experimental/rust/v0.0.* pages are still rendered by hand and tracked;
+regenerate one after editing its .md or .figs.
 
     uv run --no-project --with markdown-it-py python md2html.py \
       programming_model.md programming_model.html memory.md \
