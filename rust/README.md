@@ -74,8 +74,8 @@ tree, not inputs to its build.
 | `fb_integrals_v_potential_en_host` | nothing: rust/'s own host build (the prototype's `experimental/rust/v_potential_en_host`) | `potential_en(basis, charges)`, and `potential_en_into(basis, charges, v)` into a caller's slice: the spherical nuclear attraction V over `point_charges(molecule)` on the host, on rayon's threads, every nucleus summed into one Hermite table per primitive pair, the Boys function `fb_integrals_df_metric`'s; `potential_en_via_cartesian`, `PointCharge`. Device-free; held to PySCF through f |
 
 One more crate holds no port:
-`fb-doc-check` (`doc_check/`), the section-citation, `unsafe`, contract and
-source-rule checks, the code-rule scans, and the workspace graph test. There is no umbrella crate. The crate graph is the selection graph
+`fb-doc-check` (`doc_check/`), the checks of the tree's text and package
+graph, which its crate doc lists. There is no umbrella crate. The crate graph is the selection graph
 ([`testing.md`](docs/testing.md), "Selection: the workspace graph is the
 selection graph"): `log` at the bottom, `error_handling` on it, `device`
 on both (and on `kernel_abi` and `recipes/sys`), `budget` on `device` and
@@ -307,42 +307,10 @@ three-center units, which the C++ tree does not have, straight into
 (`speri3`, the bra Cartesian) and `.../three_center/spherical/kernels/`
 (`ssperi3`, all three indices spherical).
 
-`doc_check/tests/section_citations.rs` checks that every section the
-README, `docs/` and every member's Rust sources cite by name is a heading of
-the file cited ([`documentation.md`](docs/documentation.md), "Narrative:
-mdBook beside the rustdoc", has the rules). It reads files and nothing else,
-in a crate that links nothing, so it needs neither card nor library:
-`cargo test -p fb-doc-check`. It finds the members from the workspace
-manifest, so a new crate is scanned without being named there.
-`doc_check/tests/unsafe_code.rs`, in the same crate, checks every member's
-crate roots against the list of crates allowed `unsafe`
-([`programming_model.md`](docs/programming_model.md), "Capabilities are
-enforced by lints"): a root that does not `#![forbid(unsafe_code)]` must be
-a listed crate's, and a listed crate must still hold `unsafe`.
-`doc_check/tests/rules.rs` reads the rules register,
-[`rules.md`](docs/rules.md), and fails when a check a row names, a lint,
-a type, a test file or a test in one, does not exist.
-
-`doc_check/tests/contracts.rs` checks that no doc comment restates a
-contract, which rustdoc renders on its own, that every `debug_assert!`
-carries an `// INVARIANT:` comment, and that a public function's leading
-precondition on its arguments is a `#[requires]` whatever its message (an
-`assert!`, interpolated or not, an `assert_eq!` or `assert_ne!`, or an
-`if … { panic!() }` guard), and
-that a value check (`le!`, `lt!`, `eq!`, `fits_i32!`) appears only in a
-contract's condition, as a whole `&&` term of it
-([`testing.md`](docs/testing.md), "Contracts are part of the spec").
-`doc_check/tests/unsafe_contracts.rs` checks that, in a function holding an
-`unsafe` block, a `#[debug_requires]` on an integer parameter or a
-parameter's `.len()` is always on or carries a `// RELEASE:` comment saying
-what holds the bound in a release build.
-
-`doc_check/tests/source_rules.rs` scans the sources for six rules of the
-register, each named in its row: every `#[ignore]` is a device case's, no
-Markdown sits beside a module, a doc example carries its marker, nothing is
-exported to C, a binding crate's safe wrapper links down to the binding it
-calls, and a test that trips a contract is `#[cfg(debug_assertions)]`
-exactly when the contract is a debug one.
+`fb-doc-check`'s checks are listed in one place, its crate doc
+(`doc_check/src/lib.rs`), a line per test file, and each rule they hold is
+a row of [`rules.md`](docs/rules.md) naming its test. Its crate links
+nothing, so `cargo test -p fb-doc-check` needs neither card nor library.
 
 Tests run in parallel, so a capture test must not use global capture mode.
 A global capture forbids other threads' unsafe calls, and on the 3080 it

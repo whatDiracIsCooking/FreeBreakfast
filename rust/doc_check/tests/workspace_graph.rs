@@ -50,8 +50,9 @@ const LOG_ONLY: &[&str] = &["fb-core-log", "fb-core-error-handling"];
 /// The logging macros' paths, as [`reexports`] flattens them. A crate that
 /// re-exports any of them offers itself as a way to log, so a crate that
 /// only logs may come to depend on it, and it is held to [`LOG_ONLY`]'s
-/// rule. A crate of the old layer did this while depending on its handle
-/// crate; the macros are now imported from where they are defined.
+/// rule: one that also depends on a handle crate would hand the handles to
+/// every crate that logs through it. The macros are imported from where
+/// they are defined.
 const LOG_MACROS: &[&str] = &[
     "log::*",
     "log::trace",
@@ -72,15 +73,14 @@ const HANDLES: &[&str] = &["fb-core-device", "wwr-sys"];
 /// workspace of `members` members: two thirds of the others, rounded down.
 ///
 /// A fraction, so the bar grows with the tree rather than being outgrown by
-/// it. Two thirds is chosen from the distribution when the test landed (38
-/// members, so 37 others and a bar of 24): the two global crates sat at 30
-/// (`fb-core-log`) and 29 (`fb-core-error-handling`), 81% and 78%, and every
-/// other member at 20 or fewer (the old layer's handle crate 20,
-/// `fb-core-types` 18, `fb-atom` 17, `fb-molecule` 16, the test-support crate
-/// and the old layer's thread pool 15), 54% at most. Two thirds sits in that gap: the
-/// highest ordinary crate has a sixth of the workspace in headroom, and a
-/// crate everything above the core leaves depends on (the C++ tree's
-/// `free_breakfast.core`, imported by 154 of 157 GPU test files) fails.
+/// it. Two thirds sits in the gap between the global crates and the rest:
+/// at 29 members (28 others, a bar of 18) the two global crates sit at 21
+/// (`fb-core-log`) and 20 (`fb-core-error-handling`), 75% and 71%, and
+/// every other member at 13 or fewer (`fb-core-types` 13, `fb-atom` 12,
+/// `fb-molecule` 11), 46% at most. The highest ordinary crate has five
+/// members of headroom, and a crate everything above the core leaves
+/// depends on (the C++ tree's `free_breakfast.core`, imported by 154 of 157
+/// GPU test files) fails.
 fn bar(members: usize) -> usize {
     members.saturating_sub(1) * 2 / 3
 }
@@ -845,10 +845,9 @@ fn a_logger_reaching_the_handles_fails_with_the_chain() {
     );
 }
 
-/// Catches a logging facade over the handles, as the old layer had: a
-/// crate that re-exports the logging macros while depending on
-/// `fb-core-device`. A crate that depends on
-/// it without offering them, or whose re-export is commented out, passes,
+/// Catches a logging facade over the handles: a crate that re-exports the
+/// logging macros while depending on `fb-core-device`. A crate that depends
+/// on it without offering them, or whose re-export is commented out, passes,
 /// and so does one that offers them and reaches no handle crate.
 #[test]
 fn a_logging_facade_reaching_the_handles_fails() {
