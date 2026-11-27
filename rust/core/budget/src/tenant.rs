@@ -53,7 +53,7 @@ impl Tenancy {
     /// # Panics
     /// If a tenant is carved, live or leaked, naming `what`.
     #[track_caller]
-    pub(crate) fn whole(&self, what: &str) -> *mut u8 {
+    pub(crate) fn base(&self, what: &str) -> *mut u8 {
         let carved = locked(&self.carved);
         if let Some(&(b, e)) = carved.first() {
             panic!("a {what} is reached whole while its bytes {b}..{e} are a tenant's");

@@ -571,9 +571,10 @@ and fills a stream enqueues, device slices, and each GPU's
   included, since an `Allocation` error is a value only where the budget
   refuses a plan.
 - **The slices are the layer above's, again.** `DeviceSlice` and
-  `DeviceSliceMut` carry the same promise; `part`, `part_mut` and
-  `split_at_mut` cut runs (`Part`, `PartMut`) from them, each cut an
-  always-on contract at the caller's line, as "The safe wrapper" has it.
+  `DeviceSliceMut` carry the same promise; `part` and `part_mut` cut
+  runs (`Part`, `PartMut`) from them, and the crate's own recipes
+  `split_at_mut`, each cut an always-on contract at the caller's line,
+  as "The safe wrapper" has it.
   The copies' lengths are always-on contracts too: the device end sets a
   copy's length, so `upload` reads the head of a longer host end,
   `download` writes the head of a longer one, and `copy_device` writes the

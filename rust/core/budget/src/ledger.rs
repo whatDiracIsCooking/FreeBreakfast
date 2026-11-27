@@ -68,23 +68,6 @@ pub struct RegionInfo {
     pub bytes: u64,
 }
 
-/// One slab's totals, for a test or a figure.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SlabInfo {
-    /// The gpu.
-    pub gpu: usize,
-    /// Device or pinned.
-    pub kind: Kind,
-    /// The slab's size.
-    pub peak: u64,
-    /// The plain sum of the declarations.
-    pub sum: u64,
-    /// The heaviest set of mutually unordered declarations.
-    pub bound: u64,
-    /// The steps that make the bound.
-    pub bound_steps: Vec<&'static str>,
-}
-
 /// The caps, the counters, the `over` flag, the per-step table and, after
 /// the final node, the scratch slabs: one per run, held by the bus.
 pub struct Ledger {
@@ -199,7 +182,7 @@ impl Ledger {
 
     /// The pinned bytes charged for `gpu` so far.
     #[must_use]
-    pub fn pinned_total(&self, gpu: usize) -> u64 {
+    pub(crate) fn pinned_total(&self, gpu: usize) -> u64 {
         self.pinned[gpu].load(Ordering::Acquire)
     }
 
@@ -486,29 +469,6 @@ impl Ledger {
         out
     }
 
-    /// Every slab's totals, after the final node.
-    #[must_use]
-    pub fn slabs(&self) -> Vec<SlabInfo> {
-        self.slabs
-            .get()
-            .map_or(&[][..], Vec::as_slice)
-            .iter()
-            .map(|slab| SlabInfo {
-                gpu: slab.gpu,
-                kind: slab.kind,
-                peak: slab.packed.peak,
-                sum: slab.packed.sum,
-                bound: slab.packed.bound,
-                bound_steps: slab
-                    .packed
-                    .bound_set
-                    .iter()
-                    .map(|&i| slab.steps[i].0)
-                    .collect(),
-            })
-            .collect()
-    }
-
     /// `step`'s lease: its region of every slab, for the length of one
     /// `run`. The wrapper makes it; a step is handed a reference.
     ///
@@ -735,13 +695,6 @@ impl Budget<'_> {
     #[must_use]
     pub fn gpus(&self) -> usize {
         self.ledger.gpus()
-    }
-
-    /// The device cap `gpu` is held to: what a step's default limit is a
-    /// fraction of.
-    #[must_use]
-    pub fn device_cap(&self, gpu: usize) -> u64 {
-        self.ledger.caps.device[gpu].used
     }
 
     /// `len` elements of device memory on `gpu`, the step's `Output`'s for

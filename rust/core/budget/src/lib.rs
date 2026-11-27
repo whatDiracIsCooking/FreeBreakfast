@@ -34,7 +34,7 @@
 //!     ledger.budget(step).scratch(0, Kind::Pinned, layout.bytes());
 //! }
 //! ledger.finish(&["a", "b"], &[vec![], vec![0]]).unwrap();
-//! assert_eq!(ledger.slabs()[1].peak, 8192);
+//! assert!(ledger.regions().iter().all(|r| r.offset == 0 && r.bytes == 8192));
 //!
 //! // `a`'s run is lent its region, and carves its tenant from it.
 //! let lease = ledger.lease("a");
@@ -63,9 +63,9 @@ mod tenant;
 mod tests;
 
 pub use buffers::{DeviceBuf, HeapSlab, PinnedBuf, Plain};
-pub use host::host_available;
+pub(crate) use host::host_available;
 pub use lease::{HostPart, Layout, Lease, ScratchBuf, Span};
-pub use ledger::{Budget, Ledger, RegionInfo, SlabInfo};
+pub use ledger::{Budget, Ledger, RegionInfo};
 pub use record::{AllocationRecord, RECORD_THRESHOLD};
 pub use tenant::{DeviceTenant, PinnedTenant};
 
@@ -145,7 +145,7 @@ pub fn device_margin(total: u64) -> u64 {
 /// The host margin of a defaulted cap: the larger of 1 GiB and 5% of the
 /// available memory.
 #[must_use]
-pub fn host_margin(available: u64) -> u64 {
+pub(crate) fn host_margin(available: u64) -> u64 {
     (1 << 30).max(available / 20)
 }
 

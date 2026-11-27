@@ -38,7 +38,7 @@ fn allocated(raw: Option<&Arc<Tenancy>>, len: usize) -> usize {
 }
 
 /// Device memory a step's `Output` owns. Empty, of length 0, under a dry
-/// or refused budget ([`DeviceBuf::is_allocated`]).
+/// or refused budget.
 ///
 /// Its bytes can be carved into typed tenants ([`DeviceBuf::tenant`]),
 /// several live at once, while the whole is not reached.
@@ -58,12 +58,6 @@ impl<T: Plain> DeviceBuf<T> {
         }
     }
 
-    /// Whether the buffer was really allocated.
-    #[must_use]
-    pub fn is_allocated(&self) -> bool {
-        self.raw.is_some()
-    }
-
     /// The bytes as host memory, under [`Backing::Host`](crate::Backing)
     /// only: how the device-free tests read and write a "device" buffer on
     /// no gpu.
@@ -73,7 +67,7 @@ impl<T: Plain> DeviceBuf<T> {
     #[track_caller]
     pub fn host(&mut self) -> Option<&mut [T]> {
         let t = self.raw.as_ref().filter(|t| t.raw.is_host())?;
-        let ptr = t.whole("device buffer");
+        let ptr = t.base("device buffer");
         // SAFETY: `len` elements of zeroed host memory, a valid `T` at any
         // bit pattern (`Plain`), no tenant carved from them (`whole`), and
         // `&mut self` is the one user.
@@ -110,7 +104,7 @@ unsafe impl<T> DeviceSlice<T> for DeviceBuf<T> {
     #[track_caller]
     fn as_ptr(&self) -> *const T {
         self.raw.as_ref().map_or(std::ptr::null(), |t| {
-            t.whole("device buffer").cast_const().cast()
+            t.base("device buffer").cast_const().cast()
         })
     }
     fn len(&self) -> usize {
@@ -124,7 +118,7 @@ unsafe impl<T> DeviceSliceMut<T> for DeviceBuf<T> {
     fn as_mut_ptr(&mut self) -> *mut T {
         self.raw
             .as_ref()
-            .map_or(std::ptr::null_mut(), |t| t.whole("device buffer").cast())
+            .map_or(std::ptr::null_mut(), |t| t.base("device buffer").cast())
     }
 }
 
@@ -184,12 +178,6 @@ impl<T: Plain> PinnedBuf<T> {
         }
     }
 
-    /// Whether the buffer was really allocated.
-    #[must_use]
-    pub fn is_allocated(&self) -> bool {
-        self.raw.is_some()
-    }
-
     /// The tenant `span` of the buffer's bytes, typed `U`: carved from a
     /// [`Layout`](crate::Layout) over them, as a lease's tenants are, and
     /// handed back by dropping it, or by the sync of the copy it moved
@@ -231,11 +219,11 @@ impl<T: Plain> PinnedBuf<T> {
     /// # Panics
     /// If a tenant of the buffer is live or leaked.
     #[track_caller]
-    fn whole(&self) -> *mut T {
+    fn base(&self) -> *mut T {
         self.raw
             .as_ref()
             .map_or(std::ptr::NonNull::dangling().as_ptr(), |t| {
-                t.whole("pinned buffer").cast()
+                t.base("pinned buffer").cast()
             })
     }
 }
@@ -254,7 +242,7 @@ impl<T: Plain> Deref for PinnedBuf<T> {
         // bit pattern (`Plain`), borrowed with `self`, and no tenant carved
         // from them (`whole`): the carve takes `&mut self`, so none starts
         // while this borrow lives.
-        unsafe { std::slice::from_raw_parts(self.whole(), len) }
+        unsafe { std::slice::from_raw_parts(self.base(), len) }
     }
 }
 
@@ -263,7 +251,7 @@ impl<T: Plain> DerefMut for PinnedBuf<T> {
     fn deref_mut(&mut self) -> &mut [T] {
         let len = allocated(self.raw.as_ref(), self.len);
         // SAFETY: as `deref`, and `&mut self` is the one user.
-        unsafe { std::slice::from_raw_parts_mut(self.whole(), len) }
+        unsafe { std::slice::from_raw_parts_mut(self.base(), len) }
     }
 }
 

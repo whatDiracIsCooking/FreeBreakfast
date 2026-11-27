@@ -9,6 +9,7 @@
 use std::sync::atomic::Ordering;
 
 use super::*;
+use crate::slice::split_at_mut;
 
 /// Device memory from `wwr_malloc`, freed on drop: a test's buffer, since
 /// allocating is the budget's and this crate has none.

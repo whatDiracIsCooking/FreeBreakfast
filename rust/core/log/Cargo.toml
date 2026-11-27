@@ -14,6 +14,5 @@ libc.workspace = true
 log.workspace = true
 
 [dev-dependencies]
-libc.workspace = true
 # tests/panic_hook.rs and the check macros' doc examples: a contract to trip.
 contracts.workspace = true

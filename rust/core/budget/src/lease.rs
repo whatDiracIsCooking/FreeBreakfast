@@ -154,20 +154,6 @@ impl Lease<'_> {
         self.region(gpu, kind).map_or(0, |r| r.bytes)
     }
 
-    /// The step's whole region of `gpu`'s slab of `kind`: the wrapper's
-    /// NaN fill of a device region takes it. Whether it is host memory
-    /// comes with it.
-    #[must_use]
-    pub fn whole(&self, gpu: usize, kind: Kind) -> Option<(*mut u8, usize, bool)> {
-        self.region(gpu, kind).map(|r| (r.ptr, r.bytes, r.host))
-    }
-
-    /// Every region as `(gpu, kind)`.
-    #[must_use]
-    pub fn kinds(&self) -> Vec<(usize, Kind)> {
-        self.regions.iter().map(|r| (r.gpu, r.kind)).collect()
-    }
-
     /// Set every byte of every host-addressable region to `0xFF`: NaN as an
     /// `f64`, -1 as an `i32`. The wrapper's test-mode fill, before any
     /// tenant is carved; the device regions of a real plan are filled on

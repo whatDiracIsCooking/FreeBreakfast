@@ -167,18 +167,9 @@ fn a_cgroup_limit_bounds_the_host_reading() {
 fn the_fake_graph_packs_to_its_lower_bound() {
     let ledger = ledger(ROOMY, ROOMY);
     run(&ledger, &[0, 1, 2, 3, 4], &[0, 1, 2, 3, 4]).unwrap();
-    let slab = ledger
-        .slabs()
-        .into_iter()
-        .find(|s| s.kind == Kind::Device)
-        .unwrap();
     // a, then d, lie on one path and share from offset 0; b and c are
     // unordered with each other; e is unordered with everyone. The
     // heaviest antichain is {d, e} = 7 MiB, and {b, c, e} = 6.
-    assert_eq!(slab.sum, 16 * MIB);
-    assert_eq!(slab.bound, 7 * MIB);
-    assert_eq!(slab.bound_steps, ["d", "e"]);
-    assert_eq!(slab.peak, slab.bound);
     let at = |step: &str| {
         let r = ledger
             .regions()
@@ -190,11 +181,11 @@ fn the_fake_graph_packs_to_its_lower_bound() {
     assert_eq!(at("d"), (0, 6 * MIB));
     assert_eq!(at("a"), (0, 4 * MIB));
     assert_eq!(at("e"), (6 * MIB, MIB));
-    // The outputs are a sum, the scratch the packed peak, and the fixed
-    // BLAS-handle workspace is on top.
+    // The outputs are a sum, the scratch the packed peak (the bound, 7 MiB),
+    // and the fixed BLAS-handle workspace is on top.
     assert_eq!(
         ledger.device_total(0),
-        5 * MIB + slab.peak + fb_core_device::HANDLE_WORKSPACE_BYTES as u64
+        5 * MIB + 7 * MIB + fb_core_device::HANDLE_WORKSPACE_BYTES as u64
     );
     assert_eq!(
         ledger.locks_of("a"),
@@ -265,7 +256,7 @@ fn over_the_cap_is_a_refusal_with_the_table_not_a_panic() {
     let ledger = ledger(MIB / 2, ROOMY);
     let (device, _) = budget_step(&ledger, 0, 0);
     assert!(ledger.over());
-    assert!(!device.is_allocated());
+    assert_eq!(fb_core_device::DeviceSlice::len(&device), 0);
     let error = ledger.finish(&["a"], &[vec![]]).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Allocation);
     assert!(error.message.contains("REFUSED"), "{error}");
@@ -407,7 +398,6 @@ fn a_dry_budget_counts_and_allocates_nothing() {
     let (device, _) = budget_step(&ledger, 0, MIB);
     ledger.finish(&["a"], &[vec![]]).unwrap();
     assert_eq!(ledger.allocations(), 0);
-    assert!(!device.is_allocated());
     assert_eq!(fb_core_device::DeviceSlice::len(&device), 0);
     assert_eq!(
         ledger.device_total(0),

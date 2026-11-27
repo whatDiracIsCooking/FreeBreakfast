@@ -17,7 +17,7 @@
 //!   waits for.
 //! - [`DeviceSlice`] and [`DeviceSliceMut`]: device memory with its length,
 //!   which every call here takes in place of a pointer, and [`Part`] and
-//!   [`PartMut`], runs of one ([`part`], [`part_mut`], [`split_at_mut`]).
+//!   [`PartMut`], runs of one ([`part`], [`part_mut`]).
 //!   [`HostSlice`] and [`HostSliceMut`] are the host end of a copy, handed
 //!   to it by value.
 //! - [`GpuResources`]: one GPU's stream with a BLAS and a dense-solver
@@ -60,7 +60,6 @@ use wwr_sys::wwr_status;
 pub use gpu::{CHOLESKY_TILE, GpuResources, HANDLE_WORKSPACE_BYTES};
 pub use slice::{
     DeviceSlice, DeviceSliceMut, HostSlice, HostSliceMut, Part, PartMut, part, part_mut,
-    split_at_mut,
 };
 pub use stream::{Event, Pending, Stream, sync_meter};
 /// The BLAS mode enums [`GpuResources`]' calls take (`gemm`'s operations,

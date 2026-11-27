@@ -125,18 +125,17 @@ unsafe impl<T> DeviceSlice<T> for Part<'_, T> {
 }
 
 /// A borrowed run of a [`DeviceSliceMut`], to write, as `&mut slice[a..b]`
-/// borrows from a slice. Made by [`part_mut`] and [`split_at_mut`], and cut
-/// again the same way.
+/// borrows from a slice. Made by [`part_mut`], and cut again the same way.
 ///
 /// The parent is borrowed exclusively while a part lives, so neither it
 /// nor a second part of it can be used beside the part:
 ///
 /// ```compile_fail,E0499
-/// use fb_core_device::{DeviceSliceMut, split_at_mut};
+/// use fb_core_device::{DeviceSliceMut, part_mut};
 ///
 /// fn both(a: &mut impl DeviceSliceMut<f64>) {
-///     let (head, _tail) = split_at_mut(a, 1);
-///     let (_again, _) = split_at_mut(a, 1);
+///     let head = part_mut(a, 0, 1);
+///     let _again = part_mut(a, 1, 1);
 ///     drop(head);
 /// }
 /// ```
@@ -225,20 +224,11 @@ pub fn part_mut<T>(of: &mut impl DeviceSliceMut<T>, offset: usize, len: usize) -
 }
 
 /// `of` cut at element `mid` into two writable parts, `[0, mid)` and
-/// `[mid, len)`, which do not meet, as `<[T]>::split_at_mut`.
-///
-/// ```
-/// use fb_core_device::{DeviceSlice, DeviceSliceMut, split_at_mut};
-///
-/// /// The first `k` columns of an `n`-row matrix, apart from the rest.
-/// fn panels(a: &mut impl DeviceSliceMut<f64>, n: usize, k: usize) -> (usize, usize) {
-///     let (left, right) = split_at_mut(a, n * k);
-///     (left.len(), right.len())
-/// }
-/// ```
+/// `[mid, len)`, which do not meet, as `<[T]>::split_at_mut`: how the
+/// crate's own recipes reach two panels of one matrix at once.
 #[requires(le!(mid, of.len()), "mid is within the slice")]
 #[track_caller]
-pub fn split_at_mut<T>(
+pub(crate) fn split_at_mut<T>(
     of: &mut impl DeviceSliceMut<T>,
     mid: usize,
 ) -> (PartMut<'_, T>, PartMut<'_, T>) {

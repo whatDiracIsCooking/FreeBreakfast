@@ -14,7 +14,7 @@ use fb_core_error_handling::{Error, Result};
 ///
 /// # Errors
 /// If `/proc/meminfo` cannot be read or has no `MemAvailable`.
-pub fn host_available() -> Result<u64> {
+pub(crate) fn host_available() -> Result<u64> {
     let meminfo = std::fs::read_to_string("/proc/meminfo")
         .map_err(|e| Error::io(format!("cannot read '/proc/meminfo': {e}")))?;
     let own = std::fs::read_to_string("/proc/self/cgroup").ok();
