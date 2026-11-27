@@ -150,7 +150,7 @@ broken promise; a contract would turn it into a panic.
 ```bash
 cd rust
 cmake --preset cuda                    # or hip; the backend has no default
-cmake --build --preset cuda            # libwwr_capi_{runtime_api,blas,solver,ccl}.so and the kernel libraries
+cmake --build --preset cuda            # libwwr_capi_{runtime_api,blas,solver}.so and the kernel libraries
 cargo test --workspace -- --include-ignored  # debug, device cases and contract tests
 cargo test --workspace --release       # the debug contracts' tests are skipped
 cargo test -p fb-core-budget           # one crate
@@ -182,9 +182,8 @@ them (below).
 
 `CMakeLists.txt` here is a CMake project of its own, which the root
 `CMakeLists.txt` does not add: it configures `deps/WarpWraps` alone (its
-tests, examples and install rules off, its collectives on) and builds
-`wwr.capi.runtime_api`, `wwr.capi.blas`, `wwr.capi.solver` and
-`wwr.capi.ccl`,
+tests, examples and install rules off) and builds
+`wwr.capi.runtime_api`, `wwr.capi.blas` and `wwr.capi.solver`,
 so building what the crates link configures nothing of the C++ tree. Its
 presets are `cuda` and `hip`, into `build-cuda/` and `build-hip/` here,
 with the root's sm_80 floor checked. It also builds the kernel shared
@@ -218,18 +217,7 @@ GPU's BLAS and dense-solver handles), and a workspace build unifies features, so
 The GPU tests (the ignored ones) use device 0 and need room on it for a
 context; a tier-5 case (`tier 5: needs two GPUs`, named `tier5_*`) uses
 devices 0 and 1, or every device it sees, and the gates run it only where
-wwr sees two (`docs/testing.md`, "Selecting GPU tiers in cargo"). A
-collective between two cards with no peer path the library will take, as
-PCIe through a host bridge, goes through shared memory, a `/dev/shm`
-segment of tens of MiB per pair; docker's default 64 MiB is too small,
-and the clique's first collective fails with `WWR_CCL_RESULT_SYSTEM_ERROR`.
-The devcontainers and `docker/compose.yaml` start the container with
-`--shm-size=1g`, which a container made before that carries only after
-`devtools/devcontainer.sh rebuild` on the host; `devtools/doctor.sh` warns
-when more than one card is visible and `/dev/shm` is under 512 MiB.
-Until the rebuild, `NCCL_P2P_LEVEL=SYS` is the stopgap: it lets NCCL take
-the peer path over the bridge, overriding its own judgment of the
-topology for every run, so it is not the fix. The host-only
+wwr sees two (`docs/testing.md`, "Selecting GPU tiers in cargo"). The host-only
 tests (the fake handle kind, error codes and contracts) need no GPU, and
 `fb-core-log`, `fb-core-error-handling`, `fb-core-types`,
 `fb-core-primitives`, `fb-core-constants`, `fb-atom`, `fb-molecule`,
