@@ -291,7 +291,7 @@ unbatched case is the batched one with a single batch on a single GPU.
   feature is not added until it runs on a single node's GPUs, one GPU
   being the case of one.
 - **Width stops mattering early.** In the prototype's single-GPU build
-  (`experimental/rust/df_batched`) the time is flat past about 20
+  (`experimental/rust/df_batched`, removed after `b0935805`) the time is flat past about 20
   batches, and a width of one costs 5.6× to 11.6×.
 - **No "what is left".** A width is a function of the step's own limit,
   so `mem_budget` stays local and order-free.

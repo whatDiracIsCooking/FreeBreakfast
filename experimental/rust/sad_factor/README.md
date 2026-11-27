@@ -9,9 +9,9 @@ here builds J or K.
 
 ## Why
 
-`v0.0.4`'s SCF builds K from C's occupied columns on every pass but the
+`fb-steps`' SCF builds K from C's occupied columns on every pass but the
 first of a fresh run, whose D is the guess and has no factor
-(`../v0.0.4/v0.0.4.html`, "K from the occupied orbitals"). At gly10 in
+(`rust/docs/programming_model.md`, "What the chain measured"). At gly10 in
 cc-pVDZ on one GPU that pass is about 12 s of a 58.3 s SCF, against about
 2.6 s for a pass from C. K from a factor costs in proportion to the
 factor's width.
@@ -90,8 +90,8 @@ gly10 (cc-pVDZ), and each stamp's rank against the Madelung fill's count.
 
 - The device half: the guess publishing L beside D₀, and the SCF's first
   pass taking `Density::Occupied(L, rank)`.
-- Whether `v0.0.4`'s pass scratch holds a factor wider than `n_occ`
-  (`jk_layout`): not read.
+- Whether `fb-steps`' pass scratch holds a factor wider than `n_occ`
+  (`jk_layout` in `rust/steps/src/steps/eri.rs`): not read.
 - A stamp that is not positive semidefinite is not refused: its negative
   eigenvalues are dropped with the null space and show in
   `largest_dropped`.

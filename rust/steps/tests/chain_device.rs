@@ -1,8 +1,8 @@
 //! The DF-RHF chain on a card (tier 4): every step of `fb-steps` through
 //! [`fb_steps::run`], cc-pVDZ over cc-pVDZ-JKFIT.
 //!
-//! The energies are `../experimental/rust/v0.0.2/README.md`'s recorded
-//! ones, each within 1.2e-12 of PySCF's DF-RHF over the same documents,
+//! The energies are the ones `experimental/rust/v0.0.2/README.md` recorded
+//! (the prototype is removed; `git show b0935805:<path>` has it), each within 1.2e-12 of PySCF's DF-RHF over the same documents,
 //! printed beside each. The bar on an energy is 1e-9 Eh, set by the loop's own
 //! convergence: `[scf] energy_tolerance` is 1e-10 between two builds and
 //! the commutator 1e-7, whose square bounds the energy's distance from the

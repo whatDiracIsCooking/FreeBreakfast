@@ -1,5 +1,5 @@
 //! What device memory a `dtrsm` needs from its BLAS handle, against its shape
-//! (experimental/rust/v0.0.4/v0.0.4.html, "One handle set per card, under one lock": is a
+//! (rust/docs/gpu_layer.md, "One handle set per GPU, under its lock": is a
 //! fixed 128 MiB workspace enough?). Through wwr-sys, one shape per process;
 //! run_all.sh runs the shapes under the card's lock.
 //!

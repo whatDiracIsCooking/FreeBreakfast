@@ -2,7 +2,7 @@
 //! `fb-core-device`'s stream and slices (tier 4).
 //!
 //! - One class, (p d | d), of water in cc-pVDZ against cc-pVDZ-JKFIT,
-//!   launched on the inputs `experimental/rust/df_batched/single_gpu_spherical`
+//!   launched on the inputs a since-removed prototype
 //!   launched its own `ssperi3` library on, and compared with what it wrote
 //!   (`integrals/sys/tests/data/README.md`, "The fully spherical class"). The kernel units are
 //!   the same text and the inputs the same bits, so the bar, 1e-12 of the

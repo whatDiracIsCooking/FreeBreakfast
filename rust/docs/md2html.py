@@ -10,9 +10,7 @@ file's source rather than a 404. A `.figs` argument
 splices in the hand-drawn SVG figures it holds (see `insert_figures`). The
 .md is the source. The pages of this directory are not tracked:
 .github/workflows/docs.yml renders them for the Pages site with the two
-commands below, which also render them locally, from this directory. The
-experimental/rust/v0.0.* pages are still rendered by hand and tracked;
-regenerate one after editing its .md or .figs.
+commands below, which also render them locally, from this directory.
 
     B=https://github.com/whatDiracIsCooking/FreeBreakfast/blob/main/rust/docs/
     uv run --no-project --with markdown-it-py python md2html.py --blob "$B" \
