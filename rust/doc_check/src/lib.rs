@@ -1,48 +1,57 @@
-//! The documentation checks that need nothing of the tree but its text:
-//! `tests/section_citations.rs`, which checks that every section the
-//! workspace's documents and comments cite by name is a heading of the file
-//! cited; `tests/unsafe_code.rs`, which checks that every crate root
-//! forbids `unsafe_code` unless `docs/programming_model.md` lists its crate
-//! as allowed it; `tests/contracts.rs`, which checks that no doc comment
-//! restates a contract rustdoc already renders, that every
-//! `debug_assert!` is an internal invariant that says so, that a
-//! leading precondition (an `assert!` whatever its message, an
-//! `assert_eq!` or `assert_ne!`, or an `if … { panic!() }` guard) is a
-//! `#[requires]`, and, in
-//! `a_value_check_is_only_in_a_contract` and
-//! `a_value_check_is_a_whole_term_of_its_condition`, that `fb_core_log`'s
-//! value checks are written only in a contract's condition, each a whole
-//! `&&` term of it;
-//! `tests/unsafe_contracts.rs`, which checks that no `unsafe` block rests
-//! on a debug-only contract on an extent unless a `// RELEASE:` comment
-//! says what holds it in release;
-//! `tests/rules.rs`, which checks that every lint, type, test file and test
-//! the register `docs/rules.md` names exists; and `tests/workspace_graph.rs`,
-//! which reads the package graph (`cargo metadata`, over the manifests'
-//! text) and checks the reverse-dependents bar, that no crate is an
-//! umbrella, that a crate which only logs reaches no handle crate, that
-//! every direct dependency is named in its crate's sources, that no member
-//! reaches a thread-pool crate, and the path rules of `devtools/test.py`
-//! against the layout; `tests/source_rules.rs`, which scans the sources for
-//! six rules of the register: every `#[ignore]` is a device case's, no
-//! Markdown sits beside a module, doc examples carry their markers, nothing
-//! is exported to C, the safe wrappers link down to their bindings, and a
-//! test that trips a contract is debug-only exactly when the contract is; and `tests/code_rules.rs`,
-//! which checks that only the boundary logs an error, that no Rust source
-//! names a warp width or a launch shape, and that an `Allocation` error is
-//! made only at admission; and `tests/doc_lists.rs`, which holds the docs'
-//! lists of what the tree holds to the tree: the kernel libraries' ABI
-//! versions and functions in `docs/gpu_layer.md`, the slow cases in
-//! `docs/testing.md`, and which members link the library in `README.md`;
-//! `tests/device_calls.rs`, which checks that every device call of
-//! `fb-core-device`'s `Stream`, `Event` and `GpuResources` holds a
-//! `ScopedDevice` and every solver call repeats its size query;
-//! and `tests/git_dependencies.rs`, which checks that a git dependency is
-//! pinned by a full commit in `[workspace.dependencies]` alone, and that a
-//! prototype under `experimental/rust/` names the same commit.
-//! A crate of its own
-//! so that it builds and runs without the wwr library. The checks are its tests; the
-//! library holds only what more than one of them reads.
+//! The checks of the tree that need nothing of it but its text and its
+//! package graph. Each is a test file, whose own header has the whole of
+//! what it checks and what it misses; the rules it holds are rows of the
+//! register, `docs/rules.md`, which name it:
+//!
+//! - `tests/section_citations.rs`: every section the workspace's documents
+//!   and comments cite by name is a heading of the file cited.
+//! - `tests/rules.rs`: every lint, type, test file and test the register
+//!   names exists, and every document beside it is cited by a row.
+//! - `tests/unsafe_code.rs`: every crate root forbids `unsafe_code` unless
+//!   `docs/programming_model.md` lists its crate as allowed it.
+//! - `tests/unsafe_contracts.rs`: no `unsafe` block rests on a debug-only
+//!   contract on an extent unless a `// RELEASE:` comment says what holds
+//!   it in release.
+//! - `tests/contracts.rs`: no doc comment restates a contract rustdoc
+//!   already renders, every `debug_assert!` is an internal invariant that
+//!   says so, a leading precondition (an `assert!` whatever its message, an
+//!   `assert_eq!` or `assert_ne!`, or an `if … { panic!() }` guard) is a
+//!   `#[requires]`, and `fb_core_log`'s value checks are written only in a
+//!   contract's condition, each a whole `&&` term of it.
+//! - `tests/source_rules.rs`: scans of the sources for eight rules: every
+//!   `#[ignore]` is a device case's, no Markdown sits beside a module, doc
+//!   examples carry their markers, nothing is exported to C, the library's
+//!   triangular solves are not called, the safe wrappers link down to
+//!   their bindings, a GPU's handles take their stream once before the
+//!   workspace, and a test that trips a contract is debug-only exactly
+//!   when the contract is.
+//! - `tests/code_rules.rs`: only the boundary logs an error, no Rust source
+//!   names a warp width or a launch shape, and an `Allocation` error is
+//!   made only at admission.
+//! - `tests/device_calls.rs`: every device call of `fb-core-device`'s
+//!   `Stream`, `Event` and `GpuResources` holds a `ScopedDevice`, and every
+//!   solver call repeats its size query.
+//! - `tests/lint_config.rs`: the clippy bans the rules lean on are
+//!   configured, in `clippy.toml` and `steps/clippy.toml`.
+//! - `tests/panic_profile.rs`: the release profile alone aborts on a panic.
+//! - `tests/doc_lists.rs`: the docs' lists of what the tree holds are the
+//!   tree's: the kernel libraries' ABI versions and functions in
+//!   `docs/gpu_layer.md`, the slow cases in `docs/testing.md`, and which
+//!   members link the library in `README.md`.
+//! - `tests/workspace_graph.rs`: the package graph (`cargo metadata`, over
+//!   the manifests' text) keeps the reverse-dependents bar, holds no
+//!   umbrella, lets no crate that only logs reach a handle crate, names
+//!   every direct dependency in its crate's sources, reaches no thread-pool
+//!   crate, and matches the path rules of `devtools/test.py` to the layout.
+//! - `tests/git_dependencies.rs`: a git dependency is pinned by a full
+//!   commit in `[workspace.dependencies]` alone, and a prototype under
+//!   `experimental/rust/` names the same commit.
+//!
+//! A crate of its own so that it builds and runs without the wwr library:
+//! `cargo test -p fb-doc-check` needs neither card nor library. It finds the
+//! members from the workspace manifest, so a new crate is scanned without
+//! being named here. The checks are its tests; the library holds only what
+//! more than one of them reads.
 
 #![forbid(unsafe_code)]
 

@@ -1,4 +1,4 @@
-//! Nine rules of the register (`docs/rules.md`) that a scan of the sources
+//! Eight rules of the register (`docs/rules.md`) that a scan of the sources
 //! holds, each failing with the file and line of every departure:
 //!
 //! - **`#[ignore]` is a device case's, and says so**: every `ignore` in an
@@ -19,6 +19,10 @@
 //! - **Nothing crosses from Rust into C++**: no `no_mangle` or
 //!   `export_name`, no `pub` `extern` function, and no `cdylib` or
 //!   `staticlib` crate (`docs/gpu_layer.md`, "What the port changes").
+//! - **The library's triangular solves are not called**: no identifier
+//!   under `rust/` starts `wwr_` and holds `trsm`, `potrs` or `getrs`; a
+//!   triangular solve is `GpuResources::trsm` (`docs/gpu_layer.md`,
+//!   "Layering").
 //! - **The safe wrapper links down**: in a binding crate (a member whose
 //!   `src/bindings.rs` declares functions), every `pub fn` that calls a
 //!   binding links it in its doc comment (`docs/documentation.md`, "The C header").
@@ -263,7 +267,7 @@ fn only_the_allowed_markdown_passes() {
         "README.md",
         "CLAUDE.md",
         "docs/memory.md",
-        "integrals/mmd/tests/data/README.md",
+        "integrals/sys/tests/data/README.md",
     ] {
         assert!(markdown_allowed(ok, false), "{ok}");
     }
@@ -271,9 +275,9 @@ fn only_the_allowed_markdown_passes() {
     for bad in [
         "sad/README.md",
         "sad/src/README.md",
-        "core/arena/DESIGN.md",
-        "core/arena/src/block.md",
-        "integrals/mmd/tests/notes.md",
+        "core/budget/DESIGN.md",
+        "core/budget/src/lease.md",
+        "integrals/sys/tests/notes.md",
     ] {
         assert!(!markdown_allowed(bad, false), "{bad}");
     }

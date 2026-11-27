@@ -416,7 +416,7 @@ fn error_logs_are_held_to_their_counts() {
             "error!(\"a\");\nerror!(\"b\");".to_owned(),
         ),
         (
-            "recipes/blas/src/lib.rs".to_owned(),
+            "recipes/sys/src/lib.rs".to_owned(),
             "fn f() {\n    log::error!(\"x\");\n}".to_owned(),
         ),
     ];
@@ -424,7 +424,7 @@ fn error_logs_are_held_to_their_counts() {
     let all = failures.join("\n");
     assert!(
         all.contains(
-            "recipes/blas/src/lib.rs is not allowed any:\n  recipes/blas/src/lib.rs:2: error!"
+            "recipes/sys/src/lib.rs is not allowed any:\n  recipes/sys/src/lib.rs:2: error!"
         ),
         "{all}"
     );
