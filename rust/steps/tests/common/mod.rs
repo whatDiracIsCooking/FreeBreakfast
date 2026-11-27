@@ -1,11 +1,11 @@
 //! What the steps' tests share: a config over a molecule of `tests/data`,
 //! the chain's config, a file of `tests/data`, the energy bar, the bohr,
 //! the gates' fast switch, a buffer brought back to the host, a packed
-//! triangle unpacked, and the check that the orthogonalizer, gpu0's lock
+//! triangle unpacked, the check that the orthogonalizer, gpu0's lock
 //! holder, shares no scratch byte with a step the DAG leaves unordered with
-//! it; and the allocation record, installed in every test binary of the
-//! steps, so the wrapper fails a step whose `run` makes one allocation past
-//! its threshold on the plain heap (`docs/memory.md`, "The budget").
+//! it, and this process's VRAM on an AMD card; and the allocation record,
+//! installed in every test binary of the steps, so the wrapper fails a step
+//! whose `run` makes one allocation past its threshold on the plain heap (`docs/memory.md`, "The budget").
 
 #![allow(
     dead_code,
@@ -126,4 +126,57 @@ pub fn orthogonalizer_scratch_is_its_own(ledger: &Ledger) -> usize {
         }
     }
     compared
+}
+
+/// This process's device memory on AMD cards, in bytes, from amdgpu's DRM
+/// fdinfo: the `drm-memory-vram` of every open file of this process whose
+/// `drm-driver` is `amdgpu`, counted once per `drm-client-id` (a file
+/// duplicated into two descriptors is one client). The kernel keeps it per
+/// file, so it is this process's alone: no other tenant of the card moves
+/// it, as one moves the device's free memory, and it counts every buffer of
+/// ours in VRAM, the budget's and a library's alike. `None` when the process
+/// has no amdgpu file open: on CUDA, or before the runtime opened one.
+pub fn amdgpu_process_vram() -> Option<u64> {
+    let dir = std::fs::read_dir("/proc/self/fdinfo").ok()?;
+    amdgpu_vram(
+        dir.flatten()
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok()),
+    )
+}
+
+/// [`amdgpu_process_vram`] over the fdinfo texts `files`.
+pub fn amdgpu_vram(files: impl IntoIterator<Item = String>) -> Option<u64> {
+    let mut clients = std::collections::BTreeMap::new();
+    for text in files {
+        let field = |key: &str| {
+            text.lines()
+                .find_map(|l| l.strip_prefix(key)?.strip_prefix(':'))
+                .map(str::trim)
+        };
+        if field("drm-driver") != Some("amdgpu") {
+            continue;
+        }
+        let (Some(id), Some(vram)) = (field("drm-client-id"), field("drm-memory-vram")) else {
+            continue;
+        };
+        clients.insert(id.to_owned(), bytes_of(vram));
+    }
+    (!clients.is_empty()).then(|| clients.values().sum())
+}
+
+/// A DRM fdinfo memory value, `<n>` with an optional ` KiB`, ` MiB` or
+/// ` GiB` unit, in bytes.
+///
+/// # Panics
+/// If the value is not a number with one of those units.
+pub fn bytes_of(value: &str) -> u64 {
+    let (n, unit) = value.split_once(' ').unwrap_or((value, ""));
+    let n: u64 = n.parse().expect("a DRM memory value is a count");
+    n * match unit {
+        "" => 1,
+        "KiB" => 1 << 10,
+        "MiB" => 1 << 20,
+        "GiB" => 1 << 30,
+        _ => panic!("a DRM memory unit: {value}"),
+    }
 }

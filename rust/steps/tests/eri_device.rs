@@ -18,11 +18,6 @@
 //! `sqrt((mn|mn))`); every other column is the unscreened one within the
 //! bar above. At 0 nothing is dropped.
 
-#![allow(
-    clippy::disallowed_methods,
-    reason = "a test reads its result back on the host: the harness waits, not a task"
-)]
-
 mod common;
 
 use fb_core_budget::Backing;

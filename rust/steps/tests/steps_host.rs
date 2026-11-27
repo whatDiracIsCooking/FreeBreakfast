@@ -10,7 +10,8 @@
 //! occupied block, the allocation record failing a step that allocates on the plain heap in its
 //! `run`, and the four host steps passing it: each builds its triangle in
 //! its pinned staging, so no `run` allocates one of its own
-//! (`docs/memory.md`, "The budget"), past 1 MiB from about 360 AOs.
+//! (`docs/memory.md`, "The budget"), past 1 MiB from about 360 AOs; and
+//! the parse of amdgpu's fdinfo behind `chain_vram.rs`'s readings.
 
 mod common;
 
@@ -769,4 +770,44 @@ fn gly10s_host_steps_pass_the_allocation_record() {
         return;
     }
     host_steps_pass_the_record("gly10.xyz");
+}
+
+/// amdgpu's lines, as kernel 6.8 writes them for one render node.
+fn fdinfo(id: u32, vram_kib: u64) -> String {
+    format!(
+        "pos:\t0\nflags:\t02100002\nmnt_id:\t26\nino:\t1033\ndrm-driver:\tamdgpu\n\
+         drm-pdev:\t0000:03:00.0\ndrm-client-id:\t{id}\npasid:\t32790\n\
+         drm-memory-vram:\t{vram_kib} KiB\ndrm-memory-gtt: \t2048 KiB\n\
+         drm-memory-cpu: \t0 KiB\n"
+    )
+}
+
+/// Two clients summed, a client's second descriptor counted once, and
+/// every other file passed over.
+#[test]
+fn sums_each_amdgpu_client_once() {
+    let other = "pos:\t0\nflags:\t02\ndrm-driver:\tnvidia\ndrm-client-id:\t3\n".to_owned();
+    let files = [
+        fdinfo(7, 100),
+        fdinfo(7, 100),
+        fdinfo(9, 28),
+        other,
+        "pos:\t0\n".to_owned(),
+    ];
+    assert_eq!(common::amdgpu_vram(files), Some(128 << 10));
+}
+
+/// No amdgpu file: no reading, not zero.
+#[test]
+fn no_amdgpu_file_is_none() {
+    assert_eq!(common::amdgpu_vram(["pos:\t0\n".to_owned()]), None);
+}
+
+/// Each unit, and a bare count.
+#[test]
+fn drm_memory_units() {
+    assert_eq!(common::bytes_of("5"), 5);
+    assert_eq!(common::bytes_of("5 KiB"), 5 << 10);
+    assert_eq!(common::bytes_of("5 MiB"), 5 << 20);
+    assert_eq!(common::bytes_of("5 GiB"), 5 << 30);
 }

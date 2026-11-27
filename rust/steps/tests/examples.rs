@@ -22,11 +22,6 @@
 //! functional is held to PySCF's by `localization_device.rs`; here its
 //! products are read back and its SCF energy held to the DF-RHF's bar.
 
-#![allow(
-    clippy::disallowed_macros,
-    reason = "a test's case lists and its readings back, outside any step's run"
-)]
-
 mod common;
 
 use std::collections::BTreeSet;

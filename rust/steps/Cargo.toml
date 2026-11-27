@@ -66,7 +66,5 @@ harness = false
 # (Python's json, NumPy) reads it; and the old path's recorded energies
 # (`recorded_device.rs`).
 serde_json = { workspace = true, features = ["float_roundtrip"] }
-# chain_vram's per-process VRAM reading on an AMD card.
-fb-test-support.workspace = true
 # The step-end sync's negative control (`controls_device.rs`).
 fb-core-flow = { workspace = true, features = ["test-support"] }

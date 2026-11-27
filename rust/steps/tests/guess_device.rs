@@ -17,11 +17,6 @@
 //! representative, the one case of a loaded guess, so it is no slow case
 //! (`docs/testing.md`, "Slow cases").
 
-#![allow(
-    clippy::disallowed_macros,
-    reason = "a test's paths and config text, outside any step's run"
-)]
-
 mod common;
 
 use std::path::Path;

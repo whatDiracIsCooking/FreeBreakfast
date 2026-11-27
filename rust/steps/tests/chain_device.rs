@@ -18,10 +18,6 @@
 //! case is a slow one (`docs/testing.md`, "Slow cases").
 
 #![allow(
-    clippy::disallowed_methods,
-    reason = "a test reads its result back on the host: the harness waits, not a task"
-)]
-#![allow(
     clippy::disallowed_macros,
     reason = "a test's case lists and host reference, outside any step's run"
 )]

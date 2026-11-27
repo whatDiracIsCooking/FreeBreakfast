@@ -18,11 +18,6 @@
 //! `eri_device.rs`'s `the_screen_zeroes_only_columns_under_the_threshold_on_benzene`
 //! is its family's representative at the gates.
 
-#![allow(
-    clippy::disallowed_methods,
-    reason = "a test reads its result back on the host: the harness waits, not a task"
-)]
-
 mod common;
 
 use fb_core_budget::Backing;
