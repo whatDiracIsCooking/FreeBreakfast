@@ -29,7 +29,7 @@ Do not use these:
   one whole card per run and admits device 0 of each backend alone, so the
   C++ gates run a 2×/4×/8× box as a 1× box. The collectives between cards
   need a `/dev/shm` larger than docker's 64 MiB, which the devcontainer's
-  `--shm-size=1g` gives (`rust/README.md`, "Build and test").
+  `--shm-size=1g` gives (`.devcontainer/cuda/devcontainer.json`).
 
 Pick an Ubuntu image that ships Docker and the NVIDIA container toolkit
 (Lambda Stack or GPU Base). The image is CUDA 13, so the host driver must be

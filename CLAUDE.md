@@ -364,7 +364,9 @@ peer path they will take (NVLink pairs joined by a PCIe host bridge) through
 `WWR_CCL_RESULT_SYSTEM_ERROR`. A container made before the flag keeps 64 MiB
 until `devtools/devcontainer.sh rebuild` on the host; `devtools/doctor.sh`
 warns about it, and `NCCL_P2P_LEVEL=SYS` is the stopgap until then, not the
-fix (`rust/README.md`, "Build and test").
+fix (`.devcontainer/cuda/devcontainer.json` has the whole story). Nothing in
+the tree builds the collectives today (`rust/` dropped `wwr.capi.ccl`); the
+setting stays for the multi-GPU work that will.
 
 ### The duplication that is load-bearing
 
