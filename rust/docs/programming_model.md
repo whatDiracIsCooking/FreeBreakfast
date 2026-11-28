@@ -208,6 +208,16 @@ object, `fb_steps::EriManager`, which is `eri`'s `Output`, and its users
 call its methods. `build_jk(shared, held, d, j, k)` is the one that works:
 J and K for each density of `d`, on gpu0, into the caller's `j` and `k`.
 
+This section is the model's contract with it. Its mechanics are specified
+beside the code, on the items' rustdoc pages, each with its figures
+([`documentation.md`](documentation.md), "Diagrams and animations"):
+
+| Page, under the site's `/api/fb_steps/` | Has |
+|---|---|
+| `struct.EriManager.html` | What the manager holds and where, B's two cuts (columns in the build, rows in a pass), the ERI buffer's tenants, and what `[eri] mem_per_gpu` gives |
+| `struct.EriManager.html#method.build_jk` | A J/K pass: the densities' crossing, each GPU's share, the pass's ring, the contractions from D and from C, the reduction |
+| `struct.EriStep.html` | B's build: the pair batches, the spherical kernel, the screen's bound, the build's ring and its launch order |
+
 - **It is `eri`'s `Output`.** `eri`'s `mem_budget` allocates all of it: the
   metric's Cholesky factor L on every GPU, B's slab on the host heap, and
   on every GPU the ERI buffer and its pinned staging
@@ -229,111 +239,36 @@ J and K for each density of `d`, on gpu0, into the caller's `j` and `k`.
   caller's. A caller's own state (its DIIS, its Fock matrix) stays in the
   caller's scratch.
 - **It takes a slice of densities.** DF-RHF passes one, and ROHF two,
-  its alpha and beta factors, in one pass: each aux batch is uploaded and
-  gathered once, and contracted with each density in turn. A response
-  solve, a Davidson or a state average would pass many. The buffers are
-  sized for an open shell's two, a closed shell's one, from `Dims`, a
-  contract of `build_jk`.
+  its alpha and beta factors, in one pass. A response solve, a Davidson
+  or a state average would pass many. The buffers are sized for an open
+  shell's two, a closed shell's one, from `Dims`, a contract of
+  `build_jk`.
 - **A density is D, or a factor C of D = 2 C Cᵀ** (`Density::Dense`,
-  `Density::Occupied`). From D, K costs two n_aux × n_ao³ products; from
-  C, two n_aux × n_ao² × n_occ ones, and J comes from the same
-  half-transformed B. A caller that has a factor passes it: the SCF does
-  on every pass, its first the guess's eigen-factor. Only the matrix
-  given crosses to the other GPUs: downloaded from gpu0 once, and one host
-  end uploaded to each of them under one token.
-
-**B is built over pairs and contracted over aux functions.** A pair
-column of B depends on every P, so a batch of P cannot be fitted alone; a
-batch of pairs can. The pair batches, each a run of one class's pairs,
-partition the pair columns, and each GPU takes a contiguous range of
-them: it forms (μν|P) in its ring, fits it against its own L, downloads
-it and scatters it into its own columns of every row of B, which
-`split_at_mut` cut from the other GPUs', so no GPU needs anything from
-another and no pointer is shared. A J/K pass then runs over aux batches:
-the aux functions are split across the GPUs once, in budget mode, each
-GPU contracts its own share, and the fragments are summed onto gpu0
-through the host.
-
-**(μν|P) is spherical from the kernel.** FelizJueves's
-`ssperi3<la, lb, lP>` writes all three indices as real solid harmonics,
-each pair's block at its spherical pair column, the layout the fit reads.
-No bra transform runs, and the ring holds no Cartesian batch and no
-transform scratch. It is plain FP64. No array in the DF-RHF chain has a
-Cartesian index.
-
-**The build is Schwarz-screened.** `[eri] schwarz_threshold`, 1e-12 by
-default (the old path's), drops a shell pair whose bound is under it:
-the pair has no cells, the ring buffer it would have been written into
-is zeroed first, and its columns of B are zero. The bound is the sum of
-the pair's records' dressed Schwarz bounds, formed on each GPU from the
-records it already holds (`fb_integrals_sys::record_bound`) and read on
-the host once, before the first batch; it is at least `sqrt((mn|mn))`
-for every Cartesian `m`, `n` of the pair, and the fit is a projection,
-`Σ_Q B_Q,mn² <= (mn|mn)`, so a dropped column is that small. B and the
-ring stay at the unscreened bound `Dims` gives
-([`memory.md`](memory.md), "Batched only"), so the budget does not
-depend on the threshold, and 0 is the unscreened build.
-
-**The build's ring.** `[eri] ring` pair batches are in flight per GPU,
-two or one. Each ring buffer has a stream of its own, which carries its
-batch's cells, its three-centre kernels and its download. The fit, a
-blocked triangular solve, goes on the GPU's stream: it waits on the event
-the ring stream recorded after the kernels, and the download waits on the
-event recorded after the fit. The host waits on a buffer's download token,
-which syncs that buffer's stream alone, before it scatters the batch into
-B and writes the buffer's pinned bytes again
-([`gpu_layer.md`](gpu_layer.md), "The v0.0.4 runtime").
-
-**A J/K pass uploads its whole share, through a ring of the same depth.**
-B has one copy, on the host; no GPU keeps rows of it between passes. Each
-aux batch goes through one of the pass's ring buffers, each with a pinned
-end and an upload stream of the manager's own:
-
-1. The host copies the batch's rows of B into the buffer's pinned end,
-   once the upload that last read those bytes has run.
-2. The upload, and the gather of the packed rows into square matrices, go
-   on the buffer's stream, after the event the GPU's stream recorded
-   behind the contraction that last read the buffer.
-3. The contraction goes on the GPU's stream, after the event the buffer's
-   stream recorded behind the gather.
-
-So a batch's host copy and its upload both run while the batch before is
-contracted, and the GPU never waits for the host. The pass joins its
-streams before it returns: the wrapper does not know the manager's
-streams. With the ring a pass takes the contraction's time, so nothing is
-gained by keeping rows of B on a GPU.
-
-**The ERI buffer.** One device buffer per GPU within `[eri] mem_per_gpu`,
-`eri`'s step limit, charged at what it uses, with its pinned staging.
-`eri`'s build and every later J/K pass run in it, one after the other,
-since the DAG orders `eri` before every reader: during `eri`'s run it
-holds the build's ring; afterwards a pass's gather tables, a copy of the
-density, the J and K fragments, one aux batch's work and the pass's ring.
-It is held for the whole calculation, so what it takes is not available
-to later steps, and the budget table shows it in `eri`'s row.
-
-**Pinned staging does not grow with the limit.** A fitted pair batch
-comes down through a staging buffer of at most 64 MiB, and an aux batch
-of B's rows goes up through one of at most 128 MiB. Neither batch is ever
-wider than its staging buffer holds, whatever `mem_per_gpu` is: a batch
-is one copy. Page-locking costs about 0.9 s per GiB, and each ring
-page-locks a buffer for each of its depth, while the build's time is flat
-in the width well below 64 MiB ([`memory.md`](memory.md), "Batched
-only"). So the buffer stops growing with the limit.
-
-**What `mem_per_gpu` does, from config alone:**
-
-| Set to | Gives |
-|---|---|
-| Below the ring at a width of one | A refusal naming `[eri]`'s key, its value and the least it needs |
-| About the ring | Narrow pair batches and narrow aux batches, a width of one logged at `warn`: the tests' many-batch case on water |
-| More | Wider batches, up to what a staging buffer holds; past that, nothing |
-| Default | 2 GiB: a fixed constant, not a fraction of the cap, so a dry budget is exact. A placeholder for a measured value |
-
-**Derivatives of B are scratch.** A gradient or a Hessian step builds the
-derivative of B a batch at a time and contracts it at once, inside the
-step that needs it. It reads the metric and L, which is why the metric is
-an `Output` of its own and L is the manager's. No such step is built yet.
+  `Density::Occupied`). K is cheaper from a factor, by `n_occ / n_ao`, so
+  a caller that has one passes it: the SCF does on every pass, its first
+  the guess's eigen-factor.
+- **A pass is whole when `build_jk` returns.** Only the matrix given
+  crosses to the other GPUs: downloaded from gpu0 once, and one host end
+  uploaded to each of them under one token. The pass joins the manager's
+  streams before it returns: the wrapper does not know them.
+- **B is built over pairs and contracted over aux functions.** B has one
+  copy, on the host heap. `eri` builds it a batch of pair columns at a
+  time, each GPU its own contiguous columns of every row; a J/K pass
+  uploads it a batch of rows at a time, each GPU its own fixed share, and
+  no GPU keeps rows of it between passes. No array in the DF-RHF chain
+  has a Cartesian index.
+- **The build is Schwarz-screened.** `[eri] schwarz_threshold`, 1e-12 by
+  default (the old path's) and at least 0, drops a shell pair whose
+  summed record bounds are under it: the pair has no cells and its
+  columns of B are zero, and every other column is the unscreened one.
+  B and the ring stay at the unscreened bound `Dims` gives
+  ([`memory.md`](memory.md), "Batched only"), so the budget does not
+  depend on the threshold, and 0 is the unscreened build.
+- **Derivatives of B are scratch.** A gradient or a Hessian step builds
+  the derivative of B a batch at a time and contracts it at once, inside
+  the step that needs it. It reads the metric and L, which is why the
+  metric is an `Output` of its own and L is the manager's. No such step
+  is built yet.
 
 ### What the model covers
 

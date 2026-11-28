@@ -38,6 +38,9 @@
 //!   tree's: the kernel libraries' ABI versions and functions in
 //!   `docs/gpu_layer.md`, the slow cases in `docs/testing.md`, and which
 //!   members link the library in `README.md`.
+//! - `tests/figures.rs`: every `.svg` under a member's `src/` is a doc
+//!   comment's figure: included on a page, one HTML block with no blank
+//!   line, balanced, labelled, inked by the theme, with ids of its own.
 //! - `tests/workspace_graph.rs`: the package graph (`cargo metadata`, over
 //!   the manifests' text) keeps the reverse-dependents bar, holds no
 //!   umbrella, lets no crate that only logs reach a handle crate, names

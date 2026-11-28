@@ -1,0 +1,38 @@
+<figure class="fb-fig">
+<svg viewBox="0 0 720 312" role="img" aria-label="A J/K pass across several GPUs. The caller's density, or its factor, is downloaded from gpu0 to one pinned host end and uploaded to every other GPU under one token. Every GPU contracts its own share of B's rows, uploaded from the host in aux batches, into its fragments of J and K. The fragments are downloaded, summed on the host and uploaded into the caller's j and k on gpu0.">
+<style>.fb-fig{margin:1.2em 0}.fb-fig svg{display:block;width:100%;max-width:780px;height:auto}.fb-fig figcaption{font-size:.875em;opacity:.8;max-width:780px}.fb-fig text{font-family:"Fira Sans",Arial,Helvetica,sans-serif;font-size:12px;fill:currentColor}.fb-fig .t{font-weight:600}.fb-fig .sm{font-size:11px}.fb-fig .mt{fill-opacity:.65}.fb-fig .at{fill:var(--link-color,#3873ad)}.fb-fig .ln{stroke:currentColor;fill:none;stroke-width:1.3}.fb-fig .ml{stroke:currentColor;stroke-opacity:.45;fill:none;stroke-width:1}.fb-fig .al{stroke:var(--link-color,#3873ad);fill:none;stroke-width:1.6}.fb-fig .box{fill:var(--code-block-background-color,#f5f5f5);stroke:currentColor;stroke-width:1.2}.fb-fig .row{fill:currentColor;fill-opacity:.1;stroke:currentColor;stroke-width:1}.fb-fig .ab{fill:var(--link-color,#3873ad);fill-opacity:.18;stroke:var(--link-color,#3873ad);stroke-width:1.5}.fb-fig .ah{fill:var(--link-color,#3873ad)}.fb-fig .fh{fill:currentColor}</style>
+<defs>
+<marker id="eripg1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<text class="t" x="120" y="18" text-anchor="middle">gpu0</text>
+<text class="t" x="360" y="18" text-anchor="middle">host</text>
+<text class="t" x="600" y="18" text-anchor="middle">every other GPU</text>
+<rect class="box" x="20" y="34" width="200" height="32" rx="4"/><text x="120" y="54" text-anchor="middle">D or C, the caller's</text>
+<rect class="ab" x="260" y="34" width="200" height="32" rx="4"/><text x="360" y="54" text-anchor="middle">one pinned host end</text>
+<rect class="box" x="500" y="34" width="200" height="32" rx="4"/><text x="600" y="54" text-anchor="middle">its copy of D or C</text>
+<line class="ln" x1="220" y1="50" x2="258" y2="50" marker-end="url(#eripg1)"/>
+<line class="ln" x1="460" y1="50" x2="498" y2="50" marker-end="url(#eripg1)"/>
+<text class="sm mt" x="240" y="82" text-anchor="middle">download</text>
+<text class="sm mt" x="480" y="82" text-anchor="middle">uploads, one token</text>
+<line class="ln" x1="120" y1="66" x2="120" y2="108" marker-end="url(#eripg1)"/>
+<line class="ln" x1="600" y1="66" x2="600" y2="108" marker-end="url(#eripg1)"/>
+<rect class="box" x="20" y="110" width="200" height="32" rx="4"/><text x="120" y="130" text-anchor="middle">its ring: J and K fragments</text>
+<rect class="box" x="260" y="110" width="200" height="32" rx="4"/><text x="360" y="130" text-anchor="middle">B: each GPU's share of rows</text>
+<rect class="box" x="500" y="110" width="200" height="32" rx="4"/><text x="600" y="130" text-anchor="middle">its ring: J and K fragments</text>
+<line class="ln" x1="260" y1="126" x2="222" y2="126" marker-end="url(#eripg1)"/>
+<line class="ln" x1="460" y1="126" x2="498" y2="126" marker-end="url(#eripg1)"/>
+<text class="sm mt" x="240" y="158" text-anchor="middle">aux batches</text>
+<text class="sm mt" x="480" y="158" text-anchor="middle">aux batches</text>
+<line class="ln" x1="120" y1="142" x2="258" y2="204" marker-end="url(#eripg1)"/>
+<line class="ln" x1="600" y1="142" x2="462" y2="204" marker-end="url(#eripg1)"/>
+<text class="sm mt" x="148" y="186" text-anchor="end">downloads</text>
+<text class="sm mt" x="572" y="186">downloads</text>
+<rect class="ab" x="260" y="190" width="200" height="32" rx="4"/><text x="360" y="210" text-anchor="middle">fragments summed on the host</text>
+<line class="ln" x1="320" y1="222" x2="222" y2="268" marker-end="url(#eripg1)"/>
+<text class="sm mt" x="290" y="256">uploads</text>
+<rect class="box" x="20" y="262" width="200" height="32" rx="4"/><text x="120" y="282" text-anchor="middle">J and K, the caller's j and k</text>
+<text class="sm mt" x="350" y="280">One GPU: its fragments are the result, copied on the GPU's</text>
+<text class="sm mt" x="350" y="294">stream, and nothing crosses the host.</text>
+</svg>
+<figcaption>A pass on several GPUs, top to bottom. The GPUs exchange nothing directly: the density goes out through one host end, and the fragments come back through the host, where they are summed in gpu0's pinned staging.</figcaption>
+</figure>

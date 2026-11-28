@@ -1,0 +1,87 @@
+<figure class="fb-fig">
+<svg viewBox="0 0 720 388" role="img" aria-label="The tenants of one GPU's ERI buffer and of its pinned staging, at a ring of two. During eri's run each ring buffer holds its cells and its pair batch on the device, and the fitted batch and the cells of each aux momentum in pinned memory. During a J/K pass the device holds the gather weights, a copy of each density, the J and K fragments, one aux batch's work, gamma, and per ring buffer the gather tables, the packed rows and the gathered squares; pinned memory holds the host ends of D, J and K and per ring buffer the tables and the packed rows.">
+<style>.fb-fig{margin:1.2em 0}.fb-fig svg{display:block;width:100%;max-width:780px;height:auto}.fb-fig figcaption{font-size:.875em;opacity:.8;max-width:780px}.fb-fig text{font-family:"Fira Sans",Arial,Helvetica,sans-serif;font-size:12px;fill:currentColor}.fb-fig .t{font-weight:600}.fb-fig .sm{font-size:11px}.fb-fig .mt{fill-opacity:.65}.fb-fig .at{fill:var(--link-color,#3873ad)}.fb-fig .ln{stroke:currentColor;fill:none;stroke-width:1.3}.fb-fig .ml{stroke:currentColor;stroke-opacity:.45;fill:none;stroke-width:1}.fb-fig .al{stroke:var(--link-color,#3873ad);fill:none;stroke-width:1.6}.fb-fig .box{fill:var(--code-block-background-color,#f5f5f5);stroke:currentColor;stroke-width:1.2}.fb-fig .row{fill:currentColor;fill-opacity:.1;stroke:currentColor;stroke-width:1}.fb-fig .ab{fill:var(--link-color,#3873ad);fill-opacity:.18;stroke:var(--link-color,#3873ad);stroke-width:1.5}.fb-fig .ah{fill:var(--link-color,#3873ad)}.fb-fig .fh{fill:currentColor}</style>
+<text class="t" x="10" y="18">During eri's run: the build's ring</text>
+<text class="sm mt" x="10" y="52">ERI buffer</text>
+<rect class="box" x="100" y="34" width="70" height="30"/>
+<text class="sm" x="135" y="53" text-anchor="middle">cells</text>
+<rect class="ab" x="170" y="34" width="230" height="30"/>
+<text class="sm" x="285" y="53" text-anchor="middle">pair batch: n_aux × its columns</text>
+<rect class="box" x="400" y="34" width="70" height="30"/>
+<text class="sm" x="435" y="53" text-anchor="middle">cells</text>
+<rect class="ab" x="470" y="34" width="230" height="30"/>
+<text class="sm" x="585" y="53" text-anchor="middle">pair batch: n_aux × its columns</text>
+<text class="sm mt" x="10" y="94">pinned</text>
+<rect class="ab" x="100" y="76" width="190" height="30"/>
+<text class="sm" x="195" y="95" text-anchor="middle">the fitted batch, coming down</text>
+<rect class="box" x="290" y="76" width="110" height="30"/>
+<text class="sm" x="345" y="95" text-anchor="middle">cells, per aux l</text>
+<rect class="ab" x="400" y="76" width="190" height="30"/>
+<text class="sm" x="495" y="95" text-anchor="middle">the fitted batch, coming down</text>
+<rect class="box" x="590" y="76" width="110" height="30"/>
+<text class="sm" x="645" y="95" text-anchor="middle">cells, per aux l</text>
+<path class="ln" d="M100,114 v6 h300 v-6"/>
+<path class="ln" d="M400,114 v6 h300 v-6"/>
+<text class="sm" x="250" y="136" text-anchor="middle">ring buffer 0</text>
+<text class="sm" x="550" y="136" text-anchor="middle">ring buffer 1</text>
+<line class="ml" x1="10" y1="154" x2="710" y2="154" stroke-dasharray="5 4"/>
+<text class="t" x="10" y="178">During a J/K pass: the same bytes, carved again</text>
+<text class="sm mt" x="10" y="212">ERI buffer</text>
+<rect class="box" x="100" y="194" width="62" height="30"/>
+<text class="sm" x="131" y="213" text-anchor="middle">weights</text>
+<rect class="box" x="162" y="194" width="52" height="30"/>
+<text class="sm" x="188" y="213" text-anchor="middle">D or C</text>
+<rect class="box" x="214" y="194" width="36" height="30"/>
+<text class="sm" x="232" y="213" text-anchor="middle">J</text>
+<rect class="box" x="250" y="194" width="36" height="30"/>
+<text class="sm" x="268" y="213" text-anchor="middle">K</text>
+<rect class="box" x="286" y="194" width="108" height="30"/>
+<text class="sm" x="340" y="213" text-anchor="middle">a batch's work</text>
+<rect class="box" x="394" y="194" width="34" height="30"/>
+<text class="sm" x="411" y="213" text-anchor="middle">γ</text>
+<rect class="ab" x="428" y="194" width="36" height="30"/>
+<text class="sm" x="446" y="213" text-anchor="middle">0</text>
+<rect class="ab" x="464" y="194" width="36" height="30"/>
+<text class="sm" x="482" y="213" text-anchor="middle">1</text>
+<rect class="ab" x="500" y="194" width="44" height="30"/>
+<text class="sm" x="522" y="213" text-anchor="middle">0</text>
+<rect class="ab" x="544" y="194" width="44" height="30"/>
+<text class="sm" x="566" y="213" text-anchor="middle">1</text>
+<rect class="ab" x="588" y="194" width="56" height="30"/>
+<text class="sm" x="616" y="213" text-anchor="middle">0</text>
+<rect class="ab" x="644" y="194" width="56" height="30"/>
+<text class="sm" x="672" y="213" text-anchor="middle">1</text>
+<path class="ln" d="M162,232 v6 h124 v-6"/>
+<text class="sm" x="224" y="254" text-anchor="middle">one per density</text>
+<path class="ln" d="M428,232 v6 h72 v-6"/>
+<text class="sm" x="464" y="254" text-anchor="middle">tables</text>
+<path class="ln" d="M500,232 v6 h88 v-6"/>
+<text class="sm" x="544" y="254" text-anchor="middle">rows</text>
+<path class="ln" d="M588,232 v6 h112 v-6"/>
+<text class="sm" x="644" y="254" text-anchor="middle">squares</text>
+<text class="sm mt" x="10" y="296">pinned</text>
+<rect class="box" x="100" y="278" width="60" height="30"/>
+<text class="sm" x="130" y="297" text-anchor="middle">D or C</text>
+<rect class="box" x="160" y="278" width="60" height="30"/>
+<text class="sm" x="190" y="297" text-anchor="middle">J</text>
+<rect class="box" x="220" y="278" width="60" height="30"/>
+<text class="sm" x="250" y="297" text-anchor="middle">K</text>
+<rect class="ab" x="280" y="278" width="50" height="30"/>
+<text class="sm" x="305" y="297" text-anchor="middle">0</text>
+<rect class="ab" x="330" y="278" width="50" height="30"/>
+<text class="sm" x="355" y="297" text-anchor="middle">1</text>
+<rect class="ab" x="380" y="278" width="160" height="30"/>
+<text class="sm" x="460" y="297" text-anchor="middle">0</text>
+<rect class="ab" x="540" y="278" width="160" height="30"/>
+<text class="sm" x="620" y="297" text-anchor="middle">1</text>
+<path class="ln" d="M100,316 v6 h180 v-6"/>
+<text class="sm" x="190" y="338" text-anchor="middle">host ends, one per density</text>
+<path class="ln" d="M280,316 v6 h100 v-6"/>
+<text class="sm" x="330" y="338" text-anchor="middle">tables</text>
+<path class="ln" d="M380,316 v6 h320 v-6"/>
+<text class="sm" x="540" y="338" text-anchor="middle">rows, going up</text>
+<text class="sm mt" x="100" y="362">0 and 1: the pass's ring buffers. tables: the gather tables. rows: an aux batch's packed rows of B.</text>
+<text class="sm mt" x="100" y="378">squares: the rows gathered into n_ao × n_ao matrices. Widths are not to scale.</text>
+</svg>
+<figcaption>One GPU's ERI buffer and its pinned staging at <code>[eri] ring = 2</code>, in layout order. Both layouts start at the buffer's first byte, and the buffer is as long as the longer one.</figcaption>
+</figure>

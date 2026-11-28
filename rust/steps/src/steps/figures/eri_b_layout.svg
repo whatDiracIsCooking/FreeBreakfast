@@ -1,0 +1,43 @@
+<figure class="fb-fig">
+<svg viewBox="0 0 720 286" role="img" aria-label="B drawn twice as a matrix of n_aux rows and n_col pair columns. In eri's run the columns are cut into pair batches, each a run of one class's pairs, and each GPU builds a contiguous run of batches. In a J/K pass the rows are cut into each GPU's contiguous share, and each share into aux batches.">
+<style>.fb-fig{margin:1.2em 0}.fb-fig svg{display:block;width:100%;max-width:780px;height:auto}.fb-fig figcaption{font-size:.875em;opacity:.8;max-width:780px}.fb-fig text{font-family:"Fira Sans",Arial,Helvetica,sans-serif;font-size:12px;fill:currentColor}.fb-fig .t{font-weight:600}.fb-fig .sm{font-size:11px}.fb-fig .mt{fill-opacity:.65}.fb-fig .at{fill:var(--link-color,#3873ad)}.fb-fig .ln{stroke:currentColor;fill:none;stroke-width:1.3}.fb-fig .ml{stroke:currentColor;stroke-opacity:.45;fill:none;stroke-width:1}.fb-fig .al{stroke:var(--link-color,#3873ad);fill:none;stroke-width:1.6}.fb-fig .box{fill:var(--code-block-background-color,#f5f5f5);stroke:currentColor;stroke-width:1.2}.fb-fig .row{fill:currentColor;fill-opacity:.1;stroke:currentColor;stroke-width:1}.fb-fig .ab{fill:var(--link-color,#3873ad);fill-opacity:.18;stroke:var(--link-color,#3873ad);stroke-width:1.5}.fb-fig .ah{fill:var(--link-color,#3873ad)}.fb-fig .fh{fill:currentColor}</style>
+<text class="t" x="190" y="18" text-anchor="middle">Built over pairs: eri's run</text>
+<text class="sm mt" x="190" y="34" text-anchor="middle">columns cut into pair batches, one class's pairs each</text>
+<text class="sm" x="85" y="54" text-anchor="middle">class 0</text>
+<text class="sm" x="155" y="54" text-anchor="middle">class 1</text>
+<text class="sm" x="260" y="54" text-anchor="middle">class 2</text>
+<rect class="row" x="60" y="62" width="110" height="150"/>
+<rect class="ab" x="170" y="62" width="150" height="150"/>
+<line class="ml" x1="85" y1="62" x2="85" y2="212"/>
+<line class="ln" x1="110" y1="56" x2="110" y2="212"/>
+<line class="ml" x1="140" y1="62" x2="140" y2="212"/>
+<line class="ml" x1="170" y1="62" x2="170" y2="212"/>
+<line class="ln" x1="200" y1="56" x2="200" y2="212"/>
+<line class="ml" x1="240" y1="62" x2="240" y2="212"/>
+<line class="ml" x1="280" y1="62" x2="280" y2="212"/>
+<text class="sm mt" x="46" y="137" text-anchor="middle" transform="rotate(-90 46 137)">n_aux rows</text>
+<text class="sm" x="115" y="141" text-anchor="middle">gpu0</text>
+<text class="sm" x="245" y="141" text-anchor="middle">gpu1</text>
+<path class="ln" d="M60,220 v6 h110 v-6"/>
+<path class="ln" d="M170,220 v6 h150 v-6"/>
+<text class="sm" x="115" y="242" text-anchor="middle">gpu0's batches</text>
+<text class="sm" x="245" y="242" text-anchor="middle">gpu1's batches</text>
+<text class="sm mt" x="190" y="266" text-anchor="middle">a GPU fits and scatters its own columns of every row</text>
+<line class="ml" x1="375" y1="10" x2="375" y2="276"/>
+<text class="t" x="560" y="18" text-anchor="middle">Contracted over aux functions: a J/K pass</text>
+<text class="sm mt" x="560" y="34" text-anchor="middle">rows cut into each GPU's share, a share into aux batches</text>
+<text class="sm mt" x="560" y="54" text-anchor="middle">n_col pair columns</text>
+<rect class="row" x="430" y="62" width="260" height="75"/>
+<rect class="ab" x="430" y="137" width="260" height="75"/>
+<line class="ml" x1="430" y1="87" x2="690" y2="87"/>
+<line class="ml" x1="430" y1="112" x2="690" y2="112"/>
+<line class="ml" x1="430" y1="162" x2="690" y2="162"/>
+<line class="ml" x1="430" y1="187" x2="690" y2="187"/>
+<text class="sm mt" x="416" y="137" text-anchor="middle" transform="rotate(-90 416 137)">n_aux rows</text>
+<text class="sm" x="560" y="103" text-anchor="middle">gpu0's share, in aux batches</text>
+<text class="sm" x="560" y="178" text-anchor="middle">gpu1's share, in aux batches</text>
+<text class="sm mt" x="560" y="242" text-anchor="middle">an aux batch goes up through the pass's ring</text>
+<text class="sm mt" x="560" y="266" text-anchor="middle">a GPU contracts its own rows, and keeps none of them</text>
+</svg>
+<figcaption>B, n_aux rows of n_col pair columns, cut two ways on two GPUs. A pair column depends on every aux function, so the build batches columns; a J/K pass sums over aux functions, so it batches rows.</figcaption>
+</figure>

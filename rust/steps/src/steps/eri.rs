@@ -1,65 +1,12 @@
-//! The density-fitted integrals: one all-GPU step whose `Output` is the
-//! [`EriManager`], the metric's Cholesky factor L on every GPU, the fitted
-//! tensor
-//!
-//! ```text
-//! B[Q][μν] = Σ_P L⁻¹[Q][P] (P|μν)
-//! ```
-//!
-//! on the host heap, n_aux rows of the n_col spherical pair columns, and
-//! per GPU the ERI buffer with its pinned staging and its streams' state
-//! (`docs/programming_model.md`, "The EriManager"; `docs/gpu_layer.md`,
-//! "The v0.0.4 runtime"; the prototype's `src/steps/eri.rs`).
-//!
-//! **B is built over pairs.** A pair column of B depends on every P, so a
-//! batch of P cannot be fitted alone; a batch of pairs can. The pair
-//! batches, a class's run of pairs each, partition the pair columns
-//! (checked when the list is made), and each GPU takes a contiguous range
-//! of them, so it owns one contiguous range of columns in every row of B:
-//! the rows are cut at the GPUs' column boundaries by `split_at_mut`, and
-//! each GPU scatters into its own slices, safe code with no shared pointer.
-//! Each GPU forms (μν|P) in its ring, `ssperi3<la, lb, lP>`, spherical in
-//! all three indices, fits it against its own L, and downloads it.
-//!
-//! **The screen.** At a positive `[eri] schwarz_threshold`, each class's
-//! records' dressed Schwarz bounds are formed on the GPU
-//! ([`record_bound`]), read on the host, and summed per shell pair: a pair
-//! whose sum is under the threshold has no cells, and its columns of B are
-//! zero. The sum is at least `sqrt((mn|mn))` for every Cartesian `m`, `n`
-//! of the pair, so a dropped column's fit is that small. B keeps every
-//! pair's columns, at the unscreened bound `Dims` gives, so the budget does
-//! not depend on the threshold.
-//!
-//! **The build's ring.** `[eri] ring` pair batches in flight per GPU, two
-//! or one, each ring buffer on a stream of its own carrying its batch's
-//! cells, its three-centre kernels and its download. The fit, a blocked
-//! triangular solve, goes on the GPU's stream: it waits on the event the
-//! ring stream recorded after the kernels, and the download waits on the
-//! event recorded after the fit. The host waits on a ring buffer's
-//! download token, which syncs that buffer's stream alone, before it
-//! scatters that batch into B and writes the buffer's pinned bytes again.
-//! The metric's factor goes on the GPU's stream before the loop, and
-//! overlaps the first batch's kernels.
-//!
-//! **B is contracted over aux functions.** [`EriManager::build_jk`] runs a
-//! J/K pass: each GPU contracts its own fixed share of B's rows, and the
-//! fragments are reduced onto gpu0 through the host. Each aux batch goes
-//! through one of the pass's ring buffers, each with a pinned end and an
-//! upload stream of the manager's own: the host copies the batch's rows
-//! into the buffer's pinned end once that buffer's last upload has run (a
-//! wait on its token, its stream alone); the upload and the gather into
-//! square matrices go on the buffer's stream, after the event the GPU's
-//! stream recorded behind the contraction that last read the buffer; the
-//! contraction goes on the GPU's stream, after the event recorded behind
-//! the gather. So a batch's host copy and its upload overlap the batch
-//! before's contraction. The pass joins its streams before it returns.
-//!
-//! **The ERI buffer** is one device buffer per GPU within `[eri]
-//! mem_per_gpu`, charged at what it uses, with its pinned staging; both are
-//! carved into tenants ([`DeviceBuf::tenant`], [`PinnedBuf::tenant`]).
-//! During `eri`'s run they hold the build's ring; afterwards a pass's
-//! gather tables, a copy of D, the J and K fragments, one aux batch's work
-//! and the pass's ring.
+//! The density-fitted integrals: [`EriStep`], one all-GPU step whose
+//! `Output` is the [`EriManager`]. This module is private, so rustdoc
+//! publishes no page for this header, and the spec is on the items'
+//! pages: the build of B on [`EriStep`], what the manager holds on
+//! [`EriManager`], a J/K pass on [`EriManager::build_jk`], each with its
+//! figures (`figures/eri_*.svg`). The model's contract is
+//! `docs/programming_model.md`, "The EriManager"; the streams' and events'
+//! rules are `docs/gpu_layer.md`, "The v0.0.4 runtime". Ported from the
+//! prototype's `src/steps/eri.rs`.
 
 use std::ops::Range;
 use std::sync::Mutex;
@@ -138,7 +85,87 @@ macro_rules! ring_wait {
     }};
 }
 
-/// The step.
+/// The `eri` step: all-GPU, reading the metric, with the [`EriManager`] as
+/// its `Output`. Its `mem_budget` allocates all of the manager, and its
+/// `run` factors the metric on every GPU and builds the fitted tensor B,
+///
+/// ```text
+/// B[Q][μν] = Σ_P L⁻¹[Q][P] (P|μν)
+/// ```
+///
+/// with L the metric's Cholesky factor, into the manager's slab on the host
+/// heap. What the manager then holds, and how it is sized, is on
+/// [`EriManager`]; this page is the build.
+///
+/// # B is built over pairs
+///
+/// A pair column of B depends on every P, so a batch of P cannot be fitted
+/// alone; a batch of pairs can. A pair batch is a run of one class's shell
+/// pairs, at most the pair batch width in columns ([`EriManager::width`]),
+/// and the batches partition B's pair columns, which is checked when the
+/// list is made. Each GPU takes a contiguous run of batches, the `g`-th of
+/// `n` equal runs of the list, and so one contiguous range of columns in
+/// every row of B: the rows are cut at the GPUs' column boundaries by
+/// `split_at_mut`, and each GPU scatters into its own slices, safe code
+/// with no shared pointer. No GPU needs anything from another
+/// ([`EriManager`] draws the cut).
+///
+/// **(μν|P) is spherical from the kernel.** `ssperi3<la, lb, lP>`
+/// ([`three_center_spherical_class`]) writes all three indices as real
+/// solid harmonics, each pair's block at its spherical pair column, the
+/// layout the fit reads. No bra transform runs, and the ring holds no
+/// Cartesian batch and no transform scratch. It is plain FP64.
+///
+/// # The screen
+///
+/// At a positive `[eri] schwarz_threshold`, each class's records' dressed
+/// Schwarz bounds are formed on the GPU ([`record_bound`]), read on the
+/// host once, before the first batch, and summed per shell pair. A pair
+/// whose sum is under the threshold has no cells: the ring buffer its
+/// batch is written into is zeroed first, and its columns of B are zero
+/// ([`EriManager::dropped_pairs`] counts them). The sum is at least
+/// `sqrt((mn|mn))` for every Cartesian `m`, `n` of the pair, and the fit is
+/// a projection, `Σ_Q B_Q,mn² <= (mn|mn)`, so a dropped column is that
+/// small. B and the ring stay at the unscreened bound `Dims` gives, so the
+/// budget does not depend on the threshold, and 0 is the unscreened build.
+///
+/// # The build's ring
+///
+/// `[eri] ring` pair batches are in flight on each GPU, two or one. Each
+/// ring buffer has one of the step's streams to itself, and a batch goes
+/// round in four moves:
+///
+/// 1. **Cells, on the host.** The batch's kept pairs crossed with every
+///    aux shell of one momentum, written into the ring buffer's pinned
+///    cells.
+/// 2. **Kernels, on the ring buffer's stream.** The cells' upload and the
+///    three-centre kernels, one launch per aux momentum, into the buffer's
+///    batch of `n_aux ×` its columns.
+/// 3. **The fit, on the GPU's stream.** `B ← L⁻¹ B` in place, a blocked
+///    triangular solve. It waits on the event the ring buffer's stream
+///    recorded behind the kernels.
+/// 4. **The download, on the ring buffer's stream,** after the event the
+///    GPU's stream recorded behind the fit. The host waits on the
+///    download's token, which syncs that stream alone, then scatters the
+///    batch, transposed, into its columns of B and writes the buffer's
+///    pinned bytes again.
+///
+#[doc = include_str!("figures/eri_build_ring.svg")]
+///
+/// The metric's factorization goes on the GPU's stream before the loop and
+/// overlaps the first batch's kernels. Before the first batch each GPU
+/// also forms its shell table, aux records and each class's records on the
+/// first ring stream, in the step's scratch, and after the last it writes
+/// the gather weights a J/K pass reads and checks the factorization's flag
+/// on the host: a metric that is not positive definite is a numerical
+/// error naming the GPU and the leading minor.
+///
+/// **Largest kernel stack first.** A GPU launches its batches by their
+/// class's `(la + lb, la)`, descending, and each batch's aux momenta from
+/// the highest, so the first launch on each ring stream is the largest it
+/// makes and every later one fits the stack that launch took
+/// (`docs/memory.md`, "Caps and margins"). Each batch's columns are its
+/// own, so the order moves no element of B.
 #[derive(Clone, Copy)]
 pub struct EriStep;
 
@@ -182,11 +209,95 @@ struct GpuState {
     events: Vec<Event>,
 }
 
-/// The fitted integrals and what builds J and K from them: `eri`'s
-/// `Output`. A reader declares it like any other, and a reader that calls
-/// [`Self::build_jk`] also declares the manager's lock and every GPU's,
-/// which the wrapper takes. B and L are immutable after `eri`; the state
-/// behind the `Mutex` changes only under the manager's lock.
+/// The density-fitted integrals and what builds J and K from them: `eri`'s
+/// `Output`, built by [`EriStep`] and read through [`Self::build_jk`]
+/// (`docs/programming_model.md`, "The EriManager", has the model's
+/// contract: who declares what, and who owns which result).
+///
+/// # What it holds
+///
+#[doc = include_str!("figures/eri_holds.svg")]
+///
+/// - **B, once, on the host heap** ([`Self::b`]): the fitted tensor
+///   `B[Q][μν] = Σ_P L⁻¹[Q][P] (P|μν)`, `n_aux` rows of the `n_col`
+///   spherical pair columns, each shell pair's block once. No GPU keeps
+///   rows of it between passes.
+/// - **L on every GPU**: the metric's Cholesky factor, `n_aux × n_aux`.
+///   Each GPU fits against its own.
+/// - **The ERI buffer on every GPU**, one device buffer within `[eri]
+///   mem_per_gpu`, and its pinned staging on the host, both carved into
+///   tenants ([`DeviceBuf::tenant`], [`PinnedBuf::tenant`]).
+/// - **Streams and events of its own on every GPU**, made on `eri`'s first
+///   run: one stream per buffer of a pass's ring, and the events that
+///   order a ring buffer's stream against the GPU's.
+///
+/// B and L are immutable after `eri`'s run. The rest sits behind a `Mutex`
+/// that is only ever `try_lock`ed, under the manager's lock, which a
+/// reader that calls [`Self::build_jk`] declares beside every GPU's and
+/// the wrapper takes. The manager itself takes no lock.
+///
+/// # Built over pairs, contracted over aux functions
+///
+#[doc = include_str!("figures/eri_b_layout.svg")]
+///
+/// [`EriStep`] builds B a pair batch at a time: a pair column depends on
+/// every aux function, so columns are what can be fitted alone, and each
+/// GPU writes its own contiguous run of them. [`Self::build_jk`] contracts
+/// B an aux batch at a time: J and K are sums over aux functions, so each
+/// GPU takes a fixed, contiguous share of the rows, the `g`-th of `n`
+/// ranges with the first `n_aux % n` one row longer, and uploads it
+/// through a ring on every pass. With the ring a pass takes the
+/// contraction's time, so nothing is gained by keeping rows of B on a GPU.
+///
+/// # The ERI buffer
+///
+/// `eri`'s build and every later J/K pass run in the same buffer, one
+/// after the other, since the DAG orders `eri` before every reader. Each
+/// carves it by its own layout, from the buffer's first byte:
+///
+#[doc = include_str!("figures/eri_buffer_tenants.svg")]
+///
+/// - **During `eri`'s run**, the build's ring: per ring buffer, its cells
+///   and its pair batch on the device, and in pinned memory the fitted
+///   batch on its way down and the cells of each aux momentum.
+/// - **During a pass**: the gather weights (written once, at the end of
+///   the build), a copy of each density for a GPU that is not gpu0, the J
+///   and K fragments, one aux batch's work (every `B_Q C`, or `B_Q D`) and
+///   its γ, and the pass's ring: per ring buffer, the gather tables, an
+///   aux batch's packed rows and the squares gathered from them. Pinned
+///   memory holds the ring's host ends and, on several GPUs, the host ends
+///   of the densities and of the J and K fragments.
+///
+/// It is held for the whole calculation, so what it takes is not available
+/// to later steps, and the budget table shows it in `eri`'s row.
+///
+/// # Sizing
+///
+/// `[eri] mem_per_gpu` is the limit of one GPU's ERI buffer, 2 GiB by
+/// default ([`DEFAULT_MEM_PER_GPU`]). `eri`'s `mem_budget` picks the two
+/// batch widths from it, and the buffer is charged at what the wider of
+/// its two layouts uses, never at the limit:
+///
+/// - **The pair batch width** ([`Self::width`]), in pair columns: the
+///   widest whose build ring fits the limit and whose fitted batch fits
+///   one pinned buffer of 64 MiB, and never under one pair of the widest
+///   class.
+/// - **The aux batch width** ([`Self::jk_width`]), in rows of B: the
+///   widest whose pass fits the limit, never past a GPU's share nor past
+///   what one pinned buffer of 128 MiB holds.
+///
+/// So pinned staging does not grow with the limit: a batch is one copy,
+/// never wider than its staging buffer. Page-locking costs about 0.9 s per
+/// GiB, and each ring page-locks a buffer for each of its depth, while the
+/// build's time is flat in the width well below 64 MiB (`docs/memory.md`,
+/// "Batched only").
+///
+/// | `mem_per_gpu` | Gives |
+/// |---|---|
+/// | Below [`EriStep::least_mem_per_gpu`] | A refusal naming `[eri]`'s key, its value and the least it needs |
+/// | About that | Narrow pair batches and narrow aux batches, a width of one logged at `warn`: the tests' many-batch case on water |
+/// | More | Wider batches, up to what a staging buffer holds; past that, nothing |
+/// | Unset | 2 GiB: a fixed constant, not a fraction of the cap, so a dry budget is exact. A placeholder for a measured value |
 pub struct EriManager {
     n_aux: usize,
     n_col: usize,
@@ -255,11 +366,87 @@ impl EriManager {
         self.passes.load(Ordering::Relaxed)
     }
 
-    /// J and K for each density, on gpu0, into the caller's `j` and `k`.
-    /// Every GPU uploads and contracts its own aux batches through the
-    /// pass's ring, and the fragments are reduced onto gpu0 through the
-    /// host. It takes no lock: the GPU guards and the manager's come in
-    /// `held`, taken by the wrapper; `shared` is the reader's.
+    /// J and K for each density of `d`, on gpu0, into the caller's `j` and
+    /// `k`: one J/K pass,
+    ///
+    /// ```text
+    /// J = Σ_Q B_Q (B_Q · D)        K = Σ_Q B_Q D B_Q
+    /// ```
+    ///
+    /// with `B_Q` row `Q` of B as a square matrix. It takes no lock: the GPU
+    /// guards and the manager's come in `held`, taken by the wrapper;
+    /// `shared` is the reader's. It reads the densities and writes `j` and
+    /// `k`, and keeps nothing of the caller's.
+    ///
+    /// # Across the GPUs
+    ///
+    #[doc = include_str!("figures/eri_pass_gpus.svg")]
+    ///
+    /// 1. **The densities cross through the host**, on several GPUs only.
+    ///    Each matrix given, D or the factor C, is downloaded from gpu0 on
+    ///    the manager's stream, after an event recorded on gpu0's stream
+    ///    behind the caller's work, and its one host end is uploaded to
+    ///    every other GPU under one token.
+    /// 2. **Every GPU contracts its own share of B's rows**
+    ///    ([`fan_out`]) into its fragments of J and K, through the pass's
+    ///    ring, below. gpu0 reads the caller's matrices, every other GPU
+    ///    its copies.
+    /// 3. **The fragments are reduced onto gpu0.** Each GPU's are
+    ///    downloaded on its manager's stream, which waits for its
+    ///    contractions; they are summed on the host in gpu0's pinned
+    ///    staging and uploaded into `j` and `k`. On one GPU its fragments
+    ///    are the result, copied on the GPU's stream.
+    ///
+    /// The pass joins the manager's streams before it returns: the wrapper
+    /// does not know them.
+    ///
+    /// # The pass's ring
+    ///
+    /// A GPU's share goes up in aux batches of [`Self::jk_width`] rows,
+    /// each through one of the pass's ring buffers, `[eri] ring` of them,
+    /// each with a pinned end and a stream of the manager's own:
+    ///
+    /// 1. **The host copy.** The batch's rows of B are copied into the
+    ///    ring buffer's pinned end, once the upload that last read those
+    ///    bytes has run: a wait on that upload's token, its stream alone.
+    /// 2. **The upload and the gather, on the ring buffer's stream.** The
+    ///    packed rows go up and [`packed_gather`] spreads each into a
+    ///    square `n_ao × n_ao` matrix, after the event the GPU's stream
+    ///    recorded behind the contraction that last read the buffer.
+    /// 3. **The contraction, on the GPU's stream,** after the event the
+    ///    ring buffer's stream recorded behind the gather.
+    ///
+    #[doc = include_str!("figures/eri_pass_ring.svg")]
+    ///
+    /// So a batch's host copy and its upload both run while the batch
+    /// before is contracted, and the GPU never waits for the host.
+    ///
+    /// # The contractions
+    ///
+    /// An aux batch is uploaded and gathered once, and contracted with each
+    /// density in turn. From [`Density::Occupied`], the factor C of
+    /// `D = 2 C Cᵀ`:
+    ///
+    /// ```text
+    /// M_Q = B_Q C              one batched gemm; the blocks side by side are M
+    /// γ_Q = 2 M_Q · C          one gemv: γ_Q = B_Q · D
+    /// J  += Σ_Q γ_Q B_Q        one gemv
+    /// K  += 2 M Mᵀ             a syrk on CUDA, a gemm on HIP
+    /// ```
+    ///
+    /// The syrk writes K's lower triangle alone, mirrored on the GPU's
+    /// stream once the pass's batches are done; which of the two is used is
+    /// whichever measured faster on the backend. From [`Density::Dense`]:
+    ///
+    /// ```text
+    /// γ_Q = B_Q · D            one gemv
+    /// J  += Σ_Q γ_Q B_Q        one gemv
+    /// K  += Σ_Q (B_Q D) B_Qᵀ   one batched gemm for every B_Q D, then one gemm
+    /// ```
+    ///
+    /// From D, K costs two `n_aux × n_ao³` products; from C, two
+    /// `n_aux × n_ao² × n_occ` ones, and J comes from the same
+    /// half-transformed B.
     ///
     /// # Errors
     /// A launch's, a copy's or the library's failure.

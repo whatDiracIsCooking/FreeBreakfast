@@ -1,0 +1,46 @@
+<figure class="fb-fig">
+<svg viewBox="0 0 740 252" role="img" aria-label="A timeline of the build's ring on one GPU, at a ring of two, over four lanes: the host, ring stream 0, the GPU's stream and ring stream 1. The host writes a batch's cells; the batch's ring stream runs its three-centre kernels; the fit runs on the GPU's stream after an event recorded behind the kernels; the download runs on the ring stream after an event recorded behind the fit; the host waits on the download's token and scatters the batch into B. Two batches are in flight, and the metric's factorization overlaps the first batch's kernels.">
+<style>.fb-fig{margin:1.2em 0}.fb-fig svg{display:block;width:100%;max-width:780px;height:auto}.fb-fig figcaption{font-size:.875em;opacity:.8;max-width:780px}.fb-fig text{font-family:"Fira Sans",Arial,Helvetica,sans-serif;font-size:12px;fill:currentColor}.fb-fig .t{font-weight:600}.fb-fig .sm{font-size:11px}.fb-fig .mt{fill-opacity:.65}.fb-fig .at{fill:var(--link-color,#3873ad)}.fb-fig .ln{stroke:currentColor;fill:none;stroke-width:1.3}.fb-fig .ml{stroke:currentColor;stroke-opacity:.45;fill:none;stroke-width:1}.fb-fig .al{stroke:var(--link-color,#3873ad);fill:none;stroke-width:1.6}.fb-fig .box{fill:var(--code-block-background-color,#f5f5f5);stroke:currentColor;stroke-width:1.2}.fb-fig .row{fill:currentColor;fill-opacity:.1;stroke:currentColor;stroke-width:1}.fb-fig .ab{fill:var(--link-color,#3873ad);fill-opacity:.18;stroke:var(--link-color,#3873ad);stroke-width:1.5}.fb-fig .ah{fill:var(--link-color,#3873ad)}.fb-fig .fh{fill:currentColor}</style>
+<defs>
+<marker id="eribr1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0L10,5L0,10z"/></marker>
+<marker id="eribr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<text class="t" x="10" y="18">The build's ring on one GPU, [eri] ring = 2</text>
+<text class="sm mt" x="10" y="57">host</text>
+<text class="sm mt" x="10" y="101">ring stream 0</text>
+<text class="sm mt" x="10" y="145">the GPU's stream</text>
+<text class="sm mt" x="10" y="189">ring stream 1</text>
+<line class="ml" x1="112" y1="53" x2="730" y2="53" stroke-dasharray="2 4"/>
+<line class="ml" x1="112" y1="97" x2="730" y2="97" stroke-dasharray="2 4"/>
+<line class="ml" x1="112" y1="141" x2="730" y2="141" stroke-dasharray="2 4"/>
+<line class="ml" x1="112" y1="185" x2="730" y2="185" stroke-dasharray="2 4"/>
+<rect class="box" x="120" y="40" width="46" height="26" rx="3"/><rect class="ab" x="120" y="40" width="46" height="26" rx="3"/><text class="sm" x="143" y="57" text-anchor="middle">cells a</text>
+<rect class="box" x="168" y="40" width="46" height="26" rx="3"/><text class="sm" x="191" y="57" text-anchor="middle">cells b</text>
+<rect class="box" x="382" y="40" width="62" height="26" rx="3"/><rect class="ab" x="382" y="40" width="62" height="26" rx="3"/><text class="sm" x="413" y="57" text-anchor="middle">scatter a</text>
+<rect class="box" x="446" y="40" width="46" height="26" rx="3"/><text class="sm" x="469" y="57" text-anchor="middle">cells c</text>
+<rect class="box" x="494" y="40" width="62" height="26" rx="3"/><text class="sm" x="525" y="57" text-anchor="middle">scatter b</text>
+<rect class="box" x="558" y="40" width="46" height="26" rx="3"/><text class="sm" x="581" y="57" text-anchor="middle">cells d</text>
+<rect class="box" x="168" y="84" width="100" height="26" rx="3"/><rect class="ab" x="168" y="84" width="100" height="26" rx="3"/><text class="sm" x="218" y="101" text-anchor="middle">kernels a</text>
+<rect class="box" x="328" y="84" width="52" height="26" rx="3"/><rect class="ab" x="328" y="84" width="52" height="26" rx="3"/><text class="sm" x="354" y="101" text-anchor="middle">down a</text>
+<rect class="box" x="494" y="84" width="100" height="26" rx="3"/><text class="sm" x="544" y="101" text-anchor="middle">kernels c</text>
+<rect class="box" x="654" y="84" width="52" height="26" rx="3"/><text class="sm" x="680" y="101" text-anchor="middle">down c</text>
+<rect class="box" x="120" y="128" width="134" height="26" rx="3"/><text class="sm" x="187" y="145" text-anchor="middle">factor (P|Q) into L</text>
+<rect class="box" x="270" y="128" width="56" height="26" rx="3"/><rect class="ab" x="270" y="128" width="56" height="26" rx="3"/><text class="sm" x="298" y="145" text-anchor="middle">fit a</text>
+<rect class="box" x="328" y="128" width="56" height="26" rx="3"/><text class="sm" x="356" y="145" text-anchor="middle">fit b</text>
+<rect class="box" x="596" y="128" width="56" height="26" rx="3"/><text class="sm" x="624" y="145" text-anchor="middle">fit c</text>
+<rect class="box" x="216" y="172" width="100" height="26" rx="3"/><text class="sm" x="266" y="189" text-anchor="middle">kernels b</text>
+<rect class="box" x="386" y="172" width="52" height="26" rx="3"/><text class="sm" x="412" y="189" text-anchor="middle">down b</text>
+<rect class="box" x="606" y="172" width="100" height="26" rx="3"/><text class="sm" x="656" y="189" text-anchor="middle">kernels d</text>
+<line class="al" x1="160" y1="67" x2="174" y2="83" marker-end="url(#eribr1)"/>
+<line class="al" x1="262" y1="111" x2="276" y2="127" marker-end="url(#eribr1)"/>
+<text class="sm at" x="256" y="123" text-anchor="end">event</text>
+<line class="al" x1="322" y1="127" x2="336" y2="111" marker-end="url(#eribr1)"/>
+<text class="sm at" x="344" y="123">event</text>
+<line class="al" x1="376" y1="83" x2="390" y2="67" marker-end="url(#eribr1)"/>
+<text class="sm at" x="340" y="79">token</text>
+<line class="ln" x1="120" y1="218" x2="722" y2="218" marker-end="url(#eribr2)"/>
+<text class="sm mt" x="730" y="236" text-anchor="end">time</text>
+<text class="sm mt" x="120" y="236">a, b, c, d: pair batches in launch order. Batch a's chain is marked; every batch's is the same.</text>
+</svg>
+<figcaption>Kernels on a ring buffer's stream, the fit on the GPU's stream, the download back on the ring buffer's stream, the scatter on the host: batch b's kernels run while batch a is fitted, and the host writes batch c's cells while b is fitted and downloaded.</figcaption>
+</figure>

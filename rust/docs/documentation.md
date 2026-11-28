@@ -301,6 +301,25 @@ hand-written SVG, and rendered when the docs build. The tree already does the
 second half: `experimental/cope_rearrangement`'s surfaces and scans are SVG
 written by stdlib Python, committed as text, and shown by its READMEs.
 
+**A figure on a rustdoc page is an SVG beside its module, included
+inline.** The file sits in a `figures/` directory beside the module whose
+item it illustrates, and reaches that item's page through
+`#[doc = include_str!("figures/x.svg")]` between the doc comment's
+paragraphs: the comment stays readable in an editor, and the picture is
+reviewed as a text diff. rustdoc hands the file to Markdown as one raw HTML
+block, and renders it under each of its themes, beside whatever other
+figures the page has. So the file is one `<figure>` from its first byte
+with no blank line, which would end the block; it holds one
+`<svg role="img">` with an `aria-label`, and a `<figcaption>`; its ink is
+`currentColor` and rustdoc's CSS variables, a hex colour only as a
+`var()`'s fallback; its ids are shared with no other figure; and every
+figure carries the same `<style>`, scoped to the figures' class.
+`doc_check/tests/figures.rs` holds each of those for every `.svg` under a
+member's `src/`. Whether a label is true to the code and legible is seen
+only by looking: a figure is rasterized in a light and a dark ink when it
+is drawn or changed. The figures of `fb_steps::EriManager` and
+`fb_steps::EriStep` are the first.
+
 **A step DAG's diagram is emitted, not drawn.** The diagram worth having
 shows the DAG the config built, its steps and their declared reads, so its
 emitter is on the built DAG and writes Mermaid (for the pages) or DOT (for a
